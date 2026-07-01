@@ -108,6 +108,14 @@ describe("rightPanelStore", () => {
     expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refB)).toBeNull();
   });
 
+  it("opens a singleton source control surface", () => {
+    useRightPanelStore.getState().open(refA, "sourceControl");
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces).toContainEqual({ id: "sourceControl", kind: "sourceControl" });
+    expect(state.activeSurfaceId).toBe("sourceControl");
+    expect(state.isOpen).toBe(true);
+  });
+
   it("opening a different kind keeps both surfaces and activates the new one", () => {
     useRightPanelStore.getState().open(refA, "plan");
     useRightPanelStore.getState().open(refA, "preview");
