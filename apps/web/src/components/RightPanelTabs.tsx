@@ -4,7 +4,7 @@ import {
   ClipboardList,
   FileDiff,
   Files,
-  GitBranch,
+  GitPullRequestArrow,
   Globe2,
   Plus,
   TerminalSquare,
@@ -263,7 +263,7 @@ function SurfaceIcon({
     case "diff":
       return <FileDiff className="size-3.5 shrink-0" />;
     case "sourceControl":
-      return <GitBranch className="size-3.5 shrink-0" />;
+      return <GitPullRequestArrow className="size-3.5 shrink-0" />;
     case "files":
       return <Files className="size-3.5 shrink-0" />;
     case "file":
