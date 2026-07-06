@@ -1,4 +1,4 @@
-name: Deploy T3 Connect relay
+name: Deploy T4 Connect relay
 
 on:
   push:
@@ -17,8 +17,14 @@ concurrency:
 jobs:
   deploy_relay:
     name: Deploy production relay
-    runs-on: blacksmith-8vcpu-ubuntu-2404
-    timeout-minutes: 15
+    # Fork adaptation: only deploy when relay infrastructure is configured.
+    # CLOUDFLARE_ACCOUNT_ID must be a REPOSITORY-level variable for this guard:
+    # job-level `if:` cannot see environment-scoped variables because the
+    # `production` environment only attaches after the job starts. Without
+    # this guard every push to main fails on missing Cloudflare credentials.
+    if: vars.CLOUDFLARE_ACCOUNT_ID != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     environment:
       name: production
     env:

@@ -1,180 +1,154 @@
 # Encyclopedia
 
-This is a living glossary for T3 Code. It explains what common terms mean in this codebase.
+This is a living glossary for T4Code. It explains common terms used in the
+codebase and UI.
 
-## Table of contents
+## Project And Workspace
 
-- [Project and workspace](#project-and-workspace)
-- [Thread timeline](#thread-timeline)
-- [Orchestration](#orchestration)
-- [Provider runtime](#provider-runtime)
-- [Checkpointing](#checkpointing)
+### Project
 
-## Concepts
+The top-level workspace record in an environment. A project points at a
+workspace root and owns the visible primary/worktree rows in the left panel.
 
-### Project and workspace
+### Workspace Root
 
-#### Project
+The filesystem path for a project checkout. Git, file, terminal, and provider
+operations run relative to this root unless a thread has a worktree path.
 
-The top-level workspace record in the app. In [the orchestration contracts][1], a project has a `workspaceRoot`, a title, and one or more threads. See [workspace-layout.md][2].
+### Primary Workspace Row
 
-#### Workspace root
+The left-panel row for a project's live checkout. It is backed by the project's
+default thread, shows the live checkout branch, and cannot be deleted as a
+normal thread.
 
-The root filesystem path for a project. In [the orchestration model][1], it is the base directory for branches and optional worktrees. See [workspace-layout.md][2].
+### Default Thread
 
-#### Worktree
+The undeletable thread that backs a project primary row. Removing it is modeled
+as removing the project, not deleting a thread.
 
-A Git worktree used as an isolated workspace for a thread. If a thread has a `worktreePath` in [the contracts][1], it runs there instead of in the main working tree. Git operations live in [GitCore.ts][3].
+### Worktree
 
-### Thread timeline
+A Git worktree used as an isolated workspace. Worktree threads have
+`worktreePath` set and run chats, terminals, filesystem, and source-control
+operations in that path.
 
-#### Thread
+### Workspace Thread
 
-The main durable unit of conversation and workspace history. In [the orchestration contracts][1], a thread holds messages, activities, checkpoints, and session-related state. See [projector.ts][4].
+A normal visible thread for a project primary checkout or worktree. It owns
+conversation history, provider session state, activities, checkpoints, and
+workspace metadata.
 
-#### Turn
+### Panel Thread
 
-A single user-to-assistant work cycle inside a thread. It starts with user input and ends when follow-up work like checkpointing settles. See [the contracts][1], [ProviderRuntimeIngestion.ts][5], and [CheckpointReactor.ts][6].
+A hidden sibling thread with `kind: "panel"`. Panel threads share the host
+thread's project, branch, and worktree but own an isolated provider session and
+transcript. They appear as center-panel tabs, not left-panel rows.
 
-#### Activity
+## UI Surfaces
 
-A user-visible log item attached to a thread. In [the contracts][1], activities cover important non-message events like approvals, tool actions, and failures. They are projected into thread state in [projector.ts][4].
+### Left Panel
 
-### Orchestration
+The project/worktree navigator. It shows project groups, primary rows, worktree
+rows, pin/unread state, context menus, and running agent sub-rows.
 
-Orchestration is the server-side domain layer that turns runtime activity into stable app state. The main entry point is [OrchestrationEngine.ts][7], with core logic in [decider.ts][8] and [projector.ts][4].
+### Center Panel
 
-#### Aggregate
+The main chat area. The host chat is the first unclosable tab. Extra AI chat
+panels and terminal panels are opened from the chat header `+` menu.
 
-The domain object a command or event belongs to. In [the contracts][1], that is usually `project` or `thread`. See [decider.ts][8].
+### Right Panel
 
-#### Command
+The tool surface area for the active thread. It hosts Files, Source Control,
+Diff, Preview, Terminal, and related project tools.
 
-A typed request to change domain state. In [the contracts][1], commands are validated in [commandInvariants.ts][9] and turned into events by [decider.ts][8].
-Examples include `thread.create`, `thread.turn.start`, and `thread.checkpoint.revert`.
+### Source Control
 
-#### Domain Event
+The right-panel Git UI for the active project/worktree. It groups files by
+staged, unstaged, and untracked state; exposes stage/unstage/discard/delete
+actions; provides commit history and AI commit messages; and drives commit,
+pull, push, publish, and PR actions.
 
-A persisted fact that something already happened. In [the contracts][1], events are the source of truth, and [projector.ts][4] shows how they are applied.
-Examples include `thread.created`, `thread.message-sent`, and `thread.turn-diff-completed`.
+### Files Manager
 
-#### Decider
+The right-panel filesystem UI for the active project/worktree. It supports
+context menus for files, folders, and background space; create, rename, delete,
+duplicate, copy path, add folder as project, external editor, preview, and
+explicit Ctrl/Cmd+S saves.
 
-The pure orchestration logic that turns commands plus current state into events. The core implementation is in [decider.ts][8], with preconditions in [commandInvariants.ts][9].
+### Custom Action
 
-#### Projection
+A project script/action exposed through the chat header `+` menu and script
+commands. Script keybindings use the `script.{id}.run` command shape.
 
-A read-optimized view derived from events. See [projector.ts][4], [ProjectionPipeline.ts][11], and [ProjectionSnapshotQuery.ts][10].
+## Orchestration
 
-#### Projector
+### Command
 
-The logic that applies domain events to the read model or projection tables. See [projector.ts][4] and [ProjectionPipeline.ts][11].
+A typed request to change domain state, such as creating a project, creating a
+thread, starting a turn, or deleting a panel thread.
 
-#### Read model
+### Domain Event
 
-The current materialized view of orchestration state. In [the contracts][1], it holds projects, threads, messages, activities, checkpoints, and session state. See [ProjectionSnapshotQuery.ts][10] and [OrchestrationEngine.ts][7].
+A persisted fact that something happened. The server projects domain events
+into read models and pushes user-visible updates to clients.
 
-#### Reactor
+### Projection
 
-A side-effecting service that handles follow-up work after events or runtime signals. Examples include [CheckpointReactor.ts][6], [ProviderCommandReactor.ts][12], and [ProviderRuntimeIngestion.ts][5].
+A read-optimized view derived from events. Browser clients consume projections
+through the WebSocket transport and typed contracts.
 
-#### Receipt
+### Receipt
 
-A lightweight typed runtime signal emitted when an async milestone completes. See [RuntimeReceiptBus.ts][13].
-Examples include `checkpoint.baseline.captured`, `checkpoint.diff.finalized`, and `turn.processing.quiesced`, which are emitted by flows such as [CheckpointReactor.ts][6].
+A lightweight runtime signal emitted when async work reaches a stable milestone,
+such as checkpoint capture, diff finalization, or turn quiescence.
 
-#### Quiesced
+### Quiesced
 
-"Quiesced" means a turn has gone quiet and stable. In [the receipt schema][13], it means the follow-up work has settled, including work in [CheckpointReactor.ts][6].
+A turn has gone quiet and stable: provider work and follow-up processing have
+settled far enough for tests and orchestration to continue deterministically.
 
-### Provider runtime
+## Provider Runtime
 
-The live backend agent implementation and its event stream. The main service is [ProviderService.ts][14], the adapter contract is [ProviderAdapter.ts][15], and the overview is in [provider-architecture.md][16].
+### Provider
 
-#### Provider
+The backend agent driver/runtime, such as Codex, Claude, Cursor, Grok, or
+OpenCode.
 
-The backend agent runtime that actually performs work. See [ProviderService.ts][14], [ProviderAdapter.ts][15], and [CodexAdapter.ts][17].
+### Provider Instance
 
-#### Session
+A configured provider entry with its own display name, settings, credentials,
+home path, environment variables, and model availability.
 
-The live provider-backed runtime attached to a thread. Session shape is in [the orchestration contracts][1], and lifecycle is managed in [ProviderService.ts][14].
+### Session
 
-#### Runtime mode
+The live provider-backed runtime attached to a thread. Workspace threads and
+panel threads each own their own session.
 
-The safety/access mode for a thread or session. In [the contracts][1], the main values are `approval-required` and `full-access`. See [runtime-modes.md][18].
+### Runtime Mode
 
-#### Interaction mode
+The safety/access mode for a session, such as full access or supervised mode.
 
-The agent interaction style for a thread. In [the contracts][1], the main values are `default` and `plan`. See [runtime-modes.md][18].
+### Interaction Mode
 
-#### Assistant delivery mode
+The agent interaction style for a session, such as default or plan mode.
 
-Controls how assistant text reaches the thread timeline. In [the contracts][1], `streaming` updates incrementally and `buffered` delivers a completed result. See [ProviderService.ts][14].
+## Checkpointing
 
-#### Snapshot
+### Checkpoint
 
-A point-in-time view of state. The word is used in multiple layers, including orchestration, provider, and checkpointing. See [ProjectionSnapshotQuery.ts][10], [ProviderAdapter.ts][15], and [CheckpointStore.ts][19].
+A saved snapshot of workspace state at a particular turn.
 
-### Checkpointing
+### Checkpoint Baseline
 
-Checkpointing captures workspace state over time so the app can diff turns and restore earlier points. The main pieces are [CheckpointStore.ts][19], [CheckpointDiffQuery.ts][20], and [CheckpointReactor.ts][6].
+The starting checkpoint used to compute later diffs for a thread timeline.
 
-#### Checkpoint
+### Turn Diff
 
-A saved snapshot of a thread workspace at a particular turn. In practice it is a hidden Git ref in [CheckpointStore.ts][19] plus a projected summary from [ProjectionCheckpoints.ts][21]. Capture and lifecycle work happen in [CheckpointReactor.ts][6].
-
-#### Checkpoint ref
-
-The durable identifier for a filesystem checkpoint, stored as a Git ref. It is typed in [the contracts][1], constructed in [Utils.ts][22], and used by [CheckpointStore.ts][19].
-
-#### Checkpoint baseline
-
-The starting checkpoint for diffing a thread timeline. This flow is surfaced through [RuntimeReceiptBus.ts][13], coordinated in [CheckpointReactor.ts][6], and supported by [Utils.ts][22].
-
-#### Checkpoint diff
-
-The patch difference between two checkpoints. Query logic lives in [CheckpointDiffQuery.ts][20], diff parsing lives in [Diffs.ts][23], and finalization is coordinated by [CheckpointReactor.ts][6].
-
-#### Turn diff
-
-The file patch and changed-file summary for one turn. It is usually computed in [CheckpointDiffQuery.ts][20], represented in [the contracts][1], and recorded into thread state by [projector.ts][4].
-
-## Practical Shortcuts
-
-- If you see `requested`, think "intent recorded".
-- If you see `completed`, think "result applied".
-- If you see `receipt`, think "async milestone signal".
-- If you see `checkpoint`, think "workspace snapshot for diff/restore".
-- If you see `quiesced`, think "all relevant follow-up work has gone idle".
+The changed-file summary and patch for one turn.
 
 ## Related Docs
 
-- [architecture.md][24]
-- [provider-architecture.md][16]
-- [runtime-modes.md][18]
-- [workspace-layout.md][2]
-
-[1]: ../packages/contracts/src/orchestration.ts
-[2]: ./workspace-layout.md
-[3]: ../apps/server/src/git/Layers/GitCore.ts
-[4]: ../apps/server/src/orchestration/projector.ts
-[5]: ../apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts
-[6]: ../apps/server/src/orchestration/Layers/CheckpointReactor.ts
-[7]: ../apps/server/src/orchestration/Layers/OrchestrationEngine.ts
-[8]: ../apps/server/src/orchestration/decider.ts
-[9]: ../apps/server/src/orchestration/commandInvariants.ts
-[10]: ../apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts
-[11]: ../apps/server/src/orchestration/Layers/ProjectionPipeline.ts
-[12]: ../apps/server/src/orchestration/Layers/ProviderCommandReactor.ts
-[13]: ../apps/server/src/orchestration/Services/RuntimeReceiptBus.ts
-[14]: ../apps/server/src/provider/Layers/ProviderService.ts
-[15]: ../apps/server/src/provider/Services/ProviderAdapter.ts
-[16]: ./provider-architecture.md
-[17]: ../apps/server/src/provider/Layers/CodexAdapter.ts
-[18]: ./runtime-modes.md
-[19]: ../apps/server/src/checkpointing/CheckpointStore.ts
-[20]: ../apps/server/src/checkpointing/CheckpointDiffQuery.ts
-[21]: ../apps/server/src/persistence/Services/ProjectionCheckpoints.ts
-[22]: ../apps/server/src/checkpointing/Utils.ts
-[23]: ../apps/server/src/checkpointing/Diffs.ts
-[24]: ./architecture.md
+- [Workspace UI](../user/workspace-ui.md)
+- [Repository layout](./workspace-layout.md)
+- [Architecture overview](../architecture/overview.md)
+- [Runtime modes](../architecture/runtime-modes.md)

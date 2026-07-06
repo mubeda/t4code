@@ -1,6 +1,6 @@
 # Keybindings
 
-T3 Code reads keybindings from:
+T4Code reads keybindings from:
 
 - `~/.t3/keybindings.json`
 
@@ -19,21 +19,29 @@ See the full schema for more details: [`packages/contracts/src/keybindings.ts`](
 
 ```json
 [
+  { "key": "mod+b", "command": "sidebar.toggle" },
   { "key": "mod+j", "command": "terminal.toggle" },
+  { "key": "mod+alt+b", "command": "rightPanel.toggle" },
   { "key": "mod+d", "command": "terminal.split", "when": "terminalFocus" },
+  { "key": "mod+shift+d", "command": "terminal.splitVertical", "when": "terminalFocus" },
   { "key": "mod+n", "command": "terminal.new", "when": "terminalFocus" },
   { "key": "mod+w", "command": "terminal.close", "when": "terminalFocus" },
+  { "key": "mod+d", "command": "diff.toggle", "when": "!terminalFocus" },
   { "key": "mod+shift+j", "command": "preview.toggle" },
   { "key": "mod+r", "command": "preview.refresh", "when": "previewFocus" },
   { "key": "mod+l", "command": "preview.focusUrl", "when": "previewFocus" },
   { "key": "mod+=", "command": "preview.zoomIn", "when": "previewFocus" },
+  { "key": "mod++", "command": "preview.zoomIn", "when": "previewFocus" },
   { "key": "mod+-", "command": "preview.zoomOut", "when": "previewFocus" },
   { "key": "mod+0", "command": "preview.resetZoom", "when": "previewFocus" },
   { "key": "mod+k", "command": "commandPalette.toggle", "when": "!terminalFocus" },
   { "key": "mod+n", "command": "chat.new", "when": "!terminalFocus" },
   { "key": "mod+shift+o", "command": "chat.new", "when": "!terminalFocus" },
   { "key": "mod+shift+n", "command": "chat.newLocal", "when": "!terminalFocus" },
-  { "key": "mod+o", "command": "editor.openFavorite" }
+  { "key": "mod+shift+m", "command": "modelPicker.toggle", "when": "!terminalFocus" },
+  { "key": "mod+o", "command": "editor.openFavorite" },
+  { "key": "mod+shift+[", "command": "thread.previous" },
+  { "key": "mod+shift+]", "command": "thread.next" }
 ]
 ```
 
@@ -53,10 +61,14 @@ Invalid rules are ignored. Invalid config files are ignored. Warnings are logged
 
 ### Available Commands
 
-- `terminal.toggle`: open/close terminal drawer
-- `terminal.split`: split terminal (in focused terminal context by default)
-- `terminal.new`: create new terminal (in focused terminal context by default)
-- `terminal.close`: close/kill the focused terminal (in focused terminal context by default)
+- `sidebar.toggle`: open/close the left workspace panel
+- `terminal.toggle`: open/close the thread terminal drawer
+- `terminal.split`: split terminal horizontally in the focused terminal context
+- `terminal.splitVertical`: split terminal vertically in the focused terminal context
+- `terminal.new`: create a new terminal in the focused terminal context
+- `terminal.close`: close/kill the focused terminal
+- `rightPanel.toggle`: open/close the right tool panel
+- `diff.toggle`: open/close the thread diff view
 - `preview.toggle`: open/close the in-app browser preview panel (desktop app only)
 - `preview.refresh`: reload the active preview tab (in focused preview context by default)
 - `preview.focusUrl`: focus the URL input of the preview panel (in focused preview context by default)
@@ -64,9 +76,13 @@ Invalid rules are ignored. Invalid config files are ignored. Warnings are logged
 - `preview.zoomOut`: zoom the preview viewport out one step (in focused preview context by default)
 - `preview.resetZoom`: reset the preview zoom to 100% (in focused preview context by default)
 - `commandPalette.toggle`: open or close the global command palette
-- `chat.new`: create a new chat thread preserving the active thread's branch/worktree state
+- `chat.new`: create a new worktree/chat thread preserving the active context where possible
 - `chat.newLocal`: create a new chat thread for the active project in a new environment (local/worktree determined by app settings (default `local`))
+- `modelPicker.toggle`: open/close the model picker
 - `editor.openFavorite`: open current project/worktree in the last-used editor
+- `thread.previous` / `thread.next`: jump through visible left-panel workspace rows
+- `thread.jump.1` through `thread.jump.9`: jump to a visible left-panel workspace row
+- `modelPicker.jump.1` through `modelPicker.jump.9`: jump to a model/provider row while the model picker is open
 - `script.{id}.run`: run a project script by id (for example `script.test.run`)
 
 ### Key Syntax
@@ -94,6 +110,7 @@ Currently available context keys:
 - `terminalOpen`
 - `previewFocus`
 - `previewOpen`
+- `modelPickerOpen`
 
 Supported operators:
 

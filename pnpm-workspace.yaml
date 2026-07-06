@@ -60,7 +60,7 @@ onlyBuiltDependencies:
 
 overrides:
   # Keep every Clerk consumer on the same snapshot train. Clerk publishes wallet
-  # auth integrations as required dependencies, but T3 Code does not support
+  # auth integrations as required dependencies, but T4Code does not support
   # wallet auth, so keep that unused dependency tree out of installs.
   "@clerk/backend": "catalog:"
   "@clerk/clerk-js": "catalog:"

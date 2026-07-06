@@ -534,6 +534,83 @@ export function getProjectSortTimestamp(
   return toSortableTimestamp(project.updatedAt ?? project.createdAt) ?? Number.NEGATIVE_INFINITY;
 }
 
+// --- Orca-parity workspace-row helpers (primary row + pin ordering + duration) ---
+
+export interface WorkspaceRowThreadInput {
+  readonly kind?: "default" | "workspace" | "panel" | undefined;
+}
+
+/** Finds the project's default (primary-row) thread, if the server has backfilled one. */
+export function findDefaultThread<T extends WorkspaceRowThreadInput>(
+  threads: readonly T[],
+): T | null {
+  return threads.find((thread) => thread.kind === "default") ?? null;
+}
+
+/**
+ * Splits a project's threads into the primary-row thread (`kind: "default"`)
+ * and the remaining workspace rows (worktree/ad-hoc threads). `kind: "panel"`
+ * threads are center-panel siblings of a host thread and never appear as
+ * sidebar rows, so they are excluded from `workspaceThreads` entirely. `null`
+ * primary means the server hasn't backfilled a default thread yet for this
+ * project; callers fall back to creating one on click.
+ */
+export function splitPrimaryAndWorkspaceThreads<T extends WorkspaceRowThreadInput>(
+  threads: readonly T[],
+): { primaryThread: T | null; workspaceThreads: T[] } {
+  const primaryThread = findDefaultThread(threads);
+  const workspaceThreads = threads.filter(
+    (thread) => thread !== primaryThread && thread.kind !== "panel",
+  );
+  return { primaryThread, workspaceThreads };
+}
+
+/**
+ * Stable-partitions `items` so pinned entries (per `sidebarWorkspaceMetaStore`)
+ * come first, preserving the caller's existing relative order (typically
+ * already sorted via `sortThreads`) within each partition.
+ */
+export function orderRowsWithPins<T>(
+  items: readonly T[],
+  pinnedKeys: ReadonlySet<string> | readonly string[],
+  getKey: (item: T) => string,
+): T[] {
+  const pinned = pinnedKeys instanceof Set ? pinnedKeys : new Set(pinnedKeys);
+  const pinnedItems: T[] = [];
+  const restItems: T[] = [];
+  for (const item of items) {
+    (pinned.has(getKey(item)) ? pinnedItems : restItems).push(item);
+  }
+  return [...pinnedItems, ...restItems];
+}
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
+/**
+ * Coarse elapsed-time label for the running/starting agent sub-row (Orca's
+ * "Claude Code – Running · 1h"). Prefers `session.updatedAt`, falling back to
+ * `latestTurn.startedAt`. Returns `null` when neither timestamp is usable.
+ */
+export function formatSessionDuration(input: {
+  readonly sessionUpdatedAt?: string | null | undefined;
+  readonly latestTurnStartedAt?: string | null | undefined;
+  readonly now?: number;
+}): string | null {
+  const iso = input.sessionUpdatedAt ?? input.latestTurnStartedAt ?? null;
+  if (!iso) return null;
+  const startedAt = Date.parse(iso);
+  if (Number.isNaN(startedAt)) return null;
+  const now = input.now ?? Date.now();
+  const elapsedMs = Math.max(0, now - startedAt);
+
+  if (elapsedMs < MINUTE_MS) return "now";
+  if (elapsedMs < HOUR_MS) return `${Math.floor(elapsedMs / MINUTE_MS)}m`;
+  if (elapsedMs < DAY_MS) return `${Math.floor(elapsedMs / HOUR_MS)}h`;
+  return `${Math.floor(elapsedMs / DAY_MS)}d`;
+}
+
 export function sortProjectsForSidebar<
   TProject extends SidebarProject,
   TThread extends Pick<Thread, "projectId" | "createdAt" | "updatedAt"> & ThreadSortInput,

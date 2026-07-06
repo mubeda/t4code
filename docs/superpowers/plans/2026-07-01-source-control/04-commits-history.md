@@ -16,23 +16,24 @@ See [00-overview.md → Global Constraints](./00-overview.md#global-constraints)
 
 ## File Structure
 
-| File | Responsibility |
-|---|---|
-| `packages/contracts/src/git.ts` *(modify)* | `VcsCommit`, `VcsListCommitsInput`, `VcsListCommitsResult`. |
-| `packages/contracts/src/rpc.ts` *(modify)* | `WS_METHODS.vcsListCommits` + `Rpc.make` + `WsRpcGroup`. |
-| `apps/server/src/ws.ts` *(modify)* | read scope + dispatch handler. |
-| `apps/server/src/vcs/GitVcsDriver.ts` *(modify)* | `listCommits` interface method. |
-| `apps/server/src/vcs/GitVcsDriverCore.ts` *(modify)* | `listCommits` via `git log` + parser. |
-| `apps/server/src/vcs/GitVcsDriverCore.test.ts` *(modify)* | integration test. |
-| `apps/server/src/git/GitManager.ts` *(modify)* | delegate `listCommits`. |
-| `apps/server/src/git/GitWorkflowService.ts` *(modify)* | delegate `listCommits`. |
-| `packages/client-runtime/src/state/vcs.ts` *(modify)* | `listCommits` query atom. |
-| `apps/web/src/components/SourceControlCommits.tsx` *(create)* | collapsible commit list with deferred load. |
-| `apps/web/src/components/SourceControlCommits.logic.ts` *(create)* | `formatCommitTimestamp` + parsing helpers. |
-| `apps/web/src/components/SourceControlCommits.test.tsx` / `.logic.test.ts` *(create)* | tests. |
-| `apps/web/src/components/SourceControlPanel.tsx` *(modify)* | mount the section at the bottom. |
+| File                                                                                  | Responsibility                                              |
+| ------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `packages/contracts/src/git.ts` _(modify)_                                            | `VcsCommit`, `VcsListCommitsInput`, `VcsListCommitsResult`. |
+| `packages/contracts/src/rpc.ts` _(modify)_                                            | `WS_METHODS.vcsListCommits` + `Rpc.make` + `WsRpcGroup`.    |
+| `apps/server/src/ws.ts` _(modify)_                                                    | read scope + dispatch handler.                              |
+| `apps/server/src/vcs/GitVcsDriver.ts` _(modify)_                                      | `listCommits` interface method.                             |
+| `apps/server/src/vcs/GitVcsDriverCore.ts` _(modify)_                                  | `listCommits` via `git log` + parser.                       |
+| `apps/server/src/vcs/GitVcsDriverCore.test.ts` _(modify)_                             | integration test.                                           |
+| `apps/server/src/git/GitManager.ts` _(modify)_                                        | delegate `listCommits`.                                     |
+| `apps/server/src/git/GitWorkflowService.ts` _(modify)_                                | delegate `listCommits`.                                     |
+| `packages/client-runtime/src/state/vcs.ts` _(modify)_                                 | `listCommits` query atom.                                   |
+| `apps/web/src/components/SourceControlCommits.tsx` _(create)_                         | collapsible commit list with deferred load.                 |
+| `apps/web/src/components/SourceControlCommits.logic.ts` _(create)_                    | `formatCommitTimestamp` + parsing helpers.                  |
+| `apps/web/src/components/SourceControlCommits.test.tsx` / `.logic.test.ts` _(create)_ | tests.                                                      |
+| `apps/web/src/components/SourceControlPanel.tsx` _(modify)_                           | mount the section at the bottom.                            |
 
 **Interfaces produced:**
+
 - `VcsCommit = { sha: string; shortSha: string; subject: string; authorName: string; authoredAtMs: number }`.
 - `VcsListCommitsInput = { cwd: string; limit?: number; cursor?: number }`; `VcsListCommitsResult = { commits: readonly VcsCommit[]; nextCursor: number | null }`.
 
@@ -41,6 +42,7 @@ See [00-overview.md → Global Constraints](./00-overview.md#global-constraints)
 ### Task 1: Contract + RPC registration
 
 **Files:**
+
 - Modify: `packages/contracts/src/git.ts`, `packages/contracts/src/rpc.ts`
 
 - [ ] **Step 1: Add the schemas** (`git.ts`, near the other results)
@@ -95,10 +97,12 @@ git commit -m "feat(contracts): add vcs.listCommits RPC"
 ### Task 2: Server — `listCommits` via `git log`
 
 **Files:**
+
 - Modify: `apps/server/src/vcs/GitVcsDriver.ts`, `apps/server/src/vcs/GitVcsDriverCore.ts`, `apps/server/src/git/GitManager.ts`, `apps/server/src/git/GitWorkflowService.ts`
 - Test: `apps/server/src/vcs/GitVcsDriverCore.test.ts`
 
 **Interfaces:**
+
 - Produces: `listCommits(input: VcsListCommitsInput) → Effect<VcsListCommitsResult, GitCommandError>` on all three service layers.
 
 - [ ] **Step 1: Failing integration test** (`GitVcsDriverCore.test.ts`)
@@ -110,7 +114,15 @@ it.effect("lists recent commits with subject and author", () =>
     yield* initRepoWithCommit(cwd);
     yield* writeTextFile(cwd, "second.txt", "second\n");
     yield* git(cwd, ["add", "second.txt"]);
-    yield* git(cwd, ["-c", "user.name=Ada", "-c", "user.email=ada@example.com", "commit", "-m", "second commit"]);
+    yield* git(cwd, [
+      "-c",
+      "user.name=Ada",
+      "-c",
+      "user.email=ada@example.com",
+      "commit",
+      "-m",
+      "second commit",
+    ]);
 
     const result = yield* (yield* GitVcsDriver.GitVcsDriver).listCommits({ cwd, limit: 10 });
     assert.isAtLeast(result.commits.length, 2);
@@ -130,9 +142,13 @@ Add a parser near the other pure parsers (after `parsePorcelainFileStatus`), usi
 ```ts
 const COMMIT_FIELD_SEP = "\x1f";
 
-export function parseGitLogLine(
-  line: string,
-): { sha: string; shortSha: string; subject: string; authorName: string; authoredAtMs: number } | null {
+export function parseGitLogLine(line: string): {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  authorName: string;
+  authoredAtMs: number;
+} | null {
   if (line.trim().length === 0) return null;
   const [sha, shortSha, subject, authorName, authoredAt] = line.split(COMMIT_FIELD_SEP);
   if (!sha || !shortSha) return null;
@@ -150,34 +166,34 @@ export function parseGitLogLine(
 Add the driver method (uses the confirmed `runGitStdoutWithOptions`/`executeGit`; `git log` is already used elsewhere in this file):
 
 ```ts
-  const listCommits: GitVcsDriver.GitVcsDriver["Service"]["listCommits"] = Effect.fn("listCommits")(
-    function* (input) {
-      const limit = input.limit ?? 30;
-      const cursor = input.cursor ?? 0;
-      const result = yield* executeGit(
-        "GitVcsDriver.listCommits",
-        input.cwd,
-        [
-          "log",
-          `--max-count=${limit + 1}`,
-          `--skip=${cursor}`,
-          `--pretty=format:%H${COMMIT_FIELD_SEP}%h${COMMIT_FIELD_SEP}%s${COMMIT_FIELD_SEP}%an${COMMIT_FIELD_SEP}%at`,
-        ],
-        { allowNonZeroExit: true },
-      );
-      if (result.exitCode !== 0) {
-        // Empty repo (no commits yet) → treat as no history.
-        return { commits: [], nextCursor: null };
-      }
-      const parsed = result.stdout
-        .split(/\r?\n/g)
-        .map((line) => parseGitLogLine(line))
-        .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
-      const hasMore = parsed.length > limit;
-      const commits = hasMore ? parsed.slice(0, limit) : parsed;
-      return { commits, nextCursor: hasMore ? cursor + limit : null };
-    },
-  );
+const listCommits: GitVcsDriver.GitVcsDriver["Service"]["listCommits"] = Effect.fn("listCommits")(
+  function* (input) {
+    const limit = input.limit ?? 30;
+    const cursor = input.cursor ?? 0;
+    const result = yield* executeGit(
+      "GitVcsDriver.listCommits",
+      input.cwd,
+      [
+        "log",
+        `--max-count=${limit + 1}`,
+        `--skip=${cursor}`,
+        `--pretty=format:%H${COMMIT_FIELD_SEP}%h${COMMIT_FIELD_SEP}%s${COMMIT_FIELD_SEP}%an${COMMIT_FIELD_SEP}%at`,
+      ],
+      { allowNonZeroExit: true },
+    );
+    if (result.exitCode !== 0) {
+      // Empty repo (no commits yet) → treat as no history.
+      return { commits: [], nextCursor: null };
+    }
+    const parsed = result.stdout
+      .split(/\r?\n/g)
+      .map((line) => parseGitLogLine(line))
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+    const hasMore = parsed.length > limit;
+    const commits = hasMore ? parsed.slice(0, limit) : parsed;
+    return { commits, nextCursor: hasMore ? cursor + limit : null };
+  },
+);
 ```
 
 Add `listCommits` to the returned driver object, and declare it on the `GitVcsDriver` `Service` interface (`GitVcsDriver.ts`):
@@ -211,6 +227,7 @@ git commit -m "feat(server): list recent commits via git log"
 ### Task 3: Server — dispatch + scope
 
 **Files:**
+
 - Modify: `apps/server/src/ws.ts`
 
 - [ ] **Step 1: Add scope + handler**
@@ -241,11 +258,13 @@ git commit -m "feat(server): dispatch vcs.listCommits"
 ### Task 4: Client — query atom + commits component
 
 **Files:**
+
 - Modify: `packages/client-runtime/src/state/vcs.ts`
 - Create: `apps/web/src/components/SourceControlCommits.logic.ts` (+ test), `apps/web/src/components/SourceControlCommits.tsx` (+ test)
 - Modify: `apps/web/src/components/SourceControlPanel.tsx`
 
 **Interfaces:**
+
 - Produces: `vcsEnvironment.listCommits` query atom; `SourceControlCommits` component; `formatCommitTimestamp(ms, nowMs) → string`.
 
 - [ ] **Step 1: Add the query atom** (`packages/client-runtime/src/state/vcs.ts`, next to `listRefs`)
@@ -306,7 +325,13 @@ describe("SourceControlCommitRow", () => {
   it("renders the short sha, subject and author", () => {
     const markup = renderToStaticMarkup(
       <SourceControlCommitRow
-        commit={{ sha: "abcdef1234", shortSha: "abcdef1", subject: "Fix the thing", authorName: "Ada", authoredAtMs: 1 }}
+        commit={{
+          sha: "abcdef1234",
+          shortSha: "abcdef1",
+          subject: "Fix the thing",
+          authorName: "Ada",
+          authoredAtMs: 1,
+        }}
         nowMs={2}
       />,
     );
@@ -336,15 +361,23 @@ import { formatCommitTimestamp } from "./SourceControlCommits.logic";
 export function SourceControlCommitRow({ commit, nowMs }: { commit: VcsCommit; nowMs: number }) {
   return (
     <div className="flex items-center gap-2 px-2 py-1 text-xs">
-      <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{commit.shortSha}</span>
+      <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+        {commit.shortSha}
+      </span>
       <span className="min-w-0 flex-1 truncate">{commit.subject}</span>
       <span className="shrink-0 text-[11px] text-muted-foreground">{commit.authorName}</span>
-      <span className="shrink-0 text-[11px] text-muted-foreground">{formatCommitTimestamp(commit.authoredAtMs, nowMs)}</span>
+      <span className="shrink-0 text-[11px] text-muted-foreground">
+        {formatCommitTimestamp(commit.authoredAtMs, nowMs)}
+      </span>
     </div>
   );
 }
 
-export function SourceControlCommits({ threadRef, gitCwd, nowMs }: {
+export function SourceControlCommits({
+  threadRef,
+  gitCwd,
+  nowMs,
+}: {
   threadRef: ScopedThreadRef;
   gitCwd: string | null;
   nowMs: number;
@@ -353,7 +386,10 @@ export function SourceControlCommits({ threadRef, gitCwd, nowMs }: {
   // Deferred first load: only subscribe once expanded.
   const query = useEnvironmentQuery(
     expanded && gitCwd !== null
-      ? vcsEnvironment.listCommits({ environmentId: threadRef.environmentId, input: { cwd: gitCwd, limit: 30 } })
+      ? vcsEnvironment.listCommits({
+          environmentId: threadRef.environmentId,
+          input: { cwd: gitCwd, limit: 30 },
+        })
       : null,
   );
   const commits = query.data?.commits ?? [];
@@ -364,7 +400,9 @@ export function SourceControlCommits({ threadRef, gitCwd, nowMs }: {
         onClick={() => setExpanded((value) => !value)}
         className="flex w-full items-center gap-1 px-2 py-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground"
       >
-        <ChevronDownIcon className={cn("size-3.5 transition-transform", !expanded && "-rotate-90")} />
+        <ChevronDownIcon
+          className={cn("size-3.5 transition-transform", !expanded && "-rotate-90")}
+        />
         Commits
       </button>
       {expanded ? (
@@ -392,7 +430,7 @@ Run the render test → PASS.
 `SourceControlPanel.tsx` — import `SourceControlCommits`, and render it just before the closing `</DiffPanelShell>` (below the changes body, matching the screenshot's docked-bottom placement). Pass a `nowMs` from `Date.now()` captured on render (fine for a display-only relative timestamp; the component takes it as a prop to stay pure and testable):
 
 ```tsx
-        <SourceControlCommits threadRef={threadRef} gitCwd={gitCwd} nowMs={Date.now()} />
+<SourceControlCommits threadRef={threadRef} gitCwd={gitCwd} nowMs={Date.now()} />
 ```
 
 - [ ] **Step 7: Typecheck + web tests + manual + commit**

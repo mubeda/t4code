@@ -1,10 +1,15 @@
-import type {
-  OrchestrationEvent,
-  OrchestrationReadModel,
-  ProjectId,
+import {
+  CommandId,
+  DEFAULT_MODEL,
+  DEFAULT_PROVIDER_INTERACTION_MODE,
+  DEFAULT_RUNTIME_MODE,
+  type OrchestrationEvent,
+  type OrchestrationReadModel,
+  OrchestrationCommand,
+  type ProjectId,
+  ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
-import { OrchestrationCommand } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
@@ -319,6 +324,43 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       });
       return yield* Deferred.await(result);
     });
+
+  // Idempotent startup backfill: every project must have exactly one "default" thread
+  // (kind: "default"). project.create now auto-creates this for new projects (see decider.ts),
+  // but projects created before that behavior existed have none — synthesize it here on boot.
+  // No-op on subsequent boots once every project has been backfilled.
+  const projectsMissingDefaultThread = commandReadModel.projects.filter(
+    (project) =>
+      project.deletedAt === null &&
+      !commandReadModel.threads.some(
+        (thread) =>
+          thread.projectId === project.id && thread.kind === "default" && thread.deletedAt === null,
+      ),
+  );
+
+  if (projectsMissingDefaultThread.length > 0) {
+    const crypto = yield* Crypto.Crypto;
+    for (const project of projectsMissingDefaultThread) {
+      const backfillOccurredAt = DateTime.formatIso(yield* DateTime.now);
+      yield* dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(yield* crypto.randomUUIDv4),
+        threadId: ThreadId.make(yield* crypto.randomUUIDv4),
+        projectId: project.id,
+        title: project.title,
+        kind: "default",
+        modelSelection: project.defaultModelSelection ?? {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: DEFAULT_MODEL,
+        },
+        runtimeMode: DEFAULT_RUNTIME_MODE,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        branch: null,
+        worktreePath: null,
+        createdAt: backfillOccurredAt,
+      }).pipe(Effect.catch(() => Effect.void));
+    }
+  }
 
   return {
     readEvents,

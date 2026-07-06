@@ -4,7 +4,7 @@ import { useEffect } from "react";
 import ChatView from "../components/ChatView";
 import { threadHasStarted } from "../components/ChatView.logic";
 import { finalizePromotedDraftThreadByRef, useComposerDraftStore } from "../composerDraftStore";
-import { resolveThreadRouteRef } from "../threadRoutes";
+import { resolveThreadRouteRef, shouldRedirectMissingRouteThread } from "../threadRoutes";
 import { SidebarInset } from "~/components/ui/sidebar";
 import { useEnvironmentThreadRefs, useThreadDetail, useThreadShell } from "../state/entities";
 import { useEnvironmentQuery } from "../state/query";
@@ -30,25 +30,25 @@ function ChatThreadRouteView() {
   const draftThread = useComposerDraftStore((store) =>
     threadRef ? store.getDraftThreadByRef(threadRef) : null,
   );
-  const environmentHasDraftThreads = useComposerDraftStore((store) => {
-    if (!threadRef) {
-      return false;
-    }
-    return store.hasDraftThreadsInEnvironment(threadRef.environmentId);
-  });
   const routeThreadExists = threadExists || draftThreadExists;
   const serverThreadStarted = threadHasStarted(serverThreadDetail);
-  const environmentHasAnyThreads = environmentHasServerThreads || environmentHasDraftThreads;
+  const shellStatus = shell.data?.status ?? null;
 
   useEffect(() => {
-    if (!threadRef || !bootstrapComplete) {
+    if (!threadRef) {
       return;
     }
 
-    if (!routeThreadExists && environmentHasAnyThreads) {
+    if (
+      shouldRedirectMissingRouteThread({
+        shellStatus,
+        routeThreadExists,
+        environmentHasServerThreads,
+      })
+    ) {
       void navigate({ to: "/", replace: true });
     }
-  }, [bootstrapComplete, environmentHasAnyThreads, navigate, routeThreadExists, threadRef]);
+  }, [environmentHasServerThreads, navigate, routeThreadExists, shellStatus, threadRef]);
 
   useEffect(() => {
     if (!threadRef || !serverThreadStarted || !draftThread) {

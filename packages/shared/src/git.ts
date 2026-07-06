@@ -246,6 +246,43 @@ function toLocalStatusPart(status: VcsStatusResult): VcsStatusLocalResult {
   };
 }
 
+type WorkingTreeFile = VcsStatusResult["workingTree"]["files"][number];
+type MergedWorkingTreeFile = {
+  -readonly [K in keyof Omit<WorkingTreeFile, "area">]: WorkingTreeFile[K];
+};
+
+/**
+ * Merge working-tree file entries that share the same `path` into a single
+ * entry: insertions/deletions are summed, the FIRST entry's `status` is kept,
+ * and the `area` field is dropped. First-appearance order is preserved.
+ *
+ * This restores the pre-staging unique-by-path shape for consumers that render
+ * or count the raw `workingTree.files` and don't understand staging areas
+ * (where a single path can appear once per area).
+ */
+export function mergeWorkingTreeFilesByPath(
+  files: readonly WorkingTreeFile[],
+): Array<MergedWorkingTreeFile> {
+  const byPath = new Map<string, MergedWorkingTreeFile>();
+
+  for (const file of files) {
+    const existing = byPath.get(file.path);
+    if (existing) {
+      existing.insertions += file.insertions;
+      existing.deletions += file.deletions;
+      continue;
+    }
+    byPath.set(file.path, {
+      path: file.path,
+      insertions: file.insertions,
+      deletions: file.deletions,
+      ...(file.status === undefined ? {} : { status: file.status }),
+    });
+  }
+
+  return [...byPath.values()];
+}
+
 export function applyGitStatusStreamEvent(
   current: VcsStatusResult | null,
   event: VcsStatusStreamEvent,

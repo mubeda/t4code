@@ -7,6 +7,7 @@ import {
   FolderPlusIcon,
   Globe2Icon,
   LoaderIcon,
+  PinIcon,
   SearchIcon,
   SettingsIcon,
   SquarePenIcon,
@@ -22,6 +23,7 @@ import {
   ThreadWorktreeIndicator,
 } from "./ThreadStatusIndicators";
 import { ProjectFavicon } from "./ProjectFavicon";
+import { CreateWorktreeDialog } from "./CreateWorktreeDialog";
 import { useAtomValue } from "@effect/atom-react";
 import { autoAnimate } from "@formkit/auto-animate";
 import React, { useCallback, useEffect, memo, useMemo, useRef, useState } from "react";
@@ -43,13 +45,19 @@ import { restrictToFirstScrollableAncestor, restrictToVerticalAxis } from "@dnd-
 import { CSS } from "@dnd-kit/utilities";
 import {
   type ContextMenuItem,
+  DEFAULT_MODEL,
+  DEFAULT_PROVIDER_INTERACTION_MODE,
+  DEFAULT_RUNTIME_MODE,
   DEFAULT_SERVER_SETTINGS,
+  EDITORS,
   ProjectId,
+  ProviderInstanceId,
   type ScopedThreadRef,
   type ResolvedKeybindingsConfig,
   type SidebarProjectGroupingMode,
   ThreadId,
 } from "@t3tools/contracts";
+import { createModelSelection } from "@t3tools/shared/model";
 import {
   parseScopedThreadKey,
   scopedProjectKey,
@@ -74,10 +82,16 @@ import {
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { isElectron } from "../env";
-import { APP_STAGE_LABEL } from "../branding";
+import { APP_BASE_NAME, APP_STAGE_LABEL } from "../branding";
 import { useOpenPrLink } from "../lib/openPullRequestLink";
 import { isTerminalFocused } from "../lib/terminalFocus";
-import { isMacPlatform } from "../lib/utils";
+import { cn, isMacPlatform, newThreadId } from "../lib/utils";
+import {
+  selectIsPinned,
+  selectIsUnread,
+  useSidebarWorkspaceMetaStore,
+} from "../sidebarWorkspaceMetaStore";
+import { useProjectBranchPolling } from "../hooks/useProjectBranchPolling";
 import {
   readThreadShell,
   useProject,
@@ -115,6 +129,7 @@ import { useDesktopUpdateState } from "../state/desktopUpdate";
 import { useThreadActions } from "../hooks/useThreadActions";
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
+import { shellEnvironment } from "../state/shell";
 import { threadEnvironment, useEnvironmentThread } from "../state/threads";
 import { vcsEnvironment } from "../state/vcs";
 import { useEnvironment, useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
@@ -184,7 +199,10 @@ import {
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useOpenAddProjectCommandPalette } from "../commandPaletteContext";
 import {
+  findDefaultThread,
+  formatSessionDuration,
   getSidebarThreadIdsToPrewarm,
+  orderRowsWithPins,
   resolveAdjacentThreadId,
   isContextMenuPointerDown,
   isTrailingDoubleClick,
@@ -197,6 +215,7 @@ import {
   orderItemsByPreferredIds,
   shouldClearThreadSelectionOnMouseDown,
   sortProjectsForSidebar,
+  splitPrimaryAndWorkspaceThreads,
   useThreadJumpHintVisibility,
   ThreadStatusPill,
 } from "./Sidebar.logic";
@@ -385,6 +404,13 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
   const threadKey = scopedThreadKey(threadRef);
   const lastVisitedAt = useUiStateStore((state) => state.threadLastVisitedAtById[threadKey]);
   const isSelected = useThreadSelectionStore((state) => state.selectedThreadKeys.has(threadKey));
+  const isPinned = useSidebarWorkspaceMetaStore((state) =>
+    selectIsPinned(state.pinnedThreadKeys, threadKey),
+  );
+  const isUnread = useSidebarWorkspaceMetaStore((state) =>
+    selectIsUnread(state.unreadThreadKeys, threadKey),
+  );
+  const markWorkspaceRowRead = useSidebarWorkspaceMetaStore((state) => state.markRead);
   const runningTerminalIds = useThreadRunningTerminalIds({
     environmentId: thread.environmentId,
     threadId: thread.id,
@@ -459,6 +485,20 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
   );
   const isThreadRunning =
     thread.session?.status === "running" && thread.session.activeTurnId != null;
+  // Orca-parity nested agent sub-row ("Claude Code – Running · 1h") — shown
+  // for any workspace row with an active/connecting session, broader than
+  // `isThreadRunning` above (which additionally requires an active turn and
+  // only gates the archive-button swap).
+  const agentSubRowStatus =
+    thread.session?.status === "running" || thread.session?.status === "starting"
+      ? thread.session.status
+      : null;
+  const agentSubRowDuration = agentSubRowStatus
+    ? formatSessionDuration({
+        sessionUpdatedAt: thread.session?.updatedAt,
+        latestTurnStartedAt: thread.latestTurn?.startedAt,
+      })
+    : null;
   const threadStatus = resolveThreadStatusPill({
     thread: {
       ...thread,
@@ -494,9 +534,10 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
   );
   const handleRowClick = useCallback(
     (event: React.MouseEvent) => {
+      markWorkspaceRowRead(threadKey);
       handleThreadClick(event, threadRef, orderedProjectThreadKeys);
     },
-    [handleThreadClick, orderedProjectThreadKeys, threadRef],
+    [handleThreadClick, markWorkspaceRowRead, orderedProjectThreadKeys, threadKey, threadRef],
   );
   const handleRowDoubleClick = useCallback(
     (event: React.MouseEvent) => {
@@ -520,9 +561,10 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
     (event: React.KeyboardEvent) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
+      markWorkspaceRowRead(threadKey);
       navigateToThread(threadRef);
     },
-    [navigateToThread, threadRef],
+    [markWorkspaceRowRead, navigateToThread, threadKey, threadRef],
   );
   const handleRowContextMenu = useCallback(
     (event: React.MouseEvent) => {
@@ -691,6 +733,20 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
         onContextMenu={handleRowContextMenu}
       >
         <div className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
+          {isUnread && (
+            <span
+              aria-label="Unread"
+              data-testid={`thread-unread-${thread.id}`}
+              className="size-1.5 shrink-0 rounded-full bg-sky-500 dark:bg-sky-300/80"
+            />
+          )}
+          {isPinned && (
+            <PinIcon
+              aria-label="Pinned"
+              data-testid={`thread-pinned-${thread.id}`}
+              className="size-3 shrink-0 text-muted-foreground/50"
+            />
+          )}
           {prStatus && (
             <Tooltip>
               <TooltipTrigger
@@ -881,6 +937,21 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
           </div>
         </div>
       </SidebarMenuSubButton>
+      {agentSubRowStatus && (
+        <div
+          data-thread-selection-safe
+          data-testid={`thread-agent-row-${thread.id}`}
+          className="flex items-center gap-1.5 truncate pr-2 pb-0.5 pl-6 text-[10px] text-muted-foreground/70"
+        >
+          <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-sky-500 dark:bg-sky-300/80" />
+          <span className="min-w-0 truncate">
+            {thread.session?.providerName ?? "Agent"}
+            {" – "}
+            {agentSubRowStatus === "running" ? "Running" : "Connecting"}
+            {agentSubRowDuration ? ` · ${agentSubRowDuration}` : ""}
+          </span>
+        </div>
+      )}
     </SidebarMenuSubItem>
   );
 });
@@ -931,6 +1002,88 @@ interface SidebarProjectThreadListProps {
   openPrLink: (event: React.MouseEvent<HTMLElement>, prUrl: string) => void;
   expandThreadListForProject: (projectKey: string) => void;
   collapseThreadListForProject: (projectKey: string) => void;
+}
+
+/**
+ * Orca-parity primary workspace row: the project checkout itself (not a
+ * worktree). Title/subtitle track the checkout's LIVE current branch (not
+ * `thread.branch`, which the default thread always carries as `null`) —
+ * TODO(orca-port): wire `useProjectBranchPolling`'s `branchByProjectKey`
+ * through props once the prop-drilling path through
+ * SidebarProjectsContent/SidebarProjectListRow is threaded (see
+ * w3-progress.md); for now this row queries `vcs.status` directly, the same
+ * pattern `SidebarThreadRow` already uses per-thread (see `gitStatus` above).
+ */
+function SidebarPrimaryRow(props: {
+  project: SidebarProjectSnapshot;
+  primaryThread: SidebarThreadSummary | null;
+  isActive: boolean;
+  onClick: () => void;
+  onContextMenu?: (event: React.MouseEvent) => void;
+}) {
+  const { project, primaryThread, isActive, onClick, onContextMenu } = props;
+  const gitStatus = useEnvironmentQuery(
+    vcsEnvironment.status({
+      environmentId: project.environmentId,
+      input: { cwd: project.workspaceRoot },
+    }),
+  );
+  const liveBranch = gitStatus.data?.refName ?? null;
+  const title = liveBranch ?? primaryThread?.branch ?? project.displayName;
+  const statusPill = primaryThread ? resolveThreadStatusPill({ thread: primaryThread }) : null;
+  const primaryThreadKey = primaryThread
+    ? scopedThreadKey(scopeThreadRef(primaryThread.environmentId, primaryThread.id))
+    : null;
+  const isPinned = useSidebarWorkspaceMetaStore(
+    (state) =>
+      primaryThreadKey !== null && selectIsPinned(state.pinnedThreadKeys, primaryThreadKey),
+  );
+  const isUnread = useSidebarWorkspaceMetaStore(
+    (state) =>
+      primaryThreadKey !== null && selectIsUnread(state.unreadThreadKeys, primaryThreadKey),
+  );
+  const markRead = useSidebarWorkspaceMetaStore((state) => state.markRead);
+  const handleClick = useCallback(() => {
+    if (primaryThreadKey) {
+      markRead(primaryThreadKey);
+    }
+    onClick();
+  }, [markRead, onClick, primaryThreadKey]);
+
+  return (
+    <SidebarMenuSubItem className="w-full" data-thread-selection-safe>
+      <SidebarMenuSubButton
+        data-thread-item
+        size="sm"
+        className={resolveThreadRowClassName({ isActive, isSelected: false })}
+        onClick={handleClick}
+        {...(onContextMenu ? { onContextMenu } : {})}
+      >
+        <span className="flex min-w-0 flex-1 items-center gap-2">
+          <span
+            className={cn(
+              "size-1.5 shrink-0 rounded-full",
+              statusPill ? statusPill.dotClass : "bg-muted-foreground/30",
+              statusPill?.pulse && "animate-pulse",
+            )}
+          />
+          {isUnread && (
+            <span
+              aria-label="Unread"
+              className="size-1.5 shrink-0 rounded-full bg-sky-500 dark:bg-sky-300/80"
+            />
+          )}
+          {isPinned && (
+            <PinIcon aria-label="Pinned" className="size-3 shrink-0 text-muted-foreground/50" />
+          )}
+          <span className="min-w-0 flex-1 truncate">{title}</span>
+          <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[9px] font-medium text-muted-foreground/70">
+            primary
+          </span>
+        </span>
+      </SidebarMenuSubButton>
+    </SidebarMenuSubItem>
+  );
 }
 
 const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
@@ -1067,6 +1220,7 @@ interface SidebarProjectItemProps {
   activeRouteThreadKey: string | null;
   newThreadShortcutLabel: string | null;
   handleNewThread: ReturnType<typeof useNewThreadHandler>;
+  openCreateWorktreeDialog: (projectId?: ProjectId | null) => void;
   archiveThread: ReturnType<typeof useThreadActions>["archiveThread"];
   deleteThread: ReturnType<typeof useThreadActions>["deleteThread"];
   threadJumpLabelByKey: ReadonlyMap<string, string>;
@@ -1087,6 +1241,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     activeRouteThreadKey,
     newThreadShortcutLabel,
     handleNewThread,
+    openCreateWorktreeDialog,
     archiveThread,
     deleteThread,
     threadJumpLabelByKey,
@@ -1119,6 +1274,30 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
+  const createDefaultThread = useAtomCommand(threadEnvironment.create, {
+    reportFailure: false,
+  });
+  const pinnedThreadKeys = useSidebarWorkspaceMetaStore((state) => state.pinnedThreadKeys);
+  const unreadThreadKeys = useSidebarWorkspaceMetaStore((state) => state.unreadThreadKeys);
+  const togglePinnedThreadKey = useSidebarWorkspaceMetaStore((state) => state.togglePinned);
+  const markThreadRowUnread = useSidebarWorkspaceMetaStore((state) => state.markUnread);
+  const markThreadRowRead = useSidebarWorkspaceMetaStore((state) => state.markRead);
+  // Orca-parity context menu (item 2): "Update" runs vcs.pull for the row's
+  // cwd (worktree path or project checkout), same atom-command pattern as
+  // `useVcsPullAction` in sourceControlActions.ts -- that hook can't be used
+  // here directly because its scope is fixed at mount, while the row clicked
+  // varies per context-menu invocation.
+  const pullWorkspaceRow = useAtomCommand(vcsEnvironment.pull, { reportFailure: false });
+  const refreshVcsStatusAfterPull = useAtomCommand(vcsEnvironment.refreshStatus, {
+    reportFailure: false,
+  });
+  const openInEditorMutation = useAtomCommand(shellEnvironment.openInEditor, {
+    reportFailure: false,
+  });
+  // TODO(orca-port): this reads the PRIMARY server's available editors; rows
+  // belonging to a different (remote) environment may see an editor list that
+  // doesn't match their actual backend. Acceptable simplification for now.
+  const availableEditors = useAtomValue(primaryServerConfigAtom)?.availableEditors ?? [];
   const updateSettings = useUpdateClientSettings();
   const sidebarThreadPreviewCount = useClientSettings<SidebarThreadPreviewCount>(
     (settings) => settings.sidebarThreadPreviewCount,
@@ -1245,39 +1424,50 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     return counts;
   }, [memberProjectByScopedKey, project.memberProjects, projectThreads]);
 
-  const { projectStatus, visibleProjectThreads, orderedProjectThreadKeys } = useMemo(() => {
-    const lastVisitedAtByThreadKey = new Map(
-      projectThreads.map((thread, index) => [
-        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-        threadLastVisitedAts[index] ?? null,
-      ]),
-    );
-    const resolveProjectThreadStatus = (thread: SidebarThreadSummary) => {
-      const lastVisitedAt = lastVisitedAtByThreadKey.get(
-        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+  const { primaryThread, projectStatus, visibleProjectThreads, orderedProjectThreadKeys } =
+    useMemo(() => {
+      const lastVisitedAtByThreadKey = new Map(
+        projectThreads.map((thread, index) => [
+          scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+          threadLastVisitedAts[index] ?? null,
+        ]),
       );
-      return resolveThreadStatusPill({
-        thread: {
-          ...thread,
-          ...(lastVisitedAt !== null && lastVisitedAt !== undefined ? { lastVisitedAt } : {}),
-        },
-      });
-    };
-    const visibleProjectThreads = sortThreads(
-      projectThreads.filter((thread) => thread.archivedAt === null),
-      threadSortOrder,
-    );
-    const projectStatus = resolveProjectStatusIndicator(
-      visibleProjectThreads.map((thread) => resolveProjectThreadStatus(thread)),
-    );
-    return {
-      orderedProjectThreadKeys: visibleProjectThreads.map((thread) =>
-        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-      ),
-      projectStatus,
-      visibleProjectThreads,
-    };
-  }, [projectThreads, threadLastVisitedAts, threadSortOrder]);
+      const resolveProjectThreadStatus = (thread: SidebarThreadSummary) => {
+        const lastVisitedAt = lastVisitedAtByThreadKey.get(
+          scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+        );
+        return resolveThreadStatusPill({
+          thread: {
+            ...thread,
+            ...(lastVisitedAt !== null && lastVisitedAt !== undefined ? { lastVisitedAt } : {}),
+          },
+        });
+      };
+      // Orca-parity workspace-row model: the project's `kind: "default"`
+      // thread is the primary row (rendered separately, see
+      // `SidebarPrimaryRow`) — everything else is a worktree/ad-hoc
+      // workspace row, ordered pinned-first (sidebarWorkspaceMetaStore) then
+      // by the existing sortThreads order.
+      const { primaryThread, workspaceThreads } = splitPrimaryAndWorkspaceThreads(
+        projectThreads.filter((thread) => thread.archivedAt === null),
+      );
+      const visibleProjectThreads = orderRowsWithPins(
+        sortThreads(workspaceThreads, threadSortOrder),
+        pinnedThreadKeys,
+        (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+      );
+      const projectStatus = resolveProjectStatusIndicator(
+        visibleProjectThreads.map((thread) => resolveProjectThreadStatus(thread)),
+      );
+      return {
+        orderedProjectThreadKeys: visibleProjectThreads.map((thread) =>
+          scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+        ),
+        primaryThread,
+        projectStatus,
+        visibleProjectThreads,
+      };
+    }, [pinnedThreadKeys, projectThreads, threadLastVisitedAts, threadSortOrder]);
   const pinnedCollapsedThread = useMemo(() => {
     const activeThreadKey = activeRouteThreadKey ?? undefined;
     if (!activeThreadKey || projectExpanded) {
@@ -1290,6 +1480,24 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       ) ?? null
     );
   }, [activeRouteThreadKey, projectExpanded, visibleProjectThreads]);
+  // Orca-parity fix (w3-progress.md KNOWN BUG): the primary row's thread was
+  // split out of `visibleProjectThreads`, so `pinnedCollapsedThread` (which
+  // only searches that array) never matched it — collapsing a project while
+  // routed to its own default thread hid the primary row entirely, unlike
+  // regular threads which peek through when collapsed+active. Tracked
+  // separately (not folded into `pinnedCollapsedThread` itself) because that
+  // value also drives which threads `SidebarProjectThreadList` renders, and
+  // the primary thread must stay rendered via `SidebarPrimaryRow`, not
+  // `SidebarThreadRow`.
+  const isPrimaryThreadActiveWhileCollapsed = useMemo(() => {
+    if (!primaryThread || projectExpanded || !activeRouteThreadKey) {
+      return false;
+    }
+    return (
+      scopedThreadKey(scopeThreadRef(primaryThread.environmentId, primaryThread.id)) ===
+      activeRouteThreadKey
+    );
+  }, [activeRouteThreadKey, primaryThread, projectExpanded]);
 
   const {
     hasOverflowingThreads,
@@ -1325,11 +1533,20 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
       ),
     );
+    // Collapsed + routed to the primary (default) thread: `pinnedCollapsedThread`
+    // stays null (it only searches workspace threads, see
+    // `isPrimaryThreadActiveWhileCollapsed` above) and `shouldShowThreadPanel`
+    // is true so the primary row can peek through -- but that must NOT fall
+    // into the `previewThreads` branch below, or every workspace row's
+    // preview slice would render alongside it. Only render workspace rows
+    // here when actually expanded or peeking a specific pinned/active one.
     const renderedThreads = pinnedCollapsedThread
       ? [pinnedCollapsedThread]
-      : visibleProjectThreads.filter((thread) =>
-          visibleThreadKeys.has(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))),
-        );
+      : projectExpanded
+        ? visibleProjectThreads.filter((thread) =>
+            visibleThreadKeys.has(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))),
+          )
+        : [];
     const hiddenThreads = visibleProjectThreads.filter(
       (thread) =>
         !visibleThreadKeys.has(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))),
@@ -1341,9 +1558,11 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       ),
       renderedThreads,
       showEmptyThreadState: projectExpanded && visibleProjectThreads.length === 0,
-      shouldShowThreadPanel: projectExpanded || pinnedCollapsedThread !== null,
+      shouldShowThreadPanel:
+        projectExpanded || pinnedCollapsedThread !== null || isPrimaryThreadActiveWhileCollapsed,
     };
   }, [
+    isPrimaryThreadActiveWhileCollapsed,
     isThreadListExpanded,
     pinnedCollapsedThread,
     projectExpanded,
@@ -1711,6 +1930,50 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     [clearSelection, isMobile, router, setOpenMobile, setSelectionAnchor],
   );
 
+  const handlePrimaryRowClick = useCallback(() => {
+    if (primaryThread) {
+      navigateToThread(scopeThreadRef(primaryThread.environmentId, primaryThread.id));
+      return;
+    }
+    // Server backfill (pinned interface 1) may not have run yet for this
+    // project — create the default thread on demand, then navigate.
+    const threadId = newThreadId();
+    // TODO(orca-port): this fallback-provider selection is a client-side
+    // safety net for the rare pre-backfill case; revisit once every project
+    // is guaranteed a default thread server-side.
+    const fallbackProvider = serverConfigs
+      .get(project.environmentId)
+      ?.providers.find((provider) => provider.enabled);
+    const modelSelection =
+      project.defaultModelSelection ??
+      (fallbackProvider
+        ? createModelSelection(
+            fallbackProvider.instanceId,
+            fallbackProvider.models[0]?.slug ?? DEFAULT_MODEL,
+          )
+        : createModelSelection(ProviderInstanceId.make("codex"), DEFAULT_MODEL));
+    void (async () => {
+      const result = await createDefaultThread({
+        environmentId: project.environmentId,
+        input: {
+          threadId,
+          projectId: project.id,
+          title: project.displayName,
+          modelSelection,
+          runtimeMode: DEFAULT_RUNTIME_MODE,
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          kind: "default",
+          branch: null,
+          worktreePath: null,
+        },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        return;
+      }
+      navigateToThread(scopeThreadRef(project.environmentId, threadId));
+    })();
+  }, [createDefaultThread, navigateToThread, primaryThread, project, serverConfigs]);
+
   const handleThreadClick = useCallback(
     (
       event: React.MouseEvent,
@@ -1834,77 +2097,20 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     ],
   );
 
+  // Orca port: the sidebar no longer seeds/routes to draft threads (spec
+  // item 6) — the "new thread" action opens `CreateWorktreeDialog` for the
+  // clicked project member instead of `handleNewThread`'s draft-creation
+  // flow. `handleNewThread` is still threaded through as a prop (used
+  // elsewhere in this file, e.g. keyboard shortcuts) but is intentionally
+  // NOT called from here anymore.
   const createThreadForProjectMember = useCallback(
     (member: SidebarProjectGroupMember) => {
-      const currentRouteParams =
-        router.state.matches[router.state.matches.length - 1]?.params ?? {};
-      const currentRouteTarget = resolveThreadRouteTarget(currentRouteParams);
-      const currentActiveThread =
-        currentRouteTarget?.kind === "server"
-          ? readThreadShell(currentRouteTarget.threadRef)
-          : null;
-      const draftStore = useComposerDraftStore.getState();
-      const currentActiveDraftThread =
-        currentRouteTarget?.kind === "server"
-          ? (draftStore.getDraftThread(currentRouteTarget.threadRef) ?? null)
-          : currentRouteTarget?.kind === "draft"
-            ? (draftStore.getDraftSession(currentRouteTarget.draftId) ?? null)
-            : null;
-      const seedContext = resolveSidebarNewThreadSeedContext({
-        projectId: member.id,
-        defaultEnvMode: resolveSidebarNewThreadEnvMode({
-          defaultEnvMode:
-            serverConfigs.get(member.environmentId)?.settings.defaultThreadEnvMode ??
-            DEFAULT_SERVER_SETTINGS.defaultThreadEnvMode,
-        }),
-        activeThread:
-          currentActiveThread && currentActiveThread.projectId === member.id
-            ? {
-                projectId: currentActiveThread.projectId,
-                branch: currentActiveThread.branch,
-                worktreePath: currentActiveThread.worktreePath,
-              }
-            : null,
-        activeDraftThread:
-          currentActiveDraftThread && currentActiveDraftThread.projectId === member.id
-            ? {
-                projectId: currentActiveDraftThread.projectId,
-                branch: currentActiveDraftThread.branch,
-                worktreePath: currentActiveDraftThread.worktreePath,
-                envMode: currentActiveDraftThread.envMode,
-                startFromOrigin: currentActiveDraftThread.startFromOrigin,
-              }
-            : null,
-      });
       if (isMobile) {
         setOpenMobile(false);
       }
-      void (async () => {
-        const result = await settlePromise(() =>
-          handleNewThread(scopeProjectRef(member.environmentId, member.id), {
-            ...(seedContext.branch !== undefined ? { branch: seedContext.branch } : {}),
-            ...(seedContext.worktreePath !== undefined
-              ? { worktreePath: seedContext.worktreePath }
-              : {}),
-            envMode: seedContext.envMode,
-            ...(seedContext.startFromOrigin !== undefined
-              ? { startFromOrigin: seedContext.startFromOrigin }
-              : {}),
-          }),
-        );
-        if (result._tag === "Failure") {
-          const error = squashAtomCommandFailure(result);
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Could not create thread",
-              description: error instanceof Error ? error.message : "An error occurred.",
-            }),
-          );
-        }
-      })();
+      openCreateWorktreeDialog(member.id);
     },
-    [handleNewThread, isMobile, router, serverConfigs, setOpenMobile],
+    [isMobile, openCreateWorktreeDialog, setOpenMobile],
   );
 
   const handleCreateThreadClick = useCallback(
@@ -2123,16 +2329,92 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       );
       const threadWorkspacePath =
         thread.worktreePath ?? threadProject?.workspaceRoot ?? project.workspaceRoot ?? null;
+      const isPinned = pinnedThreadKeys.includes(threadKey);
+      const isUnread = unreadThreadKeys.includes(threadKey);
+      // Orca-parity "Open in" submenu (item 2): built from the same EDITORS
+      // list + availableEditors filter as OpenInPicker.tsx, adapted to the
+      // native-style {id,label,children} shape `api.contextMenu.show` expects
+      // (that component renders its own React menu, so it can't be reused
+      // as-is here).
+      const openInEditorOptions = EDITORS.filter((editor) => availableEditors.includes(editor.id));
       const clicked = await api.contextMenu.show(
         [
+          { id: "update", label: "Update", disabled: !threadWorkspacePath },
+          openInEditorOptions.length > 0
+            ? {
+                id: "open-in",
+                label: "Open in",
+                children: openInEditorOptions.map((editor) => ({
+                  id: `open-in:${editor.id}`,
+                  label: editor.label,
+                })),
+              }
+            : { id: "open-in", label: "Open in", disabled: true },
           { id: "rename", label: "Rename thread" },
-          { id: "mark-unread", label: "Mark unread" },
+          isUnread
+            ? { id: "mark-read", label: "Mark read" }
+            : { id: "mark-unread", label: "Mark unread" },
+          { id: "toggle-pin", label: isPinned ? "Unpin" : "Pin" },
           { id: "copy-path", label: "Copy Path" },
           { id: "copy-thread-id", label: "Copy Thread ID" },
-          { id: "delete", label: "Delete", destructive: true, icon: "trash" },
+          {
+            id: "delete",
+            label: thread.worktreePath ? "Delete Worktree" : "Delete",
+            destructive: true,
+            icon: "trash",
+          },
         ],
         position,
       );
+
+      if (clicked === "update") {
+        if (!threadWorkspacePath) return;
+        const pullResult = await pullWorkspaceRow({
+          environmentId: thread.environmentId,
+          input: { cwd: threadWorkspacePath },
+        });
+        if (pullResult._tag === "Failure") {
+          if (!isAtomCommandInterrupted(pullResult)) {
+            const error = squashAtomCommandFailure(pullResult);
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Failed to update",
+                description: error instanceof Error ? error.message : "An error occurred.",
+              }),
+            );
+          }
+          return;
+        }
+        await refreshVcsStatusAfterPull({
+          environmentId: thread.environmentId,
+          input: { cwd: threadWorkspacePath },
+        });
+        return;
+      }
+
+      if (typeof clicked === "string" && clicked.startsWith("open-in:")) {
+        if (!threadWorkspacePath) return;
+        const editor = openInEditorOptions.find(
+          (candidate) => `open-in:${candidate.id}` === clicked,
+        );
+        if (!editor) return;
+        const openResult = await openInEditorMutation({
+          environmentId: thread.environmentId,
+          input: { cwd: threadWorkspacePath, editor: editor.id },
+        });
+        if (openResult._tag === "Failure" && !isAtomCommandInterrupted(openResult)) {
+          const error = squashAtomCommandFailure(openResult);
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Failed to open editor",
+              description: error instanceof Error ? error.message : "An error occurred.",
+            }),
+          );
+        }
+        return;
+      }
 
       if (clicked === "rename") {
         startThreadRename(threadKey, thread.title);
@@ -2140,7 +2422,15 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       }
 
       if (clicked === "mark-unread") {
-        markThreadUnread(threadKey, thread.latestTurn?.completedAt);
+        markThreadRowUnread(threadKey);
+        return;
+      }
+      if (clicked === "mark-read") {
+        markThreadRowRead(threadKey);
+        return;
+      }
+      if (clicked === "toggle-pin") {
+        togglePinnedThreadKey(threadKey);
         return;
       }
       if (clicked === "copy-path") {
@@ -2187,13 +2477,176 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     },
     [
       appSettingsConfirmThreadDelete,
+      availableEditors,
       copyPathToClipboard,
       copyThreadIdToClipboard,
       deleteThread,
-      markThreadUnread,
+      markThreadRowRead,
+      markThreadRowUnread,
       memberProjectByScopedKey,
+      openInEditorMutation,
+      pinnedThreadKeys,
       project.workspaceRoot,
+      pullWorkspaceRow,
+      refreshVcsStatusAfterPull,
       startThreadRename,
+      togglePinnedThreadKey,
+      unreadThreadKeys,
+    ],
+  );
+
+  // Orca-parity context menu for the primary (project checkout) row --
+  // mirrors `handleThreadContextMenu` above but scoped to `project.workspaceRoot`
+  // and reuses `handleRemoveProject` (already handles the grouped-project
+  // submenu case) for "Remove Project…" instead of "Delete Worktree" (the
+  // primary row's worktree is the checkout itself and can't be deleted).
+  const handlePrimaryRowContextMenu = useCallback(
+    (event: React.MouseEvent) => {
+      event.preventDefault();
+      void (async () => {
+        const api = readLocalApi();
+        if (!api) return;
+        const cwd = project.workspaceRoot;
+        const primaryThreadKey = primaryThread
+          ? scopedThreadKey(scopeThreadRef(primaryThread.environmentId, primaryThread.id))
+          : null;
+        const isPinned = primaryThreadKey !== null && pinnedThreadKeys.includes(primaryThreadKey);
+        const isUnread = primaryThreadKey !== null && unreadThreadKeys.includes(primaryThreadKey);
+        const openInEditorOptions = EDITORS.filter((editor) =>
+          availableEditors.includes(editor.id),
+        );
+        const removeProjectItem: ContextMenuItem<string> =
+          project.memberProjects.length === 1
+            ? { id: "remove-project", label: "Remove Project…", destructive: true, icon: "trash" }
+            : {
+                id: "remove-project",
+                label: "Remove Project…",
+                destructive: true,
+                icon: "trash",
+                children: project.memberProjects.map((member) => ({
+                  id: `remove-project:${member.physicalProjectKey}`,
+                  label: formatProjectMemberActionLabel(member, project.groupedProjectCount),
+                })),
+              };
+        const clicked = await api.contextMenu.show(
+          [
+            { id: "update", label: "Update" },
+            openInEditorOptions.length > 0
+              ? {
+                  id: "open-in",
+                  label: "Open in",
+                  children: openInEditorOptions.map((editor) => ({
+                    id: `open-in:${editor.id}`,
+                    label: editor.label,
+                  })),
+                }
+              : { id: "open-in", label: "Open in", disabled: true },
+            { id: "copy-path", label: "Copy Path" },
+            ...(primaryThreadKey
+              ? [
+                  isUnread
+                    ? { id: "mark-read", label: "Mark read" }
+                    : { id: "mark-unread", label: "Mark unread" },
+                  { id: "toggle-pin", label: isPinned ? "Unpin" : "Pin" },
+                ]
+              : []),
+            removeProjectItem,
+          ],
+          { x: event.clientX, y: event.clientY },
+        );
+
+        if (clicked === "update") {
+          const pullResult = await pullWorkspaceRow({
+            environmentId: project.environmentId,
+            input: { cwd },
+          });
+          if (pullResult._tag === "Failure") {
+            if (!isAtomCommandInterrupted(pullResult)) {
+              const error = squashAtomCommandFailure(pullResult);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Failed to update",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
+            }
+            return;
+          }
+          await refreshVcsStatusAfterPull({ environmentId: project.environmentId, input: { cwd } });
+          return;
+        }
+
+        if (typeof clicked === "string" && clicked.startsWith("open-in:")) {
+          const editor = openInEditorOptions.find(
+            (candidate) => `open-in:${candidate.id}` === clicked,
+          );
+          if (!editor) return;
+          const openResult = await openInEditorMutation({
+            environmentId: project.environmentId,
+            input: { cwd, editor: editor.id },
+          });
+          if (openResult._tag === "Failure" && !isAtomCommandInterrupted(openResult)) {
+            const error = squashAtomCommandFailure(openResult);
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Failed to open editor",
+                description: error instanceof Error ? error.message : "An error occurred.",
+              }),
+            );
+          }
+          return;
+        }
+
+        if (clicked === "copy-path") {
+          copyPathToClipboard(cwd, { path: cwd });
+          return;
+        }
+        if (clicked === "mark-unread" && primaryThreadKey) {
+          markThreadRowUnread(primaryThreadKey);
+          return;
+        }
+        if (clicked === "mark-read" && primaryThreadKey) {
+          markThreadRowRead(primaryThreadKey);
+          return;
+        }
+        if (clicked === "toggle-pin" && primaryThreadKey) {
+          togglePinnedThreadKey(primaryThreadKey);
+          return;
+        }
+        if (clicked === "remove-project") {
+          if (project.memberProjects.length === 1) {
+            await handleRemoveProject(project.memberProjects[0]!);
+          }
+          return;
+        }
+        if (typeof clicked === "string" && clicked.startsWith("remove-project:")) {
+          const physicalKey = clicked.slice("remove-project:".length);
+          const member = project.memberProjects.find(
+            (candidate) => candidate.physicalProjectKey === physicalKey,
+          );
+          if (member) {
+            await handleRemoveProject(member);
+          }
+          return;
+        }
+      })();
+    },
+    [
+      availableEditors,
+      copyPathToClipboard,
+      handleRemoveProject,
+      markThreadRowRead,
+      markThreadRowUnread,
+      openInEditorMutation,
+      pinnedThreadKeys,
+      primaryThread,
+      project,
+      pullWorkspaceRow,
+      refreshVcsStatusAfterPull,
+      togglePinnedThreadKey,
+      unreadThreadKeys,
     ],
   );
 
@@ -2304,6 +2757,22 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           </TooltipPopup>
         </Tooltip>
       </div>
+
+      {shouldShowThreadPanel && (
+        <SidebarMenuSub className="mx-0.5 my-0 w-full translate-x-0 gap-0.5 overflow-hidden px-1 py-0 sm:mx-1 sm:px-1.5">
+          <SidebarPrimaryRow
+            project={project}
+            primaryThread={primaryThread}
+            isActive={
+              primaryThread !== null &&
+              activeRouteThreadKey ===
+                scopedThreadKey(scopeThreadRef(primaryThread.environmentId, primaryThread.id))
+            }
+            onClick={handlePrimaryRowClick}
+            onContextMenu={handlePrimaryRowContextMenu}
+          />
+        </SidebarMenuSub>
+      )}
 
       <SidebarProjectThreadList
         projectKey={project.projectKey}
@@ -2764,13 +3233,7 @@ function SidebarBrand() {
       className="sidebar-brand ml-[var(--workspace-titlebar-content-left)] h-7 w-fit min-w-0 shrink-0 items-center gap-1 overflow-hidden rounded-md text-foreground outline-hidden ring-ring focus-visible:ring-2"
       to="/"
     >
-      <T3Wordmark />
-      <span className="truncate text-sm font-medium tracking-tight text-muted-foreground">
-        Code
-      </span>
-      <span className="sidebar-brand-stage shrink-0 items-center whitespace-nowrap rounded-full bg-muted/50 px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-[0.18em] text-muted-foreground/60">
-        {stageLabel}
-      </span>
+      <SidebarBrandContent appBaseName={APP_BASE_NAME} stageLabel={stageLabel} />
     </Link>
   );
 }
@@ -2785,19 +3248,22 @@ function useSidebarStageLabel() {
   });
 }
 
-function T3Wordmark() {
+export function SidebarBrandContent({
+  appBaseName,
+  stageLabel,
+}: {
+  readonly appBaseName: string;
+  readonly stageLabel: string;
+}) {
   return (
-    <svg
-      aria-label="T3"
-      className="h-2.5 w-auto shrink-0 text-foreground"
-      viewBox="15.5309 37 94.3941 56.96"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <path
-        d="M33.4509 93V47.56H15.5309V37H64.3309V47.56H46.4109V93H33.4509ZM86.7253 93.96C82.832 93.96 78.9653 93.4533 75.1253 92.44C71.2853 91.3733 68.032 89.88 65.3653 87.96L70.4053 78.04C72.5386 79.5867 75.0186 80.8133 77.8453 81.72C80.672 82.6267 83.5253 83.08 86.4053 83.08C89.6586 83.08 92.2186 82.44 94.0853 81.16C95.952 79.88 96.8853 78.12 96.8853 75.88C96.8853 73.7467 96.0586 72.0667 94.4053 70.84C92.752 69.6133 90.0853 69 86.4053 69H80.4853V60.44L96.0853 42.76L97.5253 47.4H68.1653V37H107.365V45.4L91.8453 63.08L85.2853 59.32H89.0453C95.9253 59.32 101.125 60.8667 104.645 63.96C108.165 67.0533 109.925 71.0267 109.925 75.88C109.925 79.0267 109.099 81.9867 107.445 84.76C105.792 87.48 103.259 89.6933 99.8453 91.4C96.432 93.1067 92.0586 93.96 86.7253 93.96Z"
-        fill="currentColor"
-      />
-    </svg>
+    <>
+      <span className="truncate text-sm font-semibold tracking-tight text-foreground">
+        {appBaseName}
+      </span>
+      <span className="sidebar-brand-stage shrink-0 items-center whitespace-nowrap rounded-full bg-muted/50 px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-[0.18em] text-muted-foreground/60">
+        {stageLabel}
+      </span>
+    </>
   );
 }
 
@@ -2850,6 +3316,7 @@ interface SidebarProjectsContentProps {
   handleProjectDragEnd: (event: DragEndEvent) => void;
   handleProjectDragCancel: (event: DragCancelEvent) => void;
   handleNewThread: ReturnType<typeof useNewThreadHandler>;
+  openCreateWorktreeDialog: (projectId?: ProjectId | null) => void;
   archiveThread: ReturnType<typeof useThreadActions>["archiveThread"];
   deleteThread: ReturnType<typeof useThreadActions>["deleteThread"];
   sortedProjects: readonly SidebarProjectSnapshot[];
@@ -2891,6 +3358,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     handleProjectDragEnd,
     handleProjectDragCancel,
     handleNewThread,
+    openCreateWorktreeDialog,
     archiveThread,
     deleteThread,
     sortedProjects,
@@ -3005,6 +3473,22 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                 render={
                   <button
                     type="button"
+                    aria-label="New worktree"
+                    data-testid="sidebar-new-worktree-trigger"
+                    className="inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
+                    onClick={() => openCreateWorktreeDialog()}
+                  />
+                }
+              >
+                <SquarePenIcon className="size-3.5" />
+              </TooltipTrigger>
+              <TooltipPopup side="right">New worktree</TooltipPopup>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    type="button"
                     aria-label="Add project"
                     data-testid="sidebar-add-project-trigger"
                     className="inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
@@ -3044,6 +3528,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                         }
                         newThreadShortcutLabel={newThreadShortcutLabel}
                         handleNewThread={handleNewThread}
+                        openCreateWorktreeDialog={openCreateWorktreeDialog}
                         archiveThread={archiveThread}
                         deleteThread={deleteThread}
                         threadJumpLabelByKey={threadJumpLabelByKey}
@@ -3076,6 +3561,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                 }
                 newThreadShortcutLabel={newThreadShortcutLabel}
                 handleNewThread={handleNewThread}
+                openCreateWorktreeDialog={openCreateWorktreeDialog}
                 archiveThread={archiveThread}
                 deleteThread={deleteThread}
                 threadJumpLabelByKey={threadJumpLabelByKey}
@@ -3118,6 +3604,18 @@ export default function Sidebar() {
   const sidebarThreadPreviewCount = useClientSettings((s) => s.sidebarThreadPreviewCount);
   const updateSettings = useUpdateClientSettings();
   const handleNewThread = useNewThreadHandler();
+  // Orca port item 5/6: "new workspace" entry points open CreateWorktreeDialog
+  // instead of seeding a draft thread. `createWorktreeDialogProjectId` is the
+  // project the dialog's "Project" select defaults to (null = the global "+"
+  // entry point, no preselection) — kept separate from the dialog's open
+  // state so "no project preselected" isn't confused with "closed".
+  const [createWorktreeDialogOpen, setCreateWorktreeDialogOpen] = useState(false);
+  const [createWorktreeDialogProjectId, setCreateWorktreeDialogProjectId] =
+    useState<ProjectId | null>(null);
+  const openCreateWorktreeDialog = useCallback((projectId: ProjectId | null = null) => {
+    setCreateWorktreeDialogProjectId(projectId);
+    setCreateWorktreeDialogOpen(true);
+  }, []);
   const { archiveThread, deleteThread } = useThreadActions();
   const { isMobile, setOpenMobile } = useSidebar();
   const routeThreadRef = useParams({
@@ -3400,6 +3898,26 @@ export default function Sidebar() {
     sidebarProjects,
     visibleThreads,
   ]);
+  // Pinned interface 5: keeps each project checkout's `vcs.status` fresh on
+  // a cadence (3s active / 30s others). We don't need the hook's returned
+  // `branchByProjectKey` here — `SidebarPrimaryRow` already subscribes to
+  // the identical {environmentId, cwd} status query per-row (same pattern
+  // as `SidebarThreadRow`'s `gitStatus` above), and that subscription atom
+  // is shared/keyed by input, so the `refreshStatus` calls this hook makes
+  // land on every row subscribed to the same project without prop-drilling.
+  const branchPollingProjects = useMemo(
+    () =>
+      sortedProjects.map((project) => ({
+        key: project.projectKey,
+        environmentId: project.environmentId,
+        workspaceRoot: project.workspaceRoot,
+      })),
+    [sortedProjects],
+  );
+  useProjectBranchPolling({
+    projects: branchPollingProjects,
+    activeProjectKey: activeRouteProjectKey,
+  });
   const isManualProjectSorting = sidebarProjectSortOrder === "manual";
   const visibleSidebarThreadKeys = useMemo(
     () =>
@@ -3695,6 +4213,14 @@ export default function Sidebar() {
 
   return (
     <>
+      <CreateWorktreeDialog
+        open={createWorktreeDialogOpen}
+        onOpenChange={(open) => {
+          setCreateWorktreeDialogOpen(open);
+          if (!open) setCreateWorktreeDialogProjectId(null);
+        }}
+        defaultProjectId={createWorktreeDialogProjectId}
+      />
       {prewarmedSidebarThreadRefs.map((threadRef) => (
         <SidebarThreadDetailPrewarmer key={scopedThreadKey(threadRef)} threadRef={threadRef} />
       ))}
@@ -3723,6 +4249,7 @@ export default function Sidebar() {
             handleProjectDragEnd={handleProjectDragEnd}
             handleProjectDragCancel={handleProjectDragCancel}
             handleNewThread={handleNewThread}
+            openCreateWorktreeDialog={openCreateWorktreeDialog}
             archiveThread={archiveThread}
             deleteThread={deleteThread}
             sortedProjects={sortedProjects}
