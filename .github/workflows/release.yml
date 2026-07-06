@@ -534,6 +534,16 @@ jobs:
           AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
           T3CODE_DESKTOP_UPDATE_REPOSITORY: mubeda/t4code
         run: |
+          # GitHub-hosted macOS runners default to a very low open-file limit
+          # (ulimit -n 256); electron-builder's ad-hoc signing walk of the
+          # unpacked .app bundle deterministically fails with EMFILE unless
+          # the limit is raised in the same shell that runs the build.
+          if [[ "${{ matrix.platform }}" == "mac" ]]; then
+            sudo launchctl limit maxfiles 65536 200000 || true
+            ulimit -n 65536 || ulimit -n 10240 || true
+            echo "open-file limit: $(ulimit -n)"
+          fi
+
           args=(
             --platform "${{ matrix.platform }}"
             --target "${{ matrix.target }}"
