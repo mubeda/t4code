@@ -66,40 +66,6 @@ type DecideOrchestrationCommandResult =
   | PlannedOrchestrationEvent
   | ReadonlyArray<PlannedOrchestrationEvent>;
 
-const decideCommandSequence = Effect.fn("decideCommandSequence")(function* ({
-  commands,
-  readModel,
-}: {
-  readonly commands: ReadonlyArray<OrchestrationCommand>;
-  readonly readModel: OrchestrationReadModel;
-}): Effect.fn.Return<
-  ReadonlyArray<PlannedOrchestrationEvent>,
-  OrchestrationCommandInvariantError | PlatformError.PlatformError,
-  Crypto.Crypto
-> {
-  let nextReadModel = readModel;
-  let nextSequence = readModel.snapshotSequence;
-  const plannedEvents: PlannedOrchestrationEvent[] = [];
-
-  for (const nextCommand of commands) {
-    const decided = yield* decideOrchestrationCommand({
-      command: nextCommand,
-      readModel: nextReadModel,
-    });
-    const nextEvents = Array.isArray(decided) ? decided : [decided];
-    for (const nextEvent of nextEvents) {
-      plannedEvents.push(nextEvent);
-      nextSequence += 1;
-      nextReadModel = yield* projectEvent(nextReadModel, {
-        ...nextEvent,
-        sequence: nextSequence,
-      }).pipe(Effect.orDie);
-    }
-  }
-
-  return plannedEvents;
-});
-
 export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand")(function* ({
   command,
   readModel,
@@ -212,34 +178,33 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const activeThreads = listThreadsByProjectId(readModel, command.projectId).filter(
         (thread) => thread.deletedAt === null,
       );
-      if (activeThreads.length > 0 && command.force !== true) {
+      const activeNonDefaultThreads = activeThreads.filter((thread) => thread.kind !== "default");
+      if (activeNonDefaultThreads.length > 0 && command.force !== true) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Project '${command.projectId}' is not empty and cannot be deleted without force=true.`,
         });
       }
-      if (activeThreads.length > 0) {
-        return yield* decideCommandSequence({
-          readModel,
-          commands: [
-            ...activeThreads.map(
-              (thread): Extract<OrchestrationCommand, { type: "thread.delete" }> => ({
-                type: "thread.delete",
-                commandId: command.commandId,
-                threadId: thread.id,
-              }),
-            ),
-            {
-              type: "project.delete",
-              commandId: command.commandId,
-              projectId: command.projectId,
-            },
-          ],
+
+      const occurredAt = yield* nowIso;
+      const plannedEvents: PlannedOrchestrationEvent[] = [];
+      for (const thread of activeThreads) {
+        plannedEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: thread.id,
+            occurredAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.deleted" as const,
+          payload: {
+            threadId: thread.id,
+            deletedAt: occurredAt,
+          },
         });
       }
 
-      const occurredAt = yield* nowIso;
-      return {
+      plannedEvents.push({
         ...(yield* withEventBase({
           aggregateKind: "project",
           aggregateId: command.projectId,
@@ -251,7 +216,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           projectId: command.projectId,
           deletedAt: occurredAt,
         },
-      };
+      });
+
+      const [firstPlannedEvent] = plannedEvents;
+      return plannedEvents.length === 1 && firstPlannedEvent !== undefined
+        ? firstPlannedEvent
+        : plannedEvents;
     }
 
     case "thread.create": {
