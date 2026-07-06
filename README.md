@@ -15,35 +15,26 @@ This project is a public GitHub fork of [T3 Code](https://github.com/pingdotgg/t
 > - Cursor: install [Cursor CLI](https://cursor.com/cli) and run `cursor-agent login`
 > - OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
 
-### Run without installing
-
-```bash
-npx t3@latest
-```
-
-Tip: Use `npx t3@latest --help` for the full CLI reference.
-
 ### Desktop app
 
-Install the latest version of the desktop app from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), or from your favorite package registry:
+Download the latest desktop build for your platform from
+[GitHub Releases](https://github.com/mubeda/t4code/releases):
 
-#### Windows (`winget`)
+- macOS: `.dmg` (Apple Silicon `arm64` or Intel `x64`)
+- Windows: `.exe` installer (x64)
+- Linux: `.AppImage` (x64)
 
-```bash
-winget install T3Tools.T3Code
-```
+> [!NOTE]
+> Release builds are currently unsigned. On macOS, right-click the app and
+> choose "Open" on first launch (or run
+> `xattr -dr com.apple.quarantine "/Applications/T4Code (Alpha).app"`).
+> On Windows, choose "More info" → "Run anyway" if SmartScreen warns.
 
-#### macOS (Homebrew)
+### Run from source
 
-```bash
-brew install --cask t3-code
-```
-
-#### Arch Linux (AUR)
-
-```bash
-yay -S t3code-bin
-```
+See [Getting started](./docs/getting-started/quick-start.md), or jump to the
+[contributor setup](#if-you-really-want-to-contribute-still-read-this-first)
+below to install the toolchain and run the app locally.
 
 ## Current UI
 
@@ -108,5 +99,3 @@ vp i
 ```
 
 Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening an issue or PR.
-
-Need support? Join the [Discord](https://discord.gg/jn4EGJjrvv).
