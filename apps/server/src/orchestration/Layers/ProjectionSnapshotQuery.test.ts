@@ -72,6 +72,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           thread_id,
           project_id,
           title,
+          kind,
           model_selection_json,
           runtime_mode,
           interaction_mode,
@@ -90,6 +91,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           'thread-1',
           'project-1',
           'Thread 1',
+          'workspace',
           '{"provider":"codex","model":"gpt-5-codex"}',
           'full-access',
           'default',
@@ -285,6 +287,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
           title: "Thread 1",
+          kind: "workspace",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
             model: "gpt-5-codex",
@@ -395,6 +398,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
           title: "Thread 1",
+          kind: "workspace",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
             model: "gpt-5-codex",

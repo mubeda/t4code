@@ -134,6 +134,10 @@ describe("OrchestrationEngine", () => {
           id: ThreadId.make("thread-bootstrap"),
           projectId: asProjectId("project-bootstrap"),
           title: "Bootstrap Thread",
+          // The persisted projection already satisfies the "every project has
+          // exactly one default thread" invariant, so engine bootstrap must
+          // not append a backfill thread.created event (sequence stays at 8).
+          kind: "default" as const,
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
             model: "gpt-5-codex",
@@ -410,8 +414,25 @@ describe("OrchestrationEngine", () => {
     expect(events.map((event) => event.type)).toEqual([
       "project.created",
       "thread.created",
+      "thread.created",
       "thread.deleted",
     ]);
+    // project.create auto-creates the project's undeletable default thread.
+    const autoDefaultThreadEvent = events[1];
+    expect(
+      autoDefaultThreadEvent?.type === "thread.created"
+        ? autoDefaultThreadEvent.payload.kind
+        : null,
+    ).toBe("default");
+    // The explicitly created (non-default) thread is the one that was deleted.
+    const explicitThreadEvent = events[2];
+    expect(
+      explicitThreadEvent?.type === "thread.created" ? explicitThreadEvent.payload.threadId : null,
+    ).toBe("thread-replay");
+    const deletedEvent = events[3];
+    expect(deletedEvent?.type === "thread.deleted" ? deletedEvent.payload.threadId : null).toBe(
+      "thread-replay",
+    );
     await system.dispose();
   });
 
@@ -744,7 +765,9 @@ describe("OrchestrationEngine", () => {
       }),
     );
 
-    expect(result.sequence).toBe(2);
+    // project.create appended two events (project.created + auto default
+    // thread.created), so the retried thread.create lands at sequence 3.
+    expect(result.sequence).toBe(3);
     const eventsAfterRetry = await runtime.runPromise(
       Stream.runCollect(engine.readEvents(0)).pipe(
         Effect.map((chunk): OrchestrationEvent[] => Array.from(chunk)),
@@ -753,7 +776,18 @@ describe("OrchestrationEngine", () => {
     expect(eventsAfterRetry.map((event) => event.type)).toEqual([
       "project.created",
       "thread.created",
+      "thread.created",
     ]);
+    const autoDefaultThreadEvent = eventsAfterRetry[1];
+    expect(
+      autoDefaultThreadEvent?.type === "thread.created"
+        ? autoDefaultThreadEvent.payload.kind
+        : null,
+    ).toBe("default");
+    const retriedThreadEvent = eventsAfterRetry[2];
+    expect(
+      retriedThreadEvent?.type === "thread.created" ? retriedThreadEvent.payload.threadId : null,
+    ).toBe("thread-flaky-ok");
     await runtime.dispose();
   });
 
@@ -850,13 +884,17 @@ describe("OrchestrationEngine", () => {
         Effect.map((chunk): OrchestrationEvent[] => Array.from(chunk)),
       ),
     );
+    // Only the failed turn.start command's events are rolled back; the
+    // project.create events (including the auto default thread.created) and
+    // the explicit thread.created remain.
     expect(eventsAfterFailure.map((event) => event.type)).toEqual([
       "project.created",
+      "thread.created",
       "thread.created",
     ]);
 
     const retryResult = await runtime.runPromise(engine.dispatch(turnStartCommand));
-    expect(retryResult.sequence).toBe(4);
+    expect(retryResult.sequence).toBe(5);
 
     const eventsAfterRetry = await runtime.runPromise(
       Stream.runCollect(engine.readEvents(0)).pipe(
@@ -865,6 +903,7 @@ describe("OrchestrationEngine", () => {
     );
     expect(eventsAfterRetry.map((event) => event.type)).toEqual([
       "project.created",
+      "thread.created",
       "thread.created",
       "thread.message-sent",
       "thread.turn-start-requested",
