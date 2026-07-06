@@ -67,7 +67,7 @@ describe("buildHomeThreadGroups", () => {
     const project = makeProject({
       environmentId,
       id: ProjectId.make("project-1"),
-      title: "T3 Code",
+      title: "T4Code",
     });
     const threads = [
       makeThread({
@@ -186,7 +186,7 @@ describe("buildHomeThreadGroups", () => {
       provider: "github",
       owner: "t3tools",
       name: "t3code",
-      displayName: "T3 Code",
+      displayName: "T4Code",
       rootPath: "/workspaces/t3code",
     };
     const projects = [

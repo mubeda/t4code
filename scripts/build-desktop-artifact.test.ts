@@ -83,8 +83,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   });
 
   it("switches desktop packaging product names to nightly for nightly builds", () => {
-    assert.equal(resolveDesktopProductName("0.0.17"), "T3 Code (Alpha)");
-    assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
+    assert.equal(resolveDesktopProductName("0.0.17"), "T4Code (Alpha)");
+    assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T4Code (Nightly)");
   });
 
   it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {
@@ -140,6 +140,68 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         channel: "nightly",
       });
     }),
+  );
+
+  it.effect("defaults desktop build publish config to the T4Code release repository", () =>
+    Effect.gen(function* () {
+      const latestConfig = yield* createBuildConfig(
+        "win",
+        "nsis",
+        "1.2.3",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+      const nightlyConfig = yield* createBuildConfig(
+        "linux",
+        "AppImage",
+        "1.2.4-nightly.20260705.1",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+
+      assert.deepStrictEqual(latestConfig.publish, [
+        {
+          provider: "github",
+          owner: "mubeda",
+          repo: "t4code",
+          releaseType: "release",
+        },
+      ]);
+      assert.deepStrictEqual(nightlyConfig.publish, [
+        {
+          provider: "github",
+          owner: "mubeda",
+          repo: "t4code",
+          releaseType: "prerelease",
+          channel: "nightly",
+        },
+      ]);
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
+  );
+
+  it.effect("uses the generic mock update server when mock updates are enabled", () =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "linux",
+        "AppImage",
+        "1.2.3",
+        false,
+        true,
+        4123,
+        undefined,
+      );
+
+      assert.deepStrictEqual(config.publish, [
+        {
+          provider: "generic",
+          url: "http://localhost:4123",
+        },
+      ]);
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
   it("omits bundled workspace packages from staged desktop dependencies", () => {
@@ -405,7 +467,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(mac.entitlements, "/tmp/entitlements.mac.plist");
       assert.equal(mac.provisioningProfile, "/tmp/t3code.provisionprofile");
       assert.deepStrictEqual(mac.protocols, [
-        { name: "T3 Code", schemes: ["t3code", "t3code-dev"] },
+        { name: "T4Code", schemes: ["t3code", "t3code-dev"] },
       ]);
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );

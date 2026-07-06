@@ -37,8 +37,12 @@ import {
   type ProjectEntriesFailure,
   type ProjectFileFailure,
   type ProjectFileOperation,
+  ProjectCreateEntryError,
+  ProjectDeleteEntryError,
+  ProjectDuplicateEntryError,
   ProjectListEntriesError,
   ProjectReadFileError,
+  ProjectRenameEntryError,
   ProjectSearchEntriesError,
   ProjectWriteFileError,
   RelayClientInstallFailedError,
@@ -232,6 +236,10 @@ function projectFileFailureContext(
       return { failure: "path_not_file", resolvedPath: error.resolvedPath };
     case "WorkspaceBinaryFileError":
       return { failure: "binary_file", resolvedPath: error.resolvedPath };
+    case "WorkspaceEntryExistsError":
+      return { failure: "entry_already_exists", resolvedPath: error.resolvedPath };
+    case "WorkspaceEntryNotFoundError":
+      return { failure: "path_not_found", resolvedPath: error.resolvedPath };
     default:
       return unexpectedCompatibilityError(error);
   }
@@ -303,18 +311,28 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [WS_METHODS.projectsReadFile, AuthOrchestrationReadScope],
   [WS_METHODS.projectsSearchEntries, AuthOrchestrationReadScope],
   [WS_METHODS.projectsWriteFile, AuthOrchestrationOperateScope],
+  [WS_METHODS.projectsCreateEntry, AuthOrchestrationOperateScope],
+  [WS_METHODS.projectsRenameEntry, AuthOrchestrationOperateScope],
+  [WS_METHODS.projectsDeleteEntry, AuthOrchestrationOperateScope],
+  [WS_METHODS.projectsDuplicateEntry, AuthOrchestrationOperateScope],
   [WS_METHODS.shellOpenInEditor, AuthOrchestrationOperateScope],
   [WS_METHODS.filesystemBrowse, AuthOrchestrationReadScope],
   [WS_METHODS.assetsCreateUrl, AuthOrchestrationReadScope],
   [WS_METHODS.subscribeVcsStatus, AuthOrchestrationReadScope],
   [WS_METHODS.vcsRefreshStatus, AuthOrchestrationReadScope],
+  [WS_METHODS.vcsListCommits, AuthOrchestrationReadScope],
   [WS_METHODS.vcsPull, AuthOrchestrationOperateScope],
+  [WS_METHODS.vcsStageFiles, AuthOrchestrationOperateScope],
+  [WS_METHODS.vcsUnstageFiles, AuthOrchestrationOperateScope],
+  [WS_METHODS.vcsDiscardFiles, AuthOrchestrationOperateScope],
+  [WS_METHODS.vcsGenerateCommitMessage, AuthOrchestrationOperateScope],
   [WS_METHODS.gitRunStackedAction, AuthOrchestrationOperateScope],
   [WS_METHODS.gitResolvePullRequest, AuthOrchestrationOperateScope],
   [WS_METHODS.gitPreparePullRequestThread, AuthOrchestrationOperateScope],
   [WS_METHODS.vcsListRefs, AuthOrchestrationReadScope],
   [WS_METHODS.vcsCreateWorktree, AuthOrchestrationOperateScope],
   [WS_METHODS.vcsRemoveWorktree, AuthOrchestrationOperateScope],
+  [WS_METHODS.vcsClone, AuthOrchestrationOperateScope],
   [WS_METHODS.vcsCreateRef, AuthOrchestrationOperateScope],
   [WS_METHODS.vcsSwitchRef, AuthOrchestrationOperateScope],
   [WS_METHODS.vcsInit, AuthOrchestrationOperateScope],
@@ -1385,6 +1403,70 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "workspace" },
           ),
+        [WS_METHODS.projectsCreateEntry]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.projectsCreateEntry,
+            workspaceFileSystem.createEntry(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProjectCreateEntryError({
+                    cwd: input.cwd,
+                    relativePath: input.relativePath,
+                    ...projectFileFailureContext(cause),
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.projectsRenameEntry]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.projectsRenameEntry,
+            workspaceFileSystem.renameEntry(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProjectRenameEntryError({
+                    cwd: input.cwd,
+                    relativePath: input.fromRelativePath,
+                    ...projectFileFailureContext(cause),
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.projectsDeleteEntry]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.projectsDeleteEntry,
+            workspaceFileSystem.deleteEntry(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProjectDeleteEntryError({
+                    cwd: input.cwd,
+                    relativePath: input.relativePath,
+                    ...projectFileFailureContext(cause),
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.projectsDuplicateEntry]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.projectsDuplicateEntry,
+            workspaceFileSystem.duplicateEntry(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProjectDuplicateEntryError({
+                    cwd: input.cwd,
+                    relativePath: input.relativePath,
+                    ...projectFileFailureContext(cause),
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "workspace" },
+          ),
         [WS_METHODS.shellOpenInEditor]: (input) =>
           observeRpcEffect(WS_METHODS.shellOpenInEditor, externalLauncher.launchEditor(input), {
             "rpc.aggregate": "workspace",
@@ -1480,6 +1562,42 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "git" },
           ),
+        [WS_METHODS.vcsStageFiles]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsStageFiles,
+            gitWorkflow
+              .stageFiles(input)
+              .pipe(
+                Effect.tap(() => refreshGitStatus(input.cwd).pipe(Effect.ignore({ log: true }))),
+              ),
+            { "rpc.aggregate": "git" },
+          ),
+        [WS_METHODS.vcsUnstageFiles]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsUnstageFiles,
+            gitWorkflow
+              .unstageFiles(input)
+              .pipe(
+                Effect.tap(() => refreshGitStatus(input.cwd).pipe(Effect.ignore({ log: true }))),
+              ),
+            { "rpc.aggregate": "git" },
+          ),
+        [WS_METHODS.vcsDiscardFiles]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsDiscardFiles,
+            gitWorkflow
+              .discardFiles(input)
+              .pipe(
+                Effect.tap(() => refreshGitStatus(input.cwd).pipe(Effect.ignore({ log: true }))),
+              ),
+            { "rpc.aggregate": "git" },
+          ),
+        [WS_METHODS.vcsGenerateCommitMessage]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsGenerateCommitMessage,
+            gitWorkflow.generateCommitMessage(input),
+            { "rpc.aggregate": "git" },
+          ),
         [WS_METHODS.gitRunStackedAction]: (input) =>
           observeRpcStream(
             WS_METHODS.gitRunStackedAction,
@@ -1523,6 +1641,10 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.vcsListRefs, gitWorkflow.listRefs(input), {
             "rpc.aggregate": "vcs",
           }),
+        [WS_METHODS.vcsListCommits]: (input) =>
+          observeRpcEffect(WS_METHODS.vcsListCommits, gitWorkflow.listCommits(input), {
+            "rpc.aggregate": "vcs",
+          }),
         [WS_METHODS.vcsCreateWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsCreateWorktree,
@@ -1535,6 +1657,13 @@ const makeWsRpcLayer = (
             gitWorkflow.removeWorktree(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "vcs" },
           ),
+        // TODO(orca-port): unlike other vcs.* mutations, clone has no pre-existing cwd to
+        // refresh status for — the resulting `result.path` is a brand-new location no client
+        // subscribes to until a project/thread is created there.
+        [WS_METHODS.vcsClone]: (input) =>
+          observeRpcEffect(WS_METHODS.vcsClone, gitWorkflow.clone(input), {
+            "rpc.aggregate": "vcs",
+          }),
         [WS_METHODS.vcsCreateRef]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsCreateRef,

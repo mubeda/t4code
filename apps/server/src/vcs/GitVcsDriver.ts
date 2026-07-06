@@ -18,11 +18,15 @@ import {
   type VcsCreateRefResult,
   type VcsCreateWorktreeInput,
   type VcsCreateWorktreeResult,
+  type GitCloneInput,
+  type GitCloneResult,
   type ReviewDiffPreviewInput,
   type ReviewDiffPreviewResult,
   type VcsInitInput,
   type VcsListRefsInput,
   type VcsListRefsResult,
+  type VcsListCommitsInput,
+  type VcsListCommitsResult,
   type VcsPullResult,
   type VcsRemoveWorktreeInput,
   type VcsStatusInput,
@@ -59,6 +63,8 @@ export interface GitStatusDetails {
   hasOriginRemote: boolean;
   isDefaultBranch: boolean;
   branch: string | null;
+  /** Resolved default/base branch name (e.g. "main") — for `vs <base>` context. */
+  defaultBranch: string | null;
   upstreamRef: string | null;
   hasWorkingTreeChanges: boolean;
   workingTree: VcsStatusResult["workingTree"];
@@ -199,10 +205,29 @@ export class GitVcsDriver extends Context.Service<
       cwd: string,
       options?: GitRemoteStatusOptions,
     ) => Effect.Effect<GitRemoteStatusDetails, GitCommandError>;
+    readonly stageFiles: (input: {
+      readonly cwd: string;
+      readonly filePaths: readonly string[];
+    }) => Effect.Effect<void, GitCommandError>;
+    readonly unstageFiles: (input: {
+      readonly cwd: string;
+      readonly filePaths: readonly string[];
+    }) => Effect.Effect<void, GitCommandError>;
+    readonly discardFiles: (input: {
+      readonly cwd: string;
+      readonly filePaths: readonly string[];
+    }) => Effect.Effect<void, GitCommandError>;
     readonly prepareCommitContext: (
       cwd: string,
       filePaths?: readonly string[],
     ) => Effect.Effect<GitPreparedCommitContext | null, GitCommandError>;
+    readonly readCommitMessageContext: (
+      cwd: string,
+      filePaths?: readonly string[],
+    ) => Effect.Effect<
+      { readonly hasChanges: boolean; readonly summary: string; readonly patch: string },
+      GitCommandError
+    >;
     readonly commit: (
       cwd: string,
       subject: string,
@@ -228,10 +253,14 @@ export class GitVcsDriver extends Context.Service<
     readonly listRefs: (
       input: VcsListRefsInput,
     ) => Effect.Effect<VcsListRefsResult, GitCommandError>;
+    readonly listCommits: (
+      input: VcsListCommitsInput,
+    ) => Effect.Effect<VcsListCommitsResult, GitCommandError>;
     readonly pullCurrentBranch: (cwd: string) => Effect.Effect<VcsPullResult, GitCommandError>;
     readonly createWorktree: (
       input: VcsCreateWorktreeInput,
     ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError>;
+    readonly clone: (input: GitCloneInput) => Effect.Effect<GitCloneResult, GitCommandError>;
     readonly fetchPullRequestBranch: (
       input: GitFetchPullRequestBranchInput,
     ) => Effect.Effect<void, GitCommandError>;
@@ -658,9 +687,9 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       const commitEnv: NodeJS.ProcessEnv = {
         ...process.env,
         GIT_INDEX_FILE: tempIndexPath,
-        GIT_AUTHOR_NAME: "T3 Code",
+        GIT_AUTHOR_NAME: "T4Code",
         GIT_AUTHOR_EMAIL: "t3code@users.noreply.github.com",
-        GIT_COMMITTER_NAME: "T3 Code",
+        GIT_COMMITTER_NAME: "T4Code",
         GIT_COMMITTER_EMAIL: "t3code@users.noreply.github.com",
       };
 

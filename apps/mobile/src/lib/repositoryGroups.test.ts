@@ -53,20 +53,20 @@ describe("groupProjectsByRepository", () => {
       provider: "github",
       owner: "t3tools",
       name: "t3code",
-      displayName: "T3 Code",
+      displayName: "T4Code",
     };
 
     const projects = [
       makeProject({
         environmentId: EnvironmentId.make("env-local"),
         id: ProjectId.make("project-local"),
-        title: "T3 Code",
+        title: "T4Code",
         repositoryIdentity: repoIdentity,
       }),
       makeProject({
         environmentId: EnvironmentId.make("env-staging"),
         id: ProjectId.make("project-staging"),
-        title: "T3 Code",
+        title: "T4Code",
         repositoryIdentity: repoIdentity,
       }),
     ];
@@ -95,7 +95,7 @@ describe("groupProjectsByRepository", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0]).toMatchObject({
       key: "github.com/t3tools/t3code",
-      title: "T3 Code",
+      title: "T4Code",
       subtitle: "t3tools/t3code",
       projectCount: 2,
       threadCount: 2,

@@ -108,6 +108,14 @@ describe("rightPanelStore", () => {
     expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refB)).toBeNull();
   });
 
+  it("opens a singleton source control surface", () => {
+    useRightPanelStore.getState().open(refA, "sourceControl");
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces).toContainEqual({ id: "sourceControl", kind: "sourceControl" });
+    expect(state.activeSurfaceId).toBe("sourceControl");
+    expect(state.isOpen).toBe(true);
+  });
+
   it("opening a different kind keeps both surfaces and activates the new one", () => {
     useRightPanelStore.getState().open(refA, "plan");
     useRightPanelStore.getState().open(refA, "preview");
@@ -430,5 +438,109 @@ describe("rightPanelStore", () => {
         (surface) => surface.id,
       ),
     ).toEqual(["terminal:term-1", "browser:tab-b", "browser:tab-c"]);
+  });
+
+  it("remaps a renamed file surface, preserving its reveal state and active selection", () => {
+    useRightPanelStore.getState().openFile(refA, "src/old.ts", 12);
+    useRightPanelStore.getState().remapFileSurfaces(refA, "src/old.ts", "src/new.ts");
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "file:src/new.ts",
+      surfaces: [
+        {
+          id: "file:src/new.ts",
+          kind: "file",
+          relativePath: "src/new.ts",
+          revealLine: 12,
+          revealRequestId: 1,
+        },
+      ],
+    });
+  });
+
+  it("remaps every descendant surface when a directory is renamed", () => {
+    useRightPanelStore.getState().openFile(refA, "src/a.ts");
+    useRightPanelStore.getState().openFile(refA, "src/nested/b.ts");
+    useRightPanelStore.getState().open(refA, "plan");
+    useRightPanelStore.getState().remapFileSurfaces(refA, "src", "lib");
+
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces.map((surface) => surface.id)).toEqual([
+      "file:lib/a.ts",
+      "file:lib/nested/b.ts",
+      "plan",
+    ]);
+    expect(state.activeSurfaceId).toBe("plan");
+  });
+
+  it("rewrites the active surface id when a renamed directory contained it", () => {
+    useRightPanelStore.getState().openFile(refA, "src/nested/b.ts");
+    useRightPanelStore.getState().remapFileSurfaces(refA, "src", "lib");
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)?.id).toBe(
+      "file:lib/nested/b.ts",
+    );
+  });
+
+  it("leaves sibling surfaces that merely share a name prefix untouched when renaming", () => {
+    useRightPanelStore.getState().openFile(refA, "src/index.ts");
+    useRightPanelStore.getState().openFile(refA, "srcfoo/x.ts");
+    useRightPanelStore.getState().remapFileSurfaces(refA, "src", "lib");
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces.map(
+        (surface) => surface.id,
+      ),
+    ).toEqual(["file:lib/index.ts", "file:srcfoo/x.ts"]);
+  });
+
+  it("remap is a no-op when no file surface matches", () => {
+    useRightPanelStore.getState().open(refA, "plan");
+    useRightPanelStore.getState().remapFileSurfaces(refA, "src/index.ts", "src/renamed.ts");
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "plan",
+      surfaces: [{ id: "plan", kind: "plan" }],
+    });
+  });
+
+  it("closes the exact file surface and falls back to a neighbor", () => {
+    useRightPanelStore.getState().openBrowser(refA, "tab-a");
+    useRightPanelStore.getState().openFile(refA, "src/index.ts");
+    useRightPanelStore.getState().closeFileSurfacesUnder(refA, "src/index.ts");
+
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces.map((surface) => surface.id)).toEqual(["browser:tab-a"]);
+    expect(state.activeSurfaceId).toBe("browser:tab-a");
+  });
+
+  it("closes every descendant surface when a directory is deleted", () => {
+    useRightPanelStore.getState().openFile(refA, "src/a.ts");
+    useRightPanelStore.getState().openFile(refA, "src/nested/b.ts");
+    useRightPanelStore.getState().open(refA, "plan");
+    useRightPanelStore.getState().closeFileSurfacesUnder(refA, "src");
+
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces.map((surface) => surface.id)).toEqual(["plan"]);
+    expect(state.activeSurfaceId).toBe("plan");
+  });
+
+  it("leaves sibling surfaces sharing a prefix when deleting a directory", () => {
+    useRightPanelStore.getState().openFile(refA, "src/index.ts");
+    useRightPanelStore.getState().openFile(refA, "srcfoo/x.ts");
+    useRightPanelStore.getState().closeFileSurfacesUnder(refA, "src");
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces.map(
+        (surface) => surface.id,
+      ),
+    ).toEqual(["file:srcfoo/x.ts"]);
+  });
+
+  it("closes the panel when deleting removes the last surface", () => {
+    useRightPanelStore.getState().openFile(refA, "src/index.ts");
+    useRightPanelStore.getState().closeFileSurfacesUnder(refA, "src");
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: false,
+      activeSurfaceId: null,
+      surfaces: [],
+    });
   });
 });

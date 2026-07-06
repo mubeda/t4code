@@ -3,7 +3,6 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as PlatformError from "effect/PlatformError";
 
 import { ServerConfig } from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -34,7 +33,7 @@ function makeLayer(input: {
 }
 
 describe("ReviewService", () => {
-  it.effect("rejects diff preview cwd outside the configured workspace roots", () =>
+  it.effect("allows diff preview cwd outside the server workspace root (multi-project model)", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-workspace-" });
@@ -42,18 +41,16 @@ describe("ReviewService", () => {
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-base-" });
       const detectCalls: Array<{ readonly cwd: string }> = [];
 
-      const error = yield* Effect.gen(function* () {
+      const result = yield* Effect.gen(function* () {
         const review = yield* ReviewService.ReviewService;
-        return yield* review.getDiffPreview({ cwd: outsideRoot }).pipe(Effect.flip);
+        return yield* review.getDiffPreview({ cwd: outsideRoot });
       }).pipe(Effect.provide(makeLayer({ workspaceRoot, baseDir, detectCalls })));
 
-      assert.strictEqual(error._tag, "VcsRepositoryDetectionError");
-      assert.strictEqual(error.operation, "ReviewService.getDiffPreview");
-      assert.match(
-        "detail" in error ? error.detail : "",
-        /must stay within the configured workspace root/,
-      );
-      assert.deepStrictEqual(detectCalls, []);
+      // Projects can live anywhere on disk; repo detection is the only gate,
+      // matching the rest of the vcs.* surface.
+      assert.strictEqual(result.cwd, outsideRoot);
+      assert.deepStrictEqual(result.sources, []);
+      assert.deepStrictEqual(detectCalls, [{ cwd: outsideRoot }]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -72,29 +69,6 @@ describe("ReviewService", () => {
       assert.strictEqual(result.cwd, workspaceRoot);
       assert.deepStrictEqual(result.sources, []);
       assert.deepStrictEqual(detectCalls, [{ cwd: workspaceRoot }]);
-    }).pipe(Effect.provide(NodeServices.layer)),
-  );
-
-  it.effect("preserves unexpected path-resolution failures", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-workspace-" });
-      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-base-" });
-      const invalidCwd = `${workspaceRoot}\0invalid`;
-      const detectCalls: Array<{ readonly cwd: string }> = [];
-
-      const error = yield* Effect.gen(function* () {
-        const review = yield* ReviewService.ReviewService;
-        return yield* review.getDiffPreview({ cwd: invalidCwd }).pipe(Effect.flip);
-      }).pipe(Effect.provide(makeLayer({ workspaceRoot, baseDir, detectCalls })));
-
-      assert.strictEqual(error._tag, "VcsRepositoryDetectionError");
-      if (error._tag !== "VcsRepositoryDetectionError") return;
-      assert.strictEqual(error.operation, "ReviewService.assertWorkspaceBoundCwd.canonicalizePath");
-      assert.strictEqual(error.cwd, invalidCwd);
-      assert.match(error.detail, /Failed to resolve a path/);
-      assert.instanceOf(error.cause, PlatformError.PlatformError);
-      assert.deepStrictEqual(detectCalls, []);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

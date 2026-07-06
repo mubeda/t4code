@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   createThreadJumpHintVisibilityController,
+  findDefaultThread,
+  formatSessionDuration,
   getSidebarThreadIdsToPrewarm,
   getVisibleSidebarThreadIds,
+  orderRowsWithPins,
   resolveAdjacentThreadId,
   getFallbackThreadIdAfterDelete,
   getVisibleThreadsForProject,
@@ -19,6 +22,7 @@ import {
   resolveThreadStatusPill,
   shouldClearThreadSelectionOnMouseDown,
   sortProjectsForSidebar,
+  splitPrimaryAndWorkspaceThreads,
   THREAD_JUMP_HINT_SHOW_DELAY_MS,
 } from "./Sidebar.logic";
 import {
@@ -1064,5 +1068,122 @@ describe("sortProjectsForSidebar", () => {
     );
 
     expect(timestamp).toBe(Date.parse("2026-03-09T10:10:00.000Z"));
+  });
+});
+
+describe("findDefaultThread / splitPrimaryAndWorkspaceThreads", () => {
+  it("finds the thread whose kind is default", () => {
+    const threads = [
+      { id: "a", kind: "workspace" as const },
+      { id: "b", kind: "default" as const },
+    ];
+    expect(findDefaultThread(threads)?.id).toBe("b");
+  });
+
+  it("returns null when no thread is kind default (server hasn't backfilled yet)", () => {
+    const threads = [{ id: "a", kind: "workspace" as const }, { id: "b" }];
+    expect(findDefaultThread(threads)).toBeNull();
+  });
+
+  it("splits primary thread out of the workspace-row list", () => {
+    const threads = [
+      { id: "a", kind: "workspace" as const },
+      { id: "b", kind: "default" as const },
+      { id: "c", kind: "workspace" as const },
+    ];
+    const { primaryThread, workspaceThreads } = splitPrimaryAndWorkspaceThreads(threads);
+    expect(primaryThread?.id).toBe("b");
+    expect(workspaceThreads.map((t) => t.id)).toEqual(["a", "c"]);
+  });
+
+  it("workspaceThreads is the full list (primary null) when no default thread exists", () => {
+    const threads = [
+      { id: "a", kind: "workspace" as const },
+      { id: "b", kind: "workspace" as const },
+    ];
+    const { primaryThread, workspaceThreads } = splitPrimaryAndWorkspaceThreads(threads);
+    expect(primaryThread).toBeNull();
+    expect(workspaceThreads.map((t) => t.id)).toEqual(["a", "b"]);
+  });
+
+  it("excludes panel threads from workspace rows", () => {
+    const threads = [
+      { id: "a", kind: "workspace" as const },
+      { id: "p1", kind: "panel" as const },
+      { id: "b", kind: "default" as const },
+      { id: "p2", kind: "panel" as const },
+      { id: "c", kind: "workspace" as const },
+    ];
+    const { primaryThread, workspaceThreads } = splitPrimaryAndWorkspaceThreads(threads);
+    expect(primaryThread?.id).toBe("b");
+    expect(workspaceThreads.map((t) => t.id)).toEqual(["a", "c"]);
+  });
+
+  it("panel-only projects still resolve the primary thread and show no workspace rows", () => {
+    const threads = [
+      { id: "b", kind: "default" as const },
+      { id: "p1", kind: "panel" as const },
+    ];
+    const { primaryThread, workspaceThreads } = splitPrimaryAndWorkspaceThreads(threads);
+    expect(primaryThread?.id).toBe("b");
+    expect(workspaceThreads).toEqual([]);
+  });
+
+  it("panel threads are never picked as the primary thread", () => {
+    const threads = [{ id: "p1", kind: "panel" as const }];
+    expect(findDefaultThread(threads)).toBeNull();
+  });
+});
+
+describe("orderRowsWithPins", () => {
+  it("moves pinned items to the front, preserving relative order within each partition", () => {
+    const items = [{ key: "a" }, { key: "b" }, { key: "c" }, { key: "d" }];
+    const ordered = orderRowsWithPins(items, ["c", "a"], (item) => item.key);
+    expect(ordered.map((item) => item.key)).toEqual(["a", "c", "b", "d"]);
+  });
+
+  it("returns items unchanged (by order) when nothing is pinned", () => {
+    const items = [{ key: "a" }, { key: "b" }];
+    expect(orderRowsWithPins(items, [], (item) => item.key).map((i) => i.key)).toEqual(["a", "b"]);
+  });
+
+  it("accepts a Set of pinned keys", () => {
+    const items = [{ key: "a" }, { key: "b" }];
+    const ordered = orderRowsWithPins(items, new Set(["b"]), (item) => item.key);
+    expect(ordered.map((item) => item.key)).toEqual(["b", "a"]);
+  });
+});
+
+describe("formatSessionDuration", () => {
+  const now = Date.parse("2026-07-03T12:00:00.000Z");
+
+  it("returns null when neither timestamp is present", () => {
+    expect(formatSessionDuration({ now })).toBeNull();
+  });
+
+  it("formats sub-minute elapsed time as 'now'", () => {
+    expect(formatSessionDuration({ sessionUpdatedAt: "2026-07-03T11:59:45.000Z", now })).toBe(
+      "now",
+    );
+  });
+
+  it("formats minutes coarsely", () => {
+    expect(formatSessionDuration({ sessionUpdatedAt: "2026-07-03T11:48:00.000Z", now })).toBe(
+      "12m",
+    );
+  });
+
+  it("formats hours coarsely", () => {
+    expect(formatSessionDuration({ sessionUpdatedAt: "2026-07-03T11:00:00.000Z", now })).toBe("1h");
+  });
+
+  it("formats days coarsely", () => {
+    expect(formatSessionDuration({ sessionUpdatedAt: "2026-07-01T12:00:00.000Z", now })).toBe("2d");
+  });
+
+  it("falls back to latestTurn.startedAt when session.updatedAt is absent", () => {
+    expect(formatSessionDuration({ latestTurnStartedAt: "2026-07-03T11:00:00.000Z", now })).toBe(
+      "1h",
+    );
   });
 });

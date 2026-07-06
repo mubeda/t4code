@@ -106,6 +106,7 @@ import {
   ITEM_ICON_CLASS,
   RECENT_THREAD_LIMIT,
 } from "./CommandPalette.logic";
+import { AddProjectDialog } from "./AddProjectDialog";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { CommandPaletteResults } from "./CommandPaletteResults";
 import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "./Icons";
@@ -377,6 +378,17 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   const toggleOpen = useCallback(() => dispatch({ _tag: "Toggle" }), []);
   const openAddProject = useCallback(() => dispatch({ _tag: "OpenAddProject" }), []);
   const clearOpenIntent = useCallback(() => dispatch({ _tag: "ClearOpenIntent" }), []);
+  // Orca port (00-port-plan.md item 7 / W2): AddProjectDialog must be mounted
+  // here, at the always-rendered top level, NOT inside `CommandPaletteDialog`
+  // (which unmounts -- returns null -- the instant the palette closes). Its
+  // own state closes the palette then opens this dialog; wiring it inside the
+  // conditionally-rendered subtree would unmount the dialog before it could
+  // ever show.
+  const [addProjectDialogOpen, setAddProjectDialogOpen] = useState(false);
+  const openAddProjectDialog = useCallback(() => {
+    setOpen(false);
+    setAddProjectDialogOpen(true);
+  }, [setOpen]);
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const composerHandleRef = useRef<ChatComposerHandle | null>(null);
   const routeTarget = useParams({
@@ -420,9 +432,11 @@ export function CommandPalette({ children }: { children: ReactNode }) {
             openIntent={state.openIntent}
             setOpen={setOpen}
             clearOpenIntent={clearOpenIntent}
+            openAddProjectDialog={openAddProjectDialog}
           />
         </CommandDialog>
       </ComposerHandleContext>
+      <AddProjectDialog open={addProjectDialogOpen} onOpenChange={setAddProjectDialogOpen} />
     </OpenAddProjectCommandPaletteProvider>
   );
 }
@@ -432,6 +446,7 @@ function CommandPaletteDialog(props: {
   readonly openIntent: CommandPaletteOpenIntent | null;
   readonly setOpen: (open: boolean) => void;
   readonly clearOpenIntent: () => void;
+  readonly openAddProjectDialog: () => void;
 }) {
   if (!props.open) {
     return null;
@@ -442,6 +457,7 @@ function CommandPaletteDialog(props: {
       openIntent={props.openIntent}
       setOpen={props.setOpen}
       clearOpenIntent={props.clearOpenIntent}
+      openAddProjectDialog={props.openAddProjectDialog}
     />
   );
 }
@@ -450,9 +466,10 @@ function OpenCommandPaletteDialog(props: {
   readonly openIntent: CommandPaletteOpenIntent | null;
   readonly setOpen: (open: boolean) => void;
   readonly clearOpenIntent: () => void;
+  readonly openAddProjectDialog: () => void;
 }) {
   const navigate = useNavigate();
-  const { clearOpenIntent, openIntent, setOpen } = props;
+  const { clearOpenIntent, openIntent, setOpen, openAddProjectDialog } = props;
   const composerHandleRef = useComposerHandleContext();
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
@@ -486,6 +503,13 @@ function OpenCommandPaletteDialog(props: {
   const [addProjectCloneFlow, setAddProjectCloneFlow] = useState<AddProjectCloneFlow | null>(null);
   const [isRemoteProjectLookingUp, setIsRemoteProjectLookingUp] = useState(false);
   const [isRemoteProjectCloning, setIsRemoteProjectCloning] = useState(false);
+  // Orca port (00-port-plan.md item 7 / W2): "Add project" should open the
+  // new AddProjectDialog (mounted + owned by the top-level `CommandPalette`,
+  // see `openAddProjectDialog` prop) rather than this file's legacy inline
+  // browse/clone flow below. Wired minimally — the legacy multi-environment
+  // picker is kept as dead code paths for now (TODO(orca-port): remove once
+  // AddProjectDialog covers remote/WSL environments; see "Out of scope
+  // phase 1" in the plan).
   const primaryEnvironmentId = primaryEnvironment?.environmentId ?? null;
 
   const addProjectEnvironmentOptions = useMemo(() => {
@@ -924,33 +948,8 @@ function OpenCommandPaletteDialog(props: {
   );
 
   const openAddProjectFlow = useCallback(() => {
-    if (addProjectEnvironmentOptions.length > 1) {
-      pushPaletteView({
-        addonIcon: <FolderPlusIcon className={ADDON_ICON_CLASS} />,
-        groups: addProjectEnvironmentGroups,
-      });
-      return;
-    }
-
-    const environmentId = defaultAddProjectEnvironmentId;
-    if (!environmentId) {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Unable to browse projects",
-          description: "No environment is available.",
-        }),
-      );
-      return;
-    }
-
-    void startAddProjectSourceSelection(environmentId);
-  }, [
-    addProjectEnvironmentGroups,
-    addProjectEnvironmentOptions.length,
-    defaultAddProjectEnvironmentId,
-    startAddProjectSourceSelection,
-  ]);
+    openAddProjectDialog();
+  }, [openAddProjectDialog]);
 
   useLayoutEffect(() => {
     if (openIntent?.kind !== "add-project") {

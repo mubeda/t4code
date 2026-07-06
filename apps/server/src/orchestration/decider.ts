@@ -1,8 +1,14 @@
 import {
+  DEFAULT_MODEL,
+  DEFAULT_PROVIDER_INTERACTION_MODE,
+  DEFAULT_RUNTIME_MODE,
   EventId,
+  type ModelSelection,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
+  ProviderInstanceId,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
@@ -18,6 +24,7 @@ import {
   requireThreadArchived,
   requireThreadAbsent,
   requireThreadNotArchived,
+  requireThreadNotDefault,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
 
@@ -59,40 +66,6 @@ type DecideOrchestrationCommandResult =
   | PlannedOrchestrationEvent
   | ReadonlyArray<PlannedOrchestrationEvent>;
 
-const decideCommandSequence = Effect.fn("decideCommandSequence")(function* ({
-  commands,
-  readModel,
-}: {
-  readonly commands: ReadonlyArray<OrchestrationCommand>;
-  readonly readModel: OrchestrationReadModel;
-}): Effect.fn.Return<
-  ReadonlyArray<PlannedOrchestrationEvent>,
-  OrchestrationCommandInvariantError | PlatformError.PlatformError,
-  Crypto.Crypto
-> {
-  let nextReadModel = readModel;
-  let nextSequence = readModel.snapshotSequence;
-  const plannedEvents: PlannedOrchestrationEvent[] = [];
-
-  for (const nextCommand of commands) {
-    const decided = yield* decideOrchestrationCommand({
-      command: nextCommand,
-      readModel: nextReadModel,
-    });
-    const nextEvents = Array.isArray(decided) ? decided : [decided];
-    for (const nextEvent of nextEvents) {
-      plannedEvents.push(nextEvent);
-      nextSequence += 1;
-      nextReadModel = yield* projectEvent(nextReadModel, {
-        ...nextEvent,
-        sequence: nextSequence,
-      }).pipe(Effect.orDie);
-    }
-  }
-
-  return plannedEvents;
-});
-
 export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand")(function* ({
   command,
   readModel,
@@ -112,14 +85,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         projectId: command.projectId,
       });
 
-      return {
+      const projectCreatedEvent = {
         ...(yield* withEventBase({
           aggregateKind: "project",
           aggregateId: command.projectId,
           occurredAt: command.createdAt,
           commandId: command.commandId,
         })),
-        type: "project.created",
+        type: "project.created" as const,
         payload: {
           projectId: command.projectId,
           title: command.title,
@@ -130,6 +103,42 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: command.createdAt,
         },
       };
+
+      // Every project gets exactly one auto-created, undeletable "default" thread
+      // (Orca's PRIMARY workspace row equivalent) — created alongside the project itself.
+      // TODO(orca-port): server startup also backfills this default thread for any
+      // project created before this behavior existed — see serverRuntimeStartup.ts.
+      const crypto = yield* Crypto.Crypto;
+      const defaultThreadId = ThreadId.make(yield* crypto.randomUUIDv4);
+      const defaultThreadModelSelection: ModelSelection = command.defaultModelSelection ?? {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: DEFAULT_MODEL,
+      };
+
+      const defaultThreadCreatedEvent = {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: defaultThreadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.created" as const,
+        payload: {
+          threadId: defaultThreadId,
+          projectId: command.projectId,
+          title: command.title,
+          kind: "default" as const,
+          modelSelection: defaultThreadModelSelection,
+          runtimeMode: DEFAULT_RUNTIME_MODE,
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          createdAt: command.createdAt,
+          updatedAt: command.createdAt,
+        },
+      };
+
+      return [projectCreatedEvent, defaultThreadCreatedEvent];
     }
 
     case "project.meta.update": {
@@ -169,34 +178,33 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const activeThreads = listThreadsByProjectId(readModel, command.projectId).filter(
         (thread) => thread.deletedAt === null,
       );
-      if (activeThreads.length > 0 && command.force !== true) {
+      const activeNonDefaultThreads = activeThreads.filter((thread) => thread.kind !== "default");
+      if (activeNonDefaultThreads.length > 0 && command.force !== true) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Project '${command.projectId}' is not empty and cannot be deleted without force=true.`,
         });
       }
-      if (activeThreads.length > 0) {
-        return yield* decideCommandSequence({
-          readModel,
-          commands: [
-            ...activeThreads.map(
-              (thread): Extract<OrchestrationCommand, { type: "thread.delete" }> => ({
-                type: "thread.delete",
-                commandId: command.commandId,
-                threadId: thread.id,
-              }),
-            ),
-            {
-              type: "project.delete",
-              commandId: command.commandId,
-              projectId: command.projectId,
-            },
-          ],
+
+      const occurredAt = yield* nowIso;
+      const plannedEvents: PlannedOrchestrationEvent[] = [];
+      for (const thread of activeThreads) {
+        plannedEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: thread.id,
+            occurredAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.deleted" as const,
+          payload: {
+            threadId: thread.id,
+            deletedAt: occurredAt,
+          },
         });
       }
 
-      const occurredAt = yield* nowIso;
-      return {
+      plannedEvents.push({
         ...(yield* withEventBase({
           aggregateKind: "project",
           aggregateId: command.projectId,
@@ -208,7 +216,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           projectId: command.projectId,
           deletedAt: occurredAt,
         },
-      };
+      });
+
+      const [firstPlannedEvent] = plannedEvents;
+      return plannedEvents.length === 1 && firstPlannedEvent !== undefined
+        ? firstPlannedEvent
+        : plannedEvents;
     }
 
     case "thread.create": {
@@ -234,6 +247,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           projectId: command.projectId,
           title: command.title,
+          kind: command.kind,
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,
           interactionMode: command.interactionMode,
@@ -246,7 +260,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.delete": {
-      yield* requireThread({
+      // The default thread (one per project, auto-created on project.create) cannot be
+      // deleted directly — mirrors Orca's "Remove project instead" UX.
+      yield* requireThreadNotDefault({
         readModel,
         command,
         threadId: command.threadId,

@@ -124,7 +124,7 @@ export function HomeHeader(props: {
                 letterSpacing: -0.4,
               }}
             >
-              T3 Code
+              T4Code
             </RNText>
             <View
               style={{

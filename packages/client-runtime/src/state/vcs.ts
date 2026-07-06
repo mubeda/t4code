@@ -10,7 +10,12 @@ import {
 } from "./runtime.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import { subscribe, type EnvironmentRpcInput } from "../rpc/client.ts";
-import { vcsCommandConcurrency, vcsCommandScheduler } from "./vcsCommandScheduler.ts";
+import {
+  vcsCloneCommandConcurrency,
+  vcsCommandConcurrency,
+  vcsCommandScheduler,
+  vcsGenerateScheduler,
+} from "./vcsCommandScheduler.ts";
 
 export function createVcsEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
@@ -20,6 +25,11 @@ export function createVcsEnvironmentAtoms<R, E>(
       label: "environment-data:vcs:list-refs",
       tag: WS_METHODS.vcsListRefs,
       staleTimeMs: 5_000,
+    }),
+    listCommits: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:vcs:list-commits",
+      tag: WS_METHODS.vcsListCommits,
+      staleTimeMs: 10_000,
     }),
     status: createEnvironmentSubscriptionAtomFamily(runtime, {
       label: "environment-data:vcs:status",
@@ -58,6 +68,12 @@ export function createVcsEnvironmentAtoms<R, E>(
       scheduler: vcsCommandScheduler,
       concurrency: vcsCommandConcurrency,
     }),
+    clone: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:clone",
+      tag: WS_METHODS.vcsClone,
+      scheduler: vcsCommandScheduler,
+      concurrency: vcsCloneCommandConcurrency,
+    }),
     createRef: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:create-ref",
       tag: WS_METHODS.vcsCreateRef,
@@ -73,6 +89,31 @@ export function createVcsEnvironmentAtoms<R, E>(
     init: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:init",
       tag: WS_METHODS.vcsInit,
+      scheduler: vcsCommandScheduler,
+      concurrency: vcsCommandConcurrency,
+    }),
+    generateCommitMessage: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:generate-commit-message",
+      tag: WS_METHODS.vcsGenerateCommitMessage,
+      // Own lane: a slow generation must not block stage/unstage/discard/commit.
+      scheduler: vcsGenerateScheduler,
+      concurrency: vcsCommandConcurrency,
+    }),
+    stageFiles: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:stage-files",
+      tag: WS_METHODS.vcsStageFiles,
+      scheduler: vcsCommandScheduler,
+      concurrency: vcsCommandConcurrency,
+    }),
+    unstageFiles: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:unstage-files",
+      tag: WS_METHODS.vcsUnstageFiles,
+      scheduler: vcsCommandScheduler,
+      concurrency: vcsCommandConcurrency,
+    }),
+    discardFiles: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:discard-files",
+      tag: WS_METHODS.vcsDiscardFiles,
       scheduler: vcsCommandScheduler,
       concurrency: vcsCommandConcurrency,
     }),

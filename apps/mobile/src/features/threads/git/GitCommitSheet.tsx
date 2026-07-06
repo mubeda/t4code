@@ -2,6 +2,7 @@ import { useRouter } from "expo-router";
 import { useCallback, useState } from "react";
 import { Pressable, ScrollView, View, useColorScheme } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { mergeWorkingTreeFilesByPath } from "@t3tools/shared/git";
 import { useThemeColor } from "../../../lib/useThemeColor";
 
 import { AppText as Text, AppTextInput as TextInput } from "../../../components/AppText";
@@ -39,7 +40,7 @@ export function GitCommitSheet() {
 
   const busy = gitState.gitOperationLabel !== null;
   const isDefaultRef = gitStatus.data?.isDefaultRef ?? false;
-  const allFiles = gitStatus.data?.workingTree?.files ?? [];
+  const allFiles = mergeWorkingTreeFilesByPath(gitStatus.data?.workingTree?.files ?? []);
 
   const [dialogCommitMessage, setDialogCommitMessage] = useState("");
   const [excludedFiles, setExcludedFiles] = useState<ReadonlySet<string>>(new Set());

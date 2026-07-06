@@ -126,6 +126,25 @@ export function requireThreadNotArchived(input: {
   );
 }
 
+export function requireThreadNotDefault(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly command: OrchestrationCommand;
+  readonly threadId: ThreadId;
+}): Effect.Effect<OrchestrationThread, OrchestrationCommandInvariantError> {
+  return requireThread(input).pipe(
+    Effect.flatMap((thread) =>
+      thread.kind !== "default"
+        ? Effect.succeed(thread)
+        : Effect.fail(
+            invariantError(
+              input.command.type,
+              "The default thread cannot be deleted. Remove the project instead.",
+            ),
+          ),
+    ),
+  );
+}
+
 export function requireThreadAbsent(input: {
   readonly readModel: OrchestrationReadModel;
   readonly command: OrchestrationCommand;

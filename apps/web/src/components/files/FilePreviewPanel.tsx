@@ -13,7 +13,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { ChevronRight, Code2, Eye, FolderTree, Globe2, LoaderCircle } from "lucide-react";
 import * as Schema from "effect/Schema";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
 import ChatMarkdown from "~/components/ChatMarkdown";
@@ -78,6 +78,9 @@ interface FilePreviewPanelProps {
 
 const FILE_EXPLORER_STORAGE_KEY = "t3code.fileExplorerOpen";
 const FILE_SAVE_DEBOUNCE_MS = 500;
+const SAVED_INDICATOR_DURATION_MS = 1500;
+
+type SaveIndicatorStatus = "saving" | "saved" | null;
 const FILE_LINK_REVEAL_ATTRIBUTE = "data-file-link-reveal";
 const FILE_LINK_REVEAL_UNSAFE_CSS = `
   [${FILE_LINK_REVEAL_ATTRIBUTE}][data-line] {
@@ -252,6 +255,8 @@ interface EditableFileSurfaceProps {
   wordWrap: boolean;
   onPostRender: FilePostRender;
   onPendingChange: (relativePath: string, pending: boolean) => void;
+  onSaveIndicatorChange: (status: SaveIndicatorStatus) => void;
+  onRegisterFileSave?: (relativePath: string, flush: () => Promise<unknown>) => () => void;
 }
 
 interface FileSelectionOverride {
@@ -290,6 +295,60 @@ function useFileSaveCoordinator({
   return coordinator;
 }
 
+/**
+ * Wire an explicit Ctrl+S / Cmd+S save onto the file-surface container. The chord
+ * flushes the pending debounced write immediately and always preventDefaults so
+ * the browser's own save dialog can never open. The listener is scoped to the
+ * container (capture phase, so it wins before the Pierre editor's own handlers)
+ * and only fires while focus lives inside the surface.
+ */
+function useExplicitFileSave(
+  containerRef: RefObject<HTMLElement | null>,
+  saveCoordinator: FileSaveCoordinator,
+  onSaveIndicatorChange: (status: SaveIndicatorStatus) => void,
+): void {
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    let cancelled = false;
+    let savedTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearSavedTimer = () => {
+      if (savedTimer === null) return;
+      clearTimeout(savedTimer);
+      savedTimer = null;
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const isSaveChord =
+        (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "s";
+      if (!isSaveChord) return;
+      event.preventDefault();
+      clearSavedTimer();
+      onSaveIndicatorChange(saveCoordinator.hasPendingWork() ? "saving" : "saved");
+      void saveCoordinator.flush().then((result) => {
+        if (cancelled) return;
+        if (result === "failed") {
+          onSaveIndicatorChange(null);
+          return;
+        }
+        onSaveIndicatorChange("saved");
+        savedTimer = setTimeout(() => {
+          savedTimer = null;
+          if (!cancelled) onSaveIndicatorChange(null);
+        }, SAVED_INDICATOR_DURATION_MS);
+      });
+    };
+
+    container.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      cancelled = true;
+      clearSavedTimer();
+      container.removeEventListener("keydown", handleKeyDown, true);
+      onSaveIndicatorChange(null);
+    };
+  }, [containerRef, saveCoordinator, onSaveIndicatorChange]);
+}
+
 function EditableFileSurface({
   environmentId,
   cwd,
@@ -301,6 +360,8 @@ function EditableFileSurface({
   wordWrap,
   onPostRender,
   onPendingChange,
+  onSaveIndicatorChange,
+  onRegisterFileSave,
 }: EditableFileSurfaceProps) {
   const addReviewComment = useComposerDraftStore((store) => store.addReviewComment);
   const removeReviewComment = useComposerDraftStore((store) => store.removeReviewComment);
@@ -322,6 +383,11 @@ function EditableFileSurface({
     relativePath,
     onPendingChange,
   });
+  useExplicitFileSave(surfaceRef, saveCoordinator, onSaveIndicatorChange);
+  useEffect(() => {
+    if (!onRegisterFileSave) return;
+    return onRegisterFileSave(relativePath, () => saveCoordinator.flush());
+  }, [onRegisterFileSave, relativePath, saveCoordinator]);
   const editor = useMemo(
     () =>
       new Editor<FileCommentAnnotationGroup>({
@@ -558,6 +624,8 @@ function RenderedMarkdownSurface({
   contents,
   threadRef,
   onPendingChange,
+  onSaveIndicatorChange,
+  onRegisterFileSave,
 }: Omit<
   EditableFileSurfaceProps,
   | "resolvedTheme"
@@ -569,15 +637,21 @@ function RenderedMarkdownSurface({
 > & {
   threadRef: ScopedThreadRef;
 }) {
+  const surfaceRef = useRef<HTMLDivElement>(null);
   const saveCoordinator = useFileSaveCoordinator({
     environmentId,
     cwd,
     relativePath,
     onPendingChange,
   });
+  useExplicitFileSave(surfaceRef, saveCoordinator, onSaveIndicatorChange);
+  useEffect(() => {
+    if (!onRegisterFileSave) return;
+    return onRegisterFileSave(relativePath, () => saveCoordinator.flush());
+  }, [onRegisterFileSave, relativePath, saveCoordinator]);
 
   return (
-    <ScrollArea className="min-h-0 flex-1">
+    <ScrollArea ref={surfaceRef} className="min-h-0 flex-1">
       <ChatMarkdown
         text={contents}
         cwd={cwd}
@@ -632,11 +706,38 @@ export default function FilePreviewPanel({
   });
   const file = useProjectFileQuery(environmentId, cwd, relativePath);
   const [explorerOpen, setExplorerOpen] = useState(initialExplorerOpen);
+  const [saveIndicator, setSaveIndicator] = useState<SaveIndicatorStatus>(null);
   const [markdownView, setMarkdownView] = useState<{
     path: string | null;
     revealRequestId: number | null;
   }>({ path: null, revealRequestId: null });
   const breadcrumbRef = useRef<HTMLDivElement>(null);
+  // The active surface registers its pending-save flush here so tree mutations
+  // (rename/delete) can settle unsaved edits BEFORE the fs op — otherwise the
+  // surface's own unmount-time save would write to the pre-mutation path and
+  // resurrect a renamed/deleted file.
+  const activeFileSaveRef = useRef<{
+    relativePath: string;
+    flush: () => Promise<unknown>;
+  } | null>(null);
+  const registerFileSave = useCallback((savePath: string, flush: () => Promise<unknown>) => {
+    activeFileSaveRef.current = { relativePath: savePath, flush };
+    return () => {
+      if (activeFileSaveRef.current?.relativePath === savePath) {
+        activeFileSaveRef.current = null;
+      }
+    };
+  }, []);
+  const handleBeforePathMutation = useCallback(async (mutationPath: string) => {
+    const active = activeFileSaveRef.current;
+    if (!active) return;
+    if (
+      active.relativePath === mutationPath ||
+      active.relativePath.startsWith(`${mutationPath}/`)
+    ) {
+      await active.flush();
+    }
+  }, []);
   const isMarkdown = relativePath ? isMarkdownPreviewFile(relativePath) : false;
   const renderMarkdown =
     isMarkdown &&
@@ -730,6 +831,14 @@ export default function FilePreviewPanel({
               ))}
             </div>
           </ScrollArea>
+          {saveIndicator ? (
+            <span
+              className="shrink-0 text-[11px] text-muted-foreground transition-opacity"
+              aria-live="polite"
+            >
+              {saveIndicator === "saving" ? "Saving…" : "Saved"}
+            </span>
+          ) : null}
           {absolutePath && environmentId === primaryEnvironmentId ? (
             <OpenInPicker
               environmentId={environmentId}
@@ -835,6 +944,8 @@ export default function FilePreviewPanel({
                 threadRef={threadRef}
                 contents={file.data.contents}
                 onPendingChange={onPendingChange}
+                onSaveIndicatorChange={setSaveIndicator}
+                onRegisterFileSave={registerFileSave}
               />
             ) : file.data.truncated ? (
               <Virtualizer
@@ -875,6 +986,8 @@ export default function FilePreviewPanel({
                 wordWrap={wordWrap}
                 onPostRender={onFilePostRender}
                 onPendingChange={onPendingChange}
+                onSaveIndicatorChange={setSaveIndicator}
+                onRegisterFileSave={registerFileSave}
               />
             )
           ) : null}
@@ -893,7 +1006,10 @@ export default function FilePreviewPanel({
               environmentId={environmentId}
               cwd={cwd}
               projectName={projectName}
+              threadRef={threadRef}
+              availableEditors={availableEditors}
               onOpenFile={onOpenFile}
+              onBeforePathMutation={handleBeforePathMutation}
             />
           </aside>
         ) : null}

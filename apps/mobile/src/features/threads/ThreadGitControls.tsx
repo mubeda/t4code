@@ -10,6 +10,7 @@ import {
   requiresDefaultBranchConfirmation,
   resolveQuickAction,
 } from "@t3tools/client-runtime/state/vcs";
+import { mergeWorkingTreeFilesByPath } from "@t3tools/shared/git";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import Stack from "expo-router/stack";
 import { useCallback, useMemo } from "react";
@@ -48,7 +49,7 @@ function compactMenuStatus(gitStatus: VcsStatusResult | null): string {
 
   const parts: string[] = [];
   if (gitStatus.hasWorkingTreeChanges) {
-    parts.push(`${gitStatus.workingTree.files.length} changed`);
+    parts.push(`${mergeWorkingTreeFilesByPath(gitStatus.workingTree.files).length} changed`);
   } else if (gitStatus.aheadCount === 0 && gitStatus.behindCount === 0) {
     parts.push("Clean");
   }

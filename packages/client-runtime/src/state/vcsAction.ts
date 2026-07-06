@@ -35,6 +35,10 @@ export const VcsActionOperation = Schema.Literals([
   "init",
   "publish_repository",
   "prepare_pull_request_thread",
+  "stage_files",
+  "unstage_files",
+  "discard_files",
+  "generate_commit_message",
 ]);
 export type VcsActionOperation = typeof VcsActionOperation.Type;
 
@@ -74,6 +78,7 @@ export interface RunVcsStackedActionInput {
   readonly commitMessage?: string;
   readonly featureBranch?: boolean;
   readonly filePaths?: ReadonlyArray<string>;
+  readonly commitStagedIndexAsIs?: boolean;
   readonly onProgress?: (event: GitActionProgressEvent) => void;
 }
 
@@ -463,6 +468,7 @@ export function createVcsActionManager<R, E>(
           ...(input.commitMessage ? { commitMessage: input.commitMessage } : {}),
           ...(input.featureBranch ? { featureBranch: true } : {}),
           ...(input.filePaths?.length ? { filePaths: [...input.filePaths] } : {}),
+          ...(input.commitStagedIndexAsIs ? { commitStagedIndexAsIs: true } : {}),
         };
         return consumeVcsActionProgress(
           runStreamInEnvironment(

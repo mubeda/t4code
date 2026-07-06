@@ -4,6 +4,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { mergeWorkingTreeFilesByPath } from "@t3tools/shared/git";
 import type {
   GitActionProgressEvent,
   GitRunStackedActionResult,
@@ -1100,7 +1101,7 @@ export default function GitActionsControl({
   const hasPrimaryRemote = gitStatus?.hasPrimaryRemote ?? false;
   const gitStatusForActions = gitStatus;
 
-  const allFiles = gitStatusForActions?.workingTree.files ?? [];
+  const allFiles = mergeWorkingTreeFilesByPath(gitStatusForActions?.workingTree.files ?? []);
   const selectedFiles = allFiles.filter((f) => !excludedFiles.has(f.path));
   const allSelected = excludedFiles.size === 0;
   const noneSelected = selectedFiles.length === 0;

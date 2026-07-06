@@ -1,8 +1,12 @@
 import { SymbolView } from "expo-symbols";
 import type { ComponentProps } from "react";
 import { Pressable, View } from "react-native";
+import type { VcsStatusResult } from "@t3tools/contracts";
+import { mergeWorkingTreeFilesByPath } from "@t3tools/shared/git";
 import { useThemeColor } from "../../../lib/useThemeColor";
 import { AppText as Text } from "../../../components/AppText";
+
+type WorkingTreeFile = VcsStatusResult["workingTree"]["files"][number];
 
 /* ─── Shared sheet components ──────────────────────────────────────── */
 
@@ -126,7 +130,7 @@ export function statusSummary(
   gitStatus: {
     readonly isRepo?: boolean;
     readonly hasWorkingTreeChanges?: boolean;
-    readonly workingTree?: { readonly files: readonly { readonly path: string }[] };
+    readonly workingTree?: { readonly files: readonly WorkingTreeFile[] };
     readonly aheadCount?: number;
     readonly behindCount?: number;
     readonly pr?: { readonly state?: string; readonly number?: number } | null;
@@ -142,7 +146,9 @@ export function statusSummary(
 
   const parts: string[] = [];
   if (gitStatus.hasWorkingTreeChanges) {
-    const fileCount = gitStatus.workingTree?.files.length ?? 0;
+    const fileCount = gitStatus.workingTree
+      ? mergeWorkingTreeFilesByPath(gitStatus.workingTree.files).length
+      : 0;
     parts.push(`${fileCount} file${fileCount === 1 ? "" : "s"} changed`);
   } else {
     parts.push("Clean");
