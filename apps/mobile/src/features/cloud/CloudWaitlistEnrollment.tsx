@@ -38,7 +38,7 @@ export function CloudWaitlistEnrollment(props: { readonly onSignIn: () => void }
       <View style={styles.content}>
         <Text style={[styles.title, { color: colors.foreground }]}>You are on the waitlist</Text>
         <Text style={[styles.body, styles.confirmationBody, { color: colors.secondaryForeground }]}>
-          We will email you when your T3 Cloud access is ready.
+          We will email you when your T4 Cloud access is ready.
         </Text>
         <SignInAction onPress={props.onSignIn} />
       </View>

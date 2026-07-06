@@ -1,12 +1,12 @@
-# T3 Connect Clerk Setup
+# T4 Connect Clerk Setup
 
-T3 Connect uses one Clerk application for web, desktop, and mobile authentication. The relay accepts
+T4 Connect uses one Clerk application for web, desktop, and mobile authentication. The relay accepts
 Clerk JWTs only when they are generated from the `t3-relay` template with the shared
 `t3-code-relay` audience.
 
 ## Application Keys
 
-T3 Connect is disabled in a fresh clone. To enable it for source builds, add a repository-root `.env`
+T4 Connect is disabled in a fresh clone. To enable it for source builds, add a repository-root `.env`
 or `.env.local` file:
 
 ```dotenv
@@ -61,7 +61,7 @@ This uses an OAuth public client with PKCE, so the CLI stores no client secret.
 
 In **Clerk Dashboard > OAuth applications**:
 
-1. Create an OAuth application for the T3 CLI.
+1. Create an OAuth application for the T4 CLI.
 2. Enable the **Public** option so authorization-code exchange uses PKCE.
 3. Add `http://127.0.0.1:34338/callback` as an allowed redirect URI.
 4. Enable the `openid`, `profile`, and `email` scopes.
@@ -86,7 +86,7 @@ t3 serve
 `t3 connect login` opens the Clerk authorization flow and stores the CLI credential without enabling
 cloud exposure. `t3 connect link` installs the pinned managed `cloudflared` binary when needed,
 authorizes when needed, and records durable intent to expose the environment. It works without a
-running T3 server. The next `t3 serve` or `t3 start` reconciles the relay link and launches the
+running T4 server. The next `t3 serve` or `t3 start` reconciles the relay link and launches the
 managed tunnel. `t3 connect unlink` records disabled intent immediately, stops a reachable running
 connector, and attempts to revoke the relay-side environment record. It retains the stored CLI
 authorization so `t3 connect link` can re-enable exposure without another browser flow. `t3 connect
@@ -188,7 +188,7 @@ binary from another:
 ```sh
 VITE_DEV_SERVER_URL=http://127.0.0.1:5733 \
 T3CODE_PORT=13773 \
-  "/Applications/T3 Code (Alpha).app/Contents/MacOS/T3 Code (Alpha)"
+  "/Applications/T4Code (Alpha).app/Contents/MacOS/T4Code (Alpha)"
 ```
 
 After changing Associated Domains, bump the build version before rebuilding; macOS may otherwise
@@ -197,8 +197,8 @@ reuse stale Shared Web Credentials metadata for the same app/version pair.
 Verify the installed bundle before testing:
 
 ```sh
-codesign --verify --deep --strict "/Applications/T3 Code (Alpha).app"
-codesign -d --entitlements :- "/Applications/T3 Code (Alpha).app"
+codesign --verify --deep --strict "/Applications/T4Code (Alpha).app"
+codesign -d --entitlements :- "/Applications/T4Code (Alpha).app"
 ```
 
 The current mobile UI uses Clerk's native authentication view. If a future mobile browser OAuth
@@ -211,11 +211,11 @@ For a private beta where people should request access, use **Clerk Dashboard > W
 1. Toggle on **Enable waitlist** and save.
 2. Review requests on the same page and select **Invite** or **Deny**.
 
-Approved signed-in users manage T3 Connect under **Connections**. The web and desktop sidebars do
+Approved signed-in users manage T4 Connect under **Connections**. The web and desktop sidebars do
 not expose a dedicated account or waitlist control. Signed-out users reach Clerk's waitlist and
-sign-in flow contextually from the T3 Connect controls on the Connections page.
+sign-in flow contextually from the T4 Connect controls on the Connections page.
 
-On mobile, signed-out users open **Settings > T3 Account** to reach `/settings/waitlist` within the
+On mobile, signed-out users open **Settings > T4 Account** to reach `/settings/waitlist` within the
 Settings form sheet. It submits enrollment through Clerk's `useWaitlist()` flow because the prebuilt
 `<Waitlist />` component is web-only in the Expo SDK. Approved users can use **Sign in** from that
 screen.

@@ -8,6 +8,7 @@ import {
   buildThreadRouteParams,
   resolveThreadRouteRef,
   resolveThreadRouteTarget,
+  shouldRedirectMissingRouteThread,
 } from "./threadRoutes";
 
 describe("threadRoutes", () => {
@@ -63,5 +64,49 @@ describe("threadRoutes", () => {
       kind: "draft",
       draftId: "draft-1",
     });
+  });
+});
+
+describe("shouldRedirectMissingRouteThread", () => {
+  it("redirects when a live snapshot lacks the thread but has other server threads", () => {
+    expect(
+      shouldRedirectMissingRouteThread({
+        shellStatus: "live",
+        routeThreadExists: false,
+        environmentHasServerThreads: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("never redirects while the shell is not live (backend flap/reconnect windows)", () => {
+    for (const shellStatus of ["cached", "synchronizing", "empty", null] as const) {
+      expect(
+        shouldRedirectMissingRouteThread({
+          shellStatus,
+          routeThreadExists: false,
+          environmentHasServerThreads: true,
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it("never redirects when the environment has no server threads (empty/partial early snapshot; drafts do not count)", () => {
+    expect(
+      shouldRedirectMissingRouteThread({
+        shellStatus: "live",
+        routeThreadExists: false,
+        environmentHasServerThreads: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("never redirects while the route thread exists", () => {
+    expect(
+      shouldRedirectMissingRouteThread({
+        shellStatus: "live",
+        routeThreadExists: true,
+        environmentHasServerThreads: true,
+      }),
+    ).toBe(false);
   });
 });

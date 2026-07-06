@@ -5,7 +5,8 @@
  * surface descriptors and the active surface, while each feature continues to
  * own its durable resource state. Browser surfaces point at preview tab ids,
  * terminal surfaces point at terminal session ids, file surfaces point at
- * workspace paths, and diff/plan/files remain singleton surfaces.
+ * workspace paths, and diff/plan/files/sourceControl remain singleton
+ * surfaces.
  */
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { ScopedThreadRef } from "@t3tools/contracts";
@@ -14,7 +15,15 @@ import { createJSONStorage, persist } from "zustand/middleware";
 
 import { resolveStorage } from "./lib/storage";
 
-export const RIGHT_PANEL_KINDS = ["plan", "diff", "files", "file", "preview", "terminal"] as const;
+export const RIGHT_PANEL_KINDS = [
+  "plan",
+  "diff",
+  "sourceControl",
+  "files",
+  "file",
+  "preview",
+  "terminal",
+] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
 export type RightPanelSurface =
@@ -29,6 +38,7 @@ export type RightPanelSurface =
       splitDirection?: "horizontal" | "vertical";
     }
   | { id: "diff"; kind: "diff" }
+  | { id: "sourceControl"; kind: "sourceControl" }
   | { id: "files"; kind: "files" }
   | {
       id: `file:${string}`;
@@ -40,7 +50,7 @@ export type RightPanelSurface =
   | { id: "plan"; kind: "plan" };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
-const RIGHT_PANEL_STORAGE_VERSION = 7;
+const RIGHT_PANEL_STORAGE_VERSION = 8;
 
 export interface ThreadRightPanelState {
   isOpen: boolean;
@@ -69,6 +79,12 @@ interface RightPanelStoreState {
   closeAllSurfaces: (ref: ScopedThreadRef) => void;
   reconcileBrowserSurfaces: (ref: ScopedThreadRef, tabIds: readonly string[]) => void;
   reconcileFileSurfaces: (ref: ScopedThreadRef, workspaceAvailable: boolean) => void;
+  remapFileSurfaces: (
+    ref: ScopedThreadRef,
+    oldRelativePath: string,
+    newRelativePath: string,
+  ) => void;
+  closeFileSurfacesUnder: (ref: ScopedThreadRef, relativePath: string) => void;
   show: (ref: ScopedThreadRef) => void;
   close: (ref: ScopedThreadRef) => void;
   toggleVisibility: (ref: ScopedThreadRef) => void;
@@ -88,6 +104,8 @@ const singletonSurface = (
   switch (kind) {
     case "diff":
       return { id: "diff", kind };
+    case "sourceControl":
+      return { id: "sourceControl", kind };
     case "files":
       return { id: "files", kind };
     case "plan":
@@ -475,6 +493,81 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               activeSurfaceId: activeStillExists
                 ? current.activeSurfaceId
                 : (surfaces.at(-1)?.id ?? null),
+            };
+          }),
+        })),
+      // Retarget open file surfaces after a rename/move. Rewrites the exact `file:${old}` surface and,
+      // for a directory rename, every `file:${old}/…` descendant to sit under the new path — keeping
+      // each surface's reveal state and the active-surface selection. A `file:${old}` prefix WITHOUT
+      // the trailing "/" boundary is deliberately NOT matched (so renaming "src" leaves "srcfoo/x").
+      remapFileSurfaces: (ref, oldRelativePath, newRelativePath) =>
+        set((state) => ({
+          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => {
+            const oldId = `file:${oldRelativePath}`;
+            const childPrefix = `${oldId}/`;
+            const idRemap = new Map<string, string>();
+            for (const surface of current.surfaces) {
+              if (surface.kind !== "file") continue;
+              if (surface.id === oldId) {
+                idRemap.set(surface.id, `file:${newRelativePath}`);
+              } else if (surface.id.startsWith(childPrefix)) {
+                idRemap.set(
+                  surface.id,
+                  `file:${newRelativePath}/${surface.id.slice(childPrefix.length)}`,
+                );
+              }
+            }
+            if (idRemap.size === 0) return current;
+            const seen = new Set<string>();
+            const surfaces: RightPanelSurface[] = [];
+            for (const surface of current.surfaces) {
+              const nextId = surface.kind === "file" ? idRemap.get(surface.id) : undefined;
+              const next: RightPanelSurface =
+                nextId !== undefined && surface.kind === "file"
+                  ? {
+                      ...surface,
+                      id: nextId as `file:${string}`,
+                      relativePath: nextId.slice("file:".length),
+                    }
+                  : surface;
+              if (seen.has(next.id)) continue;
+              seen.add(next.id);
+              surfaces.push(next);
+            }
+            const activeSurfaceId =
+              current.activeSurfaceId !== null
+                ? (idRemap.get(current.activeSurfaceId) ?? current.activeSurfaceId)
+                : null;
+            return { ...current, surfaces, activeSurfaceId };
+          }),
+        })),
+      // Close the file surface at `relativePath` and, for a deleted directory, every descendant under
+      // it (same trailing-slash boundary as remap). Falls the active selection back to a neighbor the
+      // way closeSurface does, and closes the panel when nothing is left.
+      closeFileSurfacesUnder: (ref, relativePath) =>
+        set((state) => ({
+          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => {
+            const targetId = `file:${relativePath}`;
+            const childPrefix = `${targetId}/`;
+            const isRemoved = (surface: RightPanelSurface): boolean =>
+              surface.kind === "file" &&
+              (surface.id === targetId || surface.id.startsWith(childPrefix));
+            const activeIndex = current.surfaces.findIndex(
+              (surface) => surface.id === current.activeSurfaceId,
+            );
+            const surfaces = current.surfaces.filter((surface) => !isRemoved(surface));
+            if (surfaces.length === current.surfaces.length) return current;
+            const activeRemoved =
+              current.activeSurfaceId !== null &&
+              !surfaces.some((surface) => surface.id === current.activeSurfaceId);
+            const fallback = activeRemoved
+              ? (surfaces[Math.min(activeIndex, surfaces.length - 1)] ?? null)
+              : null;
+            return {
+              ...current,
+              isOpen: surfaces.length > 0 && current.isOpen,
+              surfaces,
+              activeSurfaceId: activeRemoved ? (fallback?.id ?? null) : current.activeSurfaceId,
             };
           }),
         })),

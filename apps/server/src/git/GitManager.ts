@@ -28,6 +28,10 @@ import {
   type VcsStatusRemoteResult,
   VcsStatusResult,
   ModelSelection,
+  type VcsListCommitsInput,
+  type VcsListCommitsResult,
+  type VcsGenerateCommitMessageInput,
+  type VcsGenerateCommitMessageResult,
 } from "@t3tools/contracts";
 import {
   detectSourceControlProviderFromGitRemoteUrl,
@@ -76,6 +80,18 @@ export class GitManager extends Context.Service<
     readonly invalidateLocalStatus: (cwd: string) => Effect.Effect<void, never>;
     readonly invalidateRemoteStatus: (cwd: string) => Effect.Effect<void, never>;
     readonly invalidateStatus: (cwd: string) => Effect.Effect<void, never>;
+    readonly stageFiles: (input: {
+      readonly cwd: string;
+      readonly filePaths: readonly string[];
+    }) => Effect.Effect<void, GitCommandError>;
+    readonly unstageFiles: (input: {
+      readonly cwd: string;
+      readonly filePaths: readonly string[];
+    }) => Effect.Effect<void, GitCommandError>;
+    readonly discardFiles: (input: {
+      readonly cwd: string;
+      readonly filePaths: readonly string[];
+    }) => Effect.Effect<void, GitCommandError>;
     readonly resolvePullRequest: (
       input: GitPullRequestRefInput,
     ) => Effect.Effect<GitResolvePullRequestResult, GitManagerServiceError>;
@@ -86,6 +102,12 @@ export class GitManager extends Context.Service<
       input: GitRunStackedActionInput,
       options?: GitRunStackedActionOptions,
     ) => Effect.Effect<GitRunStackedActionResult, GitManagerServiceError>;
+    readonly listCommits: (
+      input: VcsListCommitsInput,
+    ) => Effect.Effect<VcsListCommitsResult, GitCommandError>;
+    readonly generateCommitMessage: (
+      input: VcsGenerateCommitMessageInput,
+    ) => Effect.Effect<VcsGenerateCommitMessageResult, GitManagerServiceError>;
   }
 >()("t3/git/GitManager") {}
 
@@ -732,6 +754,7 @@ export const make = Effect.gen(function* () {
     hasOriginRemote: false,
     isDefaultBranch: false,
     branch: null,
+    defaultBranch: null,
     upstreamRef: null,
     hasWorkingTreeChanges: false,
     workingTree: { files: [], insertions: 0, deletions: 0 },
@@ -756,6 +779,7 @@ export const make = Effect.gen(function* () {
       hasPrimaryRemote: details.hasOriginRemote,
       isDefaultRef: details.isDefaultBranch,
       refName: details.branch,
+      ...(details.defaultBranch ? { defaultRefName: details.defaultBranch } : {}),
       hasWorkingTreeChanges: details.hasWorkingTreeChanges,
       workingTree: details.workingTree,
     } satisfies VcsStatusLocalResult;
@@ -1144,9 +1168,23 @@ export const make = Effect.gen(function* () {
       /** When true, also produce a semantic feature branch name. */
       includeBranch?: boolean;
       filePaths?: readonly string[];
+      /**
+       * When true, commit the current index AS-IS: read the staged context
+       * read-only (no `git reset` + `git add`) so the commit captures exactly
+       * what the user staged, not the current worktree contents.
+       */
+      commitStagedIndexAsIs?: boolean;
       modelSelection: ModelSelection;
     }) {
-      const context = yield* gitCore.prepareCommitContext(input.cwd, input.filePaths);
+      const context = input.commitStagedIndexAsIs
+        ? yield* gitCore
+            .readCommitMessageContext(input.cwd, input.filePaths)
+            .pipe(
+              Effect.map((ctx) =>
+                ctx.hasChanges ? { stagedSummary: ctx.summary, stagedPatch: ctx.patch } : null,
+              ),
+            )
+        : yield* gitCore.prepareCommitContext(input.cwd, input.filePaths);
       if (!context) {
         return null;
       }
@@ -1183,6 +1221,40 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  const generateCommitMessage: GitManager["Service"]["generateCommitMessage"] = Effect.fn(
+    "generateCommitMessage",
+  )(function* (input) {
+    // Resolve the branch locally (no network upstream refresh) — this is the
+    // ✨ generate-message hot path and only reads details.branch below.
+    const details = yield* gitCore.statusDetailsLocal(input.cwd);
+    const context = yield* gitCore.readCommitMessageContext(input.cwd, input.filePaths);
+    if (!context.hasChanges) {
+      return { message: "" };
+    }
+    const modelSelection = yield* serverSettingsService.getSettings.pipe(
+      Effect.map((settings) => settings.textGenerationModelSelection),
+      Effect.mapError(
+        (cause) =>
+          new GitManagerError({
+            operation: "generateCommitMessage",
+            cwd: input.cwd,
+            detail: "Failed to get server settings.",
+            cause,
+          }),
+      ),
+    );
+    const generated = yield* textGeneration
+      .generateCommitMessage({
+        cwd: input.cwd,
+        branch: details.branch,
+        stagedSummary: limitContext(context.summary, 8_000),
+        stagedPatch: limitContext(context.patch, 50_000),
+        modelSelection,
+      })
+      .pipe(Effect.map((result) => sanitizeCommitMessage(result)));
+    return { message: formatCommitMessage(generated.subject, generated.body) };
+  });
+
   const runCommitStep = Effect.fn("runCommitStep")(function* (
     modelSelection: ModelSelection,
     cwd: string,
@@ -1193,6 +1265,7 @@ export const make = Effect.gen(function* () {
     filePaths?: readonly string[],
     progressReporter?: GitActionProgressReporter,
     actionId?: string,
+    commitStagedIndexAsIs?: boolean,
   ) {
     const emit = (event: GitActionProgressPayload) =>
       progressReporter && actionId
@@ -1219,6 +1292,7 @@ export const make = Effect.gen(function* () {
         branch,
         ...(commitMessage ? { commitMessage } : {}),
         ...(filePaths ? { filePaths } : {}),
+        ...(commitStagedIndexAsIs ? { commitStagedIndexAsIs: true } : {}),
         modelSelection,
       });
     }
@@ -1444,6 +1518,24 @@ export const make = Effect.gen(function* () {
       yield* invalidateRemoteStatusResultCache(cwd);
     },
   );
+  const stageFiles: GitManager["Service"]["stageFiles"] = Effect.fn("stageFiles")(
+    function* (input) {
+      yield* gitCore.stageFiles(input);
+      yield* invalidateLocalStatusResultCache(input.cwd);
+    },
+  );
+  const unstageFiles: GitManager["Service"]["unstageFiles"] = Effect.fn("unstageFiles")(
+    function* (input) {
+      yield* gitCore.unstageFiles(input);
+      yield* invalidateLocalStatusResultCache(input.cwd);
+    },
+  );
+  const discardFiles: GitManager["Service"]["discardFiles"] = Effect.fn("discardFiles")(
+    function* (input) {
+      yield* gitCore.discardFiles(input);
+      yield* invalidateLocalStatusResultCache(input.cwd);
+    },
+  );
 
   const resolvePullRequest: GitManager["Service"]["resolvePullRequest"] = Effect.fn(
     "resolvePullRequest",
@@ -1635,12 +1727,14 @@ export const make = Effect.gen(function* () {
     branch: string | null,
     commitMessage?: string,
     filePaths?: readonly string[],
+    commitStagedIndexAsIs?: boolean,
   ) {
     const suggestion = yield* resolveCommitAndBranchSuggestion({
       cwd,
       branch,
       ...(commitMessage ? { commitMessage } : {}),
       ...(filePaths ? { filePaths } : {}),
+      ...(commitStagedIndexAsIs ? { commitStagedIndexAsIs: true } : {}),
       includeBranch: true,
       modelSelection,
     });
@@ -1757,6 +1851,7 @@ export const make = Effect.gen(function* () {
             initialStatus.branch,
             input.commitMessage,
             input.filePaths,
+            input.commitStagedIndexAsIs,
           );
           branchStep = result.branchStep;
           commitMessageForStep = result.resolvedCommitMessage;
@@ -1787,6 +1882,7 @@ export const make = Effect.gen(function* () {
                   input.filePaths,
                   options?.progressReporter,
                   progress.actionId,
+                  input.commitStagedIndexAsIs,
                 ),
               ),
             )
@@ -1858,6 +1954,12 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  const listCommits: GitManager["Service"]["listCommits"] = Effect.fn("listCommits")(
+    function* (input) {
+      return yield* gitCore.listCommits(input);
+    },
+  );
+
   return GitManager.of({
     localStatus,
     remoteStatus,
@@ -1865,9 +1967,14 @@ export const make = Effect.gen(function* () {
     invalidateLocalStatus,
     invalidateRemoteStatus,
     invalidateStatus,
+    stageFiles,
+    unstageFiles,
+    discardFiles,
     resolvePullRequest,
     preparePullRequestThread,
     runStackedAction,
+    listCommits,
+    generateCommitMessage,
   });
 });
 

@@ -3,17 +3,21 @@ import {
   type EditorId,
   type ProjectScript,
   type ResolvedKeybindingsConfig,
+  type ServerProvider,
+  type ServerSettings,
   type ThreadId,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { memo } from "react";
+import { memo, useState } from "react";
 import GitActionsControl from "../GitActionsControl";
 import { type DraftId } from "~/composerDraftStore";
+import { type ProviderInstanceEntry } from "~/providerInstances";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import ProjectScriptsControl, {
   type NewProjectScriptInput,
   type ProjectScriptActionResult,
 } from "../ProjectScriptsControl";
+import { ChatHeaderPanelMenu } from "./ChatHeaderPanelMenu";
 import { OpenInPicker } from "./OpenInPicker";
 import { usePrimaryEnvironmentId } from "../../state/environments";
 import { cn } from "~/lib/utils";
@@ -31,6 +35,11 @@ interface ChatHeaderProps {
   availableEditors: ReadonlyArray<EditorId>;
   rightPanelOpen: boolean;
   gitCwd: string | null;
+  providerStatuses: ReadonlyArray<ServerProvider>;
+  settings: Pick<ServerSettings, "providerInstances" | "providers">;
+  canCreatePanel: boolean;
+  onCreateChatPanel: (entry: ProviderInstanceEntry) => void;
+  onOpenTerminalPanel: () => void;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<ProjectScriptActionResult>;
   onUpdateProjectScript: (
@@ -65,6 +74,11 @@ export const ChatHeader = memo(function ChatHeader({
   availableEditors,
   rightPanelOpen,
   gitCwd,
+  providerStatuses,
+  settings,
+  canCreatePanel,
+  onCreateChatPanel,
+  onOpenTerminalPanel,
   onRunProjectScript,
   onAddProjectScript,
   onUpdateProjectScript,
@@ -76,6 +90,9 @@ export const ChatHeader = memo(function ChatHeader({
     activeThreadEnvironmentId,
     primaryEnvironmentId,
   });
+  // Bumped to ask ProjectScriptsControl to open its "Add action" dialog — the
+  // entry point that replaces its old bare "+" (now driven from the panel menu).
+  const [addDialogRequestId, setAddDialogRequestId] = useState(0);
   return (
     <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
       <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3">
@@ -100,11 +117,20 @@ export const ChatHeader = memo(function ChatHeader({
           rightPanelOpen ? "pr-0" : "pr-16",
         )}
       >
+        <ChatHeaderPanelMenu
+          providerStatuses={providerStatuses}
+          settings={settings}
+          canCreatePanel={canCreatePanel}
+          onCreateChatPanel={onCreateChatPanel}
+          onOpenTerminalPanel={onOpenTerminalPanel}
+          onAddCustomAction={() => setAddDialogRequestId((id) => id + 1)}
+        />
         {activeProjectScripts && (
           <ProjectScriptsControl
             scripts={activeProjectScripts}
             keybindings={keybindings}
             preferredScriptId={preferredScriptId}
+            addDialogRequestId={addDialogRequestId}
             onRunScript={onRunProjectScript}
             onAddScript={onAddProjectScript}
             onUpdateScript={onUpdateProjectScript}

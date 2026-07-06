@@ -51,7 +51,7 @@ export class CloudCliCredentialRemovalError extends Schema.TaggedErrorClass<Clou
   { cause: Schema.Defect() },
 ) {
   override get message(): string {
-    return "Could not remove the stored T3 Connect CLI credential.";
+    return "Could not remove the stored T4 Connect CLI credential.";
   }
 }
 
@@ -60,7 +60,7 @@ export class CloudCliCredentialRefreshError extends Schema.TaggedErrorClass<Clou
   { cause: Schema.Defect() },
 ) {
   override get message(): string {
-    return "Could not refresh the T3 Connect CLI credential.";
+    return "Could not refresh the T4 Connect CLI credential.";
   }
 }
 
@@ -69,7 +69,7 @@ export class CloudCliCredentialReadError extends Schema.TaggedErrorClass<CloudCl
   { cause: Schema.Defect() },
 ) {
   override get message(): string {
-    return "Could not read the stored T3 Connect CLI credential.";
+    return "Could not read the stored T4 Connect CLI credential.";
   }
 }
 
@@ -78,7 +78,7 @@ export class CloudCliAuthorizationError extends Schema.TaggedErrorClass<CloudCli
   { cause: Schema.Defect() },
 ) {
   override get message(): string {
-    return "Could not authorize the T3 Connect CLI.";
+    return "Could not authorize the T4 Connect CLI.";
   }
 }
 
@@ -87,7 +87,7 @@ export class CloudCliAuthorizationTimeoutError extends Schema.TaggedErrorClass<C
   { cause: Schema.Defect() },
 ) {
   override get message(): string {
-    return "Timed out waiting for T3 Connect authorization.";
+    return "Timed out waiting for T4 Connect authorization.";
   }
 }
 
@@ -186,7 +186,7 @@ export const make = Effect.gen(function* () {
         const url = new URL(request.originalUrl, metadata.redirectUri);
         const code = url.searchParams.get("code");
         if (url.searchParams.get("state") !== state || !code) {
-          return HttpServerResponse.text("Invalid T3 Connect authorization callback.", {
+          return HttpServerResponse.text("Invalid T4 Connect authorization callback.", {
             status: 400,
           });
         }
@@ -194,7 +194,7 @@ export const make = Effect.gen(function* () {
         return yield* HttpServerResponse.html`
 <html>
   <body style="font-family: sans-serif; text-align: center; margin-top: 50px;">
-    <h1>T3 Connect authorization complete</h1>
+    <h1>T4 Connect authorization complete</h1>
     <p>You can close this window and return to your terminal.</p>
   </body>
 </html>
@@ -222,7 +222,7 @@ export const make = Effect.gen(function* () {
     authorizationUrl.searchParams.set("state", state);
     authorizationUrl.searchParams.set("code_challenge", challenge);
     authorizationUrl.searchParams.set("code_challenge_method", "S256");
-    yield* Console.log(`Open this URL to authorize T3 Connect:\n${authorizationUrl.toString()}\n`);
+    yield* Console.log(`Open this URL to authorize T4 Connect:\n${authorizationUrl.toString()}\n`);
     const code = yield* Deferred.await(callback).pipe(
       Effect.timeout(CLOUD_CLI_OAUTH_CALLBACK_TIMEOUT),
       Effect.catchTag("TimeoutError", (cause) =>

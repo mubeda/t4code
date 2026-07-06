@@ -7,10 +7,13 @@ export interface FileSaveCoordinatorOptions<A, E> {
   readonly onConfirmed: (contents: string) => void;
 }
 
+export type FileSaveFlushResult = "saved" | "unchanged" | "saving" | "failed";
+
 export class FileSaveCoordinator<A = unknown, E = unknown> {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private latestContents = "";
   private latestRevision = 0;
+  private persistedRevision = 0;
   private lastChangeAt = 0;
   private saving = false;
   private disposed = false;
@@ -28,7 +31,28 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
   dispose(): void {
     this.disposed = true;
     this.clearTimer();
-    if (this.latestRevision > 0) void this.persistLatest();
+    // Only unsaved edits get a farewell write. An unconditional write here
+    // resurrects the old path when the surface unmounts because the file was
+    // just renamed or deleted out from under it.
+    if (this.latestRevision > this.persistedRevision) void this.persistLatest();
+  }
+
+  /** True while a debounced write is scheduled or an immediate write is in flight. */
+  hasPendingWork(): boolean {
+    return this.timer !== null || this.saving;
+  }
+
+  /**
+   * Persist any pending debounced edit immediately (explicit save). Cancels the
+   * outstanding debounce timer and writes now. No-op ("unchanged") when nothing
+   * is unsaved; returns "saving" when a write is already in flight — that write
+   * (and its reschedule) settles the remaining edits on its own.
+   */
+  async flush(): Promise<FileSaveFlushResult> {
+    if (this.saving) return "saving";
+    if (this.latestRevision === this.persistedRevision) return "unchanged";
+    this.clearTimer();
+    return (await this.persistLatest()) ? "saved" : "failed";
   }
 
   private schedule(delay: number): void {
@@ -45,8 +69,8 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
     this.timer = null;
   }
 
-  private async persistLatest(): Promise<void> {
-    if (this.saving || this.latestRevision === 0) return;
+  private async persistLatest(): Promise<boolean> {
+    if (this.saving || this.latestRevision === this.persistedRevision) return false;
 
     this.saving = true;
     const contents = this.latestContents;
@@ -54,13 +78,14 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
     const result = await this.options.persist(contents);
     const succeeded = result._tag === "Success";
     if (succeeded) {
+      this.persistedRevision = revision;
       this.options.onConfirmed(contents);
     }
 
     this.saving = false;
     if (revision === this.latestRevision) {
       if (succeeded) this.options.onPendingChange(false);
-      return;
+      return succeeded;
     }
 
     const remainingDebounce = Math.max(
@@ -68,9 +93,9 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
       this.options.debounceMs - (Date.now() - this.lastChangeAt),
     );
     if (this.disposed) {
-      void this.persistLatest();
-    } else {
-      this.schedule(remainingDebounce);
+      return this.persistLatest();
     }
+    this.schedule(remainingDebounce);
+    return succeeded;
   }
 }

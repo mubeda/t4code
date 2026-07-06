@@ -59,7 +59,7 @@ function ConfiguredT3ConnectSidebarSignIn() {
             onClick={openAuthPrompt}
           >
             <LogInIcon className="size-4" />
-            <span>Sign in to T3 Connect</span>
+            <span>Sign in to T4 Connect</span>
           </SidebarMenuButton>
         </SidebarMenuItem>
       </SidebarMenu>

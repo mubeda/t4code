@@ -1,4 +1,5 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import type { EnvironmentShellStatus } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import type { DraftId } from "./composerDraftStore";
 
@@ -36,6 +37,30 @@ export function resolveThreadRouteRef(
   }
 
   return scopeThreadRef(params.environmentId as EnvironmentId, params.threadId as ThreadId);
+}
+
+export interface MissingRouteThreadRedirectInput {
+  /** Shell sync status for the route's environment; null when no shell state loaded yet. */
+  readonly shellStatus: EnvironmentShellStatus | null;
+  /** True when the route thread resolves as a server thread or a local draft. */
+  readonly routeThreadExists: boolean;
+  /** Server threads only — client-persisted drafts must not count. */
+  readonly environmentHasServerThreads: boolean;
+}
+
+/**
+ * A thread route may bounce to the index only when a LIVE snapshot from the
+ * currently-connected server authoritatively lacks the thread. During backend
+ * restarts/reconnects the shell serves a cached snapshot ("cached"/
+ * "synchronizing"), and the first live snapshot after an auth handshake can be
+ * empty or partial — navigating on those windows yanks the user off a thread
+ * that still exists. Draft threads are client-persisted and survive server
+ * flaps, so they say nothing about the server's thread list.
+ */
+export function shouldRedirectMissingRouteThread(input: MissingRouteThreadRedirectInput): boolean {
+  return (
+    input.shellStatus === "live" && !input.routeThreadExists && input.environmentHasServerThreads
+  );
 }
 
 export function resolveThreadRouteTarget(

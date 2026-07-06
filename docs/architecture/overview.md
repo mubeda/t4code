@@ -1,6 +1,7 @@
 # Architecture
 
-T3 Code runs as a **Node.js WebSocket server** that wraps `codex app-server` (JSON-RPC over stdio) and serves a React web app.
+T4Code runs as a **Node.js WebSocket server** that coordinates provider
+runtimes, terminals, Git, filesystem operations, and a React web app.
 
 ```
 ┌─────────────────────────────────┐
@@ -19,19 +20,33 @@ T3 Code runs as a **Node.js WebSocket server** that wraps `codex app-server` (JS
 │  CheckpointReactor              │
 │  RuntimeReceiptBus              │
 └──────────┬──────────────────────┘
-           │ JSON-RPC over stdio
+           │ provider driver protocols
 ┌──────────▼──────────────────────┐
-│  codex app-server               │
+│  Codex / Claude / Cursor / Grok │
+│  / OpenCode runtimes            │
 └─────────────────────────────────┘
 ```
 
 ## Components
 
-- **Browser app**: The React app renders session state, owns the client-side WebSocket transport, and treats typed push events as the boundary between server runtime details and UI state.
+- **Browser app**: The React app renders the left project/worktree panel, center
+  chat and terminal panels, right tool surfaces, and client-side WebSocket
+  transport. Typed push events are the boundary between server runtime details
+  and UI state.
 
 - **Server**: `apps/server` is the main coordinator. It serves the web app, accepts WebSocket requests, waits for startup readiness before welcoming clients, and sends all outbound pushes through a single ordered push path.
 
-- **Provider runtime**: `codex app-server` does the actual provider/session work. The server talks to it over JSON-RPC on stdio and translates those runtime events into the app's orchestration model.
+- **Provider runtime**: Provider drivers do the actual agent/session work. The
+  server translates provider events into the app's orchestration model.
+
+- **Center panels**: The routed host chat is the first center tab. Extra AI chat
+  panels are hidden sibling threads with `kind: "panel"` that share the host
+  worktree but own their own provider session and transcript. Terminal center
+  panels attach to the host worktree.
+
+- **Right-panel surfaces**: Files, Source Control, previews, terminals, and
+  diffs are client surfaces backed by typed server RPCs for filesystem, Git,
+  terminal, and review operations.
 
 - **Background workers**: Long-running async flows such as runtime ingestion, command reaction, and checkpoint processing run as queue-backed workers. This keeps work ordered, reduces timing races, and gives tests a deterministic way to wait for the system to go idle.
 

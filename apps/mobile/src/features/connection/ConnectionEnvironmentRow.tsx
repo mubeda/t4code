@@ -135,7 +135,7 @@ export function ConnectionEnvironmentRow(props: {
         >
           {props.environment.isRelayManaged ? (
             <Text className="text-sm leading-[18px] text-foreground-muted">
-              Managed by T3 Cloud. Tunnel details update automatically.
+              Managed by T4 Cloud. Tunnel details update automatically.
             </Text>
           ) : (
             <>

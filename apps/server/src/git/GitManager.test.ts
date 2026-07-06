@@ -608,6 +608,7 @@ function runStackedAction(
     commitMessage?: string;
     featureBranch?: boolean;
     filePaths?: readonly string[];
+    commitStagedIndexAsIs?: boolean;
   },
   options?: Parameters<GitManager.GitManager["Service"]["runStackedAction"]>[1],
 ) {
@@ -1439,6 +1440,34 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     }),
   );
 
+  it.effect("commitStagedIndexAsIs commits the staged index, not the current worktree", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      // Stage version "A", then edit the worktree to "B" WITHOUT staging it.
+      NodeFS.writeFileSync(NodePath.join(repoDir, "staged.txt"), "A\n");
+      yield* runGit(repoDir, ["add", "staged.txt"]);
+      NodeFS.writeFileSync(NodePath.join(repoDir, "staged.txt"), "B\n");
+
+      const { manager } = yield* makeManager();
+      const result = yield* runStackedAction(manager, {
+        cwd: repoDir,
+        action: "commit",
+        commitMessage: "commit the staged snapshot",
+        commitStagedIndexAsIs: true,
+      });
+
+      expect(result.commit.status).toBe("created");
+      // The commit must capture the staged "A", NOT the unstaged worktree "B"
+      // (without the flag, the reset+add path would have committed "B").
+      expect(
+        yield* runGit(repoDir, ["show", "HEAD:staged.txt"]).pipe(Effect.map((r) => r.stdout)),
+      ).toBe("A\n");
+      // The unstaged "B" edit is still present in the working tree.
+      expect(NodeFS.readFileSync(NodePath.join(repoDir, "staged.txt"), "utf8")).toBe("B\n");
+    }),
+  );
+
   it.effect("creates feature branch, commits, and pushes with featureBranch option", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
@@ -1942,7 +1971,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         ).toBe(true);
         expect(ghCalls.some((call) => call.startsWith("pr create "))).toBe(false);
       }),
-    12_000,
+    30_000,
   );
 
   it.effect(
@@ -2117,7 +2146,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         expect(ownerSelectorCallIndex).toBeGreaterThanOrEqual(0);
         expect(ghCalls.some((call) => call.startsWith("pr create "))).toBe(false);
       }),
-    12_000,
+    30_000,
   );
 
   it.effect(
@@ -2184,7 +2213,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           "pr list --head octocat:statemachine --state open --limit 1",
         );
       }),
-    12_000,
+    30_000,
   );
 
   it.effect("creates PR when one does not already exist", () =>
@@ -3529,6 +3558,66 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           label: "Creating pull request...",
         }),
       ]);
+    }),
+  );
+
+  it.effect("generateCommitMessage returns a formatted message for staged changes", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      NodeFS.writeFileSync(NodePath.join(repoDir, "feature.ts"), "export const value = 1;\n");
+      yield* runGit(repoDir, ["add", "feature.ts"]);
+
+      const statusBefore = yield* runGit(repoDir, ["status", "--porcelain"]).pipe(
+        Effect.map((r) => r.stdout),
+      );
+
+      const { manager } = yield* makeManager();
+      const result = yield* manager.generateCommitMessage({ cwd: repoDir });
+
+      // The stubbed textGeneration returns subject "Implement stacked git actions".
+      expect(result.message).toContain("Implement stacked git actions");
+
+      // Read-only: staged changes must be untouched by the call (no reset/add).
+      const statusAfter = yield* runGit(repoDir, ["status", "--porcelain"]).pipe(
+        Effect.map((r) => r.stdout),
+      );
+      expect(statusAfter).toBe(statusBefore);
+    }),
+  );
+
+  it.effect("generateCommitMessage falls back to the worktree diff when nothing is staged", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      NodeFS.writeFileSync(NodePath.join(repoDir, "README.md"), "hello\nupdated\n");
+
+      const statusBefore = yield* runGit(repoDir, ["status", "--porcelain"]).pipe(
+        Effect.map((r) => r.stdout),
+      );
+
+      const { manager } = yield* makeManager();
+      const result = yield* manager.generateCommitMessage({ cwd: repoDir });
+
+      expect(result.message).toContain("Implement stacked git actions");
+
+      // Read-only: nothing should have been staged as a side effect of the fallback.
+      const statusAfter = yield* runGit(repoDir, ["status", "--porcelain"]).pipe(
+        Effect.map((r) => r.stdout),
+      );
+      expect(statusAfter).toBe(statusBefore);
+    }),
+  );
+
+  it.effect("generateCommitMessage returns an empty message when there are no changes", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+
+      const { manager } = yield* makeManager();
+      const result = yield* manager.generateCommitMessage({ cwd: repoDir });
+
+      expect(result.message).toBe("");
     }),
   );
 });

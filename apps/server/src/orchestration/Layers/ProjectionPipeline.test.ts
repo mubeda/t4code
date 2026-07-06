@@ -2575,13 +2575,25 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       `;
       assert.deepEqual(projectRows, [{ title: "Live Project", scriptsJson: "[]" }]);
 
+      // project.create dispatches two events: project.created plus the
+      // auto-created default thread's thread.created, so projectors advance
+      // to sequence 2.
       const projectorRows = yield* sql<{ readonly lastAppliedSequence: number }>`
         SELECT
           last_applied_sequence AS "lastAppliedSequence"
         FROM projection_state
         WHERE projector = 'projection.projects'
       `;
-      assert.deepEqual(projectorRows, [{ lastAppliedSequence: 1 }]);
+      assert.deepEqual(projectorRows, [{ lastAppliedSequence: 2 }]);
+
+      const threadRows = yield* sql<{ readonly kind: string; readonly title: string }>`
+        SELECT
+          kind,
+          title
+        FROM projection_threads
+        WHERE project_id = 'project-live'
+      `;
+      assert.deepEqual(threadRows, [{ kind: "default", title: "Live Project" }]);
     }),
   );
 

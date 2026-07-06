@@ -76,7 +76,7 @@ export class DesktopEnvironment extends Context.Service<
   }
 >()("@t3tools/desktop/app/DesktopEnvironment") {}
 
-const APP_BASE_NAME = "T3 Code";
+const APP_BASE_NAME = "T4Code";
 
 function resolveDesktopAppStageLabel(input: {
   readonly isDevelopment: boolean;
@@ -157,7 +157,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
   const displayName = branding.displayName;
   const stateDir = path.join(baseDir, isDevelopment ? "dev" : "userdata");
   const userDataDirName = isDevelopment ? "t3code-dev" : "t3code";
-  const legacyUserDataDirName = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)";
+  const legacyUserDataDirName = isDevelopment ? "T4Code (Dev)" : "T4Code (Alpha)";
   const resourcesPath = input.resourcesPath;
 
   return DesktopEnvironment.of({

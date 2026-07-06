@@ -209,7 +209,7 @@ export const PreviewToolkitRegistrationLive = Layer.mergeAll(
 );
 
 const McpTransportLive = McpServer.layerHttp({
-  name: "T3 Code",
+  name: "T4Code",
   version: packageJson.version,
   path: "/mcp",
 }).pipe(Layer.provide(McpAuthMiddlewareLive));

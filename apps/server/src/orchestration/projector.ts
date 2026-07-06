@@ -277,6 +277,7 @@ export function projectEvent(
             id: payload.threadId,
             projectId: payload.projectId,
             title: payload.title,
+            kind: payload.kind,
             modelSelection: payload.modelSelection,
             runtimeMode: payload.runtimeMode,
             interactionMode: payload.interactionMode,

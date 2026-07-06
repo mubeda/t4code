@@ -34,7 +34,11 @@ export type SourceControlActionKind =
   | "pull"
   | "publishRepository"
   | "runStackedAction"
-  | "preparePullRequestThread";
+  | "preparePullRequestThread"
+  | "stageFiles"
+  | "unstageFiles"
+  | "discardFiles"
+  | "generateCommitMessage";
 
 export interface SourceControlActionScope {
   readonly environmentId: EnvironmentId | null;
@@ -61,6 +65,10 @@ const ACTION_OPERATION = {
   publishRepository: "publish_repository",
   runStackedAction: "run_change_request",
   preparePullRequestThread: "prepare_pull_request_thread",
+  stageFiles: "stage_files",
+  unstageFiles: "unstage_files",
+  discardFiles: "discard_files",
+  generateCommitMessage: "generate_commit_message",
 } as const satisfies Record<SourceControlActionKind, VcsActionOperation>;
 
 function useAction<
@@ -198,6 +206,83 @@ export function useVcsPullAction(scope: SourceControlActionScope) {
   });
 }
 
+function useVcsFileAction(
+  scope: SourceControlActionScope,
+  kind: "stageFiles" | "unstageFiles" | "discardFiles",
+  command: typeof vcsEnvironment.stageFiles,
+  label: string,
+) {
+  const run = useAtomCommand(command, { reportFailure: false });
+  const status = useEnvironmentQuery(
+    scope.environmentId !== null && scope.cwd !== null
+      ? vcsEnvironment.status({ environmentId: scope.environmentId, input: { cwd: scope.cwd } })
+      : null,
+  );
+  const action = useCallback(
+    async (filePaths: string[]) => {
+      const target = resolveScope(scope);
+      if (target === null) {
+        return AsyncResult.failure<never, VcsActionUnavailableError>(
+          Cause.fail(
+            new VcsActionUnavailableError({
+              operation: ACTION_OPERATION[kind],
+              environmentId: scope.environmentId,
+              cwd: scope.cwd,
+            }),
+          ),
+        );
+      }
+      return run({ environmentId: target.environmentId, input: { cwd: target.cwd, filePaths } });
+    },
+    [run, scope, kind],
+  );
+  return useAction({ kind, label, scope, action, onSuccess: status.refresh });
+}
+
+export function useVcsStageAction(scope: SourceControlActionScope) {
+  return useVcsFileAction(scope, "stageFiles", vcsEnvironment.stageFiles, "Staging files");
+}
+export function useVcsUnstageAction(scope: SourceControlActionScope) {
+  return useVcsFileAction(scope, "unstageFiles", vcsEnvironment.unstageFiles, "Unstaging files");
+}
+export function useVcsDiscardAction(scope: SourceControlActionScope) {
+  return useVcsFileAction(scope, "discardFiles", vcsEnvironment.discardFiles, "Discarding files");
+}
+
+export function useVcsGenerateCommitMessageAction(scope: SourceControlActionScope) {
+  const generate = useAtomCommand(vcsEnvironment.generateCommitMessage, { reportFailure: false });
+  const action = useCallback(
+    async (input: { filePaths?: string[] }) => {
+      const target = resolveScope(scope);
+      if (target === null) {
+        return AsyncResult.failure<never, VcsActionUnavailableError>(
+          Cause.fail(
+            new VcsActionUnavailableError({
+              operation: "generate_commit_message",
+              environmentId: scope.environmentId,
+              cwd: scope.cwd,
+            }),
+          ),
+        );
+      }
+      return generate({
+        environmentId: target.environmentId,
+        input: {
+          cwd: target.cwd,
+          ...(input.filePaths?.length ? { filePaths: input.filePaths } : {}),
+        },
+      });
+    },
+    [generate, scope],
+  );
+  return useAction({
+    kind: "generateCommitMessage",
+    label: "Generating commit message",
+    scope,
+    action,
+  });
+}
+
 export function useGitStackedAction(scope: SourceControlActionScope) {
   const runStackedAction = useAtomCommand(vcsActionManager.runStackedAction(scope), {
     reportFailure: false,
@@ -218,6 +303,7 @@ export function useGitStackedAction(scope: SourceControlActionScope) {
       commitMessage?: string;
       featureBranch?: boolean;
       filePaths?: string[];
+      commitStagedIndexAsIs?: boolean;
       onProgress?: (event: GitActionProgressEvent) => void;
     }) => {
       if (resolveScope(scope) === null) {
@@ -237,6 +323,7 @@ export function useGitStackedAction(scope: SourceControlActionScope) {
         ...(input.commitMessage ? { commitMessage: input.commitMessage } : {}),
         ...(input.featureBranch ? { featureBranch: true } : {}),
         ...(input.filePaths?.length ? { filePaths: input.filePaths } : {}),
+        ...(input.commitStagedIndexAsIs ? { commitStagedIndexAsIs: true } : {}),
         ...(input.onProgress ? { onProgress: input.onProgress } : {}),
       });
     },

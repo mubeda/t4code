@@ -5,6 +5,7 @@ import {
   applyGitStatusStreamEvent,
   buildTemporaryWorktreeBranchName,
   isTemporaryWorktreeBranch,
+  mergeWorkingTreeFilesByPath,
   normalizeGitRemoteUrl,
   parseGitHubRepositoryNameWithOwnerFromRemoteUrl,
   WORKTREE_BRANCH_PREFIX,
@@ -138,5 +139,31 @@ describe("applyGitStatusStreamEvent", () => {
       behindCount: 1,
       pr: null,
     });
+  });
+});
+
+describe("mergeWorkingTreeFilesByPath", () => {
+  it("merges entries sharing a path, summing counts and keeping the first status", () => {
+    const merged = mergeWorkingTreeFilesByPath([
+      { path: "src/a.ts", insertions: 3, deletions: 1, status: "modified", area: "staged" },
+      { path: "src/b.ts", insertions: 5, deletions: 0, status: "added", area: "unstaged" },
+      { path: "src/a.ts", insertions: 2, deletions: 4, status: "deleted", area: "unstaged" },
+    ]);
+
+    expect(merged).toEqual([
+      { path: "src/a.ts", insertions: 5, deletions: 5, status: "modified" },
+      { path: "src/b.ts", insertions: 5, deletions: 0, status: "added" },
+    ]);
+  });
+
+  it("omits status when the first entry for a path has none, and always drops area", () => {
+    const merged = mergeWorkingTreeFilesByPath([
+      { path: "src/c.ts", insertions: 1, deletions: 0 },
+      { path: "src/c.ts", insertions: 1, deletions: 1, status: "modified", area: "staged" },
+    ]);
+
+    expect(merged).toEqual([{ path: "src/c.ts", insertions: 2, deletions: 1 }]);
+    expect(Object.hasOwn(merged[0]!, "status")).toBe(false);
+    expect(Object.hasOwn(merged[0]!, "area")).toBe(false);
   });
 });

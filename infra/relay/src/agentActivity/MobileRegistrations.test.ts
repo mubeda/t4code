@@ -458,7 +458,7 @@ describe("MobileRegistrations", () => {
             token: "push-to-start-token",
           },
           aggregate: {
-            title: "T3 Code",
+            title: "T4Code",
             subtitle: "Agent work in progress",
             activeCount: 1,
             activities: [
