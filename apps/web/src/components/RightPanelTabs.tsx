@@ -53,16 +53,19 @@ interface RightPanelTabsProps {
   onAddTerminal: () => void;
   onAddDiff: () => void;
   onAddFiles: () => void;
+  onAddSourceControl: () => void;
   browserAvailable: boolean;
   diffAvailable: boolean;
   filesAvailable: boolean;
+  sourceControlAvailable: boolean;
   children: ReactNode;
 }
 
 const SURFACE_DISABLED_REASONS = {
-  browser: "Browser previews are only available in the T3 Code desktop app.",
+  browser: "Browser previews are only available in the T4Code desktop app.",
   files: "Files are only available when a project is open.",
   diff: "Diff is only available for server threads in Git repositories.",
+  sourceControl: "Source control is only available for server threads in Git repositories.",
 } as const;
 
 type TabContextMenuAction = "copy-path" | "close" | "close-others" | "close-to-right" | "close-all";
@@ -100,9 +103,11 @@ function RightPanelEmptyState(props: {
   onAddTerminal: () => void;
   onAddDiff: () => void;
   onAddFiles: () => void;
+  onAddSourceControl: () => void;
   browserAvailable: boolean;
   diffAvailable: boolean;
   filesAvailable: boolean;
+  sourceControlAvailable: boolean;
 }) {
   const actions = [
     {
@@ -136,6 +141,14 @@ function RightPanelEmptyState(props: {
       available: props.diffAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.diff,
       onClick: props.onAddDiff,
+    },
+    {
+      label: "Source Control",
+      description: "Stage, commit, and open changes.",
+      icon: GitPullRequestArrow,
+      available: props.sourceControlAvailable,
+      disabledReason: SURFACE_DISABLED_REASONS.sourceControl,
+      onClick: props.onAddSourceControl,
     },
   ] as const;
 
@@ -483,6 +496,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                     <FileDiff />
                     Diff
                   </SurfaceMenuItem>
+                  <SurfaceMenuItem
+                    available={props.sourceControlAvailable}
+                    disabledReason={SURFACE_DISABLED_REASONS.sourceControl}
+                    onClick={props.onAddSourceControl}
+                  >
+                    <GitPullRequestArrow />
+                    Source Control
+                  </SurfaceMenuItem>
                 </MenuPopup>
               </Menu>
             ) : null}
@@ -497,9 +518,11 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddTerminal={props.onAddTerminal}
             onAddDiff={props.onAddDiff}
             onAddFiles={props.onAddFiles}
+            onAddSourceControl={props.onAddSourceControl}
             browserAvailable={props.browserAvailable}
             diffAvailable={props.diffAvailable}
             filesAvailable={props.filesAvailable}
+            sourceControlAvailable={props.sourceControlAvailable}
           />
         ) : (
           props.children

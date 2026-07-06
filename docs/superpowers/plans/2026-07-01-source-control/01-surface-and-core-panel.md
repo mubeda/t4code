@@ -16,20 +16,21 @@ See [00-overview.md → Global Constraints](./00-overview.md#global-constraints)
 
 ## File Structure
 
-| File | Responsibility |
-|---|---|
-| `apps/web/src/rightPanelStore.ts` *(modify)* | Register the `sourceControl` surface kind, union member, singleton factory, storage version bump. |
-| `apps/web/src/sourceControlPanelStore.ts` *(create)* | Thread-scoped persisted draft: commit message + excluded-file paths. |
-| `apps/web/src/sourceControlPanelStore.test.ts` *(create)* | Store unit tests. |
-| `apps/web/src/components/SourceControlPanel.logic.ts` *(create)* | Pure helpers: path split, selection summary, commit filePaths. |
-| `apps/web/src/components/SourceControlPanel.logic.test.ts` *(create)* | Logic unit tests. |
-| `apps/web/src/components/SourceControlChangesList.tsx` *(create)* | Presentational changed-files list (render-testable). |
-| `apps/web/src/components/SourceControlChangesList.test.tsx` *(create)* | Render test. |
-| `apps/web/src/components/SourceControlPanel.tsx` *(create)* | The composed panel (default export). |
-| `apps/web/src/components/RightPanelTabs.tsx` *(modify)* | Chooser card, `+` menu item, tab title/icon, disabled reason, new props. |
-| `apps/web/src/components/ChatView.tsx` *(modify)* | `addSourceControlSurface`, availability, content branch, render-site props. |
+| File                                                                   | Responsibility                                                                                    |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `apps/web/src/rightPanelStore.ts` _(modify)_                           | Register the `sourceControl` surface kind, union member, singleton factory, storage version bump. |
+| `apps/web/src/sourceControlPanelStore.ts` _(create)_                   | Thread-scoped persisted draft: commit message + excluded-file paths.                              |
+| `apps/web/src/sourceControlPanelStore.test.ts` _(create)_              | Store unit tests.                                                                                 |
+| `apps/web/src/components/SourceControlPanel.logic.ts` _(create)_       | Pure helpers: path split, selection summary, commit filePaths.                                    |
+| `apps/web/src/components/SourceControlPanel.logic.test.ts` _(create)_  | Logic unit tests.                                                                                 |
+| `apps/web/src/components/SourceControlChangesList.tsx` _(create)_      | Presentational changed-files list (render-testable).                                              |
+| `apps/web/src/components/SourceControlChangesList.test.tsx` _(create)_ | Render test.                                                                                      |
+| `apps/web/src/components/SourceControlPanel.tsx` _(create)_            | The composed panel (default export).                                                              |
+| `apps/web/src/components/RightPanelTabs.tsx` _(modify)_                | Chooser card, `+` menu item, tab title/icon, disabled reason, new props.                          |
+| `apps/web/src/components/ChatView.tsx` _(modify)_                      | `addSourceControlSurface`, availability, content branch, render-site props.                       |
 
 **Interfaces produced by this plan (consumed by later plans):**
+
 - `SourceControlPanel` default export, props `{ mode: DiffPanelMode; threadRef: ScopedThreadRef; gitCwd: string | null }`.
 - `useSourceControlPanelStore` + `selectThreadSourceControlDraft(byThreadKey, ref) → SourceControlDraft` where `SourceControlDraft = { message: string; excludedPaths: string[] }`.
 - `SourceControlChangesList` props include an optional `renderBadge?: (file: WorkingTreeFile) => ReactNode` slot (Plan 02 injects the status badge here) and an optional `renderSections` extension point is **not** added here — Plan 03 refactors the list into sections.
@@ -40,10 +41,12 @@ See [00-overview.md → Global Constraints](./00-overview.md#global-constraints)
 ### Task 1: Register the `sourceControl` surface kind
 
 **Files:**
+
 - Modify: `apps/web/src/rightPanelStore.ts` (lines 17, 20-40, 43, 85-96)
 - Test: `apps/web/src/rightPanelStore.test.ts` (existing file — add a case)
 
 **Interfaces:**
+
 - Produces: surface descriptor `{ id: "sourceControl"; kind: "sourceControl" }`; `useRightPanelStore.getState().open(ref, "sourceControl")` opens/activates it.
 
 - [ ] **Step 1: Write the failing test**
@@ -127,10 +130,12 @@ git commit -m "feat(source-control): register sourceControl right-panel surface 
 ### Task 2: Draft store (`sourceControlPanelStore`)
 
 **Files:**
+
 - Create: `apps/web/src/sourceControlPanelStore.ts`
 - Test: `apps/web/src/sourceControlPanelStore.test.ts`
 
 **Interfaces:**
+
 - Produces: `useSourceControlPanelStore` with actions `setMessage`, `toggleExcludedPath`, `setExcludedPaths`, `clearDraft`, `removeThread`; selector `selectThreadSourceControlDraft(byThreadKey, ref) → SourceControlDraft`; type `SourceControlDraft = { message: string; excludedPaths: string[] }`.
 
 - [ ] **Step 1: Write the failing test**
@@ -153,7 +158,9 @@ describe("sourceControlPanelStore", () => {
   beforeEach(() => useSourceControlPanelStore.setState({ byThreadKey: {} }));
 
   it("returns a default draft for an unknown thread", () => {
-    expect(selectThreadSourceControlDraft(useSourceControlPanelStore.getState().byThreadKey, THREAD_REF)).toEqual({
+    expect(
+      selectThreadSourceControlDraft(useSourceControlPanelStore.getState().byThreadKey, THREAD_REF),
+    ).toEqual({
       message: "",
       excludedPaths: [],
     });
@@ -162,18 +169,21 @@ describe("sourceControlPanelStore", () => {
   it("sets the commit message", () => {
     useSourceControlPanelStore.getState().setMessage(THREAD_REF, "fix: thing");
     expect(
-      selectThreadSourceControlDraft(useSourceControlPanelStore.getState().byThreadKey, THREAD_REF).message,
+      selectThreadSourceControlDraft(useSourceControlPanelStore.getState().byThreadKey, THREAD_REF)
+        .message,
     ).toBe("fix: thing");
   });
 
   it("toggles an excluded path on and off", () => {
     useSourceControlPanelStore.getState().toggleExcludedPath(THREAD_REF, "src/a.ts");
     expect(
-      selectThreadSourceControlDraft(useSourceControlPanelStore.getState().byThreadKey, THREAD_REF).excludedPaths,
+      selectThreadSourceControlDraft(useSourceControlPanelStore.getState().byThreadKey, THREAD_REF)
+        .excludedPaths,
     ).toEqual(["src/a.ts"]);
     useSourceControlPanelStore.getState().toggleExcludedPath(THREAD_REF, "src/a.ts");
     expect(
-      selectThreadSourceControlDraft(useSourceControlPanelStore.getState().byThreadKey, THREAD_REF).excludedPaths,
+      selectThreadSourceControlDraft(useSourceControlPanelStore.getState().byThreadKey, THREAD_REF)
+        .excludedPaths,
     ).toEqual([]);
   });
 
@@ -232,7 +242,8 @@ export const useSourceControlPanelStore = create<SourceControlPanelStoreState>()
   persist(
     (set) => ({
       byThreadKey: {},
-      setMessage: (ref, message) => set((state) => updateDraft(state, ref, (draft) => ({ ...draft, message }))),
+      setMessage: (ref, message) =>
+        set((state) => updateDraft(state, ref, (draft) => ({ ...draft, message }))),
       toggleExcludedPath: (ref, path) =>
         set((state) =>
           updateDraft(state, ref, (draft) => {
@@ -243,7 +254,9 @@ export const useSourceControlPanelStore = create<SourceControlPanelStoreState>()
           }),
         ),
       setExcludedPaths: (ref, paths) =>
-        set((state) => updateDraft(state, ref, (draft) => ({ ...draft, excludedPaths: [...new Set(paths)] }))),
+        set((state) =>
+          updateDraft(state, ref, (draft) => ({ ...draft, excludedPaths: [...new Set(paths)] })),
+        ),
       clearDraft: (ref) => set((state) => updateDraft(state, ref, () => ({ ...DEFAULT_DRAFT }))),
       removeThread: (ref) =>
         set((state) => {
@@ -290,10 +303,12 @@ git commit -m "feat(source-control): add source control panel draft store"
 ### Task 3: Panel logic module
 
 **Files:**
+
 - Create: `apps/web/src/components/SourceControlPanel.logic.ts`
 - Test: `apps/web/src/components/SourceControlPanel.logic.test.ts`
 
 **Interfaces:**
+
 - Consumes: `VcsStatusResult` from `@t3tools/contracts`.
 - Produces: `type WorkingTreeFile = { path: string; insertions: number; deletions: number }`; `splitFilePath(path) → { dir: string | null; name: string }`; `summarizeChangeSelection(files, excludedPaths) → ChangeSelectionSummary`; `resolveCommitFilePaths(summary) → string[] | undefined`; `workingTreeFiles(status) → WorkingTreeFile[]`.
 
@@ -348,7 +363,10 @@ describe("summarizeChangeSelection", () => {
   });
 
   it("reports noneSelected when every file is excluded", () => {
-    const summary = summarizeChangeSelection(FILES, new Set(["tasks.md", "docs/prps/PFS-1848/master-plan.md"]));
+    const summary = summarizeChangeSelection(
+      FILES,
+      new Set(["tasks.md", "docs/prps/PFS-1848/master-plan.md"]),
+    );
     expect(summary.noneSelected).toBe(true);
   });
 });
@@ -454,10 +472,12 @@ git commit -m "feat(source-control): add source control panel selection logic"
 ### Task 4: Presentational changed-files list
 
 **Files:**
+
 - Create: `apps/web/src/components/SourceControlChangesList.tsx`
 - Test: `apps/web/src/components/SourceControlChangesList.test.tsx`
 
 **Interfaces:**
+
 - Consumes: `WorkingTreeFile`, `splitFilePath` from `./SourceControlPanel.logic`; `Checkbox` from `~/components/ui/checkbox`.
 - Produces: `SourceControlChangesList` with props `{ files: readonly WorkingTreeFile[]; excludedPaths: ReadonlySet<string>; onToggle: (path: string) => void; onOpenFile: (path: string) => void; renderBadge?: (file: WorkingTreeFile) => ReactNode }`. The `renderBadge` slot is the extension point Plan 02 uses to inject the status badge.
 
@@ -500,7 +520,9 @@ describe("SourceControlChangesList", () => {
         excludedPaths={new Set()}
         onToggle={() => {}}
         onOpenFile={() => {}}
-        renderBadge={(file) => <span data-testid="badge">{file.path === "tasks.md" ? "U" : "M"}</span>}
+        renderBadge={(file) => (
+          <span data-testid="badge">{file.path === "tasks.md" ? "U" : "M"}</span>
+        )}
       />,
     );
     expect(markup).toContain('data-testid="badge"');
@@ -508,7 +530,12 @@ describe("SourceControlChangesList", () => {
 
   it("renders an empty state when there are no files", () => {
     const markup = renderToStaticMarkup(
-      <SourceControlChangesList files={[]} excludedPaths={new Set()} onToggle={() => {}} onOpenFile={() => {}} />,
+      <SourceControlChangesList
+        files={[]}
+        excludedPaths={new Set()}
+        onToggle={() => {}}
+        onOpenFile={() => {}}
+      />,
     );
     expect(markup).toContain("No changes");
   });
@@ -565,7 +592,12 @@ export function SourceControlChangesList(props: SourceControlChangesListProps) {
               onClick={() => props.onOpenFile(file.path)}
               title={file.path}
             >
-              <span className={cn("shrink-0 truncate font-mono text-xs", excluded && "text-muted-foreground line-through")}>
+              <span
+                className={cn(
+                  "shrink-0 truncate font-mono text-xs",
+                  excluded && "text-muted-foreground line-through",
+                )}
+              >
                 {name}
               </span>
               {dir ? (
@@ -605,9 +637,11 @@ git commit -m "feat(source-control): add presentational changes list"
 ### Task 5: The `SourceControlPanel` component
 
 **Files:**
+
 - Create: `apps/web/src/components/SourceControlPanel.tsx`
 
 **Interfaces:**
+
 - Consumes: `vcsEnvironment.status` (`~/state/vcs`), `useEnvironmentQuery` (`~/state/query`), `useGitStackedAction`/`useVcsPullAction`/`useSourceControlActionRunning` (`~/lib/sourceControlActions`), `getSourceControlPresentation` (`~/sourceControlPresentation`), `buildMenuItems`/`resolveQuickAction`/`requiresDefaultBranchConfirmation`/`resolveDefaultBranchActionDialogCopy` (`./GitActionsControl.logic`), `DiffPanelShell`/`DiffPanelMode` (`./DiffPanelShell`), draft store, `SourceControlPanel.logic`, `SourceControlChangesList`, `useRightPanelStore`, `useDiffPanelStore`, `toastManager`/`stackedThreadToast` (`~/components/ui/toast`), `isAtomCommandInterrupted`/`squashAtomCommandFailure` (`@t3tools/client-runtime/state/runtime`), `randomUUID` (`~/lib/utils`), `openPullRequestLink` (`~/lib/openPullRequestLink`), `readLocalApi` (`~/localApi`).
 - Produces: `export default function SourceControlPanel(props: { mode: DiffPanelMode; threadRef: ScopedThreadRef; gitCwd: string | null })`.
 
@@ -668,7 +702,11 @@ import {
   type DefaultBranchConfirmableAction,
 } from "./GitActionsControl.logic";
 import { SourceControlChangesList } from "./SourceControlChangesList";
-import { resolveCommitFilePaths, summarizeChangeSelection, workingTreeFiles } from "./SourceControlPanel.logic";
+import {
+  resolveCommitFilePaths,
+  summarizeChangeSelection,
+  workingTreeFiles,
+} from "./SourceControlPanel.logic";
 
 interface SourceControlPanelProps {
   mode: DiffPanelMode;
@@ -678,7 +716,9 @@ interface SourceControlPanelProps {
 
 const RUNNING_ACTIONS = ["runStackedAction", "pull"] as const;
 
-function isDefaultBranchConfirmable(action: GitStackedAction): action is DefaultBranchConfirmableAction {
+function isDefaultBranchConfirmable(
+  action: GitStackedAction,
+): action is DefaultBranchConfirmableAction {
   return (
     action === "push" ||
     action === "create_pr" ||
@@ -716,7 +756,10 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
 
   const files = useMemo(() => workingTreeFiles(status), [status]);
   const excludedPaths = useMemo(() => new Set(draft.excludedPaths), [draft.excludedPaths]);
-  const summary = useMemo(() => summarizeChangeSelection(files, excludedPaths), [files, excludedPaths]);
+  const summary = useMemo(
+    () => summarizeChangeSelection(files, excludedPaths),
+    [files, excludedPaths],
+  );
   const presentation = useMemo(
     () => getSourceControlPresentation(status?.sourceControlProvider),
     [status?.sourceControlProvider],
@@ -749,7 +792,8 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
         setPendingConfirm({
           action,
           branchName: status.refName,
-          includesCommit: actionCanCommit && (action === "commit_push" ? status.hasWorkingTreeChanges : true),
+          includesCommit:
+            actionCanCommit && (action === "commit_push" ? status.hasWorkingTreeChanges : true),
         });
         return;
       }
@@ -798,11 +842,25 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
         data: { ...threadToastData, dismissAfterVisibleMs: 10_000 },
       });
     },
-    [clearDraft, draft.message, isDefaultRef, runAction, status, summary, threadRef, threadToastData],
+    [
+      clearDraft,
+      draft.message,
+      isDefaultRef,
+      runAction,
+      status,
+      summary,
+      threadRef,
+      threadToastData,
+    ],
   );
 
   const runPull = useCallback(async () => {
-    const toastId = toastManager.add({ type: "loading", title: "Pulling…", timeout: 0, data: threadToastData });
+    const toastId = toastManager.add({
+      type: "loading",
+      title: "Pulling…",
+      timeout: 0,
+      data: threadToastData,
+    });
     const result = await pullAction.run();
     if (result._tag === "Failure") {
       if (isAtomCommandInterrupted(result)) {
@@ -839,7 +897,8 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
   const onPrimaryAction = useCallback(() => {
     if (quickAction.kind === "open_pr") return openPr();
     if (quickAction.kind === "run_pull") return void runPull();
-    if (quickAction.kind === "run_action" && quickAction.action) return void runGitAction(quickAction.action);
+    if (quickAction.kind === "run_action" && quickAction.action)
+      return void runGitAction(quickAction.action);
     // open_publish / show_hint: no-op here (surfaced as disabled below).
   }, [openPr, quickAction, runGitAction, runPull]);
 
@@ -865,7 +924,8 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
       ) : null}
       {status && (status.aheadCount > 0 || status.behindCount > 0) ? (
         <span className="shrink-0 text-[11px] text-muted-foreground">
-          {status.aheadCount > 0 ? `↑${status.aheadCount}` : ""} {status.behindCount > 0 ? `↓${status.behindCount}` : ""}
+          {status.aheadCount > 0 ? `↑${status.aheadCount}` : ""}{" "}
+          {status.behindCount > 0 ? `↓${status.behindCount}` : ""}
         </span>
       ) : null}
     </div>
@@ -900,7 +960,9 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
           </Button>
           <Menu>
             <MenuTrigger
-              render={<Button aria-label="Source control actions" size="icon-sm" variant="outline" />}
+              render={
+                <Button aria-label="Source control actions" size="icon-sm" variant="outline" />
+              }
               disabled={isBusy}
             >
               <ChevronDownIcon className="size-4" aria-hidden />
@@ -915,7 +977,13 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
                     if (item.dialogAction) return void runGitAction(item.dialogAction);
                   }}
                 >
-                  {item.icon === "commit" ? <GitCommitIcon /> : item.icon === "push" ? <CloudUploadIcon /> : <presentation.Icon />}
+                  {item.icon === "commit" ? (
+                    <GitCommitIcon />
+                  ) : item.icon === "push" ? (
+                    <CloudUploadIcon />
+                  ) : (
+                    <presentation.Icon />
+                  )}
                   {item.label}
                 </MenuItem>
               ))}
@@ -932,7 +1000,10 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
               variant="ghost"
               size="xs"
               onClick={() =>
-                setExcludedPaths(threadRef, summary.allSelected ? files.map((file) => file.path) : [])
+                setExcludedPaths(
+                  threadRef,
+                  summary.allSelected ? files.map((file) => file.path) : [],
+                )
               }
             >
               {summary.allSelected ? "Deselect all" : "Select all"}
@@ -964,10 +1035,15 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
         ) : null}
       </div>
 
-      <Dialog open={pendingConfirm !== null} onOpenChange={(open) => !open && setPendingConfirm(null)}>
+      <Dialog
+        open={pendingConfirm !== null}
+        onOpenChange={(open) => !open && setPendingConfirm(null)}
+      >
         <DialogPopup className="max-w-xl">
           <DialogHeader>
-            <DialogTitle>{pendingConfirmCopy?.title ?? "Run action on default branch?"}</DialogTitle>
+            <DialogTitle>
+              {pendingConfirmCopy?.title ?? "Run action on default branch?"}
+            </DialogTitle>
             <DialogDescription>{pendingConfirmCopy?.description}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -1013,9 +1089,11 @@ git commit -m "feat(source-control): add SourceControlPanel composed from existi
 ### Task 6: Wire the surface into `RightPanelTabs`
 
 **Files:**
+
 - Modify: `apps/web/src/components/RightPanelTabs.tsx` (lines 3, 28-51, 53-57, 89-131, 189-219, 237-270, 437-474, 480-494)
 
 **Interfaces:**
+
 - Consumes: `SourceControlPanel` is NOT imported here (only in ChatView). This task only adds the chooser/menu/tab affordances + two new props (`onAddSourceControl`, `sourceControlAvailable`).
 - Produces: `RightPanelTabsProps` gains `onAddSourceControl: () => void` and `sourceControlAvailable: boolean`.
 
@@ -1024,7 +1102,16 @@ git commit -m "feat(source-control): add SourceControlPanel composed from existi
 `apps/web/src/components/RightPanelTabs.tsx` line 3 — add `GitPullRequestArrow` to the lucide import:
 
 ```ts
-import { ClipboardList, FileDiff, Files, GitPullRequestArrow, Globe2, Plus, TerminalSquare, X } from "lucide-react";
+import {
+  ClipboardList,
+  FileDiff,
+  Files,
+  GitPullRequestArrow,
+  Globe2,
+  Plus,
+  TerminalSquare,
+  X,
+} from "lucide-react";
 ```
 
 - [ ] **Step 2: Add the two props to `RightPanelTabsProps`**
@@ -1038,7 +1125,7 @@ In `interface RightPanelTabsProps` (after `onAddFiles: () => void;`, line 46) ad
 and after `filesAvailable: boolean;` (line 49) add:
 
 ```ts
-  sourceControlAvailable: boolean;
+sourceControlAvailable: boolean;
 ```
 
 - [ ] **Step 3: Add the disabled reason**
@@ -1047,7 +1134,7 @@ In `SURFACE_DISABLED_REASONS` (lines 53-57), add a `sourceControl` entry:
 
 ```ts
 const SURFACE_DISABLED_REASONS = {
-  browser: "Browser previews are only available in the T3 Code desktop app.",
+  browser: "Browser previews are only available in the T4Code desktop app.",
   files: "Files are only available when a project is open.",
   diff: "Diff is only available for server threads in Git repositories.",
   sourceControl: "Source control is only available for server threads in Git repositories.",
@@ -1106,14 +1193,14 @@ In `SurfaceIcon` (switch at line 246) add:
 In the `+` menu (`MenuPopup` at lines 444-473), after the `Diff` `SurfaceMenuItem` (line 472) add:
 
 ```tsx
-                  <SurfaceMenuItem
-                    available={props.sourceControlAvailable}
-                    disabledReason={SURFACE_DISABLED_REASONS.sourceControl}
-                    onClick={props.onAddSourceControl}
-                  >
-                    <GitPullRequestArrow />
-                    Source Control
-                  </SurfaceMenuItem>
+<SurfaceMenuItem
+  available={props.sourceControlAvailable}
+  disabledReason={SURFACE_DISABLED_REASONS.sourceControl}
+  onClick={props.onAddSourceControl}
+>
+  <GitPullRequestArrow />
+  Source Control
+</SurfaceMenuItem>
 ```
 
 - [ ] **Step 7: Pass the new props into `RightPanelEmptyState`**
@@ -1121,17 +1208,17 @@ In the `+` menu (`MenuPopup` at lines 444-473), after the `Diff` `SurfaceMenuIte
 In the `RightPanelEmptyState` render (lines 482-490) add:
 
 ```tsx
-          <RightPanelEmptyState
-            onAddBrowser={props.onAddBrowser}
-            onAddTerminal={props.onAddTerminal}
-            onAddDiff={props.onAddDiff}
-            onAddFiles={props.onAddFiles}
-            onAddSourceControl={props.onAddSourceControl}
-            browserAvailable={props.browserAvailable}
-            diffAvailable={props.diffAvailable}
-            filesAvailable={props.filesAvailable}
-            sourceControlAvailable={props.sourceControlAvailable}
-          />
+<RightPanelEmptyState
+  onAddBrowser={props.onAddBrowser}
+  onAddTerminal={props.onAddTerminal}
+  onAddDiff={props.onAddDiff}
+  onAddFiles={props.onAddFiles}
+  onAddSourceControl={props.onAddSourceControl}
+  browserAvailable={props.browserAvailable}
+  diffAvailable={props.diffAvailable}
+  filesAvailable={props.filesAvailable}
+  sourceControlAvailable={props.sourceControlAvailable}
+/>
 ```
 
 - [ ] **Step 8: Typecheck**
@@ -1151,9 +1238,11 @@ git commit -m "feat(source-control): add Source Control chooser card, tab and me
 ### Task 7: Wire `ChatView` (make it live) + manual verification
 
 **Files:**
+
 - Modify: `apps/web/src/components/ChatView.tsx` (lines ~262 import, ~2772 add-callback, ~4969 content branch, ~5315/5342 render props)
 
 **Interfaces:**
+
 - Consumes: `SourceControlPanel` (`./SourceControlPanel`), `addSourceControlSurface`, `isServerThread`, `isGitRepo`, `gitCwd`, `activeThreadRef`.
 
 - [ ] **Step 1: Lazy-import the panel**
@@ -1169,10 +1258,10 @@ const SourceControlPanel = lazy(() => import("./SourceControlPanel"));
 Immediately after `addDiffSurface` (ends line 2776), add:
 
 ```ts
-  const addSourceControlSurface = useCallback(() => {
-    if (!activeThreadRef || !isServerThread || !isGitRepo) return;
-    useRightPanelStore.getState().open(activeThreadRef, "sourceControl");
-  }, [activeThreadRef, isGitRepo, isServerThread]);
+const addSourceControlSurface = useCallback(() => {
+  if (!activeThreadRef || !isServerThread || !isGitRepo) return;
+  useRightPanelStore.getState().open(activeThreadRef, "sourceControl");
+}, [activeThreadRef, isGitRepo, isServerThread]);
 ```
 
 - [ ] **Step 3: Add the content branch**
@@ -1205,6 +1294,7 @@ Expected: PASS (existing suite + the new store/logic/list tests).
 - [ ] **Step 7: Manual smoke test**
 
 Run the app: `pnpm dev:web` (see [00-overview.md → Global Constraints](./00-overview.md#global-constraints) if the runner differs). Open a **server thread inside a Git repository**, open the right panel, and:
+
 1. Confirm the empty-state chooser shows a **Source Control** card with the description "Stage, commit, and open changes." and a git/PR icon.
 2. Click it → the panel opens with a "Source Control" tab, the branch name in the header, and the working-tree changes listed with `+/-` counts.
 3. Untick a file → the bottom `+/-` totals update; the primary button label reflects the resolved action.

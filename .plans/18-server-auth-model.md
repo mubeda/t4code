@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define the long-term server auth architecture for T3 Code before first-class remote environments ship.
+Define the long-term server auth architecture for T4Code before first-class remote environments ship.
 
 This plan is deliberately broader than the current WebSocket token check and narrower than a complete remote collaboration system. The goal is to make the server secure by default, keep local desktop UX frictionless, and leave clean integration points for future remote access methods.
 
@@ -29,7 +29,7 @@ This document is written in terms of Effect-native services and layers because a
 
 ### 1. Auth is a server concern
 
-Every privileged surface of the T3 server must go through the same auth policy engine:
+Every privileged surface of the T4 server must go through the same auth policy engine:
 
 - HTTP routes
 - WebSocket upgrades
@@ -619,12 +619,12 @@ Participants:
   DesktopUser   = user at the host machine
   DesktopMain   = desktop app
   Tunnel        = tunnel provider
-  T3Server      = T3 server
+  T3Server      = T4 server
   PhoneBrowser  = mobile browser
 
 DesktopUser -> DesktopMain : enable remote access via tunnel
 DesktopMain -> T3Server : switch policy to RemoteReachablePolicy
-DesktopMain -> Tunnel : publish local T3 endpoint
+DesktopMain -> Tunnel : publish local T4 endpoint
 Tunnel --> DesktopMain : public https/wss URL
 
 DesktopMain -> T3Server : issue one-time pairing token
@@ -653,7 +653,7 @@ The auth flow should stay the same.
 ```text
 Participants:
   DesktopUser   = user at the host machine
-  T3Server      = T3 server
+  T3Server      = T4 server
   PrivateNet    = tailscale / private LAN
   PhoneBrowser  = mobile browser
 
@@ -687,7 +687,7 @@ Participants:
   DesktopMain   = desktop app
   SSH           = ssh transport/session
   RemoteHost    = remote machine
-  RemoteT3      = remote T3 server
+  RemoteT3      = remote T4 server
   Frontend      = desktop renderer
 
 DesktopUser -> DesktopMain : add SSH host
@@ -779,7 +779,7 @@ Remote access is one reason this auth model matters, but the auth model should n
 
 Keep the design focused on:
 
-- one T3 server
+- one T4 server
 - one auth policy
 - multiple credential types
 - multiple future access methods

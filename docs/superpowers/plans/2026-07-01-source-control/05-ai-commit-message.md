@@ -12,28 +12,29 @@
 
 See [00-overview.md → Global Constraints](./00-overview.md#global-constraints) and the **RPC registration checklist** in [03-staged-unstaged-index.md](./03-staged-unstaged-index.md#global-constraints). `vcs.generateCommitMessage` performs model work (spends tokens) but does **not** mutate the repo history; register it with `AuthOrchestrationOperateScope` (consistent with `gitRunStackedAction`, which also generates).
 
-> **Why a read-only context (do not skip):** the existing `gitCore.prepareCommitContext(cwd, filePaths)` **mutates the index** — it runs `git reset` (unstaging everything) then `git add -- <paths>` (GitVcsDriverCore.ts ~1521-1533). Reusing it for a *preview* button would mean clicking ✨ with nothing staged silently stages the entire working tree. This plan therefore builds the diff context read-only with `git diff` (Task 2) and never stages. Untracked files are not visible to `git diff HEAD`, so a repository whose only changes are brand-new files yields an empty context and the button reports "no changes to summarize" — an accepted limitation of a non-mutating preview.
+> **Why a read-only context (do not skip):** the existing `gitCore.prepareCommitContext(cwd, filePaths)` **mutates the index** — it runs `git reset` (unstaging everything) then `git add -- <paths>` (GitVcsDriverCore.ts ~1521-1533). Reusing it for a _preview_ button would mean clicking ✨ with nothing staged silently stages the entire working tree. This plan therefore builds the diff context read-only with `git diff` (Task 2) and never stages. Untracked files are not visible to `git diff HEAD`, so a repository whose only changes are brand-new files yields an empty context and the button reports "no changes to summarize" — an accepted limitation of a non-mutating preview.
 
 ---
 
 ## File Structure
 
-| File | Responsibility |
-|---|---|
-| `packages/contracts/src/git.ts` *(modify)* | `VcsGenerateCommitMessageInput` / `VcsGenerateCommitMessageResult`. |
-| `packages/contracts/src/rpc.ts` *(modify)* | `WS_METHODS.vcsGenerateCommitMessage` + `Rpc.make` + `WsRpcGroup`. |
-| `apps/server/src/ws.ts` *(modify)* | operate scope + dispatch. |
-| `apps/server/src/vcs/GitVcsDriver.ts` *(modify)* | `readCommitMessageContext` interface method. |
-| `apps/server/src/vcs/GitVcsDriverCore.ts` *(modify)* | read-only diff context builder (no index mutation). |
-| `apps/server/src/git/GitManager.ts` *(modify)* | `generateCommitMessage` service method. |
-| `apps/server/src/git/GitManager.test.ts` *(modify)* | test the new method. |
-| `apps/server/src/git/GitWorkflowService.ts` *(modify)* | delegate `generateCommitMessage`. |
-| `packages/client-runtime/src/state/vcs.ts` *(modify)* | command atom. |
-| `apps/web/src/state/sourceControlActions.ts` *(modify)* | `useVcsGenerateCommitMessageAction`. |
-| `apps/web/src/lib/sourceControlActions.ts` *(modify)* | re-export the hook. |
-| `apps/web/src/components/SourceControlPanel.tsx` *(modify)* | sparkle button + cancel + fill message. |
+| File                                                        | Responsibility                                                      |
+| ----------------------------------------------------------- | ------------------------------------------------------------------- |
+| `packages/contracts/src/git.ts` _(modify)_                  | `VcsGenerateCommitMessageInput` / `VcsGenerateCommitMessageResult`. |
+| `packages/contracts/src/rpc.ts` _(modify)_                  | `WS_METHODS.vcsGenerateCommitMessage` + `Rpc.make` + `WsRpcGroup`.  |
+| `apps/server/src/ws.ts` _(modify)_                          | operate scope + dispatch.                                           |
+| `apps/server/src/vcs/GitVcsDriver.ts` _(modify)_            | `readCommitMessageContext` interface method.                        |
+| `apps/server/src/vcs/GitVcsDriverCore.ts` _(modify)_        | read-only diff context builder (no index mutation).                 |
+| `apps/server/src/git/GitManager.ts` _(modify)_              | `generateCommitMessage` service method.                             |
+| `apps/server/src/git/GitManager.test.ts` _(modify)_         | test the new method.                                                |
+| `apps/server/src/git/GitWorkflowService.ts` _(modify)_      | delegate `generateCommitMessage`.                                   |
+| `packages/client-runtime/src/state/vcs.ts` _(modify)_       | command atom.                                                       |
+| `apps/web/src/state/sourceControlActions.ts` _(modify)_     | `useVcsGenerateCommitMessageAction`.                                |
+| `apps/web/src/lib/sourceControlActions.ts` _(modify)_       | re-export the hook.                                                 |
+| `apps/web/src/components/SourceControlPanel.tsx` _(modify)_ | sparkle button + cancel + fill message.                             |
 
 **Interfaces produced:**
+
 - `VcsGenerateCommitMessageInput = { cwd: string; filePaths?: readonly string[] }` (no `modelSelection` — the server resolves it).
 - `VcsGenerateCommitMessageResult = { message: string }`.
 - `useVcsGenerateCommitMessageAction(scope) → { run(input: { filePaths?: string[] }), isPending, error }`.
@@ -43,6 +44,7 @@ See [00-overview.md → Global Constraints](./00-overview.md#global-constraints)
 ### Task 1: Contract + RPC registration
 
 **Files:**
+
 - Modify: `packages/contracts/src/git.ts`, `packages/contracts/src/rpc.ts`
 
 - [ ] **Step 1: Schemas** (`git.ts`)
@@ -86,10 +88,12 @@ git commit -m "feat(contracts): add vcs.generateCommitMessage RPC"
 ### Task 2: Server — expose `generateCommitMessage`
 
 **Files:**
+
 - Modify: `apps/server/src/vcs/GitVcsDriver.ts`, `apps/server/src/vcs/GitVcsDriverCore.ts`, `apps/server/src/git/GitManager.ts`, `apps/server/src/git/GitWorkflowService.ts`
 - Test: `apps/server/src/git/GitManager.test.ts`
 
 **Interfaces:**
+
 - Produces: `readCommitMessageContext(cwd, filePaths?) → Effect<{ hasChanges: boolean; summary: string; patch: string }, GitCommandError>` on `GitVcsDriver`; `generateCommitMessage(input: VcsGenerateCommitMessageInput) → Effect<VcsGenerateCommitMessageResult, GitManagerServiceError>` on `GitManager` and `GitWorkflowService`.
 
 - [ ] **Step 1: Failing test** (`GitManager.test.ts`)
@@ -120,38 +124,38 @@ Run: `pnpm --filter @t3tools/server exec vp test run apps/server/src/git/GitMana
 Add a driver method that summarizes the diff **without staging** — prefer the already-staged diff, else the full working-tree diff against `HEAD`. Use the confirmed `runGitStdout` / `runGitStdoutWithOptions` primitives (both defined in this file). Place it near `readStatusDetailsLocal`:
 
 ```ts
-  const readCommitMessageContext: GitVcsDriver.GitVcsDriver["Service"]["readCommitMessageContext"] =
-    Effect.fn("readCommitMessageContext")(function* (cwd, filePaths) {
-      const pathArgs = filePaths && filePaths.length > 0 ? ["--", ...filePaths] : [];
-      const stagedSummary = yield* runGitStdout(
-        "GitVcsDriver.commitMessageContext.stagedSummary",
-        cwd,
-        ["diff", "--cached", "--name-status", ...pathArgs],
-      );
-      if (stagedSummary.trim().length > 0) {
-        const patch = yield* runGitStdout("GitVcsDriver.commitMessageContext.stagedPatch", cwd, [
-          "diff",
-          "--cached",
-          "--no-color",
-          ...pathArgs,
-        ]);
-        return { hasChanges: true, summary: stagedSummary, patch };
-      }
-      const worktreeSummary = yield* runGitStdout(
-        "GitVcsDriver.commitMessageContext.worktreeSummary",
-        cwd,
-        ["diff", "HEAD", "--name-status", ...pathArgs],
-      );
-      if (worktreeSummary.trim().length === 0) {
-        return { hasChanges: false, summary: "", patch: "" };
-      }
-      const worktreePatch = yield* runGitStdout(
-        "GitVcsDriver.commitMessageContext.worktreePatch",
-        cwd,
-        ["diff", "HEAD", "--no-color", ...pathArgs],
-      );
-      return { hasChanges: true, summary: worktreeSummary, patch: worktreePatch };
-    });
+const readCommitMessageContext: GitVcsDriver.GitVcsDriver["Service"]["readCommitMessageContext"] =
+  Effect.fn("readCommitMessageContext")(function* (cwd, filePaths) {
+    const pathArgs = filePaths && filePaths.length > 0 ? ["--", ...filePaths] : [];
+    const stagedSummary = yield* runGitStdout(
+      "GitVcsDriver.commitMessageContext.stagedSummary",
+      cwd,
+      ["diff", "--cached", "--name-status", ...pathArgs],
+    );
+    if (stagedSummary.trim().length > 0) {
+      const patch = yield* runGitStdout("GitVcsDriver.commitMessageContext.stagedPatch", cwd, [
+        "diff",
+        "--cached",
+        "--no-color",
+        ...pathArgs,
+      ]);
+      return { hasChanges: true, summary: stagedSummary, patch };
+    }
+    const worktreeSummary = yield* runGitStdout(
+      "GitVcsDriver.commitMessageContext.worktreeSummary",
+      cwd,
+      ["diff", "HEAD", "--name-status", ...pathArgs],
+    );
+    if (worktreeSummary.trim().length === 0) {
+      return { hasChanges: false, summary: "", patch: "" };
+    }
+    const worktreePatch = yield* runGitStdout(
+      "GitVcsDriver.commitMessageContext.worktreePatch",
+      cwd,
+      ["diff", "HEAD", "--no-color", ...pathArgs],
+    );
+    return { hasChanges: true, summary: worktreeSummary, patch: worktreePatch };
+  });
 ```
 
 Add `readCommitMessageContext` to the returned driver object, and declare it on the `GitVcsDriver` `Service` interface (`GitVcsDriver.ts`, near `statusDetailsLocal`):
@@ -171,28 +175,28 @@ Add `readCommitMessageContext` to the returned driver object, and declare it on 
 Add (inside the same `Effect.gen` scope as `textGeneration`, `serverSettingsService`, and the private helpers `sanitizeCommitMessage` / `formatCommitMessage` — e.g. just after `resolveCommitAndBranchSuggestion`, line 1184). It calls `textGeneration.generateCommitMessage` directly on the **read-only** context, never mutating the index:
 
 ```ts
-  const generateCommitMessage: GitManager["Service"]["generateCommitMessage"] = Effect.fn(
-    "generateCommitMessage",
-  )(function* (input) {
-    const details = yield* gitCore.statusDetails(input.cwd);
-    const context = yield* gitCore.readCommitMessageContext(input.cwd, input.filePaths);
-    if (!context.hasChanges) {
-      return { message: "" };
-    }
-    const modelSelection = yield* serverSettingsService.getSettings.pipe(
-      Effect.map((settings) => settings.textGenerationModelSelection),
-    );
-    const generated = yield* textGeneration
-      .generateCommitMessage({
-        cwd: input.cwd,
-        branch: details.branch,
-        stagedSummary: limitContext(context.summary, 8_000),
-        stagedPatch: limitContext(context.patch, 50_000),
-        modelSelection,
-      })
-      .pipe(Effect.map((result) => sanitizeCommitMessage(result)));
-    return { message: formatCommitMessage(generated.subject, generated.body) };
-  });
+const generateCommitMessage: GitManager["Service"]["generateCommitMessage"] = Effect.fn(
+  "generateCommitMessage",
+)(function* (input) {
+  const details = yield* gitCore.statusDetails(input.cwd);
+  const context = yield* gitCore.readCommitMessageContext(input.cwd, input.filePaths);
+  if (!context.hasChanges) {
+    return { message: "" };
+  }
+  const modelSelection = yield* serverSettingsService.getSettings.pipe(
+    Effect.map((settings) => settings.textGenerationModelSelection),
+  );
+  const generated = yield* textGeneration
+    .generateCommitMessage({
+      cwd: input.cwd,
+      branch: details.branch,
+      stagedSummary: limitContext(context.summary, 8_000),
+      stagedPatch: limitContext(context.patch, 50_000),
+      modelSelection,
+    })
+    .pipe(Effect.map((result) => sanitizeCommitMessage(result)));
+  return { message: formatCommitMessage(generated.subject, generated.body) };
+});
 ```
 
 (`limitContext`, `sanitizeCommitMessage`, `formatCommitMessage` are the same private helpers `resolveCommitAndBranchSuggestion` uses at lines 1170-1181, in scope here.) Declare the method on the `GitManager` `Service` interface (near line 69) and add it to the returned service object (near line 1862). Import `VcsGenerateCommitMessageInput`, `VcsGenerateCommitMessageResult` from `@t3tools/contracts`:
@@ -220,6 +224,7 @@ git commit -m "feat(server): expose non-mutating generate-commit-message"
 ### Task 3: Server — dispatch + scope
 
 **Files:**
+
 - Modify: `apps/server/src/ws.ts`
 
 - [ ] **Step 1: Scope + handler**
@@ -252,9 +257,11 @@ git commit -m "feat(server): dispatch vcs.generateCommitMessage"
 ### Task 4: Client — hook + sparkle button
 
 **Files:**
+
 - Modify: `packages/client-runtime/src/state/vcs.ts`, `apps/web/src/state/sourceControlActions.ts`, `apps/web/src/lib/sourceControlActions.ts`, `apps/web/src/components/SourceControlPanel.tsx`
 
 **Interfaces:**
+
 - Produces: `vcsEnvironment.generateCommitMessage` command; `useVcsGenerateCommitMessageAction(scope)`.
 
 - [ ] **Step 1: Command atom** (`packages/client-runtime/src/state/vcs.ts`, after `init`)
@@ -315,7 +322,12 @@ export function useVcsGenerateCommitMessageAction(scope: SourceControlActionScop
     },
     [generate, scope],
   );
-  return useAction({ kind: "generateCommitMessage", label: "Generating commit message", scope, action });
+  return useAction({
+    kind: "generateCommitMessage",
+    label: "Generating commit message",
+    scope,
+    action,
+  });
 }
 ```
 
@@ -330,66 +342,70 @@ Run: `pnpm --filter @t3tools/web exec vp test run --project unit apps/web/src/st
 3. Compute the paths to scope the (read-only) diff to — staged if present, else all changed paths. This only narrows which files the server diffs; it never stages anything (Task 2 is non-mutating):
 
 ```ts
-  const generateFilePaths = useMemo(() => {
-    const staged = files.filter((file) => file.area === "staged").map((file) => file.path);
-    return staged.length > 0 ? staged : files.map((file) => file.path);
-  }, [files]);
+const generateFilePaths = useMemo(() => {
+  const staged = files.filter((file) => file.area === "staged").map((file) => file.path);
+  return staged.length > 0 ? staged : files.map((file) => file.path);
+}, [files]);
 ```
 
 4. The handler (fills the draft message unless canceled):
 
 ```ts
-  const onGenerate = useCallback(async () => {
-    const token = generationTokenRef.current + 1;
-    generationTokenRef.current = token;
-    const result = await generateAction.run({ filePaths: generateFilePaths });
-    if (generationTokenRef.current !== token) return; // canceled/superseded
-    if (result._tag === "Failure") {
-      if (isAtomCommandInterrupted(result)) return;
-      const error = squashAtomCommandFailure(result);
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not generate a commit message",
-          description: error instanceof Error ? error.message : "An error occurred.",
-          data: threadToastData,
-        }),
-      );
-      return;
-    }
-    if (result.value.message.trim().length > 0) {
-      setMessage(threadRef, result.value.message);
-    }
-  }, [generateAction, generateFilePaths, setMessage, threadRef, threadToastData]);
+const onGenerate = useCallback(async () => {
+  const token = generationTokenRef.current + 1;
+  generationTokenRef.current = token;
+  const result = await generateAction.run({ filePaths: generateFilePaths });
+  if (generationTokenRef.current !== token) return; // canceled/superseded
+  if (result._tag === "Failure") {
+    if (isAtomCommandInterrupted(result)) return;
+    const error = squashAtomCommandFailure(result);
+    toastManager.add(
+      stackedThreadToast({
+        type: "error",
+        title: "Could not generate a commit message",
+        description: error instanceof Error ? error.message : "An error occurred.",
+        data: threadToastData,
+      }),
+    );
+    return;
+  }
+  if (result.value.message.trim().length > 0) {
+    setMessage(threadRef, result.value.message);
+  }
+}, [generateAction, generateFilePaths, setMessage, threadRef, threadToastData]);
 
-  const cancelGenerate = useCallback(() => {
-    generationTokenRef.current += 1; // ignore the in-flight result
-  }, []);
+const cancelGenerate = useCallback(() => {
+  generationTokenRef.current += 1; // ignore the in-flight result
+}, []);
 ```
 
 5. Render the button in the message box's top-right. Replace the plain `<Textarea .../>` from Plan 01 with a positioned wrapper:
 
 ```tsx
-        <div className="relative">
-          <Textarea
-            value={draft.message}
-            onChange={(event) => setMessage(threadRef, event.target.value)}
-            placeholder="Message (leave empty to auto-generate)"
-            size="sm"
-            aria-label="Commit message"
-            className="pr-9"
-          />
-          <button
-            type="button"
-            onClick={() => (generateAction.isPending ? cancelGenerate() : void onGenerate())}
-            disabled={files.length === 0 && !generateAction.isPending}
-            aria-label={generateAction.isPending ? "Stop generating" : "Generate commit message with AI"}
-            title={generateAction.isPending ? "Stop" : "Generate commit message with AI"}
-            className="absolute right-1.5 top-1.5 grid size-6 place-items-center rounded text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
-          >
-            {generateAction.isPending ? <SquareIcon className="size-3.5" /> : <SparklesIcon className="size-3.5" />}
-          </button>
-        </div>
+<div className="relative">
+  <Textarea
+    value={draft.message}
+    onChange={(event) => setMessage(threadRef, event.target.value)}
+    placeholder="Message (leave empty to auto-generate)"
+    size="sm"
+    aria-label="Commit message"
+    className="pr-9"
+  />
+  <button
+    type="button"
+    onClick={() => (generateAction.isPending ? cancelGenerate() : void onGenerate())}
+    disabled={files.length === 0 && !generateAction.isPending}
+    aria-label={generateAction.isPending ? "Stop generating" : "Generate commit message with AI"}
+    title={generateAction.isPending ? "Stop" : "Generate commit message with AI"}
+    className="absolute right-1.5 top-1.5 grid size-6 place-items-center rounded text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+  >
+    {generateAction.isPending ? (
+      <SquareIcon className="size-3.5" />
+    ) : (
+      <SparklesIcon className="size-3.5" />
+    )}
+  </button>
+</div>
 ```
 
 - [ ] **Step 6: Typecheck + web tests + manual + commit**

@@ -11,8 +11,14 @@ import {
   type VcsCreateRefResult,
   type VcsCreateWorktreeInput,
   type VcsCreateWorktreeResult,
+  type GitCloneInput,
+  type GitCloneResult,
   type VcsListRefsInput,
   type VcsListRefsResult,
+  type VcsListCommitsInput,
+  type VcsListCommitsResult,
+  type VcsGenerateCommitMessageInput,
+  type VcsGenerateCommitMessageResult,
   type GitManagerServiceError,
   type GitPreparePullRequestThreadInput,
   type GitPreparePullRequestThreadResult,
@@ -48,6 +54,18 @@ export class GitWorkflowService extends Context.Service<
     readonly invalidateLocalStatus: (cwd: string) => Effect.Effect<void, never>;
     readonly invalidateRemoteStatus: (cwd: string) => Effect.Effect<void, never>;
     readonly invalidateStatus: (cwd: string) => Effect.Effect<void, never>;
+    readonly stageFiles: (input: {
+      readonly cwd: string;
+      readonly filePaths: readonly string[];
+    }) => Effect.Effect<void, GitCommandError>;
+    readonly unstageFiles: (input: {
+      readonly cwd: string;
+      readonly filePaths: readonly string[];
+    }) => Effect.Effect<void, GitCommandError>;
+    readonly discardFiles: (input: {
+      readonly cwd: string;
+      readonly filePaths: readonly string[];
+    }) => Effect.Effect<void, GitCommandError>;
     readonly pullCurrentBranch: (cwd: string) => Effect.Effect<VcsPullResult, GitCommandError>;
     readonly runStackedAction: (
       input: GitRunStackedActionInput,
@@ -62,9 +80,19 @@ export class GitWorkflowService extends Context.Service<
     readonly listRefs: (
       input: VcsListRefsInput,
     ) => Effect.Effect<VcsListRefsResult, GitCommandError>;
+    readonly listCommits: (
+      input: VcsListCommitsInput,
+    ) => Effect.Effect<VcsListCommitsResult, GitCommandError>;
+    readonly generateCommitMessage: (
+      input: VcsGenerateCommitMessageInput,
+    ) => Effect.Effect<VcsGenerateCommitMessageResult, GitManagerServiceError>;
     readonly createWorktree: (
       input: VcsCreateWorktreeInput,
     ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError>;
+    // TODO(orca-port): unlike createWorktree, clone does not target an existing repository
+    // (`input.parentDir` is a plain filesystem directory), so this delegates straight to the
+    // GitVcsDriver without the ensureGitCommand/VcsDriverRegistry repo-detection gate.
+    readonly clone: (input: GitCloneInput) => Effect.Effect<GitCloneResult, GitCommandError>;
     readonly fetchRemote: (input: {
       readonly cwd: string;
       readonly remoteName: string;
@@ -273,6 +301,9 @@ export const make = Effect.gen(function* () {
     invalidateLocalStatus: gitManager.invalidateLocalStatus,
     invalidateRemoteStatus: gitManager.invalidateRemoteStatus,
     invalidateStatus: gitManager.invalidateStatus,
+    stageFiles: (input) => gitManager.stageFiles(input),
+    unstageFiles: (input) => gitManager.unstageFiles(input),
+    discardFiles: (input) => gitManager.discardFiles(input),
     pullCurrentBranch: (cwd) =>
       ensureGitCommand("GitWorkflowService.pullCurrentBranch", cwd).pipe(
         Effect.andThen(git.pullCurrentBranch(cwd)),
@@ -295,10 +326,13 @@ export const make = Effect.gen(function* () {
           isGitRepository ? git.listRefs(input) : Effect.succeed(nonRepositoryListRefs()),
         ),
       ),
+    listCommits: (input) => gitManager.listCommits(input),
+    generateCommitMessage: (input) => gitManager.generateCommitMessage(input),
     createWorktree: (input) =>
       ensureGitCommand("GitWorkflowService.createWorktree", input.cwd).pipe(
         Effect.andThen(git.createWorktree(input)),
       ),
+    clone: (input) => git.clone(input),
     fetchRemote: (input) =>
       ensureGitCommand("GitWorkflowService.fetchRemote", input.cwd).pipe(
         Effect.andThen(git.fetchRemote(input)),

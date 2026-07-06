@@ -1,6 +1,7 @@
 import {
   ApprovalRequestId,
   type ChatAttachment,
+  DEFAULT_THREAD_KIND,
   type OrchestrationEvent,
   type OrchestrationSessionStatus,
   ThreadId,
@@ -598,6 +599,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
             projectId: event.payload.projectId,
             title: event.payload.title,
+            kind: event.payload.kind ?? DEFAULT_THREAD_KIND,
             modelSelection: event.payload.modelSelection,
             runtimeMode: event.payload.runtimeMode,
             interactionMode: event.payload.interactionMode,

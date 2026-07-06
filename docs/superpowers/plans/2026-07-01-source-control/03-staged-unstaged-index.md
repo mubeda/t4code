@@ -16,24 +16,25 @@ See [00-overview.md → Global Constraints](./00-overview.md#global-constraints)
 
 ## File Structure
 
-| File | Responsibility |
-|---|---|
-| `packages/contracts/src/git.ts` *(modify)* | `VcsStagingArea` literal + optional `area` field; stage/unstage/discard inputs. |
-| `packages/contracts/src/rpc.ts` *(modify)* | 3 `WS_METHODS` + 3 `Rpc.make` + add to `WsRpcGroup`. |
-| `apps/server/src/ws.ts` *(modify)* | 3 scope entries + 3 dispatch handlers. |
-| `apps/server/src/vcs/GitVcsDriver.ts` *(modify)* | 3 service-interface methods. |
-| `apps/server/src/vcs/GitVcsDriverCore.ts` *(modify)* | Split numstat by area; implement stage/unstage/discard git calls. |
-| `apps/server/src/vcs/GitVcsDriverCore.test.ts` *(modify)* | Area-split + staging integration tests. |
-| `apps/server/src/git/GitManager.ts` *(modify)* | Delegate stage/unstage/discard to the driver. |
-| `apps/server/src/git/GitWorkflowService.ts` *(modify)* | Delegate stage/unstage/discard to `GitManager`. |
-| `packages/client-runtime/src/state/vcs.ts` *(modify)* | 3 command atoms. |
-| `apps/web/src/state/sourceControlActions.ts` *(modify)* | `useVcsStageAction` / `useVcsUnstageAction` / `useVcsDiscardAction`. |
-| `apps/web/src/lib/sourceControlActions.ts` *(modify)* | Re-export the 3 hooks. |
-| `apps/web/src/components/SourceControlPanel.logic.ts` *(modify)* | `groupFilesByArea` + `area` on `WorkingTreeFile`. |
-| `apps/web/src/components/SourceControlSection.tsx` *(create)* | Collapsible section header + list + bulk actions. |
-| `apps/web/src/components/SourceControlPanel.tsx` *(modify)* | Render sections; commit the staged set. |
+| File                                                             | Responsibility                                                                  |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `packages/contracts/src/git.ts` _(modify)_                       | `VcsStagingArea` literal + optional `area` field; stage/unstage/discard inputs. |
+| `packages/contracts/src/rpc.ts` _(modify)_                       | 3 `WS_METHODS` + 3 `Rpc.make` + add to `WsRpcGroup`.                            |
+| `apps/server/src/ws.ts` _(modify)_                               | 3 scope entries + 3 dispatch handlers.                                          |
+| `apps/server/src/vcs/GitVcsDriver.ts` _(modify)_                 | 3 service-interface methods.                                                    |
+| `apps/server/src/vcs/GitVcsDriverCore.ts` _(modify)_             | Split numstat by area; implement stage/unstage/discard git calls.               |
+| `apps/server/src/vcs/GitVcsDriverCore.test.ts` _(modify)_        | Area-split + staging integration tests.                                         |
+| `apps/server/src/git/GitManager.ts` _(modify)_                   | Delegate stage/unstage/discard to the driver.                                   |
+| `apps/server/src/git/GitWorkflowService.ts` _(modify)_           | Delegate stage/unstage/discard to `GitManager`.                                 |
+| `packages/client-runtime/src/state/vcs.ts` _(modify)_            | 3 command atoms.                                                                |
+| `apps/web/src/state/sourceControlActions.ts` _(modify)_          | `useVcsStageAction` / `useVcsUnstageAction` / `useVcsDiscardAction`.            |
+| `apps/web/src/lib/sourceControlActions.ts` _(modify)_            | Re-export the 3 hooks.                                                          |
+| `apps/web/src/components/SourceControlPanel.logic.ts` _(modify)_ | `groupFilesByArea` + `area` on `WorkingTreeFile`.                               |
+| `apps/web/src/components/SourceControlSection.tsx` _(create)_    | Collapsible section header + list + bulk actions.                               |
+| `apps/web/src/components/SourceControlPanel.tsx` _(modify)_      | Render sections; commit the staged set.                                         |
 
 **Interfaces produced:**
+
 - `VcsStagingArea = "staged" | "unstaged" | "untracked"`; `area?: VcsStagingArea` on each file entry.
 - Inputs `VcsStageFilesInput` / `VcsUnstageFilesInput` / `VcsDiscardFilesInput` = `{ cwd: string; filePaths: readonly string[] }` (min length 1).
 - `groupFilesByArea(files) → { staged: WorkingTreeFile[]; unstaged: WorkingTreeFile[]; untracked: WorkingTreeFile[] }`.
@@ -43,9 +44,11 @@ See [00-overview.md → Global Constraints](./00-overview.md#global-constraints)
 ### Task 1: Contract — staging area + action inputs
 
 **Files:**
+
 - Modify: `packages/contracts/src/git.ts`
 
 **Interfaces:**
+
 - Produces: `VcsStagingArea`, `area?` field, and the three action inputs.
 
 - [ ] **Step 1: Add the `VcsStagingArea` literal + `area` field**
@@ -96,9 +99,11 @@ git commit -m "feat(contracts): add staging area and stage/unstage/discard input
 ### Task 2: Contract — register the three RPCs
 
 **Files:**
+
 - Modify: `packages/contracts/src/rpc.ts`
 
 **Interfaces:**
+
 - Produces: `WS_METHODS.vcsStageFiles` = `"vcs.stageFiles"`, `.vcsUnstageFiles` = `"vcs.unstageFiles"`, `.vcsDiscardFiles` = `"vcs.discardFiles"`; three `Rpc` definitions in `WsRpcGroup`.
 
 - [ ] **Step 1: Add the method names**
@@ -156,10 +161,12 @@ git commit -m "feat(contracts): register stage/unstage/discard RPCs"
 ### Task 3: Server — driver + manager + workflow methods
 
 **Files:**
+
 - Modify: `apps/server/src/vcs/GitVcsDriver.ts`, `apps/server/src/vcs/GitVcsDriverCore.ts`, `apps/server/src/git/GitManager.ts`, `apps/server/src/git/GitWorkflowService.ts`
 - Test: `apps/server/src/vcs/GitVcsDriverCore.test.ts`
 
 **Interfaces:**
+
 - Consumes: `executeGit`/`runGit` primitives already in `GitVcsDriverCore.ts`; `GitCommandError` from contracts.
 - Produces: `stageFiles`/`unstageFiles`/`discardFiles` on `GitVcsDriver`, `GitManager`, and `GitWorkflowService`, all `(input: { cwd: string; filePaths: readonly string[] }) => Effect.Effect<void, GitCommandError>`. Plus `area` populated on every working-tree file.
 
@@ -207,55 +214,55 @@ Expected: FAIL — `file.area` is `undefined`; `driver.stageFiles` does not exis
 `apps/server/src/vcs/GitVcsDriverCore.ts` — replace the file-build block (Plan 02's version at lines ~1423-1446) so staged and unstaged numstat entries produce **separate** entries, and untracked files become area `"untracked"`:
 
 ```ts
-    const stagedEntries = parseNumstatEntries(stagedNumstatStdout);
-    const unstagedEntries = parseNumstatEntries(unstagedNumstatStdout);
+const stagedEntries = parseNumstatEntries(stagedNumstatStdout);
+const unstagedEntries = parseNumstatEntries(unstagedNumstatStdout);
 
-    let insertions = 0;
-    let deletions = 0;
-    const files: Array<{
-      path: string;
-      insertions: number;
-      deletions: number;
-      status: VcsWorkingTreeFileStatus;
-      area: VcsStagingArea;
-    }> = [];
+let insertions = 0;
+let deletions = 0;
+const files: Array<{
+  path: string;
+  insertions: number;
+  deletions: number;
+  status: VcsWorkingTreeFileStatus;
+  area: VcsStagingArea;
+}> = [];
 
-    for (const entry of stagedEntries) {
-      insertions += entry.insertions;
-      deletions += entry.deletions;
-      files.push({
-        path: entry.path,
-        insertions: entry.insertions,
-        deletions: entry.deletions,
-        status: statusByPath.get(entry.path) ?? "modified",
-        area: "staged",
-      });
-    }
-    for (const entry of unstagedEntries) {
-      insertions += entry.insertions;
-      deletions += entry.deletions;
-      files.push({
-        path: entry.path,
-        insertions: entry.insertions,
-        deletions: entry.deletions,
-        status: statusByPath.get(entry.path) ?? "modified",
-        area: "unstaged",
-      });
-    }
-    // Untracked files have no numstat baseline; they were collected from the
-    // porcelain scan as area "untracked".
-    for (const filePath of changedFilesWithoutNumstat) {
-      if (stagedEntries.some((entry) => entry.path === filePath)) continue;
-      if (unstagedEntries.some((entry) => entry.path === filePath)) continue;
-      files.push({
-        path: filePath,
-        insertions: 0,
-        deletions: 0,
-        status: statusByPath.get(filePath) ?? "modified",
-        area: statusByPath.get(filePath) === "untracked" ? "untracked" : "unstaged",
-      });
-    }
-    files.sort((a, b) => a.area.localeCompare(b.area) || a.path.localeCompare(b.path));
+for (const entry of stagedEntries) {
+  insertions += entry.insertions;
+  deletions += entry.deletions;
+  files.push({
+    path: entry.path,
+    insertions: entry.insertions,
+    deletions: entry.deletions,
+    status: statusByPath.get(entry.path) ?? "modified",
+    area: "staged",
+  });
+}
+for (const entry of unstagedEntries) {
+  insertions += entry.insertions;
+  deletions += entry.deletions;
+  files.push({
+    path: entry.path,
+    insertions: entry.insertions,
+    deletions: entry.deletions,
+    status: statusByPath.get(entry.path) ?? "modified",
+    area: "unstaged",
+  });
+}
+// Untracked files have no numstat baseline; they were collected from the
+// porcelain scan as area "untracked".
+for (const filePath of changedFilesWithoutNumstat) {
+  if (stagedEntries.some((entry) => entry.path === filePath)) continue;
+  if (unstagedEntries.some((entry) => entry.path === filePath)) continue;
+  files.push({
+    path: filePath,
+    insertions: 0,
+    deletions: 0,
+    status: statusByPath.get(filePath) ?? "modified",
+    area: statusByPath.get(filePath) === "untracked" ? "untracked" : "unstaged",
+  });
+}
+files.sort((a, b) => a.area.localeCompare(b.area) || a.path.localeCompare(b.path));
 ```
 
 > This replaces the previous `fileStatMap` merge (which summed staged+unstaged into one entry). Remove the now-unused `fileStatMap` declaration. Totals (`insertions`/`deletions`) remain the sum across all areas — unchanged behavior for `workingTree.insertions/deletions`. Import `VcsStagingArea` (type) from `@t3tools/contracts` alongside `VcsWorkingTreeFileStatus`.
@@ -265,44 +272,45 @@ Expected: FAIL — `file.area` is `undefined`; `driver.stageFiles` does not exis
 Add three functions in the driver's service object (next to the other `executeGit`-based helpers, e.g. after the commit helper). Use the confirmed primitives:
 
 ```ts
-  const stageFiles: GitVcsDriver.GitVcsDriver["Service"]["stageFiles"] = Effect.fn("stageFiles")(
-    function* (input) {
-      yield* executeGit("GitVcsDriver.stageFiles", input.cwd, ["add", "--", ...input.filePaths]).pipe(
-        Effect.asVoid,
-      );
-    },
-  );
+const stageFiles: GitVcsDriver.GitVcsDriver["Service"]["stageFiles"] = Effect.fn("stageFiles")(
+  function* (input) {
+    yield* executeGit("GitVcsDriver.stageFiles", input.cwd, ["add", "--", ...input.filePaths]).pipe(
+      Effect.asVoid,
+    );
+  },
+);
 
-  const unstageFiles: GitVcsDriver.GitVcsDriver["Service"]["unstageFiles"] = Effect.fn("unstageFiles")(
-    function* (input) {
-      yield* executeGit(
-        "GitVcsDriver.unstageFiles",
-        input.cwd,
-        ["restore", "--staged", "--", ...input.filePaths],
-      ).pipe(Effect.asVoid);
-    },
-  );
+const unstageFiles: GitVcsDriver.GitVcsDriver["Service"]["unstageFiles"] = Effect.fn(
+  "unstageFiles",
+)(function* (input) {
+  yield* executeGit("GitVcsDriver.unstageFiles", input.cwd, [
+    "restore",
+    "--staged",
+    "--",
+    ...input.filePaths,
+  ]).pipe(Effect.asVoid);
+});
 
-  const discardFiles: GitVcsDriver.GitVcsDriver["Service"]["discardFiles"] = Effect.fn("discardFiles")(
-    function* (input) {
-      // Tracked files: restore worktree + index from HEAD. Untracked files are
-      // not affected by `restore`, so also `clean` them; `clean` ignores paths
-      // that are tracked, so the two calls compose safely.
-      yield* executeGit("GitVcsDriver.discardFiles.restore", input.cwd, [
-        "restore",
-        "--staged",
-        "--worktree",
-        "--",
-        ...input.filePaths,
-      ]).pipe(Effect.asVoid, Effect.ignore);
-      yield* executeGit("GitVcsDriver.discardFiles.clean", input.cwd, [
-        "clean",
-        "-fd",
-        "--",
-        ...input.filePaths,
-      ]).pipe(Effect.asVoid);
-    },
-  );
+const discardFiles: GitVcsDriver.GitVcsDriver["Service"]["discardFiles"] = Effect.fn(
+  "discardFiles",
+)(function* (input) {
+  // Tracked files: restore worktree + index from HEAD. Untracked files are
+  // not affected by `restore`, so also `clean` them; `clean` ignores paths
+  // that are tracked, so the two calls compose safely.
+  yield* executeGit("GitVcsDriver.discardFiles.restore", input.cwd, [
+    "restore",
+    "--staged",
+    "--worktree",
+    "--",
+    ...input.filePaths,
+  ]).pipe(Effect.asVoid, Effect.ignore);
+  yield* executeGit("GitVcsDriver.discardFiles.clean", input.cwd, [
+    "clean",
+    "-fd",
+    "--",
+    ...input.filePaths,
+  ]).pipe(Effect.asVoid);
+});
 ```
 
 Add `stageFiles`, `unstageFiles`, `discardFiles` to the object returned by the driver layer (next to `statusDetailsLocal`, line ~2536).
@@ -331,18 +339,22 @@ Add `stageFiles`, `unstageFiles`, `discardFiles` to the object returned by the d
 `apps/server/src/git/GitManager.ts` — add three `Effect.fn` delegations that call the driver (mirror how `localStatus`/`status` obtain the driver via `gitCore`), and add them to the service interface (near line 69) and the returned object (near line 1862).
 
 ```ts
-  const stageFiles: GitManager["Service"]["stageFiles"] = Effect.fn("stageFiles")(function* (input) {
-    yield* gitCore.stageFiles(input);
-    yield* invalidateLocalStatusResultCache(input.cwd);
-  });
-  const unstageFiles: GitManager["Service"]["unstageFiles"] = Effect.fn("unstageFiles")(function* (input) {
+const stageFiles: GitManager["Service"]["stageFiles"] = Effect.fn("stageFiles")(function* (input) {
+  yield* gitCore.stageFiles(input);
+  yield* invalidateLocalStatusResultCache(input.cwd);
+});
+const unstageFiles: GitManager["Service"]["unstageFiles"] = Effect.fn("unstageFiles")(
+  function* (input) {
     yield* gitCore.unstageFiles(input);
     yield* invalidateLocalStatusResultCache(input.cwd);
-  });
-  const discardFiles: GitManager["Service"]["discardFiles"] = Effect.fn("discardFiles")(function* (input) {
+  },
+);
+const discardFiles: GitManager["Service"]["discardFiles"] = Effect.fn("discardFiles")(
+  function* (input) {
     yield* gitCore.discardFiles(input);
     yield* invalidateLocalStatusResultCache(input.cwd);
-  });
+  },
+);
 ```
 
 (Use the same `readonly stageFiles: (input: { cwd: string; filePaths: readonly string[] }) => Effect.Effect<void, GitCommandError>` signature on the `GitManager` interface, and add `stageFiles, unstageFiles, discardFiles` to its returned service object.)
@@ -368,6 +380,7 @@ git commit -m "feat(server): stage/unstage/discard git files and split status by
 ### Task 4: Server — dispatch + auth scopes
 
 **Files:**
+
 - Modify: `apps/server/src/ws.ts`
 
 - [ ] **Step 1: Add auth scopes**
@@ -428,9 +441,11 @@ git commit -m "feat(server): dispatch stage/unstage/discard RPCs"
 ### Task 5: Client — command atoms + action hooks
 
 **Files:**
+
 - Modify: `packages/client-runtime/src/state/vcs.ts`, `apps/web/src/state/sourceControlActions.ts`, `apps/web/src/lib/sourceControlActions.ts`
 
 **Interfaces:**
+
 - Produces: `vcsEnvironment.stageFiles/unstageFiles/discardFiles` (commands); `useVcsStageAction(scope)` / `useVcsUnstageAction(scope)` / `useVcsDiscardAction(scope)` each returning `{ run(filePaths: string[]) , isPending, error }`.
 
 - [ ] **Step 1: Add command atoms**
@@ -465,7 +480,11 @@ Create `apps/web/src/state/sourceControlActions.stage.test.ts`:
 ```ts
 import { describe, expect, it } from "vite-plus/test";
 
-import { useVcsDiscardAction, useVcsStageAction, useVcsUnstageAction } from "./sourceControlActions";
+import {
+  useVcsDiscardAction,
+  useVcsStageAction,
+  useVcsUnstageAction,
+} from "./sourceControlActions";
 
 describe("staging action hooks", () => {
   it("exports the three staging hooks", () => {
@@ -575,11 +594,13 @@ git commit -m "feat(source-control): add stage/unstage/discard client actions"
 ### Task 6: Client — group by area + section component
 
 **Files:**
+
 - Modify: `apps/web/src/components/SourceControlPanel.logic.ts`
 - Test: `apps/web/src/components/SourceControlPanel.logic.test.ts`
 - Create: `apps/web/src/components/SourceControlSection.tsx`
 
 **Interfaces:**
+
 - Produces: `groupFilesByArea(files) → { staged; unstaged; untracked }` and `SourceControlSection`.
 
 - [ ] **Step 1: Write the failing grouping test**
@@ -678,13 +699,24 @@ export function SourceControlSection(props: SourceControlSectionProps) {
           onClick={() => setCollapsed((value) => !value)}
           className="flex flex-1 items-center gap-1 text-xs font-medium uppercase tracking-wide text-muted-foreground"
         >
-          <ChevronDownIcon className={cn("size-3.5 transition-transform", collapsed && "-rotate-90")} />
+          <ChevronDownIcon
+            className={cn("size-3.5 transition-transform", collapsed && "-rotate-90")}
+          />
           {props.title}
           <span className="ml-1">{props.files.length}</span>
         </button>
         {props.primaryAction ? (
-          <Button variant="ghost" size="icon-xs" aria-label={props.primaryAction.label} onClick={props.primaryAction.onClick}>
-            {props.primaryAction.icon === "stage" ? <PlusIcon className="size-3.5" /> : <MinusIcon className="size-3.5" />}
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label={props.primaryAction.label}
+            onClick={props.primaryAction.onClick}
+          >
+            {props.primaryAction.icon === "stage" ? (
+              <PlusIcon className="size-3.5" />
+            ) : (
+              <MinusIcon className="size-3.5" />
+            )}
           </Button>
         ) : null}
         {props.onDiscard ? (
@@ -702,7 +734,10 @@ export function SourceControlSection(props: SourceControlSectionProps) {
           renderBadge={(file) => {
             const badge = workingTreeStatusBadge(file.status);
             return (
-              <span className={cn("w-4 shrink-0 text-center text-[10px] font-bold", badge.className)} title={badge.label}>
+              <span
+                className={cn("w-4 shrink-0 text-center text-[10px] font-bold", badge.className)}
+                title={badge.label}
+              >
                 {badge.letter}
               </span>
             );
@@ -730,9 +765,11 @@ git commit -m "feat(source-control): group changes by area and add section compo
 ### Task 7: Panel — render sections, stage/unstage/discard, commit staged set
 
 **Files:**
+
 - Modify: `apps/web/src/components/SourceControlPanel.tsx`
 
 **Interfaces:**
+
 - Consumes: `useVcsStageAction`/`useVcsUnstageAction`/`useVcsDiscardAction`, `groupFilesByArea`, `SourceControlSection`.
 
 - [ ] **Step 1: Wire the staging actions + sections**
@@ -743,9 +780,9 @@ In `SourceControlPanel.tsx`:
 2. Instantiate the actions:
 
 ```ts
-  const stageAction = useVcsStageAction(scope);
-  const unstageAction = useVcsUnstageAction(scope);
-  const discardAction = useVcsDiscardAction(scope);
+const stageAction = useVcsStageAction(scope);
+const unstageAction = useVcsUnstageAction(scope);
+const discardAction = useVcsDiscardAction(scope);
 ```
 
 3. Group the files: `const groups = useMemo(() => groupFilesByArea(files), [files]);`
@@ -797,16 +834,17 @@ In `SourceControlPanel.tsx`:
 5. Change the commit to commit the **staged** set. Replace `resolveCommitFilePaths(summary)` usage in `runGitAction` with the staged paths:
 
 ```ts
-      const stagedPaths = groups.staged.map((file) => file.path);
-      const filePaths = stagedPaths.length > 0 ? stagedPaths : undefined;
+const stagedPaths = groups.staged.map((file) => file.path);
+const filePaths = stagedPaths.length > 0 ? stagedPaths : undefined;
 ```
 
 and gate the primary Commit action on `groups.staged.length > 0` when the resolved action is a commit (extend `primaryDisabled`):
 
 ```ts
-  const requiresStaged = quickAction.kind === "run_action" && quickAction.action?.startsWith("commit");
-  const primaryDisabled =
-    isBusy || quickAction.disabled || (requiresStaged && groups.staged.length === 0);
+const requiresStaged =
+  quickAction.kind === "run_action" && quickAction.action?.startsWith("commit");
+const primaryDisabled =
+  isBusy || quickAction.disabled || (requiresStaged && groups.staged.length === 0);
 ```
 
 - [ ] **Step 2: Typecheck + web tests**
@@ -817,6 +855,7 @@ Run: `pnpm --filter @t3tools/web exec vp test run --project unit` → PASS.
 - [ ] **Step 3: Manual verification**
 
 `pnpm dev:web`, open the panel in a repo with staged + unstaged + untracked files:
+
 1. Three sections appear with counts (`Staged Changes N`, `Changes N`, `Untracked Files N`) and the `U`/`M`/`A`/`D` badges from Plan 02.
 2. `Stage all` on Changes/Untracked moves rows into Staged Changes; `Unstage all` reverses it; `Discard` on an unstaged/untracked file removes the change (confirm the file reverts).
 3. Commit is disabled until something is staged; committing the staged set clears it.

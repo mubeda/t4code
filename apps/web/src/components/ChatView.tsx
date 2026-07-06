@@ -123,6 +123,15 @@ import {
   useRightPanelStore,
 } from "../rightPanelStore";
 import {
+  HOST_SURFACE_ID,
+  selectThreadCenterPanelState,
+  useCenterPanelStore,
+} from "../centerPanelStore";
+import { useCenterPanelActions } from "../centerPanelActions";
+import { type ProviderInstanceEntry } from "../providerInstances";
+import { CenterPanelTabs } from "./CenterPanelTabs";
+import { CenterTerminalPanel } from "./CenterTerminalPanel";
+import {
   isPreviewSupportedInRuntime,
   setActivePreviewTab,
   useThreadPreviewState,
@@ -260,6 +269,7 @@ const PreviewPanel = lazy(() =>
   import("./preview/PreviewPanel").then((module) => ({ default: module.PreviewPanel })),
 );
 const DiffPanel = lazy(() => import("./DiffPanel"));
+const SourceControlPanel = lazy(() => import("./SourceControlPanel"));
 const FilePreviewPanel = lazy(() => import("./files/FilePreviewPanel"));
 const EMPTY_PENDING_FILE_SURFACE_IDS: ReadonlySet<string> = new Set();
 const TYPE_TO_FOCUS_EDITABLE_SELECTOR = [
@@ -333,7 +343,7 @@ function formatOutgoingPrompt(params: {
 const SCRIPT_TERMINAL_COLS = 120;
 const SCRIPT_TERMINAL_ROWS = 30;
 
-type ChatViewProps =
+type ChatViewRouteProps =
   | {
       environmentId: EnvironmentId;
       threadId: ThreadId;
@@ -350,6 +360,26 @@ type ChatViewProps =
       routeKind: "draft";
       draftId: DraftId;
     };
+
+// A center "panel" surface renders this same component for a sibling server
+// thread (multipanel). The panel thread is ALWAYS a server thread; its identity
+// comes from `panelThreadRef`, and singleton chrome/effects are gated off via
+// `isPanel` so multiple instances can mount beside the host without corrupting
+// route/title/keybinding state.
+type ChatViewPanelProps = {
+  variant: "panel";
+  panelThreadRef: ScopedThreadRef;
+  environmentId?: never;
+  threadId?: never;
+  routeKind?: never;
+  draftId?: never;
+  onDiffPanelOpen?: never;
+  reserveTitleBarControlInset?: never;
+};
+
+type ChatViewProps =
+  | (ChatViewRouteProps & { variant?: "host"; panelThreadRef?: never })
+  | ChatViewPanelProps;
 
 interface TerminalLaunchContext {
   threadId: ThreadId;
@@ -980,14 +1010,19 @@ const PersistentThreadTerminalPanel = memo(function PersistentThreadTerminalPane
 });
 
 function ChatViewContent(props: ChatViewProps) {
-  const {
-    environmentId,
-    threadId,
-    routeKind,
-    onDiffPanelOpen,
-    reserveTitleBarControlInset = true,
-  } = props;
-  const draftId = routeKind === "draft" ? props.draftId : null;
+  // In "panel" variant, thread identity comes from panelThreadRef (always a
+  // server thread) instead of the route. Resolving environmentId/threadId here
+  // makes routeThreadRef and every downstream derivation target the panel
+  // thread automatically. `isPanel` additionally gates singleton chrome/effects.
+  const isPanel = props.variant === "panel";
+  const environmentId =
+    props.variant === "panel" ? props.panelThreadRef.environmentId : props.environmentId;
+  const threadId = props.variant === "panel" ? props.panelThreadRef.threadId : props.threadId;
+  const routeKind: "server" | "draft" = props.variant === "panel" ? "server" : props.routeKind;
+  const onDiffPanelOpen = props.variant === "panel" ? undefined : props.onDiffPanelOpen;
+  const reserveTitleBarControlInset =
+    props.variant === "panel" ? true : (props.reserveTitleBarControlInset ?? true);
+  const draftId = props.variant !== "panel" && props.routeKind === "draft" ? props.draftId : null;
   const routeThreadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
     [environmentId, threadId],
@@ -1034,7 +1069,7 @@ function ChatViewContent(props: ChatViewProps) {
     [environments],
   );
   const composerDraftTarget: ScopedThreadRef | DraftId =
-    routeKind === "server" ? routeThreadRef : props.draftId;
+    props.variant === "panel" || props.routeKind === "server" ? routeThreadRef : props.draftId;
   const serverThread = useThread(routeKind === "server" ? routeThreadRef : null);
   const markThreadVisited = useUiStateStore((store) => store.markThreadVisited);
   const activeThreadLastVisitedAt = useUiStateStore((store) =>
@@ -1096,7 +1131,11 @@ function ChatViewContent(props: ChatViewProps) {
   const composerTerminalContextsRef = useRef<TerminalContextDraft[]>([]);
   const composerElementContextsRef = useRef<ElementContextDraft[]>([]);
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
-  const composerRef = useComposerHandleContext() ?? localComposerRef;
+  const sharedComposerHandle = useComposerHandleContext();
+  // The shared composer handle (command palette + global keybindings) is
+  // app-level and host-owned. A panel must use its OWN local handle so mounting
+  // it beside the host does not clobber the ref that host shortcuts drive.
+  const composerRef = isPanel ? localComposerRef : (sharedComposerHandle ?? localComposerRef);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
@@ -1287,6 +1326,47 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThread],
   );
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
+  // Center multipanel state (host variant only; a panel instance never hosts
+  // its own sub-panels). The host chat surface is always present at index 0.
+  const centerPanelByThreadKey = useCenterPanelStore((state) => state.byThreadKey);
+  const centerPanelActions = useCenterPanelActions();
+  const centerPanelState = selectThreadCenterPanelState(
+    centerPanelByThreadKey,
+    isPanel ? null : activeThreadRef,
+  );
+  const activeCenterSurface =
+    centerPanelState.surfaces.find((surface) => surface.id === centerPanelState.activeSurfaceId) ??
+    centerPanelState.surfaces[0];
+  const centerHostHidden = !isPanel && activeCenterSurface?.id !== HOST_SURFACE_ID;
+  // Chat-header "+" panel menu → create a sibling chat panel / open a center
+  // terminal, both sharing the host thread's workspace. Guarded on a live host
+  // thread ref (drafts have no server thread to host siblings yet).
+  const handleCreateChatPanel = useCallback(
+    (entry: ProviderInstanceEntry) => {
+      if (!activeThread || !activeThreadRef) return;
+      const model = entry.models[0]?.slug;
+      void centerPanelActions.createChatPanel({
+        hostRef: activeThreadRef,
+        projectId: activeThread.projectId,
+        worktreePath: activeThread.worktreePath,
+        branch: activeThread.branch ?? null,
+        instanceId: entry.instanceId,
+        ...(model ? { model } : {}),
+        providerLabel: entry.displayName,
+      });
+    },
+    [activeThread, activeThreadRef, centerPanelActions],
+  );
+  const handleOpenTerminalPanel = useCallback(() => {
+    if (!activeThreadRef) return;
+    const centerTerminalIds = centerPanelState.surfaces.flatMap((surface) =>
+      surface.kind === "terminal" ? [surface.terminalId] : [],
+    );
+    centerPanelActions.openTerminalPanel(activeThreadRef, [
+      ...activeKnownTerminalIds,
+      ...centerTerminalIds,
+    ]);
+  }, [activeKnownTerminalIds, activeThreadRef, centerPanelActions, centerPanelState.surfaces]);
   const [timelineAnchor, setTimelineAnchor] = useState<{
     readonly threadKey: string | null;
     readonly messageId: MessageId | null;
@@ -1600,6 +1680,8 @@ function ChatViewContent(props: ChatViewProps) {
   );
 
   useEffect(() => {
+    // Panel variant: sidebar visited-state is host-owned; a panel must not touch it.
+    if (isPanel) return;
     if (!serverThread?.id) return;
     const threadUpdatedAt = Date.parse(serverThread.updatedAt);
     if (Number.isNaN(threadUpdatedAt)) return;
@@ -1611,6 +1693,7 @@ function ChatViewContent(props: ChatViewProps) {
       serverThread.updatedAt,
     );
   }, [
+    isPanel,
     activeThreadLastVisitedAt,
     markThreadVisited,
     serverThread?.environmentId,
@@ -2774,6 +2857,10 @@ function ChatViewContent(props: ChatViewProps) {
     useRightPanelStore.getState().open(activeThreadRef, "diff");
     onDiffPanelOpen?.();
   }, [activeThreadRef, isGitRepo, isServerThread, onDiffPanelOpen]);
+  const addSourceControlSurface = useCallback(() => {
+    if (!activeThreadRef || !isServerThread || !isGitRepo) return;
+    useRightPanelStore.getState().open(activeThreadRef, "sourceControl");
+  }, [activeThreadRef, isGitRepo, isServerThread]);
   const addFilesSurface = useCallback(() => {
     if (!activeThreadRef || !activeProject) return;
     useRightPanelStore.getState().open(activeThreadRef, "files");
@@ -3793,9 +3880,13 @@ function ChatViewContent(props: ChatViewProps) {
       event.stopPropagation();
       void runProjectScript(script);
     };
+    // Panel variant: global keybindings are host-owned; N panels must not each
+    // register a document-level keydown handler (commands would fire N times).
+    if (isPanel) return;
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
   }, [
+    isPanel,
     activeProject,
     activeRightPanelSurface,
     addTerminalSurface,
@@ -4970,6 +5061,15 @@ function ChatViewContent(props: ChatViewProps) {
       <Suspense fallback={null}>
         <DiffPanel mode="embedded" composerDraftTarget={composerDraftTarget} />
       </Suspense>
+    ) : activeRightPanelSurface?.kind === "sourceControl" ? (
+      <Suspense fallback={null}>
+        <SourceControlPanel
+          key={scopedThreadKey(activeThreadRef)}
+          mode="embedded"
+          threadRef={activeThreadRef}
+          gitCwd={gitCwd}
+        />
+      </Suspense>
     ) : activeRightPanelSurface?.kind === "plan" ? (
       <PlanSidebar
         activePlan={activePlan}
@@ -5009,7 +5109,7 @@ function ChatViewContent(props: ChatViewProps) {
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
-      {rightPanelOpen && !shouldUsePlanSidebarSheet ? panelLayoutControls : null}
+      {!isPanel && rightPanelOpen && !shouldUsePlanSidebarSheet ? panelLayoutControls : null}
       <div
         className={cn(
           "flex min-h-0 min-w-0 flex-col overflow-x-hidden",
@@ -5018,52 +5118,80 @@ function ChatViewContent(props: ChatViewProps) {
         data-chat-column-maximized-away={rightPanelMaximized ? "true" : "false"}
       >
         {/* Top bar */}
-        <header
-          data-chat-header
-          className={cn(
-            "border-b border-border transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none",
-            isElectron
-              ? cn(
-                  "workspace-topbar drag-region relative px-3 sm:px-5",
-                  reserveTitleBarControlInset &&
-                    !inlineRightPanelOwnsTitleBar &&
-                    "wco:pr-[var(--workspace-native-controls-inset)]",
-                )
-              : "workspace-topbar pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)]",
-            COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
-          )}
-        >
-          {!rightPanelOpen ? panelLayoutControls : null}
-          <ChatHeader
-            activeThreadEnvironmentId={activeThread.environmentId}
-            activeThreadId={activeThread.id}
-            {...(routeKind === "draft" && draftId ? { draftId } : {})}
-            activeThreadTitle={activeThread.title}
-            activeProjectName={activeProject?.title}
-            openInCwd={gitCwd}
-            activeProjectScripts={activeProject?.scripts}
-            preferredScriptId={
-              activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
-            }
-            keybindings={keybindings}
-            availableEditors={availableEditors}
-            rightPanelOpen={rightPanelOpen}
-            gitCwd={gitCwd}
-            onRunProjectScript={runProjectScript}
-            onAddProjectScript={saveProjectScript}
-            onUpdateProjectScript={updateProjectScript}
-            onDeleteProjectScript={deleteProjectScript}
-          />
-        </header>
+        {/* Panel variant: host owns the chat header (title, git actions, scripts). */}
+        {!isPanel && (
+          <header
+            data-chat-header
+            className={cn(
+              "border-b border-border transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none",
+              isElectron
+                ? cn(
+                    "workspace-topbar drag-region relative px-3 sm:px-5",
+                    reserveTitleBarControlInset &&
+                      !inlineRightPanelOwnsTitleBar &&
+                      "wco:pr-[var(--workspace-native-controls-inset)]",
+                  )
+                : "workspace-topbar pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)]",
+              COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+            )}
+          >
+            {!rightPanelOpen ? panelLayoutControls : null}
+            <ChatHeader
+              activeThreadEnvironmentId={activeThread.environmentId}
+              activeThreadId={activeThread.id}
+              {...(routeKind === "draft" && draftId ? { draftId } : {})}
+              activeThreadTitle={activeThread.title}
+              activeProjectName={activeProject?.title}
+              openInCwd={gitCwd}
+              activeProjectScripts={activeProject?.scripts}
+              preferredScriptId={
+                activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
+              }
+              keybindings={keybindings}
+              availableEditors={availableEditors}
+              rightPanelOpen={rightPanelOpen}
+              gitCwd={gitCwd}
+              providerStatuses={providerStatuses as ServerProvider[]}
+              settings={settings}
+              canCreatePanel={activeThreadRef !== null}
+              onCreateChatPanel={handleCreateChatPanel}
+              onOpenTerminalPanel={handleOpenTerminalPanel}
+              onRunProjectScript={runProjectScript}
+              onAddProjectScript={saveProjectScript}
+              onUpdateProjectScript={updateProjectScript}
+              onDeleteProjectScript={deleteProjectScript}
+            />
+          </header>
+        )}
 
+        {/* Center multipanel tab strip — hidden while only the host chat exists */}
+        {!isPanel && activeThreadRef && centerPanelState.surfaces.length > 1 && (
+          <CenterPanelTabs
+            surfaces={centerPanelState.surfaces}
+            activeSurfaceId={centerPanelState.activeSurfaceId}
+            onActivate={(surface) =>
+              centerPanelActions.activateSurface(activeThreadRef, surface.id)
+            }
+            onCloseSurface={(surface) => centerPanelActions.closeSurface(activeThreadRef, surface)}
+            onCloseOtherSurfaces={(surface) =>
+              centerPanelActions.closeOtherSurfaces(activeThreadRef, surface)
+            }
+            onCloseSurfacesToRight={(surface) =>
+              centerPanelActions.closeSurfacesToRight(activeThreadRef, surface)
+            }
+            onCloseAllSurfaces={() => centerPanelActions.closeAllSurfaces(activeThreadRef)}
+          />
+        )}
         {/* Error banner */}
         <ProviderStatusBanner status={activeProviderStatus} />
         <ThreadErrorBanner
           error={threadError}
           onDismiss={() => setThreadError(activeThread.id, null)}
         />
-        {/* Main content area with optional plan sidebar */}
-        <div className="flex min-h-0 min-w-0 flex-1">
+        {/* Main content area with optional plan sidebar. Kept MOUNTED (css-hidden)
+            while a center panel tab is active so the host transcript's scroll and
+            composer state survive tab switches. */}
+        <div className={cn("flex min-h-0 min-w-0 flex-1", centerHostHidden && "hidden")}>
           {/* Chat column */}
           <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
             {/* Messages Wrapper */}
@@ -5218,12 +5346,15 @@ function ChatViewContent(props: ChatViewProps) {
               <div
                 className={cn(
                   "chat-composer-horizontal-inset chat-composer-lower-chrome relative z-10",
-                  isGitRepo
+                  // Panels never render the BranchToolbar strip below the composer,
+                  // so they take the taller no-toolbar padding — otherwise the
+                  // composer sits glued to the window edge and looks clipped.
+                  !isPanel && isGitRepo
                     ? "pb-[calc(env(safe-area-inset-bottom)+0.25rem)]"
                     : "pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:pb-[calc(env(safe-area-inset-bottom)+1rem)]",
                 )}
               >
-                {isGitRepo && (
+                {!isPanel && isGitRepo && (
                   <div className="pointer-events-auto">
                     <BranchToolbar
                       environmentId={activeThread.environmentId}
@@ -5275,27 +5406,56 @@ function ChatViewContent(props: ChatViewProps) {
         </div>
         {/* end horizontal flex container */}
 
-        {mountedTerminalThreadRefs.map(({ key: mountedThreadKey, threadRef: mountedThreadRef }) => (
-          <PersistentThreadTerminalDrawer
-            key={mountedThreadKey}
-            threadRef={mountedThreadRef}
-            threadId={mountedThreadRef.threadId}
-            visible={mountedThreadKey === activeThreadKey && terminalUiState.terminalOpen}
-            launchContext={
-              mountedThreadKey === activeThreadKey ? (activeTerminalLaunchContext ?? null) : null
-            }
-            focusRequestId={mountedThreadKey === activeThreadKey ? terminalFocusRequestId : 0}
-            splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
-            splitVerticalShortcutLabel={splitTerminalVerticalShortcutLabel ?? undefined}
-            newShortcutLabel={newTerminalShortcutLabel ?? undefined}
-            closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
-            keybindings={keybindings}
-            onAddTerminalContext={addTerminalContextToDraft}
+        {/* Active center panel body (only the active non-host surface mounts;
+            the host body above is css-hidden, not unmounted) */}
+        {centerHostHidden && activeThreadRef && activeCenterSurface?.kind === "chat" ? (
+          <ChatView
+            key={activeCenterSurface.id}
+            variant="panel"
+            panelThreadRef={scopeThreadRef(
+              activeThreadRef.environmentId,
+              activeCenterSurface.threadId,
+            )}
           />
-        ))}
+        ) : null}
+        {centerHostHidden && activeThreadRef && activeCenterSurface?.kind === "terminal" ? (
+          <CenterTerminalPanel
+            key={activeCenterSurface.id}
+            threadRef={activeThreadRef}
+            terminalId={activeCenterSurface.terminalId}
+            keybindings={keybindings}
+            focusRequestId={terminalFocusRequestId}
+            onAddTerminalContext={addTerminalContextToDraft}
+            onClose={() => centerPanelActions.closeSurface(activeThreadRef, activeCenterSurface)}
+          />
+        ) : null}
+
+        {!isPanel &&
+          mountedTerminalThreadRefs.map(
+            ({ key: mountedThreadKey, threadRef: mountedThreadRef }) => (
+              <PersistentThreadTerminalDrawer
+                key={mountedThreadKey}
+                threadRef={mountedThreadRef}
+                threadId={mountedThreadRef.threadId}
+                visible={mountedThreadKey === activeThreadKey && terminalUiState.terminalOpen}
+                launchContext={
+                  mountedThreadKey === activeThreadKey
+                    ? (activeTerminalLaunchContext ?? null)
+                    : null
+                }
+                focusRequestId={mountedThreadKey === activeThreadKey ? terminalFocusRequestId : 0}
+                splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
+                splitVerticalShortcutLabel={splitTerminalVerticalShortcutLabel ?? undefined}
+                newShortcutLabel={newTerminalShortcutLabel ?? undefined}
+                closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
+                keybindings={keybindings}
+                onAddTerminalContext={addTerminalContextToDraft}
+              />
+            ),
+          )}
       </div>
 
-      {!shouldUsePlanSidebarSheet && rightPanelOpen && activeThreadRef ? (
+      {!isPanel && !shouldUsePlanSidebarSheet && rightPanelOpen && activeThreadRef ? (
         <RightPanelTabs
           mode="inline"
           maximized={rightPanelMaximized}
@@ -5313,15 +5473,17 @@ function ChatViewContent(props: ChatViewProps) {
           onAddBrowser={createBrowserSurface}
           onAddTerminal={addTerminalSurface}
           onAddDiff={addDiffSurface}
+          onAddSourceControl={addSourceControlSurface}
           onAddFiles={addFilesSurface}
           browserAvailable={isPreviewSupportedInRuntime()}
           diffAvailable={isServerThread && isGitRepo}
+          sourceControlAvailable={isServerThread && isGitRepo}
           filesAvailable={activeProject !== null}
         >
           {rightPanelContent}
         </RightPanelTabs>
       ) : null}
-      {shouldUsePlanSidebarSheet && rightPanelOpen && activeThreadRef ? (
+      {!isPanel && shouldUsePlanSidebarSheet && rightPanelOpen && activeThreadRef ? (
         <RightPanelSheet open onClose={planSidebarOpen ? closePlanSidebar : closePreviewPanel}>
           <RightPanelTabs
             mode="sheet"
@@ -5340,9 +5502,11 @@ function ChatViewContent(props: ChatViewProps) {
             onAddBrowser={createBrowserSurface}
             onAddTerminal={addTerminalSurface}
             onAddDiff={addDiffSurface}
+            onAddSourceControl={addSourceControlSurface}
             onAddFiles={addFilesSurface}
             browserAvailable={isPreviewSupportedInRuntime()}
             diffAvailable={isServerThread && isGitRepo}
+            sourceControlAvailable={isServerThread && isGitRepo}
             filesAvailable={activeProject !== null}
           >
             {rightPanelContent}

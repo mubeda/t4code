@@ -91,15 +91,15 @@ function formatCloudStatus(status: CloudCliStatus, options?: { readonly json?: b
       ? "pending server startup"
       : "not provisioned";
   const nextStep = !status.authenticated
-    ? "Run `t3 connect link` to authorize and enable T3 Connect."
+    ? "Run `t3 connect link` to authorize and enable T4 Connect."
     : !status.desired
-      ? "Run `t3 connect link` to enable T3 Connect."
+      ? "Run `t3 connect link` to enable T4 Connect."
       : !status.linked
-        ? "Start T3 to provision the environment link and launch its managed tunnel."
+        ? "Start T4 to provision the environment link and launch its managed tunnel."
         : undefined;
 
   return [
-    "T3 Connect",
+    "T4 Connect",
     `  Exposure: ${status.desired ? "enabled" : "disabled"}`,
     `  Authorization: ${status.authenticated ? "stored credential" : "missing"}`,
     `  Environment link: ${provisioned}`,
@@ -114,7 +114,7 @@ const CLOUD_CLI_LIVE_SERVER_TIMEOUT = Duration.seconds(5);
 const confirmRelayClientInstall = (version: string) =>
   Prompt.run(
     Prompt.confirm({
-      message: `The T3 relay client is required for T3 Connect. Download and install version ${version}?`,
+      message: `The T4 relay client is required for T4 Connect. Download and install version ${version}?`,
       initial: false,
     }),
   );
@@ -219,7 +219,7 @@ const logCloudDisconnectFailure = (
   clearAuthorization: boolean,
   cause: Cause.Cause<unknown>,
 ) =>
-  Effect.logWarning("T3 Connect disconnect operation failed.").pipe(
+  Effect.logWarning("T4 Connect disconnect operation failed.").pipe(
     Effect.annotateLogs({
       operation,
       clearAuthorization,
@@ -265,10 +265,10 @@ export const reportCloudDisconnectResults = Effect.fn("cloud.cli.report_disconne
         input.liveResult.cause,
       );
       yield* Console.warn(
-        "T3 Connect is disabled, but the running server could not stop its tunnel.\nRestart that server to stop the connector.",
+        "T4 Connect is disabled, but the running server could not stop its tunnel.\nRestart that server to stop the connector.",
       );
     } else {
-      yield* Console.log("T3 Connect is disabled locally.");
+      yield* Console.log("T4 Connect is disabled locally.");
     }
 
     if (Exit.isFailure(input.relayResult)) {
@@ -308,7 +308,7 @@ const disconnectCloud = Effect.fn("cloud.cli.disconnect")(function* (options: {
   });
 
   if (options.clearAuthorization) {
-    yield* Console.log("Signed out of T3 Connect locally.");
+    yield* Console.log("Signed out of T4 Connect locally.");
   }
 });
 
@@ -353,14 +353,14 @@ const runCloudCommand = <A, E>(
 const connectLoginCommand = Command.make("login", {
   ...projectLocationFlags,
 }).pipe(
-  Command.withDescription("Authorize the T3 Connect CLI without enabling remote access."),
+  Command.withDescription("Authorize the T4 Connect CLI without enabling remote access."),
   Command.withHandler((flags) =>
     runCloudCommand(
       flags,
       Effect.gen(function* () {
         const tokens = yield* CliTokenManager.CloudCliTokenManager;
         yield* tokens.get;
-        yield* Console.log("Signed in to T3 Connect.");
+        yield* Console.log("Signed in to T4 Connect.");
       }),
     ),
   ),
@@ -369,7 +369,7 @@ const connectLoginCommand = Command.make("login", {
 const connectLinkCommand = Command.make("link", {
   ...projectLocationFlags,
 }).pipe(
-  Command.withDescription("Authorize this environment for T3 Connect on next start."),
+  Command.withDescription("Authorize this environment for T4 Connect on next start."),
   Command.withHandler((flags) =>
     runCloudCommand(
       flags,
@@ -381,7 +381,7 @@ const connectLinkCommand = Command.make("link", {
           reportRelayClientInstallProgress,
         );
         if (Option.isNone(installed)) {
-          yield* Console.log("T3 Connect setup cancelled. The relay client was not installed.");
+          yield* Console.log("T4 Connect setup cancelled. The relay client was not installed.");
           return;
         }
         yield* Console.log(
@@ -392,7 +392,7 @@ const connectLinkCommand = Command.make("link", {
         yield* tokens.get;
         yield* CliState.setCliDesiredCloudLink(true);
         yield* Console.log(
-          "This T3 environment will be available through T3 Connect the next time T3 starts.",
+          "This T4 environment will be available through T4 Connect the next time T4 starts.",
         );
       }),
     ),
@@ -403,7 +403,7 @@ const connectStatusCommand = Command.make("status", {
   ...projectLocationFlags,
   json: jsonFlag,
 }).pipe(
-  Command.withDescription("Show persisted T3 Connect and relay client state."),
+  Command.withDescription("Show persisted T4 Connect and relay client state."),
   Command.withHandler((flags) =>
     runCloudCommand(
       flags,
@@ -441,7 +441,7 @@ const connectStatusCommand = Command.make("status", {
 const connectUnlinkCommand = Command.make("unlink", {
   ...projectLocationFlags,
 }).pipe(
-  Command.withDescription("Disable T3 Connect while retaining the stored authorization."),
+  Command.withDescription("Disable T4 Connect while retaining the stored authorization."),
   Command.withHandler((flags) =>
     runCloudCommand(flags, disconnectCloud({ clearAuthorization: false })),
   ),
@@ -450,14 +450,14 @@ const connectUnlinkCommand = Command.make("unlink", {
 const connectLogoutCommand = Command.make("logout", {
   ...projectLocationFlags,
 }).pipe(
-  Command.withDescription("Disable T3 Connect and clear the stored CLI authorization."),
+  Command.withDescription("Disable T4 Connect and clear the stored CLI authorization."),
   Command.withHandler((flags) =>
     runCloudCommand(flags, disconnectCloud({ clearAuthorization: true })),
   ),
 );
 
 export const connectCommand = Command.make("connect").pipe(
-  Command.withDescription("Manage headless T3 Connect access."),
+  Command.withDescription("Manage headless T4 Connect access."),
   Command.withSubcommands([
     connectLoginCommand,
     connectLinkCommand,

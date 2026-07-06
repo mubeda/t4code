@@ -9,7 +9,13 @@ import * as Scope from "effect/Scope";
 
 import { GitCommandError } from "@t3tools/contracts";
 import { ServerConfig } from "../config.ts";
-import { splitNullSeparatedGitStdoutPaths } from "./GitVcsDriverCore.ts";
+import {
+  parsePorcelainFileStatus,
+  resolveNumstatNewPath,
+  sliceAfterFields,
+  splitNullSeparatedGitStdoutPaths,
+  statusCharToWorkingTreeStatus,
+} from "./GitVcsDriverCore.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 
 const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
@@ -76,6 +82,108 @@ const initRepoWithCommit = (
     const initialBranch = yield* git(cwd, ["branch", "--show-current"]);
     return { initialBranch };
   });
+
+describe("parsePorcelainFileStatus", () => {
+  it("maps untracked, modified, added, deleted and renamed porcelain lines", () => {
+    assert.deepStrictEqual(parsePorcelainFileStatus("? new-file.txt"), {
+      path: "new-file.txt",
+      status: "untracked",
+      indexStatus: "untracked",
+      worktreeStatus: "untracked",
+    });
+    assert.deepStrictEqual(
+      parsePorcelainFileStatus("1 .M N... 100644 100644 100644 aaa bbb tracked.ts"),
+      {
+        path: "tracked.ts",
+        status: "modified",
+        indexStatus: "modified",
+        worktreeStatus: "modified",
+      },
+    );
+    assert.deepStrictEqual(
+      parsePorcelainFileStatus("1 A. N... 000000 100644 100644 000 ccc added.ts"),
+      {
+        path: "added.ts",
+        status: "added",
+        indexStatus: "added",
+        worktreeStatus: "modified",
+      },
+    );
+    // Per-area status: an "AM" file is "added" in the index but "modified" in
+    // the worktree — the staged and unstaged rows must not share one status.
+    assert.deepStrictEqual(
+      parsePorcelainFileStatus("1 AM N... 000000 100644 100644 000 ccc staged-added.ts"),
+      {
+        path: "staged-added.ts",
+        status: "modified",
+        indexStatus: "added",
+        worktreeStatus: "modified",
+      },
+    );
+    assert.deepStrictEqual(
+      parsePorcelainFileStatus("1 .D N... 100644 100644 000000 ddd ddd gone.ts"),
+      {
+        path: "gone.ts",
+        status: "deleted",
+        indexStatus: "modified",
+        worktreeStatus: "deleted",
+      },
+    );
+    assert.equal(parsePorcelainFileStatus("! ignored.log"), null);
+  });
+
+  it("extracts the current path (before the tab) for rename, copy and unmerged records", () => {
+    assert.deepStrictEqual(
+      parsePorcelainFileStatus(
+        "2 R. N... 100644 100644 100644 aaa bbb R100 newname.ts\toldname.ts",
+      ),
+      { path: "newname.ts", status: "renamed", indexStatus: "renamed", worktreeStatus: "modified" },
+    );
+    assert.deepStrictEqual(
+      parsePorcelainFileStatus("2 C. N... 100644 100644 100644 aaa bbb C100 copy.ts\tsource.ts"),
+      { path: "copy.ts", status: "copied", indexStatus: "copied", worktreeStatus: "modified" },
+    );
+    assert.deepStrictEqual(
+      parsePorcelainFileStatus("u UU N... 100644 100644 100644 100644 aaa bbb ccc conflict.ts"),
+      {
+        path: "conflict.ts",
+        status: "modified",
+        indexStatus: "modified",
+        worktreeStatus: "modified",
+      },
+    );
+  });
+
+  it("derives letters via statusCharToWorkingTreeStatus", () => {
+    assert.equal(statusCharToWorkingTreeStatus("A"), "added");
+    assert.equal(statusCharToWorkingTreeStatus("D"), "deleted");
+    assert.equal(statusCharToWorkingTreeStatus("R"), "renamed");
+    assert.equal(statusCharToWorkingTreeStatus("C"), "copied");
+    assert.equal(statusCharToWorkingTreeStatus("M"), "modified");
+    assert.equal(statusCharToWorkingTreeStatus("?"), "modified");
+  });
+});
+
+describe("sliceAfterFields", () => {
+  it("preserves runs of spaces inside the trailing path", () => {
+    assert.equal(
+      sliceAfterFields("1 .M N... 100644 100644 100644 aaa bbb a  b.txt", 8),
+      "a  b.txt",
+    );
+    assert.equal(sliceAfterFields("a b c", 2), "c");
+    assert.equal(sliceAfterFields("a b", 2), "");
+  });
+});
+
+describe("resolveNumstatNewPath", () => {
+  it("resolves full and brace-compacted rename forms to the new path", () => {
+    assert.equal(resolveNumstatNewPath("plain.ts"), "plain.ts");
+    assert.equal(resolveNumstatNewPath("a.ts => b.ts"), "b.ts");
+    assert.equal(resolveNumstatNewPath("src/{a.ts => b.ts}"), "src/b.ts");
+    assert.equal(resolveNumstatNewPath("{a => b}/x.ts"), "b/x.ts");
+    assert.equal(resolveNumstatNewPath("a/{b => c}/x.ts"), "a/c/x.ts");
+  });
+});
 
 it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
   describe("structured errors", () => {
@@ -273,6 +381,216 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           "feature.ts",
         );
       }),
+    );
+
+    it.effect("reports per-file working-tree status letters", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        yield* writeTextFile(cwd, "tracked.ts", "export const a = 1;\n");
+        yield* git(cwd, ["add", "tracked.ts"]);
+        yield* git(cwd, ["commit", "-m", "add tracked"]);
+        yield* writeTextFile(cwd, "tracked.ts", "export const a = 2;\n");
+        yield* writeTextFile(cwd, "untracked.txt", "local-only\n");
+
+        const status = yield* (yield* GitVcsDriver.GitVcsDriver).statusDetails(cwd);
+        const byPath = new Map(status.workingTree.files.map((file) => [file.path, file.status]));
+
+        assert.equal(byPath.get("tracked.ts"), "modified");
+        assert.equal(byPath.get("untracked.txt"), "untracked");
+      }),
+    );
+
+    it.effect("splits staged and unstaged changes into areas and stages selected files", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        yield* writeTextFile(cwd, "tracked.ts", "export const a = 1;\n");
+        yield* git(cwd, ["add", "tracked.ts"]);
+        yield* git(cwd, ["commit", "-m", "add tracked"]);
+        // one staged edit, one unstaged edit, one untracked file
+        yield* writeTextFile(cwd, "tracked.ts", "export const a = 2;\n");
+        yield* git(cwd, ["add", "tracked.ts"]);
+        yield* writeTextFile(cwd, "tracked.ts", "export const a = 3;\n");
+        yield* writeTextFile(cwd, "untracked.txt", "new\n");
+
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const before = yield* driver.statusDetails(cwd);
+        const areas = new Set(before.workingTree.files.map((file) => file.area));
+        assert.isTrue(areas.has("staged"));
+        assert.isTrue(areas.has("unstaged"));
+        assert.isTrue(areas.has("untracked"));
+
+        // a file changed in both index and worktree produces TWO entries
+        const trackedEntries = before.workingTree.files.filter(
+          (file) => file.path === "tracked.ts",
+        );
+        assert.equal(trackedEntries.length, 2);
+        assert.isTrue(trackedEntries.some((entry) => entry.area === "staged"));
+        assert.isTrue(trackedEntries.some((entry) => entry.area === "unstaged"));
+
+        // stage the untracked file, then confirm it moves to the staged area
+        yield* driver.stageFiles({ cwd, filePaths: ["untracked.txt"] });
+        const after = yield* driver.statusDetails(cwd);
+        const untrackedEntry = after.workingTree.files.find(
+          (file) => file.path === "untracked.txt",
+        );
+        assert.equal(untrackedEntry?.area, "staged");
+      }),
+    );
+
+    it.effect("reports index status for staged entries and worktree status for unstaged", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        // A brand-new file staged, then edited again in the worktree -> "AM":
+        // added in the index, modified in the worktree.
+        yield* writeTextFile(cwd, "added.ts", "export const a = 1;\n");
+        yield* git(cwd, ["add", "added.ts"]);
+        yield* writeTextFile(cwd, "added.ts", "export const a = 2;\n");
+
+        const status = yield* (yield* GitVcsDriver.GitVcsDriver).statusDetails(cwd);
+        const entries = status.workingTree.files.filter((file) => file.path === "added.ts");
+        const staged = entries.find((entry) => entry.area === "staged");
+        const unstaged = entries.find((entry) => entry.area === "unstaged");
+        assert.equal(staged?.status, "added", "staged entry reflects the index (X) status");
+        assert.equal(
+          unstaged?.status,
+          "modified",
+          "unstaged entry reflects the worktree (Y) status",
+        );
+      }),
+    );
+
+    it.effect("discarding an unstaged edit preserves the staged snapshot", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        yield* writeTextFile(cwd, "file.ts", "committed\n");
+        yield* git(cwd, ["add", "file.ts"]);
+        yield* git(cwd, ["commit", "-m", "add file"]);
+        // Stage version A, then edit the worktree to B without staging.
+        yield* writeTextFile(cwd, "file.ts", "A\n");
+        yield* git(cwd, ["add", "file.ts"]);
+        yield* writeTextFile(cwd, "file.ts", "B\n");
+
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* driver.discardFiles({ cwd, filePaths: ["file.ts"] });
+
+        // The index must still hold the STAGED version A (not wiped to HEAD)…
+        const indexContent = yield* git(cwd, ["show", ":file.ts"]);
+        assert.equal(indexContent, "A");
+        const stagedDiff = yield* git(cwd, ["diff", "--cached", "--name-only"]);
+        assert.isTrue(
+          stagedDiff.includes("file.ts"),
+          "staged snapshot must not be wiped by discarding the unstaged edit",
+        );
+        const fs = yield* FileSystem.FileSystem;
+        const pathService = yield* Path.Path;
+        const contents = yield* fs.readFileString(pathService.join(cwd, "file.ts"));
+        // `git restore` re-checks-out through core.autocrlf, so normalize EOLs.
+        assert.equal(contents.replace(/\r\n/g, "\n"), "A\n");
+      }),
+    );
+
+    it.effect("unstageFiles works on an unborn HEAD (fresh repo, no commits)", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* driver.initRepo({ cwd });
+        yield* git(cwd, ["config", "user.email", "test@test.com"]);
+        yield* git(cwd, ["config", "user.name", "Test"]);
+        yield* writeTextFile(cwd, "new.txt", "hello\n");
+        yield* git(cwd, ["add", "new.txt"]);
+
+        yield* driver.unstageFiles({ cwd, filePaths: ["new.txt"] });
+
+        const porcelain = yield* git(cwd, ["status", "--porcelain"]);
+        assert.isTrue(
+          porcelain.startsWith("??"),
+          `expected new.txt untracked after unstage, got: ${porcelain}`,
+        );
+      }),
+    );
+
+    it.effect("reports line counts for untracked files", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        yield* writeTextFile(cwd, "untracked.txt", "one\ntwo\nthree\n");
+
+        const status = yield* (yield* GitVcsDriver.GitVcsDriver).statusDetails(cwd);
+        const entry = status.workingTree.files.find((file) => file.path === "untracked.txt");
+        assert.equal(entry?.area, "untracked");
+        assert.equal(entry?.insertions, 3);
+      }),
+    );
+
+    it.effect("listCommits returns empty history for an unborn HEAD instead of failing", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* driver.initRepo({ cwd });
+        const result = yield* driver.listCommits({ cwd, limit: 10 });
+        assert.deepStrictEqual(result, { commits: [], nextCursor: null });
+      }),
+    );
+
+    it.effect("resolves brace-compacted staged rename paths to the new path", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        yield* writeTextFile(cwd, "src/old-name.ts", "export const a = 1;\n");
+        yield* git(cwd, ["add", "src/old-name.ts"]);
+        yield* git(cwd, ["commit", "-m", "add file to rename"]);
+        // Staged rename within a shared prefix -> numstat emits the compacted
+        // form "src/{old-name.ts => new-name.ts}".
+        yield* git(cwd, ["mv", "src/old-name.ts", "src/new-name.ts"]);
+
+        const status = yield* (yield* GitVcsDriver.GitVcsDriver).statusDetails(cwd);
+        const paths = status.workingTree.files.map((file) => file.path);
+        assert.isTrue(
+          paths.includes("src/new-name.ts"),
+          `expected the resolved rename path, got ${paths.join(", ")}`,
+        );
+        assert.isFalse(
+          paths.some((p) => p.includes("}")),
+          "brace-compacted rename path must be resolved, not left as 'new-name.ts}'",
+        );
+      }),
+    );
+
+    it.effect("discardFiles([]) is a no-op and does NOT clean untracked files", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        yield* writeTextFile(cwd, "keep-untracked.txt", "keep\n");
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* driver.discardFiles({ cwd, filePaths: [] });
+        const status = yield* driver.statusDetails(cwd);
+        assert.isTrue(
+          status.workingTree.files.some((file) => file.path === "keep-untracked.txt"),
+          "empty filePaths must not delete untracked files",
+        );
+      }),
+    );
+
+    it.effect(
+      "discardFiles removes listed untracked files and reverts listed tracked changes",
+      () =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTmpDir();
+          yield* initRepoWithCommit(cwd);
+          yield* writeTextFile(cwd, "tracked.ts", "1\n");
+          yield* git(cwd, ["add", "tracked.ts"]);
+          yield* git(cwd, ["commit", "-m", "add tracked"]);
+          yield* writeTextFile(cwd, "tracked.ts", "2\n");
+          yield* writeTextFile(cwd, "junk.txt", "junk\n");
+          const driver = yield* GitVcsDriver.GitVcsDriver;
+          yield* driver.discardFiles({ cwd, filePaths: ["tracked.ts", "junk.txt"] });
+          const status = yield* driver.statusDetails(cwd);
+          assert.equal(status.workingTree.files.length, 0);
+        }),
     );
 
     it.effect("reports default-branch delta separately from upstream delta", () =>
@@ -593,6 +911,32 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         yield* driver.removeWorktree({ cwd, path: worktreePath });
         const fileSystem = yield* FileSystem.FileSystem;
         assert.equal(yield* fileSystem.exists(worktreePath), false);
+      }),
+    );
+  });
+
+  describe("commit history", () => {
+    it.effect("lists recent commits with subject and author", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        yield* writeTextFile(cwd, "second.txt", "second\n");
+        yield* git(cwd, ["add", "second.txt"]);
+        yield* git(cwd, [
+          "-c",
+          "user.name=Ada",
+          "-c",
+          "user.email=ada@example.com",
+          "commit",
+          "-m",
+          "second commit",
+        ]);
+
+        const result = yield* (yield* GitVcsDriver.GitVcsDriver).listCommits({ cwd, limit: 10 });
+        assert.isAtLeast(result.commits.length, 2);
+        assert.equal(result.commits[0]?.subject, "second commit");
+        assert.equal(result.commits[0]?.authorName, "Ada");
+        assert.isTrue(result.commits[0]!.authoredAtMs > 0);
       }),
     );
   });

@@ -1,4 +1,4 @@
-# T3 Mobile Terminal Native Module
+# T4 Mobile Terminal Native Module
 
 This local Expo module owns the native terminal surface for the mobile app.
 
@@ -9,7 +9,7 @@ The JavaScript contract is intentionally small:
 - remote PTY output is delivered by the existing `WsRpcClient.terminal` RPC stream
 
 The iOS implementation uses the vendored `GhosttyKit.xcframework` built from the Ghostty custom-I/O
-fork, with T3's iOS 16 compatibility patch applied. `T3TerminalView` owns a `libghostty` surface and
+fork, with T4's iOS 16 compatibility patch applied. `T3TerminalView` owns a `libghostty` surface and
 uses that callback I/O model:
 
 1. initialize libghostty once for the process

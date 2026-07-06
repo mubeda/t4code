@@ -16,17 +16,18 @@ See [00-overview.md → Global Constraints](./00-overview.md#global-constraints)
 
 ## File Structure
 
-| File | Responsibility |
-|---|---|
-| `packages/contracts/src/git.ts` *(modify)* | Add `VcsWorkingTreeFileStatus` literal + optional `status` field on `workingTree.files`. |
-| `apps/server/src/vcs/GitVcsDriverCore.ts` *(modify)* | Export porcelain status helpers; populate `status` when building the files list. |
-| `apps/server/src/vcs/GitVcsDriverCore.test.ts` *(modify)* | Unit tests for the helper + an integration test asserting real status letters. |
-| `apps/web/src/sourceControlStatus.ts` *(create)* | Letter + color map for each status. |
-| `apps/web/src/sourceControlStatus.test.ts` *(create)* | Map unit tests. |
-| `apps/web/src/components/SourceControlPanel.logic.ts` *(modify)* | Add optional `status` to `WorkingTreeFile`; pass it through `workingTreeFiles`. |
-| `apps/web/src/components/SourceControlPanel.tsx` *(modify)* | Render the badge via `renderBadge`. |
+| File                                                             | Responsibility                                                                           |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `packages/contracts/src/git.ts` _(modify)_                       | Add `VcsWorkingTreeFileStatus` literal + optional `status` field on `workingTree.files`. |
+| `apps/server/src/vcs/GitVcsDriverCore.ts` _(modify)_             | Export porcelain status helpers; populate `status` when building the files list.         |
+| `apps/server/src/vcs/GitVcsDriverCore.test.ts` _(modify)_        | Unit tests for the helper + an integration test asserting real status letters.           |
+| `apps/web/src/sourceControlStatus.ts` _(create)_                 | Letter + color map for each status.                                                      |
+| `apps/web/src/sourceControlStatus.test.ts` _(create)_            | Map unit tests.                                                                          |
+| `apps/web/src/components/SourceControlPanel.logic.ts` _(modify)_ | Add optional `status` to `WorkingTreeFile`; pass it through `workingTreeFiles`.          |
+| `apps/web/src/components/SourceControlPanel.tsx` _(modify)_      | Render the badge via `renderBadge`.                                                      |
 
 **Interfaces produced (consumed by Plan 03):**
+
 - `VcsWorkingTreeFileStatus = "modified" | "added" | "deleted" | "renamed" | "copied" | "untracked"` (contract).
 - `parsePorcelainFileStatus(line) → { path: string; status: VcsWorkingTreeFileStatus } | null` and `statusCharToWorkingTreeStatus(char) → VcsWorkingTreeFileStatus` (exported from `GitVcsDriverCore.ts`).
 - `WORKING_TREE_STATUS_BADGE` + `workingTreeStatusBadge(status)` (`sourceControlStatus.ts`).
@@ -36,9 +37,11 @@ See [00-overview.md → Global Constraints](./00-overview.md#global-constraints)
 ### Task 1: Contract — add the status literal + field
 
 **Files:**
+
 - Modify: `packages/contracts/src/git.ts` (add literal near line 47; extend the `workingTree.files` struct at lines 208-215)
 
 **Interfaces:**
+
 - Produces: `VcsWorkingTreeFileStatus` schema + type; each `workingTree.files[]` entry gains `status?: VcsWorkingTreeFileStatus`.
 
 - [ ] **Step 1: Add the status literal**
@@ -95,10 +98,12 @@ git commit -m "feat(contracts): add optional per-file working-tree status"
 ### Task 2: Server — derive and populate the status letter
 
 **Files:**
+
 - Modify: `apps/server/src/vcs/GitVcsDriverCore.ts` (add helpers near line 162; extend the status loop ~line 1395 and the file-build ~lines 1435-1446)
 - Test: `apps/server/src/vcs/GitVcsDriverCore.test.ts`
 
 **Interfaces:**
+
 - Consumes: `VcsWorkingTreeFileStatus` from `@t3tools/contracts`.
 - Produces: `parsePorcelainFileStatus`, `statusCharToWorkingTreeStatus` (exported); `workingTree.files[].status` populated in `readStatusDetailsLocal`.
 
@@ -119,18 +124,27 @@ describe("parsePorcelainFileStatus", () => {
       path: "new-file.txt",
       status: "untracked",
     });
-    assert.deepStrictEqual(parsePorcelainFileStatus("1 .M N... 100644 100644 100644 aaa bbb tracked.ts"), {
-      path: "tracked.ts",
-      status: "modified",
-    });
-    assert.deepStrictEqual(parsePorcelainFileStatus("1 A. N... 000000 100644 100644 000 ccc added.ts"), {
-      path: "added.ts",
-      status: "added",
-    });
-    assert.deepStrictEqual(parsePorcelainFileStatus("1 .D N... 100644 100644 000000 ddd ddd gone.ts"), {
-      path: "gone.ts",
-      status: "deleted",
-    });
+    assert.deepStrictEqual(
+      parsePorcelainFileStatus("1 .M N... 100644 100644 100644 aaa bbb tracked.ts"),
+      {
+        path: "tracked.ts",
+        status: "modified",
+      },
+    );
+    assert.deepStrictEqual(
+      parsePorcelainFileStatus("1 A. N... 000000 100644 100644 000 ccc added.ts"),
+      {
+        path: "added.ts",
+        status: "added",
+      },
+    );
+    assert.deepStrictEqual(
+      parsePorcelainFileStatus("1 .D N... 100644 100644 000000 ddd ddd gone.ts"),
+      {
+        path: "gone.ts",
+        status: "deleted",
+      },
+    );
     assert.equal(parsePorcelainFileStatus("! ignored.log"), null);
   });
 
@@ -226,24 +240,24 @@ export function parsePorcelainFileStatus(
 In `readStatusDetailsLocal`, add a map declaration next to `changedFilesWithoutNumstat` (line 1375):
 
 ```ts
-    const changedFilesWithoutNumstat = new Set<string>();
-    const statusByPath = new Map<string, VcsWorkingTreeFileStatus>();
+const changedFilesWithoutNumstat = new Set<string>();
+const statusByPath = new Map<string, VcsWorkingTreeFileStatus>();
 ```
 
 Then replace the change-detection branch (lines 1395-1399):
 
 ```ts
-      if (line.trim().length > 0 && !line.startsWith("#")) {
-        hasWorkingTreeChanges = true;
-        const parsed = parsePorcelainFileStatus(line);
-        if (parsed) {
-          changedFilesWithoutNumstat.add(parsed.path);
-          statusByPath.set(parsed.path, parsed.status);
-        } else {
-          const pathValue = parsePorcelainPath(line);
-          if (pathValue) changedFilesWithoutNumstat.add(pathValue);
-        }
-      }
+if (line.trim().length > 0 && !line.startsWith("#")) {
+  hasWorkingTreeChanges = true;
+  const parsed = parsePorcelainFileStatus(line);
+  if (parsed) {
+    changedFilesWithoutNumstat.add(parsed.path);
+    statusByPath.set(parsed.path, parsed.status);
+  } else {
+    const pathValue = parsePorcelainPath(line);
+    if (pathValue) changedFilesWithoutNumstat.add(pathValue);
+  }
+}
 ```
 
 - [ ] **Step 5: Attach `status` when building the files list**
@@ -251,28 +265,28 @@ Then replace the change-detection branch (lines 1395-1399):
 Replace the `files` map (lines 1435-1441) and the untracked-fallback push (lines 1443-1446):
 
 ```ts
-    const files = Array.from(fileStatMap.entries())
-      .map(([filePath, stat]) => {
-        insertions += stat.insertions;
-        deletions += stat.deletions;
-        return {
-          path: filePath,
-          insertions: stat.insertions,
-          deletions: stat.deletions,
-          status: statusByPath.get(filePath) ?? "modified",
-        };
-      })
-      .toSorted((a, b) => a.path.localeCompare(b.path));
+const files = Array.from(fileStatMap.entries())
+  .map(([filePath, stat]) => {
+    insertions += stat.insertions;
+    deletions += stat.deletions;
+    return {
+      path: filePath,
+      insertions: stat.insertions,
+      deletions: stat.deletions,
+      status: statusByPath.get(filePath) ?? "modified",
+    };
+  })
+  .toSorted((a, b) => a.path.localeCompare(b.path));
 
-    for (const filePath of changedFilesWithoutNumstat) {
-      if (fileStatMap.has(filePath)) continue;
-      files.push({
-        path: filePath,
-        insertions: 0,
-        deletions: 0,
-        status: statusByPath.get(filePath) ?? "modified",
-      });
-    }
+for (const filePath of changedFilesWithoutNumstat) {
+  if (fileStatMap.has(filePath)) continue;
+  files.push({
+    path: filePath,
+    insertions: 0,
+    deletions: 0,
+    status: statusByPath.get(filePath) ?? "modified",
+  });
+}
 ```
 
 - [ ] **Step 6: Run the tests to verify they pass**
@@ -297,12 +311,14 @@ git commit -m "feat(server): derive per-file working-tree status from porcelain"
 ### Task 3: Client — badge map + render
 
 **Files:**
+
 - Create: `apps/web/src/sourceControlStatus.ts`
 - Test: `apps/web/src/sourceControlStatus.test.ts`
 - Modify: `apps/web/src/components/SourceControlPanel.logic.ts` (add optional `status` to `WorkingTreeFile`, pass it through)
 - Modify: `apps/web/src/components/SourceControlPanel.tsx` (render the badge)
 
 **Interfaces:**
+
 - Consumes: `VcsWorkingTreeFileStatus` (`@t3tools/contracts`).
 - Produces: `WORKING_TREE_STATUS_BADGE`, `workingTreeStatusBadge(status)`.
 
@@ -413,24 +429,24 @@ import { workingTreeStatusBadge } from "~/sourceControlStatus";
 Then pass `renderBadge` to the `SourceControlChangesList` (the `<SourceControlChangesList .../>` in the ScrollArea):
 
 ```tsx
-            <SourceControlChangesList
-              files={files}
-              excludedPaths={excludedPaths}
-              onToggle={(path) => toggleExcludedPath(threadRef, path)}
-              onOpenFile={openFileInDiff}
-              renderBadge={(file) => {
-                const badge = workingTreeStatusBadge(file.status);
-                return (
-                  <span
-                    className={cn("w-4 shrink-0 text-center text-[10px] font-bold", badge.className)}
-                    title={badge.label}
-                    aria-label={badge.label}
-                  >
-                    {badge.letter}
-                  </span>
-                );
-              }}
-            />
+<SourceControlChangesList
+  files={files}
+  excludedPaths={excludedPaths}
+  onToggle={(path) => toggleExcludedPath(threadRef, path)}
+  onOpenFile={openFileInDiff}
+  renderBadge={(file) => {
+    const badge = workingTreeStatusBadge(file.status);
+    return (
+      <span
+        className={cn("w-4 shrink-0 text-center text-[10px] font-bold", badge.className)}
+        title={badge.label}
+        aria-label={badge.label}
+      >
+        {badge.letter}
+      </span>
+    );
+  }}
+/>
 ```
 
 (`cn` is already imported in `SourceControlPanel.tsx` from Plan 01.)

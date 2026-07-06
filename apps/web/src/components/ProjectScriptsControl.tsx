@@ -19,7 +19,15 @@ import {
   SettingsIcon,
   WrenchIcon,
 } from "lucide-react";
-import React, { type FormEvent, type KeyboardEvent, useCallback, useMemo, useState } from "react";
+import React, {
+  type FormEvent,
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import {
   keybindingValueForCommand,
@@ -102,6 +110,12 @@ interface ProjectScriptsControlProps {
   scripts: ReadonlyArray<ProjectScript>;
   keybindings: ResolvedKeybindingsConfig;
   preferredScriptId?: string | null;
+  /**
+   * Increment to open the "Add action" dialog from outside (the chat-header
+   * panel menu). Bumping this drives the dialog since the control no longer
+   * renders its own bare "+" trigger when there are no scripts.
+   */
+  addDialogRequestId?: number;
   onRunScript: (script: ProjectScript) => void;
   onAddScript: (input: NewProjectScriptInput) => Promise<ProjectScriptActionResult>;
   onUpdateScript: (
@@ -115,6 +129,7 @@ export default function ProjectScriptsControl({
   scripts,
   keybindings,
   preferredScriptId = null,
+  addDialogRequestId,
   onRunScript,
   onAddScript,
   onUpdateScript,
@@ -212,7 +227,7 @@ export default function ProjectScriptsControl({
     setIconPickerOpen(false);
   };
 
-  const openAddDialog = () => {
+  const openAddDialog = useCallback(() => {
     setEditingScriptId(null);
     setName("");
     setCommand("");
@@ -224,7 +239,18 @@ export default function ProjectScriptsControl({
     setAutoOpenPreview(false);
     setValidationError(null);
     setDialogOpen(true);
-  };
+  }, []);
+
+  // The chat-header panel menu opens the add dialog by incrementing
+  // addDialogRequestId (the control no longer renders its own bare "+"). Track
+  // the last-handled value in a ref so we open only on a real change, never
+  // just because the control remounted while the counter was already non-zero.
+  const lastHandledAddRequestId = useRef(addDialogRequestId);
+  useEffect(() => {
+    if (addDialogRequestId === lastHandledAddRequestId.current) return;
+    lastHandledAddRequestId.current = addDialogRequestId;
+    if (addDialogRequestId) openAddDialog();
+  }, [addDialogRequestId, openAddDialog]);
 
   const openEditDialog = (script: ProjectScript) => {
     setEditingScriptId(script.id);
@@ -327,21 +353,7 @@ export default function ProjectScriptsControl({
             </MenuPopup>
           </Menu>
         </Group>
-      ) : (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button size="xs" variant="outline" aria-label="Add action" onClick={openAddDialog} />
-            }
-          >
-            <PlusIcon className="size-3.5" />
-            <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
-              Add action
-            </span>
-          </TooltipTrigger>
-          <TooltipPopup side="top">Add action</TooltipPopup>
-        </Tooltip>
-      )}
+      ) : null}
 
       <Dialog
         onOpenChange={(open) => {

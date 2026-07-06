@@ -4,6 +4,7 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
@@ -156,7 +157,8 @@ it.effect("clones a looked-up repository into the requested destination", () =>
     const parent = yield* fs.makeTempDirectoryScoped({
       prefix: "t3-source-control-clone-parent-",
     });
-    const destinationPath = `${parent}/t3code`;
+    // Join with the platform separator — the service returns platform paths.
+    const destinationPath = (yield* Path.Path).join(parent, "t3code");
     const cloneCalls: Array<{ cwd: string; args: ReadonlyArray<string> }> = [];
 
     yield* Effect.gen(function* () {
@@ -374,6 +376,7 @@ it.effect("publish succeeds with status remote_added when the local repo has no 
               hasOriginRemote: true,
               isDefaultBranch: true,
               branch: "main",
+              defaultBranch: "main",
               upstreamRef: null,
               hasWorkingTreeChanges: false,
               workingTree: { files: [], insertions: 0, deletions: 0 },

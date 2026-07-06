@@ -2,7 +2,7 @@
 
 ## Ghostty / libghostty
 
-The iOS terminal renderer vendors `GhosttyKit.xcframework`, a libghostty build produced from T3's
+The iOS terminal renderer vendors `GhosttyKit.xcframework`, a libghostty build produced from T4's
 iOS 16 support fork. That fork was created from VVTerm's custom-I/O Ghostty fork.
 
 - Upstream project: https://github.com/ghostty-org/ghostty
