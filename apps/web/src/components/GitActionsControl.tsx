@@ -95,6 +95,12 @@ interface GitActionsControlProps {
   gitCwd: string | null;
   activeThreadRef: ScopedThreadRef | null;
   draftId?: DraftId;
+  /**
+   * Suppress the visible trigger (Initialize Git button / git actions group)
+   * while keeping the control mounted — it still owns the live thread-branch
+   * sync and the focus-driven vcs status refresh.
+   */
+  hideTrigger?: boolean;
 }
 
 interface PendingDefaultBranchAction {
@@ -971,6 +977,7 @@ export default function GitActionsControl({
   gitCwd,
   activeThreadRef,
   draftId,
+  hideTrigger = false,
 }: GitActionsControlProps) {
   const updateThreadMetadata = useAtomCommand(
     threadEnvironment.updateMetadata,
@@ -1656,7 +1663,7 @@ export default function GitActionsControl({
 
   return (
     <>
-      {!isRepo ? (
+      {hideTrigger ? null : !isRepo ? (
         <Button
           variant="outline"
           size="xs"

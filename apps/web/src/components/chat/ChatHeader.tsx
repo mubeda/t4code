@@ -150,6 +150,9 @@ export const ChatHeader = memo(function ChatHeader({
             gitCwd={gitCwd}
             activeThreadRef={scopeThreadRef(activeThreadEnvironmentId, activeThreadId)}
             {...(draftId ? { draftId } : {})}
+            // Trigger hidden: git actions live in the Source Control panel, but
+            // the control must stay mounted for its thread-branch sync effect.
+            hideTrigger
           />
         )}
       </div>
