@@ -1,5 +1,6 @@
 import type {
   ServerProcessDiagnosticsResult,
+  ServerProcessResourceHistorySummary,
   ServerProviderUsageSnapshot,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -9,6 +10,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildProviderUsageViewModel,
   buildResourceSummaryViewModel,
+  buildResourceTopProcessViewModel,
 } from "./statusBarPresentation";
 
 const updatedAt = DateTime.makeUnsafe("2026-07-07T18:00:00.000Z");
@@ -82,5 +84,28 @@ describe("statusBarPresentation", () => {
     expect(vm.cpuLabel).toBe("4.2%");
     expect(vm.processCountLabel).toBe("2");
     expect(vm.terminalCountLabel).toBe("11");
+  });
+
+  it("formats top process rows with per-process CPU instead of aggregate CPU", () => {
+    const vm = buildResourceTopProcessViewModel({
+      processKey: "123:t3 server",
+      pid: 123,
+      ppid: 1,
+      command: "t3 server",
+      depth: 0,
+      isServerRoot: true,
+      firstSeenAt: updatedAt,
+      lastSeenAt: updatedAt,
+      currentCpuPercent: 1.2,
+      avgCpuPercent: 1.2,
+      maxCpuPercent: 9.9,
+      cpuSecondsApprox: 0.06,
+      currentRssBytes: 10_000,
+      maxRssBytes: 10_000,
+      sampleCount: 1,
+    } satisfies ServerProcessResourceHistorySummary);
+
+    expect(vm.command).toBe("t3 server");
+    expect(vm.detailLabel).toBe("1.2% · 123");
   });
 });

@@ -67,7 +67,7 @@ describe("ProcessDiagnostics", () => {
     }),
   );
 
-  it.effect("aggregates only descendants of the server process", () =>
+  it.effect("aggregates the server process and descendants for application resource usage", () =>
     Effect.sync(() => {
       const diagnostics = ProcessDiagnostics.aggregateProcessDiagnostics({
         serverPid: 100,
@@ -128,13 +128,13 @@ describe("ProcessDiagnostics", () => {
 
       expect(diagnostics.serverPid).toBe(100);
       expect(DateTime.formatIso(diagnostics.readAt)).toBe("2026-05-05T10:00:00.000Z");
-      expect(diagnostics.processCount).toBe(2);
-      expect(diagnostics.totalRssBytes).toBe(6_000);
+      expect(diagnostics.processCount).toBe(3);
+      expect(diagnostics.totalRssBytes).toBe(7_000);
       expect(diagnostics.totalCpuPercent).toBe(4.75);
-      expect(diagnostics.processes.map((process) => process.pid)).toEqual([101, 102]);
-      expect(diagnostics.processes.map((process) => process.depth)).toEqual([0, 1]);
+      expect(diagnostics.processes.map((process) => process.pid)).toEqual([100, 101, 102]);
+      expect(diagnostics.processes.map((process) => process.depth)).toEqual([0, 1, 2]);
       expect(Option.getOrNull(diagnostics.processes[0]!.pgid)).toBe(100);
-      expect(diagnostics.processes[0]?.childPids).toEqual([102]);
+      expect(diagnostics.processes[0]?.childPids).toEqual([101]);
     }),
   );
 
@@ -213,13 +213,58 @@ describe("ProcessDiagnostics", () => {
         Effect.provideService(HostProcessPlatform, "linux"),
       );
 
-      expect(diagnostics.processes.map((process) => process.pid)).toEqual([4242]);
+      expect(diagnostics.processes.map((process) => process.pid)).toEqual([process.pid, 4242]);
       expect(commands).toEqual([
         {
           command: "ps",
           args: ["-axo", "pid=,ppid=,pgid=,stat=,pcpu=,rss=,etime=,command="],
         },
       ]);
+    }),
+  );
+
+  it.effect("queries Windows process resources with a batched perf-counter lookup", () =>
+    Effect.gen(function* () {
+      const commands: Array<{ readonly command: string; readonly args: ReadonlyArray<string> }> =
+        [];
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make((command) => {
+          const childProcess = command as unknown as {
+            readonly command: string;
+            readonly args: ReadonlyArray<string>;
+          };
+          commands.push({ command: childProcess.command, args: childProcess.args });
+          return Effect.succeed(
+            mockHandle({
+              stdout: JSON.stringify([
+                {
+                  ProcessId: process.pid,
+                  ParentProcessId: 1,
+                  Name: "node.exe",
+                  CommandLine: "t3 server",
+                  Status: "Live",
+                  WorkingSetSize: 12_000,
+                  PercentProcessorTime: 7,
+                },
+              ]),
+            }),
+          );
+        }),
+      );
+
+      const diagnostics = yield* Effect.service(ProcessDiagnostics.ProcessDiagnostics).pipe(
+        Effect.flatMap((pd) => pd.read),
+        Effect.provide(ProcessDiagnostics.layer.pipe(Layer.provide(spawnerLayer))),
+        Effect.provideService(HostProcessPlatform, "win32"),
+      );
+
+      expect(diagnostics.totalRssBytes).toBe(12_000);
+      expect(diagnostics.totalCpuPercent).toBe(7);
+      expect(commands).toHaveLength(1);
+      expect(commands[0]?.command).toBe("powershell.exe");
+      expect(commands[0]?.args.join(" ")).toContain("$perfByPid");
+      expect(commands[0]?.args.join(" ")).not.toContain("IDProcess = $($_.ProcessId)");
     }),
   );
 
