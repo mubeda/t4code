@@ -58,3 +58,4 @@ node_modules/
 .superpowers/orca-port/research-t4code-target.md
 .superpowers/orca-port/s1-findings.md
 *coverage-summary.json
+output/
