@@ -7,6 +7,7 @@ import * as Ref from "effect/Ref";
 import {
   makeProviderUsageService,
   MIN_MANUAL_REFRESH_MS,
+  ProviderUsageFetchError,
   STALE_THRESHOLD_MS,
   type ProviderUsageFetcher,
 } from "./ProviderUsageService.ts";
@@ -50,7 +51,7 @@ describe("ProviderUsageService", () => {
       const now = DateTime.makeUnsafe("2026-07-07T18:00:00.000Z");
       const fetcher: ProviderUsageFetcher = {
         provider: "codex",
-        fetch: Effect.fail(new Error("codex auth missing")),
+        fetch: Effect.fail(new ProviderUsageFetchError({ message: "codex auth missing" })),
       };
       const service = yield* makeProviderUsageService({
         fetchers: [fetcher],
@@ -88,10 +89,7 @@ describe("ProviderUsageService", () => {
       });
 
       yield* service.refresh({ providers: ["codex"] });
-      yield* Ref.set(
-        nowRef,
-        DateTime.makeUnsafe(18 * 60 * 60 * 1_000 + MIN_MANUAL_REFRESH_MS - 1),
-      );
+      yield* Ref.set(nowRef, DateTime.makeUnsafe(18 * 60 * 60 * 1_000 + MIN_MANUAL_REFRESH_MS - 1));
       const result = yield* service.refresh({ providers: ["codex"] });
 
       expect(yield* Ref.get(calls)).toBe(1);
@@ -104,9 +102,7 @@ describe("ProviderUsageService", () => {
   it.effect("marks old successful snapshots as unavailable on read", () =>
     Effect.gen(function* () {
       const first = DateTime.makeUnsafe("2026-07-07T18:00:00.000Z");
-      const staleRead = DateTime.makeUnsafe(
-        DateTime.toEpochMillis(first) + STALE_THRESHOLD_MS + 1,
-      );
+      const staleRead = DateTime.makeUnsafe(DateTime.toEpochMillis(first) + STALE_THRESHOLD_MS + 1);
       const nowRef = yield* Ref.make(first);
       const fetcher: ProviderUsageFetcher = {
         provider: "claude",
