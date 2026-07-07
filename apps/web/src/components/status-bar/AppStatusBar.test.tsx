@@ -5,7 +5,12 @@ import * as Option from "effect/Option";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { AppStatusBarView, createStatusBarRefreshHandler } from "./AppStatusBar";
+import {
+  AppStatusBarView,
+  STATUS_BAR_USAGE_REFRESH_INTERVAL_MS,
+  createStatusBarRefreshHandler,
+  startStatusBarUsageAutoRefresh,
+} from "./AppStatusBar";
 
 const readAt = DateTime.makeUnsafe("2026-07-07T18:00:00.000Z");
 
@@ -103,5 +108,32 @@ describe("AppStatusBarView", () => {
       input: { providers: ["claude", "codex"] },
     });
     expect(refreshQuery).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("startStatusBarUsageAutoRefresh", () => {
+  it("refreshes immediately and every 30 seconds until cleanup", () => {
+    vi.useFakeTimers();
+    try {
+      const refresh = vi.fn();
+      const cleanup = startStatusBarUsageAutoRefresh({ refresh });
+
+      expect(refresh).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(STATUS_BAR_USAGE_REFRESH_INTERVAL_MS - 1);
+      expect(refresh).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(1);
+      expect(refresh).toHaveBeenCalledTimes(2);
+
+      vi.advanceTimersByTime(STATUS_BAR_USAGE_REFRESH_INTERVAL_MS);
+      expect(refresh).toHaveBeenCalledTimes(3);
+
+      cleanup();
+      vi.advanceTimersByTime(STATUS_BAR_USAGE_REFRESH_INTERVAL_MS);
+      expect(refresh).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

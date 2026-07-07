@@ -19,6 +19,31 @@ import { ProviderUsageSegment } from "./ProviderUsageSegment";
 import { ResourceUsageSegment } from "./ResourceUsageSegment";
 import { buildProviderUsageViewModel } from "./statusBarPresentation";
 
+export const STATUS_BAR_USAGE_REFRESH_INTERVAL_MS = 30_000;
+
+type StatusBarUsageRefresh = () => void | Promise<unknown>;
+
+function runStatusBarUsageRefresh(refresh: StatusBarUsageRefresh): void {
+  void Promise.resolve(refresh()).catch(() => {
+    // Manual refresh already reports through the command layer; background refresh
+    // should not create an unhandled rejection if the environment disconnects.
+  });
+}
+
+export function startStatusBarUsageAutoRefresh({
+  refresh,
+  intervalMs = STATUS_BAR_USAGE_REFRESH_INTERVAL_MS,
+}: {
+  readonly refresh: StatusBarUsageRefresh;
+  readonly intervalMs?: number;
+}): () => void {
+  runStatusBarUsageRefresh(refresh);
+  const intervalId = globalThis.setInterval(() => {
+    runStatusBarUsageRefresh(refresh);
+  }, intervalMs);
+  return () => globalThis.clearInterval(intervalId);
+}
+
 export function createStatusBarRefreshHandler(input: {
   readonly environmentId: EnvironmentId | null;
   readonly refreshProviderUsage: (value: {
@@ -98,6 +123,9 @@ export function AppStatusBar() {
   const primaryEnvironment = usePrimaryEnvironment();
   const environmentId = primaryEnvironment?.environmentId ?? null;
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const refreshRef = useRef<() => Promise<unknown>>(async () => undefined);
+  const autoRefreshCleanupRef = useRef<(() => void) | null>(null);
+  const autoRefreshEnvironmentRef = useRef<EnvironmentId | null>(null);
   const [iconOnly, setIconOnly] = useState(false);
   const usage = useEnvironmentQuery(
     environmentId === null ? null : serverEnvironment.providerUsage({ environmentId, input: {} }),
@@ -127,6 +155,34 @@ export function AppStatusBar() {
     }),
     [environmentId, refreshProviderUsage, usage.refresh],
   );
+
+  useEffect(() => {
+    refreshRef.current = refresh;
+  }, [refresh]);
+
+  useEffect(
+    () => () => {
+      autoRefreshCleanupRef.current?.();
+      autoRefreshCleanupRef.current = null;
+      autoRefreshEnvironmentRef.current = null;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (environmentId === null) {
+      autoRefreshCleanupRef.current?.();
+      autoRefreshCleanupRef.current = null;
+      autoRefreshEnvironmentRef.current = null;
+      return;
+    }
+    if (usage.data === null || autoRefreshEnvironmentRef.current === environmentId) return;
+    autoRefreshCleanupRef.current?.();
+    autoRefreshEnvironmentRef.current = environmentId;
+    autoRefreshCleanupRef.current = startStatusBarUsageAutoRefresh({
+      refresh: () => refreshRef.current(),
+    });
+  }, [environmentId, usage.data]);
 
   useEffect(() => {
     const element = containerRef.current;
