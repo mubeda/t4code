@@ -30,6 +30,7 @@ import {
   WS_METHODS,
   WsRpcGroup,
   EditorId,
+  type ServerProviderUsageResult,
 } from "@t3tools/contracts";
 import {
   computeDpopAccessTokenHash,
@@ -111,6 +112,7 @@ import * as CloudManagedEndpointRuntime from "./cloud/ManagedEndpointRuntime.ts"
 import * as CloudCliTokenManager from "./cloud/CliTokenManager.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
+import * as ProviderUsageService from "./providerUsage/ProviderUsageService.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as Data from "effect/Data";
 
@@ -598,6 +600,43 @@ const buildAppUnderTest = (options?: {
               topProcesses: [],
               error: Option.none(),
             }),
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(ProviderUsageService.ProviderUsageService)({
+          read: Effect.succeed({
+            readAt: TEST_EPOCH,
+            isFetching: false,
+            providers: [
+              {
+                provider: "codex",
+                status: "ok",
+                session: null,
+                weekly: null,
+                updatedAt: TEST_EPOCH,
+                error: null,
+                metadata: {},
+              },
+            ],
+          } satisfies ServerProviderUsageResult),
+          refresh: () =>
+            Effect.succeed({
+              readAt: TEST_EPOCH,
+              isFetching: false,
+              providers: [
+                {
+                  provider: "codex",
+                  status: "ok",
+                  session: null,
+                  weekly: null,
+                  updatedAt: TEST_EPOCH,
+                  error: null,
+                  metadata: {
+                    refreshed: "true",
+                  },
+                },
+              ],
+            } satisfies ServerProviderUsageResult),
         }),
       ),
       Layer.provide(
@@ -3715,6 +3754,31 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assert.equal(response.environment.environmentId, testEnvironmentDescriptor.environmentId);
       assert.equal(response.auth.policy, "desktop-managed-local");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("routes websocket rpc server provider usage methods", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const { cookie } = yield* bootstrapBrowserSession();
+      assert.isDefined(cookie);
+      const wsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        cookie?.split(";")[0] ?? "",
+      );
+
+      const readResponse = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) => client[WS_METHODS.serverGetProviderUsage]({})),
+      );
+      const refreshResponse = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.serverRefreshProviderUsage]({ providers: ["codex"] }),
+        ),
+      );
+
+      assert.equal(readResponse.providers[0]?.provider, "codex");
+      assert.equal(refreshResponse.providers[0]?.metadata.refreshed, "true");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
