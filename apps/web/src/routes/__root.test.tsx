@@ -234,6 +234,10 @@ vi.mock("../components/CommandPalette", () => ({
   ),
 }));
 
+vi.mock("../components/status-bar/AppStatusBar", () => ({
+  AppStatusBar: () => <div data-mock="app-status-bar" />,
+}));
+
 vi.mock("../components/cloud/RelayClientInstallDialog", () => ({
   RelayClientInstallDialog: () => <div data-mock="relay-install" />,
 }));
@@ -442,6 +446,7 @@ describe("RootRouteView", () => {
     const markup = renderComponent();
     expect(markup).toContain('data-mock="outlet"');
     expect(markup).not.toContain('data-mock="command-palette"');
+    expect(markup).not.toContain('data-mock="app-status-bar"');
 
     const cleanups = runEffects();
     expect(s.syncThemeCalls).toBe(1);
@@ -453,6 +458,7 @@ describe("RootRouteView", () => {
     const markup = renderComponent();
     expect(markup).toContain('data-mock="outlet"');
     expect(markup).not.toContain('data-mock="sidebar-layout"');
+    expect(markup).not.toContain('data-mock="app-status-bar"');
   });
 
   it("renders the full authenticated shell", () => {
@@ -461,6 +467,7 @@ describe("RootRouteView", () => {
     const markup = renderComponent();
     expect(markup).toContain('data-mock="command-palette"');
     expect(markup).toContain('data-mock="sidebar-layout"');
+    expect(markup).toContain('data-mock="app-status-bar"');
     expect(markup).toContain('data-mock="relay-install"');
     expect(markup).toContain('data-mock="provider-update"');
     runEffects();
