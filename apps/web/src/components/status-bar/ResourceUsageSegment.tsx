@@ -5,7 +5,10 @@ import type {
 import { CpuIcon, MemoryStickIcon, TerminalIcon } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
-import { buildResourceSummaryViewModel } from "./statusBarPresentation";
+import {
+  buildResourceSummaryViewModel,
+  buildResourceTopProcessViewModel,
+} from "./statusBarPresentation";
 
 export function ResourceUsageSegment({
   diagnostics,
@@ -69,14 +72,18 @@ export function ResourceUsageSegment({
               <CpuIcon className="size-3" />
               <span>Top processes</span>
             </div>
-            {(resourceHistory?.topProcesses ?? []).slice(0, 5).map((process) => (
-              <div key={process.processKey} className="flex items-center justify-between gap-2">
-                <span className="truncate">{process.command}</span>
-                <span className="shrink-0 font-mono tabular-nums">
-                  {summary.cpuLabel} · {process.pid}
-                </span>
-              </div>
-            ))}
+            {(resourceHistory?.topProcesses ?? []).slice(0, 5).map((process) => {
+              const processView = buildResourceTopProcessViewModel(process);
+              return (
+                <div
+                  key={processView.processKey}
+                  className="flex items-center justify-between gap-2"
+                >
+                  <span className="truncate">{processView.command}</span>
+                  <span className="shrink-0 font-mono tabular-nums">{processView.detailLabel}</span>
+                </div>
+              );
+            })}
             {resourceHistory && resourceHistory.topProcesses.length === 0 ? (
               <div className="text-muted-foreground">No process samples yet.</div>
             ) : null}

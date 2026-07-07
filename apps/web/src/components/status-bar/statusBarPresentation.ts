@@ -1,5 +1,6 @@
 import type {
   ServerProcessDiagnosticsResult,
+  ServerProcessResourceHistorySummary,
   ServerProviderUsageSnapshot,
   ServerProviderUsageWindow,
 } from "@t3tools/contracts";
@@ -84,5 +85,21 @@ export function buildResourceSummaryViewModel(input: {
     cpuLabel: input.diagnostics ? formatCpuPercent(input.diagnostics.totalCpuPercent) : "--",
     processCountLabel: input.diagnostics ? String(input.diagnostics.processCount) : "0",
     terminalCountLabel: String(Math.max(0, input.terminalCount)),
+  };
+}
+
+export interface ResourceTopProcessViewModel {
+  readonly processKey: string;
+  readonly command: string;
+  readonly detailLabel: string;
+}
+
+export function buildResourceTopProcessViewModel(
+  process: ServerProcessResourceHistorySummary,
+): ResourceTopProcessViewModel {
+  return {
+    processKey: process.processKey,
+    command: process.command,
+    detailLabel: `${formatCpuPercent(process.currentCpuPercent)} · ${process.pid}`,
   };
 }
