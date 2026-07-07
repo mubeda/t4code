@@ -9,6 +9,7 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import * as NodeProcess from "node:process";
 
 class OxlintFixtureFailure extends Data.TaggedError("OxlintFixtureFailure")<{
   readonly exitCode: number;
@@ -101,6 +102,20 @@ export const createOxlintRuleHarness = (
       ".bin",
       "oxlint",
     );
+    const oxlintJsBin = path.join(
+      repoRoot,
+      "node_modules",
+      ".pnpm",
+      "node_modules",
+      "oxlint",
+      "bin",
+      "oxlint",
+    );
+    const hasOxlintJsBin = yield* fs.exists(oxlintJsBin);
+    const command = hasOxlintJsBin ? NodeProcess.execPath : oxlintBin;
+    const args = hasOxlintJsBin
+      ? [oxlintJsBin, "--config", configPath, sourcePath]
+      : ["--config", configPath, sourcePath];
     const pluginPath = path.join(repoRoot, "oxlint-plugin-t3code", "index.ts");
 
     yield* fs.writeFileString(
@@ -113,7 +128,7 @@ export const createOxlintRuleHarness = (
     yield* fs.writeFileString(sourcePath, source);
 
     const output = yield* spawnAndCollectOutput(
-      ChildProcess.make(oxlintBin, ["--config", configPath, sourcePath], { cwd: repoRoot }),
+      ChildProcess.make(command, args, { cwd: repoRoot }),
     );
 
     if (output.exitCode !== 0) {

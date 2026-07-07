@@ -10,7 +10,7 @@
  * handlers can be invoked directly. All state/query/atom seams are swapped for
  * controllable test doubles.
  */
-import type { ReactElement, ReactNode } from "react";
+import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import * as DateTime from "effect/DateTime";
@@ -264,7 +264,9 @@ const LONG_CAUSE =
   "boom failed with a very long multi-line cause\n" +
   "that definitely exceeds one hundred and eighty characters so the expandable text control offers a show-more affordance to the reader here and keeps going for a while longer.";
 
-function entry(overrides: Partial<ServerProcessDiagnosticsEntry> = {}): ServerProcessDiagnosticsEntry {
+function entry(
+  overrides: Partial<ServerProcessDiagnosticsEntry> = {},
+): ServerProcessDiagnosticsEntry {
   return {
     pid: 100,
     ppid: 1,
@@ -340,8 +342,22 @@ function resourceData(
     retainedSampleCount: 120,
     totalCpuSecondsApprox: 75,
     buckets: [
-      { startedAt: T0, endedAt: T1, avgCpuPercent: 10, maxCpuPercent: 40, maxRssBytes: 1000, maxProcessCount: 2 },
-      { startedAt: T1, endedAt: T1, avgCpuPercent: 5, maxCpuPercent: 20, maxRssBytes: 800, maxProcessCount: 1 },
+      {
+        startedAt: T0,
+        endedAt: T1,
+        avgCpuPercent: 10,
+        maxCpuPercent: 40,
+        maxRssBytes: 1000,
+        maxProcessCount: 2,
+      },
+      {
+        startedAt: T1,
+        endedAt: T1,
+        avgCpuPercent: 5,
+        maxCpuPercent: 20,
+        maxRssBytes: 800,
+        maxProcessCount: 1,
+      },
     ],
     topProcesses: [
       summary({ processKey: "root", pid: 100, isServerRoot: true, depth: 0, cpuSecondsApprox: 65 }),
@@ -358,8 +374,7 @@ function resourceData(
         pid: 102,
         isServerRoot: false,
         depth: 2,
-        command:
-          "this-is-a-really-long-process-name-that-clearly-exceeds-forty-two-characters",
+        command: "this-is-a-really-long-process-name-that-clearly-exceeds-forty-two-characters",
         cpuSecondsApprox: 7_200,
       }),
     ],
@@ -385,19 +400,53 @@ function traceData(
     slowSpanCount: 4,
     logLevelCounts: {},
     topSpansByCount: [
-      { name: "span.a", count: 10, failureCount: 1, totalDurationMs: 1000, averageDurationMs: 100, maxDurationMs: 1200 },
+      {
+        name: "span.a",
+        count: 10,
+        failureCount: 1,
+        totalDurationMs: 1000,
+        averageDurationMs: 100,
+        maxDurationMs: 1200,
+      },
     ],
     slowestSpans: [
-      { name: "span.slow", durationMs: 12_000, endedAt: T0, traceId: LONG_TRACE_ID, spanId: "span-1" },
+      {
+        name: "span.slow",
+        durationMs: 12_000,
+        endedAt: T0,
+        traceId: LONG_TRACE_ID,
+        spanId: "span-1",
+      },
     ],
     commonFailures: [
-      { name: "span.err", cause: "short cause", count: 5, lastSeenAt: T0, traceId: "t", spanId: "s" },
+      {
+        name: "span.err",
+        cause: "short cause",
+        count: 5,
+        lastSeenAt: T0,
+        traceId: "t",
+        spanId: "s",
+      },
     ],
     latestFailures: [
-      { name: "span.fail", cause: LONG_CAUSE, durationMs: 9000, endedAt: T0, traceId: "t", spanId: "s" },
+      {
+        name: "span.fail",
+        cause: LONG_CAUSE,
+        durationMs: 9000,
+        endedAt: T0,
+        traceId: "t",
+        spanId: "s",
+      },
     ],
     latestWarningAndErrorLogs: [
-      { spanName: "span.log", level: "warn", message: "a warning message", seenAt: T0, traceId: LONG_TRACE_ID, spanId: "s" },
+      {
+        spanName: "span.log",
+        level: "warn",
+        message: "a warning message",
+        seenAt: T0,
+        traceId: LONG_TRACE_ID,
+        spanId: "s",
+      },
     ],
     partialFailure: Option.none(),
     error: Option.none(),
@@ -561,7 +610,10 @@ describe("DiagnosticsSettingsPanel error banners", () => {
     };
     h.resourceQuery = {
       data: resourceData({
-        error: Option.some({ failureTag: "ProcessDiagnosticsQueryFailedError", message: "sampler stalled" }),
+        error: Option.some({
+          failureTag: "ProcessDiagnosticsQueryFailedError",
+          message: "sampler stalled",
+        }),
       }),
       error: "resource transport down",
       isPending: false,
@@ -756,6 +808,8 @@ describe("DiagnosticsSettingsPanel open logs directory", () => {
     render();
     clickOpenLogs();
     await flush();
-    expect(h.setStateCalls.map((call) => call.applied)).not.toContain("Unable to open logs folder.");
+    expect(h.setStateCalls.map((call) => call.applied)).not.toContain(
+      "Unable to open logs folder.",
+    );
   });
 });

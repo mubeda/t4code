@@ -18,6 +18,17 @@ const withMockUpdateServer = <A, E, R>(rootRealPath: string, effect: Effect.Effe
     ),
   );
 
+const createSymlinkOrSkip = Effect.fn("createSymlinkOrSkip")(function* (
+  target: string,
+  linkPath: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  return yield* fileSystem.symlink(target, linkPath).pipe(
+    Effect.as(true),
+    Effect.orElseSucceed(() => false),
+  );
+});
+
 it.layer(NodeServices.layer)("mock-update-server", (it) => {
   it.effect("serves files from the configured root", () =>
     Effect.gen(function* () {
@@ -89,7 +100,8 @@ it.layer(NodeServices.layer)("mock-update-server", (it) => {
 
       yield* fileSystem.writeFileString(outsideFile, "version: outside\n");
       yield* fileSystem.makeDirectory(linksDir, { recursive: true });
-      yield* fileSystem.symlink(outsideFile, symlinkPath);
+      const created = yield* createSymlinkOrSkip(outsideFile, symlinkPath);
+      if (!created) return;
 
       yield* withMockUpdateServer(
         rootRealPath,

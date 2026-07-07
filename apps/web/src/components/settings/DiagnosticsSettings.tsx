@@ -909,7 +909,7 @@ export function DiagnosticsSettingsPanel() {
           input: { pid, signal },
         });
         setSignalingPid(null);
-        if (result._tag === "Failure") {
+        if (result._tag !== "Success") {
           if (!isAtomCommandInterrupted(result)) {
             const error = squashAtomCommandFailure(result);
             toastManager.add({
