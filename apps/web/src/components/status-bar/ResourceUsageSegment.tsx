@@ -1,8 +1,10 @@
-import type { ServerProcessDiagnosticsResult, ServerProcessResourceHistoryResult } from "@t3tools/contracts";
+import type {
+  ServerProcessDiagnosticsResult,
+  ServerProcessResourceHistoryResult,
+} from "@t3tools/contracts";
 import { CpuIcon, MemoryStickIcon, TerminalIcon } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { buildResourceSummaryViewModel } from "./statusBarPresentation";
 
 export function ResourceUsageSegment({
@@ -17,29 +19,24 @@ export function ResourceUsageSegment({
   iconOnly: boolean;
 }) {
   const summary = buildResourceSummaryViewModel({ diagnostics, terminalCount });
+  const label = `Server child process resources, ${summary.memoryLabel}, ${summary.terminalCountLabel} terminals`;
   return (
     <Popover>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <PopoverTrigger
-              className="inline-flex h-5 items-center gap-1.5 rounded px-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
-              aria-label={`Server child process resources, ${summary.memoryLabel}, ${summary.terminalCountLabel} terminals`}
-            >
-              <MemoryStickIcon className="size-3" />
-              {!iconOnly ? (
-                <>
-                  <span className="font-mono tabular-nums">{summary.memoryLabel}</span>
-                  <span className="text-muted-foreground/50">·</span>
-                  <TerminalIcon className="size-3" />
-                </>
-              ) : null}
-              <span className="font-mono tabular-nums">{summary.terminalCountLabel}</span>
-            </PopoverTrigger>
-          }
-        />
-        <TooltipPopup>{`${summary.memoryLabel} · ${summary.terminalCountLabel} terminals`}</TooltipPopup>
-      </Tooltip>
+      <PopoverTrigger
+        className="inline-flex h-5 items-center gap-1.5 rounded px-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+        aria-label={label}
+        title={`${summary.memoryLabel} · ${summary.terminalCountLabel} terminals`}
+      >
+        <MemoryStickIcon className="size-3" />
+        {!iconOnly ? (
+          <>
+            <span className="font-mono tabular-nums">{summary.memoryLabel}</span>
+            <span className="text-muted-foreground/50">·</span>
+            <TerminalIcon className="size-3" />
+          </>
+        ) : null}
+        <span className="font-mono tabular-nums">{summary.terminalCountLabel}</span>
+      </PopoverTrigger>
       <PopoverContent side="top" align="end" sideOffset={6}>
         <div className="w-80 space-y-3 text-xs">
           <div className="flex items-center gap-1.5 font-medium">

@@ -587,40 +587,23 @@ const buildAppUnderTest = (options?: {
         }),
       ),
       Layer.provide(
-        Layer.mock(ProcessResourceMonitor.ProcessResourceMonitor)({
-          readHistory: (input) =>
-            Effect.succeed({
-              readAt: TEST_EPOCH,
-              windowMs: input.windowMs,
-              bucketMs: input.bucketMs,
-              sampleIntervalMs: 5_000,
-              retainedSampleCount: 0,
-              totalCpuSecondsApprox: 0,
-              buckets: [],
-              topProcesses: [],
-              error: Option.none(),
-            }),
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(ProviderUsageService.ProviderUsageService)({
-          read: Effect.succeed({
-            readAt: TEST_EPOCH,
-            isFetching: false,
-            providers: [
-              {
-                provider: "codex",
-                status: "ok",
-                session: null,
-                weekly: null,
-                updatedAt: TEST_EPOCH,
-                error: null,
-                metadata: {},
-              },
-            ],
-          } satisfies ServerProviderUsageResult),
-          refresh: () =>
-            Effect.succeed({
+        Layer.mergeAll(
+          Layer.mock(ProcessResourceMonitor.ProcessResourceMonitor)({
+            readHistory: (input) =>
+              Effect.succeed({
+                readAt: TEST_EPOCH,
+                windowMs: input.windowMs,
+                bucketMs: input.bucketMs,
+                sampleIntervalMs: 5_000,
+                retainedSampleCount: 0,
+                totalCpuSecondsApprox: 0,
+                buckets: [],
+                topProcesses: [],
+                error: Option.none(),
+              }),
+          }),
+          Layer.mock(ProviderUsageService.ProviderUsageService)({
+            read: Effect.succeed({
               readAt: TEST_EPOCH,
               isFetching: false,
               providers: [
@@ -631,13 +614,30 @@ const buildAppUnderTest = (options?: {
                   weekly: null,
                   updatedAt: TEST_EPOCH,
                   error: null,
-                  metadata: {
-                    refreshed: "true",
-                  },
+                  metadata: {},
                 },
               ],
             } satisfies ServerProviderUsageResult),
-        }),
+            refresh: () =>
+              Effect.succeed({
+                readAt: TEST_EPOCH,
+                isFetching: false,
+                providers: [
+                  {
+                    provider: "codex",
+                    status: "ok",
+                    session: null,
+                    weekly: null,
+                    updatedAt: TEST_EPOCH,
+                    error: null,
+                    metadata: {
+                      refreshed: "true",
+                    },
+                  },
+                ],
+              } satisfies ServerProviderUsageResult),
+          }),
+        ),
       ),
       Layer.provide(
         Layer.mock(TraceDiagnostics.TraceDiagnostics)({

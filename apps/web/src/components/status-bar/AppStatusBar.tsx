@@ -20,9 +20,9 @@ import { ResourceUsageSegment } from "./ResourceUsageSegment";
 import { buildProviderUsageViewModel } from "./statusBarPresentation";
 
 export function createStatusBarRefreshHandler(input: {
-  readonly environmentId: EnvironmentId | string | null;
+  readonly environmentId: EnvironmentId | null;
   readonly refreshProviderUsage: (value: {
-    readonly environmentId: EnvironmentId | string;
+    readonly environmentId: EnvironmentId;
     readonly input: { readonly providers: readonly ["claude", "codex"] };
   }) => Promise<unknown>;
   readonly refreshQuery: () => void;
@@ -57,7 +57,7 @@ export function AppStatusBarView({
   const providers = usage?.providers.map(buildProviderUsageViewModel) ?? [];
   return (
     <div
-      className="flex h-6 min-h-6 shrink-0 items-center justify-between gap-3 border-t border-border bg-background px-3 text-xs"
+      className="relative z-20 flex h-6 min-h-6 shrink-0 items-center justify-between gap-3 border-t border-border bg-background px-3 text-xs"
       data-testid="app-status-bar"
     >
       <div className="flex min-w-0 items-center gap-2">
@@ -100,9 +100,7 @@ export function AppStatusBar() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [iconOnly, setIconOnly] = useState(false);
   const usage = useEnvironmentQuery(
-    environmentId === null
-      ? null
-      : serverEnvironment.providerUsage({ environmentId, input: {} }),
+    environmentId === null ? null : serverEnvironment.providerUsage({ environmentId, input: {} }),
   );
   const diagnostics = useEnvironmentQuery(
     environmentId === null

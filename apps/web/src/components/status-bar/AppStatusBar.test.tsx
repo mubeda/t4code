@@ -1,7 +1,5 @@
-import type {
-  ServerProcessDiagnosticsResult,
-  ServerProviderUsageResult,
-} from "@t3tools/contracts";
+import type { ServerProcessDiagnosticsResult, ServerProviderUsageResult } from "@t3tools/contracts";
+import { EnvironmentId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -91,8 +89,9 @@ describe("AppStatusBarView", () => {
   it("builds a refresh handler that refreshes provider usage and the query", async () => {
     const refreshProviderUsage = vi.fn().mockResolvedValue({ _tag: "Success" });
     const refreshQuery = vi.fn();
+    const environmentId = EnvironmentId.make("environment-test");
     const handler = createStatusBarRefreshHandler({
-      environmentId: "environment-test",
+      environmentId,
       refreshProviderUsage,
       refreshQuery,
     });
@@ -100,7 +99,7 @@ describe("AppStatusBarView", () => {
     await handler();
 
     expect(refreshProviderUsage).toHaveBeenCalledWith({
-      environmentId: "environment-test",
+      environmentId,
       input: { providers: ["claude", "codex"] },
     });
     expect(refreshQuery).toHaveBeenCalledTimes(1);

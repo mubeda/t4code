@@ -1,4 +1,7 @@
-import type { ServerProcessDiagnosticsResult, ServerProviderUsageSnapshot } from "@t3tools/contracts";
+import type {
+  ServerProcessDiagnosticsResult,
+  ServerProviderUsageSnapshot,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { describe, expect, it } from "vite-plus/test";

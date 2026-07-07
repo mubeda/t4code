@@ -50,12 +50,14 @@
 ### Task 1: Provider Usage Contracts
 
 **Files:**
+
 - Create: `packages/contracts/src/providerUsage.ts`
 - Modify: `packages/contracts/src/index.ts`
 - Modify: `packages/contracts/src/rpc.ts`
 - Test: `packages/contracts/src/providerUsage.test.ts`
 
 **Interfaces:**
+
 - Produces: `ServerProviderUsageProvider`, `ServerProviderUsageStatus`, `ServerProviderUsageWindow`, `ServerProviderUsageSnapshot`, `ServerProviderUsageResult`, `ServerProviderUsageRefreshInput`.
 - Produces RPCs: `WsServerGetProviderUsageRpc`, `WsServerRefreshProviderUsageRpc`.
 
@@ -145,6 +147,7 @@ Stage the task files and commit with: `feat: add provider usage contracts`.
 ### Task 2: Server Provider Usage Service
 
 **Files:**
+
 - Create: `apps/server/src/providerUsage/ProviderUsageService.ts`
 - Create: `apps/server/src/providerUsage/codexUsageFetcher.ts`
 - Create: `apps/server/src/providerUsage/claudeUsageFetcher.ts`
@@ -152,6 +155,7 @@ Stage the task files and commit with: `feat: add provider usage contracts`.
 - Test: `apps/server/src/providerUsage/codexUsageFetcher.test.ts`
 
 **Interfaces:**
+
 - Consumes: provider usage contracts from Task 1.
 - Produces service tag `ProviderUsageService` with:
   - `read: Effect.Effect<ServerProviderUsageResult>`
@@ -226,11 +230,13 @@ Commit with: `feat: add provider usage service`.
 ### Task 3: Wire Server RPC
 
 **Files:**
+
 - Modify: `apps/server/src/server.ts`
 - Modify: `apps/server/src/ws.ts`
 - Test: `apps/server/src/server.test.ts`
 
 **Interfaces:**
+
 - Consumes: `ProviderUsageService` from Task 2.
 - Produces live RPC handling for `server.getProviderUsage` and `server.refreshProviderUsage`.
 
@@ -271,6 +277,7 @@ Commit with: `feat: expose provider usage rpc`.
 ### Task 4: Client State and Pure Presentation
 
 **Files:**
+
 - Modify: `packages/client-runtime/src/state/server.ts`
 - Create: `apps/web/src/components/status-bar/statusBarFormat.ts`
 - Create: `apps/web/src/components/status-bar/statusBarPresentation.ts`
@@ -278,6 +285,7 @@ Commit with: `feat: expose provider usage rpc`.
 - Test: `apps/web/src/components/status-bar/statusBarPresentation.test.ts`
 
 **Interfaces:**
+
 - Consumes: provider usage RPCs and existing process diagnostics/resource history contracts.
 - Produces:
   - `serverEnvironment.providerUsage`
@@ -349,6 +357,7 @@ Commit with: `feat: add status bar client presentation`.
 ### Task 5: Status Bar React UI
 
 **Files:**
+
 - Create: `apps/web/src/components/status-bar/ProviderUsageSegment.tsx`
 - Create: `apps/web/src/components/status-bar/ProviderUsagePopover.tsx`
 - Create: `apps/web/src/components/status-bar/ResourceUsageSegment.tsx`
@@ -356,6 +365,7 @@ Commit with: `feat: add status bar client presentation`.
 - Test: `apps/web/src/components/status-bar/AppStatusBar.test.tsx`
 
 **Interfaces:**
+
 - Consumes: presentation helpers from Task 4.
 - Consumes: `useEnvironmentQuery`, `useAtomCommand`, `serverEnvironment`, `usePrimaryEnvironment`, terminal metadata hooks.
 - Produces: `AppStatusBar` component.
@@ -408,10 +418,12 @@ Commit with: `feat: add app status bar ui`.
 ### Task 6: Mount in App Shell
 
 **Files:**
+
 - Modify: `apps/web/src/routes/__root.tsx` or `apps/web/src/components/AppSidebarLayout.tsx`
 - Test: `apps/web/src/routes/__root.test.tsx`
 
 **Interfaces:**
+
 - Consumes: `AppStatusBar`.
 - Produces: authenticated app layout with bottom status bar.
 
@@ -444,9 +456,11 @@ Commit with: `feat: mount status bar in app shell`.
 ### Task 7: Full Verification and Browser Test
 
 **Files:**
+
 - No planned production changes unless tests reveal issues.
 
 **Interfaces:**
+
 - Consumes completed Tasks 1-6.
 - Produces verified implementation.
 

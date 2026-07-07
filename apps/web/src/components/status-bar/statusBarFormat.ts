@@ -14,7 +14,7 @@ export function formatRemainingPercent(usedPercent: number): string {
 }
 
 export function formatProviderWindowLabel(
-  window: Pick<ServerProviderUsageWindow, "windowMinutes">,
+  window: Pick<ServerProviderUsageWindow, "windowMinutes"> & { readonly resetsAt?: unknown },
 ): string {
   if (window.windowMinutes === 300) return "5h";
   if (window.windowMinutes === 10080) return "wk";

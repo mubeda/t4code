@@ -5,6 +5,7 @@ import type {
   ServerProviderUsageSnapshot,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -21,8 +22,13 @@ const PROVIDERS: readonly ServerProviderUsageProvider[] = ["claude", "codex"];
 
 export interface ProviderUsageFetcher {
   readonly provider: ServerProviderUsageProvider;
-  readonly fetch: Effect.Effect<ServerProviderUsageSnapshot, unknown>;
+  readonly fetch: Effect.Effect<ServerProviderUsageSnapshot, ProviderUsageFetchError>;
 }
+
+export class ProviderUsageFetchError extends Data.TaggedError("ProviderUsageFetchError")<{
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
 
 interface ProviderUsageState {
   readonly snapshots: ReadonlyMap<ServerProviderUsageProvider, ServerProviderUsageSnapshot>;
@@ -40,10 +46,6 @@ export class ProviderUsageService extends Context.Service<
     ) => Effect.Effect<ServerProviderUsageResult>;
   }
 >()("t3/providerUsage/ProviderUsageService") {}
-
-function toErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 function unavailableSnapshot(
   provider: ServerProviderUsageProvider,
@@ -64,7 +66,7 @@ function unavailableSnapshot(
 function errorSnapshot(
   provider: ServerProviderUsageProvider,
   now: DateTime.Utc,
-  error: unknown,
+  error: ProviderUsageFetchError,
 ): ServerProviderUsageSnapshot {
   return {
     provider,
@@ -72,12 +74,14 @@ function errorSnapshot(
     session: null,
     weekly: null,
     updatedAt: now,
-    error: toErrorMessage(error),
+    error: error.message,
     metadata: {},
   };
 }
 
-function normalizeProviders(input: ServerProviderUsageRefreshInput): readonly ServerProviderUsageProvider[] {
+function normalizeProviders(
+  input: ServerProviderUsageRefreshInput,
+): readonly ServerProviderUsageProvider[] {
   return input.providers?.length ? input.providers : PROVIDERS;
 }
 
@@ -88,12 +92,16 @@ function applyStaleness(
   if (snapshot.status !== "ok") return snapshot;
   const ageMs = DateTime.toEpochMillis(now) - DateTime.toEpochMillis(snapshot.updatedAt);
   if (ageMs <= STALE_THRESHOLD_MS) return snapshot;
-  return unavailableSnapshot(snapshot.provider, snapshot.updatedAt, "Provider usage snapshot is stale.");
+  return unavailableSnapshot(
+    snapshot.provider,
+    snapshot.updatedAt,
+    "Provider usage snapshot is stale.",
+  );
 }
 
 export const makeProviderUsageService = (input: {
   readonly fetchers: ReadonlyArray<ProviderUsageFetcher>;
-  readonly now?: Effect.Effect<DateTime.Utc>;
+  readonly now?: Effect.Effect<DateTime.Utc, never, never>;
 }) =>
   Effect.gen(function* () {
     const nowEffect = input.now ?? DateTime.now;
@@ -126,26 +134,33 @@ export const makeProviderUsageService = (input: {
         const now = yield* nowEffect;
         const nowMs = DateTime.toEpochMillis(now);
         const nextDeferred = yield* Deferred.make<void>();
-        const decision = yield* Ref.modify(state, (current) => {
-          if (current.inFlight) {
-            return [{ type: "await" as const, deferred: current.inFlight }, current];
-          }
-          if (
-            current.lastRefreshStartedAtMs !== null &&
-            nowMs - current.lastRefreshStartedAtMs < MIN_MANUAL_REFRESH_MS
-          ) {
-            return [{ type: "debounced" as const }, current];
-          }
-          return [
-            { type: "start" as const, deferred: nextDeferred },
-            {
-              ...current,
-              isFetching: true,
-              lastRefreshStartedAtMs: nowMs,
-              inFlight: nextDeferred,
-            },
-          ];
-        });
+        type RefreshDecision =
+          | { readonly type: "await"; readonly deferred: Deferred.Deferred<void> }
+          | { readonly type: "debounced" }
+          | { readonly type: "start"; readonly deferred: Deferred.Deferred<void> };
+        const decision = yield* Ref.modify(
+          state,
+          (current): readonly [RefreshDecision, ProviderUsageState] => {
+            if (current.inFlight) {
+              return [{ type: "await" as const, deferred: current.inFlight }, current];
+            }
+            if (
+              current.lastRefreshStartedAtMs !== null &&
+              nowMs - current.lastRefreshStartedAtMs < MIN_MANUAL_REFRESH_MS
+            ) {
+              return [{ type: "debounced" as const }, current];
+            }
+            return [
+              { type: "start" as const, deferred: nextDeferred },
+              {
+                ...current,
+                isFetching: true,
+                lastRefreshStartedAtMs: nowMs,
+                inFlight: nextDeferred,
+              },
+            ];
+          },
+        );
 
         if (decision.type === "await") {
           yield* Deferred.await(decision.deferred);
@@ -190,24 +205,7 @@ export const makeProviderUsageService = (input: {
         });
         yield* Deferred.succeed(decision.deferred, undefined);
         return yield* read;
-      }).pipe(
-        Effect.catch((error) =>
-          Effect.gen(function* () {
-            const current = yield* Ref.get(state);
-            yield* Effect.forEach(
-              current.inFlight ? [current.inFlight] : [],
-              (deferred) => Deferred.succeed(deferred, undefined),
-              { discard: true },
-            );
-            yield* Ref.update(state, (currentState) => ({
-              ...currentState,
-              isFetching: false,
-              inFlight: null,
-            }));
-            return yield* Effect.fail(error);
-          }),
-        ),
-      );
+      });
 
     return ProviderUsageService.of({ read, refresh });
   });

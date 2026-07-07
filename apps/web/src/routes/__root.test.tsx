@@ -209,7 +209,9 @@ vi.mock("../components/ui/toast", () => ({
     },
   },
   stackedThreadToast: (toast: unknown) => toast,
-  ToastProvider: ({ children }: { children?: ReactNode }) => <div data-mock="toast">{children}</div>,
+  ToastProvider: ({ children }: { children?: ReactNode }) => (
+    <div data-mock="toast">{children}</div>
+  ),
   AnchoredToastProvider: ({ children }: { children?: ReactNode }) => (
     <div data-mock="anchored-toast">{children}</div>
   ),
@@ -345,11 +347,9 @@ afterEach(() => {
 
 describe("Route.beforeLoad", () => {
   const beforeLoad = () =>
-    (
-      Route.options.beforeLoad as (args: {
-        location: { pathname: string };
-      }) => Promise<{ authGateState: { status: string } }>
-    );
+    Route.options.beforeLoad as (args: {
+      location: { pathname: string };
+    }) => Promise<{ authGateState: { status: string } }>;
 
   it("returns hosted-pairing context for a pairing request on /pair", async () => {
     s.hostedPairing = true;
@@ -591,9 +591,7 @@ describe("EventRouter", () => {
     runEffects();
 
     expect(
-      s.toasts.some(
-        (toast) => (toast as { title?: string }).title === "Keybindings updated",
-      ),
+      s.toasts.some((toast) => (toast as { title?: string }).title === "Keybindings updated"),
     ).toBe(true);
   });
 
