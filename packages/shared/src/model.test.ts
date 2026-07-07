@@ -1,16 +1,39 @@
 import { describe, expect, it } from "vite-plus/test";
-import { ProviderInstanceId, type ModelCapabilities } from "@t3tools/contracts";
+import {
+  DEFAULT_MODEL,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ModelCapabilities,
+  type ProviderOptionDescriptor,
+} from "@t3tools/contracts";
 
 import {
+  applyClaudePromptEffortPrefix,
   buildProviderOptionSelectionsFromDescriptors,
   createModelCapabilities,
   createModelSelection,
   getModelSelectionBooleanOptionValue,
+  getModelSelectionOptionDescriptors,
+  getModelSelectionOptionValue,
   getModelSelectionStringOptionValue,
-  getProviderOptionDescriptors,
   getProviderOptionBooleanSelectionValue,
+  getProviderOptionCurrentLabel,
+  getProviderOptionCurrentValue,
+  getProviderOptionDescriptors,
+  getProviderOptionSelectionValue,
   getProviderOptionStringSelectionValue,
+  isClaudeUltrathinkPrompt,
+  normalizeModelSlug,
+  resolvePromptInjectedEffort,
+  resolveModelSlugForProvider,
+  resolveSelectableModel,
+  trimOrNull,
+  type SelectableModelOption,
 } from "./model.ts";
+
+const CODEX = ProviderDriverKind.make("codex");
+const CLAUDE = ProviderDriverKind.make("claudeAgent");
+const UNKNOWN = ProviderDriverKind.make("madeupprovider");
 
 const codexCaps: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [
@@ -142,5 +165,425 @@ describe("descriptor helpers", () => {
     ).toBeUndefined();
     expect(getModelSelectionStringOptionValue(selection, "reasoningEffort")).toBe("high");
     expect(getModelSelectionBooleanOptionValue(selection, "fastMode")).toBe(true);
+  });
+});
+
+describe("selection value readers", () => {
+  it("returns undefined for missing / nullish selection sources", () => {
+    expect(getProviderOptionSelectionValue(null, "effort")).toBeUndefined();
+    expect(getProviderOptionSelectionValue(undefined, "effort")).toBeUndefined();
+    expect(getProviderOptionSelectionValue([], "effort")).toBeUndefined();
+    expect(getProviderOptionStringSelectionValue(null, "effort")).toBeUndefined();
+    expect(getProviderOptionBooleanSelectionValue(undefined, "effort")).toBeUndefined();
+  });
+
+  it("finds a selection value by id", () => {
+    const selections = [
+      { id: "effort", value: "high" },
+      { id: "fast", value: true },
+    ];
+    expect(getProviderOptionSelectionValue(selections, "effort")).toBe("high");
+    expect(getProviderOptionSelectionValue(selections, "fast")).toBe(true);
+    expect(getProviderOptionSelectionValue(selections, "absent")).toBeUndefined();
+  });
+
+  it("reads model-selection option values through the options array", () => {
+    const selection = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4", [
+      { id: "effort", value: "high" },
+      { id: "fast", value: true },
+    ]);
+    expect(getModelSelectionOptionValue(selection, "effort")).toBe("high");
+    expect(getModelSelectionOptionValue(selection, "fast")).toBe(true);
+    expect(getModelSelectionOptionValue(null, "effort")).toBeUndefined();
+    expect(getModelSelectionStringOptionValue(null, "effort")).toBeUndefined();
+    expect(getModelSelectionBooleanOptionValue(undefined, "fast")).toBeUndefined();
+  });
+});
+
+describe("getProviderOptionDescriptors edge cases", () => {
+  it("keeps the descriptor's own currentValue when no selection overrides it", () => {
+    const caps = createModelCapabilities({
+      optionDescriptors: [
+        {
+          id: "effort",
+          label: "Reasoning",
+          type: "select",
+          options: [
+            { id: "medium", label: "Medium" },
+            { id: "high", label: "High", isDefault: true },
+          ],
+          currentValue: "medium",
+        },
+      ],
+    });
+    const descriptor = getProviderOptionDescriptors({ caps })[0]!;
+    expect(descriptor.type).toBe("select");
+    if (descriptor.type === "select") {
+      expect(descriptor.currentValue).toBe("medium");
+    }
+  });
+
+  it("falls back to the default option when the descriptor has no currentValue", () => {
+    const caps = createModelCapabilities({
+      optionDescriptors: [
+        {
+          id: "effort",
+          label: "Reasoning",
+          type: "select",
+          options: [
+            { id: "medium", label: "Medium" },
+            { id: "high", label: "High", isDefault: true },
+          ],
+        },
+      ],
+    });
+    const descriptor = getProviderOptionDescriptors({ caps })[0]!;
+    if (descriptor.type === "select") {
+      expect(descriptor.currentValue).toBe("high");
+    }
+  });
+
+  it("resets a prompt-injected selection back to the default option", () => {
+    const caps = createModelCapabilities({
+      optionDescriptors: [
+        {
+          id: "effort",
+          label: "Reasoning",
+          type: "select",
+          options: [
+            { id: "high", label: "High", isDefault: true },
+            { id: "ultrathink", label: "Ultrathink" },
+          ],
+          promptInjectedValues: ["ultrathink"],
+        },
+      ],
+    });
+    const descriptor = getProviderOptionDescriptors({
+      caps,
+      selections: [{ id: "effort", value: "ultrathink" }],
+    })[0]!;
+    if (descriptor.type === "select") {
+      expect(descriptor.currentValue).toBe("high");
+    }
+  });
+
+  it("passes through an arbitrary value for a select with no options", () => {
+    const caps = createModelCapabilities({
+      optionDescriptors: [{ id: "effort", label: "Reasoning", type: "select", options: [] }],
+    });
+    const descriptor = getProviderOptionDescriptors({
+      caps,
+      selections: [{ id: "effort", value: "whatever" }],
+    })[0]!;
+    if (descriptor.type === "select") {
+      expect(descriptor.currentValue).toBe("whatever");
+    }
+  });
+
+  it("drops currentValue when a select cannot resolve any value", () => {
+    const caps = createModelCapabilities({
+      optionDescriptors: [{ id: "effort", label: "Reasoning", type: "select", options: [] }],
+    });
+    const descriptor = getProviderOptionDescriptors({ caps })[0]!;
+    expect(descriptor.type).toBe("select");
+    expect("currentValue" in descriptor).toBe(false);
+  });
+
+  it("applies a boolean selection value and leaves it alone for non-boolean input", () => {
+    const caps = createModelCapabilities({
+      optionDescriptors: [{ id: "fast", label: "Fast", type: "boolean" }],
+    });
+    const applied = getProviderOptionDescriptors({
+      caps,
+      selections: [{ id: "fast", value: true }],
+    })[0]!;
+    if (applied.type === "boolean") {
+      expect(applied.currentValue).toBe(true);
+    }
+    // A string selection value cannot apply to a boolean descriptor.
+    const unchanged = getProviderOptionDescriptors({
+      caps,
+      selections: [{ id: "fast", value: "nope" }],
+    })[0]!;
+    if (unchanged.type === "boolean") {
+      expect(unchanged.currentValue).toBeUndefined();
+    }
+  });
+});
+
+describe("getProviderOptionCurrentValue / Label", () => {
+  const selectDescriptor: ProviderOptionDescriptor = {
+    id: "effort",
+    label: "Reasoning",
+    type: "select",
+    options: [
+      { id: "medium", label: "Medium" },
+      { id: "high", label: "High", isDefault: true },
+    ],
+    currentValue: "medium",
+  };
+  const selectNoCurrent: ProviderOptionDescriptor = {
+    id: "effort",
+    label: "Reasoning",
+    type: "select",
+    options: [
+      { id: "medium", label: "Medium" },
+      { id: "high", label: "High", isDefault: true },
+    ],
+  };
+  const booleanOn: ProviderOptionDescriptor = {
+    id: "fast",
+    label: "Fast",
+    type: "boolean",
+    currentValue: true,
+  };
+  const booleanUnset: ProviderOptionDescriptor = {
+    id: "fast",
+    label: "Fast",
+    type: "boolean",
+  };
+
+  it("resolves current values", () => {
+    expect(getProviderOptionCurrentValue(null)).toBeUndefined();
+    expect(getProviderOptionCurrentValue(undefined)).toBeUndefined();
+    expect(getProviderOptionCurrentValue(selectDescriptor)).toBe("medium");
+    expect(getProviderOptionCurrentValue(selectNoCurrent)).toBe("high");
+    expect(getProviderOptionCurrentValue(booleanOn)).toBe(true);
+    expect(getProviderOptionCurrentValue(booleanUnset)).toBeUndefined();
+  });
+
+  it("resolves current labels", () => {
+    expect(getProviderOptionCurrentLabel(null)).toBeUndefined();
+    expect(getProviderOptionCurrentLabel(selectDescriptor)).toBe("Medium");
+    expect(getProviderOptionCurrentLabel(selectNoCurrent)).toBe("High");
+    expect(getProviderOptionCurrentLabel(booleanOn)).toBe("On");
+    expect(
+      getProviderOptionCurrentLabel({
+        id: "fast",
+        label: "Fast",
+        type: "boolean",
+        currentValue: false,
+      }),
+    ).toBe("Off");
+    expect(getProviderOptionCurrentLabel(booleanUnset)).toBeUndefined();
+  });
+
+  it("returns undefined labels for selects with no matching or non-string current value", () => {
+    const emptyOptions: ProviderOptionDescriptor = {
+      id: "effort",
+      label: "Reasoning",
+      type: "select",
+      options: [],
+    };
+    // No options, no currentValue → current value is undefined → label undefined.
+    expect(getProviderOptionCurrentLabel(emptyOptions)).toBeUndefined();
+    const staleCurrent: ProviderOptionDescriptor = {
+      id: "effort",
+      label: "Reasoning",
+      type: "select",
+      options: [{ id: "high", label: "High" }],
+      currentValue: "gone",
+    };
+    // currentValue does not match any option → find returns undefined.
+    expect(getProviderOptionCurrentLabel(staleCurrent)).toBeUndefined();
+  });
+});
+
+describe("getModelSelectionOptionDescriptors", () => {
+  const caps = createModelCapabilities({
+    optionDescriptors: [
+      {
+        id: "effort",
+        label: "Reasoning",
+        type: "select",
+        options: [{ id: "high", label: "High", isDefault: true }],
+      },
+    ],
+  });
+
+  it("returns [] without a model selection or caps", () => {
+    expect(getModelSelectionOptionDescriptors(null, caps)).toEqual([]);
+    const selection = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4");
+    expect(getModelSelectionOptionDescriptors(selection, null)).toEqual([]);
+    expect(getModelSelectionOptionDescriptors(selection, undefined)).toEqual([]);
+  });
+
+  it("resolves descriptors from the selection's options", () => {
+    const selection = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4", [
+      { id: "effort", value: "high" },
+    ]);
+    const descriptors = getModelSelectionOptionDescriptors(selection, caps);
+    expect(descriptors).toHaveLength(1);
+    expect(descriptors[0]?.id).toBe("effort");
+  });
+});
+
+describe("createModelSelection", () => {
+  it("omits the options key when no selections are supplied", () => {
+    expect(createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4")).toEqual({
+      instanceId: "codex",
+      model: "gpt-5.4",
+    });
+    expect(createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4", null)).toEqual({
+      instanceId: "codex",
+      model: "gpt-5.4",
+    });
+    expect(createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4", [])).toEqual({
+      instanceId: "codex",
+      model: "gpt-5.4",
+    });
+  });
+});
+
+describe("trimOrNull", () => {
+  it("returns null for non-strings and empty strings", () => {
+    expect(trimOrNull(null)).toBeNull();
+    expect(trimOrNull(undefined)).toBeNull();
+    expect(trimOrNull("   ")).toBeNull();
+  });
+
+  it("trims and returns non-empty strings", () => {
+    expect(trimOrNull("  hi  ")).toBe("hi");
+  });
+});
+
+describe("isClaudeUltrathinkPrompt", () => {
+  it("detects the ultrathink keyword regardless of case", () => {
+    expect(isClaudeUltrathinkPrompt("please ULTRATHINK this")).toBe(true);
+    expect(isClaudeUltrathinkPrompt("ultrathink")).toBe(true);
+  });
+
+  it("returns false for missing or unrelated text", () => {
+    expect(isClaudeUltrathinkPrompt(null)).toBe(false);
+    expect(isClaudeUltrathinkPrompt(undefined)).toBe(false);
+    expect(isClaudeUltrathinkPrompt("just thinking")).toBe(false);
+    expect(isClaudeUltrathinkPrompt("ultrathinking")).toBe(false);
+  });
+});
+
+describe("normalizeModelSlug", () => {
+  it("returns null for non-string / empty input", () => {
+    expect(normalizeModelSlug(null)).toBeNull();
+    expect(normalizeModelSlug(undefined)).toBeNull();
+    expect(normalizeModelSlug("   ")).toBeNull();
+  });
+
+  it("maps aliases for the default (codex) provider", () => {
+    expect(normalizeModelSlug("gpt-5-codex")).toBe("gpt-5.4");
+    expect(normalizeModelSlug("5.3")).toBe("gpt-5.3-codex");
+  });
+
+  it("passes through unknown slugs and canonical slugs unchanged", () => {
+    expect(normalizeModelSlug("gpt-5.4")).toBe("gpt-5.4");
+    expect(normalizeModelSlug("some-custom-model")).toBe("some-custom-model");
+  });
+
+  it("uses the provider-specific alias table", () => {
+    expect(normalizeModelSlug("opus", CLAUDE)).toBe("claude-opus-4-8");
+    expect(normalizeModelSlug("sonnet", CLAUDE)).toBe("claude-sonnet-5");
+  });
+
+  it("passes slugs through for providers without an alias table", () => {
+    expect(normalizeModelSlug("weird-model", UNKNOWN)).toBe("weird-model");
+  });
+});
+
+describe("resolveModelSlugForProvider", () => {
+  it("returns the normalized slug when resolvable", () => {
+    expect(resolveModelSlugForProvider(CLAUDE, "opus")).toBe("claude-opus-4-8");
+    expect(resolveModelSlugForProvider(CODEX, "gpt-5-codex")).toBe("gpt-5.4");
+  });
+
+  it("falls back to the provider default when the model is empty", () => {
+    expect(resolveModelSlugForProvider(CLAUDE, null)).toBe("claude-sonnet-5");
+    expect(resolveModelSlugForProvider(CODEX, "")).toBe("gpt-5.4");
+  });
+
+  it("falls back to the global default for an unknown provider", () => {
+    expect(resolveModelSlugForProvider(UNKNOWN, null)).toBe(DEFAULT_MODEL);
+  });
+});
+
+describe("resolveSelectableModel", () => {
+  const options: ReadonlyArray<SelectableModelOption> = [
+    { slug: "gpt-5.4", name: "GPT 5.4" },
+    { slug: "gpt-5.3-codex", name: "GPT 5.3 Codex" },
+  ];
+
+  it("returns null for non-string / empty values", () => {
+    expect(resolveSelectableModel(CODEX, null, options)).toBeNull();
+    expect(resolveSelectableModel(CODEX, undefined, options)).toBeNull();
+    expect(resolveSelectableModel(CODEX, "   ", options)).toBeNull();
+  });
+
+  it("matches directly by slug", () => {
+    expect(resolveSelectableModel(CODEX, "gpt-5.4", options)).toBe("gpt-5.4");
+  });
+
+  it("matches by display name case-insensitively", () => {
+    expect(resolveSelectableModel(CODEX, "gpt 5.4", options)).toBe("gpt-5.4");
+  });
+
+  it("matches through the provider alias table", () => {
+    expect(resolveSelectableModel(CODEX, "gpt-5-codex", options)).toBe("gpt-5.4");
+    expect(resolveSelectableModel(CODEX, "5.3", options)).toBe("gpt-5.3-codex");
+  });
+
+  it("returns null when nothing resolves to an available option", () => {
+    expect(resolveSelectableModel(CODEX, "definitely-not-a-model", options)).toBeNull();
+  });
+});
+
+describe("resolvePromptInjectedEffort", () => {
+  const caps = createModelCapabilities({
+    optionDescriptors: [
+      {
+        id: "effort",
+        label: "Reasoning",
+        type: "select",
+        options: [
+          { id: "high", label: "High", isDefault: true },
+          { id: "ultrathink", label: "Ultrathink" },
+        ],
+        promptInjectedValues: ["ultrathink"],
+      },
+      { id: "fast", label: "Fast", type: "boolean" },
+    ],
+  });
+
+  it("returns null for empty effort", () => {
+    expect(resolvePromptInjectedEffort(caps, null)).toBeNull();
+    expect(resolvePromptInjectedEffort(caps, "   ")).toBeNull();
+  });
+
+  it("returns the effort when it is a prompt-injected value", () => {
+    expect(resolvePromptInjectedEffort(caps, "ultrathink")).toBe("ultrathink");
+  });
+
+  it("returns null when the effort is not prompt-injected on any descriptor", () => {
+    expect(resolvePromptInjectedEffort(caps, "high")).toBeNull();
+  });
+});
+
+describe("applyClaudePromptEffortPrefix", () => {
+  it("returns the trimmed text for empty input", () => {
+    expect(applyClaudePromptEffortPrefix("   ", "ultrathink")).toBe("");
+  });
+
+  it("leaves the text unchanged when effort is not ultrathink", () => {
+    expect(applyClaudePromptEffortPrefix("Fix the bug", "high")).toBe("Fix the bug");
+    expect(applyClaudePromptEffortPrefix("  Fix the bug  ", null)).toBe("Fix the bug");
+  });
+
+  it("prepends the Ultrathink prefix once", () => {
+    expect(applyClaudePromptEffortPrefix("Fix the bug", "ultrathink")).toBe(
+      "Ultrathink:\nFix the bug",
+    );
+  });
+
+  it("does not double-prefix already-prefixed text", () => {
+    expect(applyClaudePromptEffortPrefix("Ultrathink: already", "ultrathink")).toBe(
+      "Ultrathink: already",
+    );
   });
 });

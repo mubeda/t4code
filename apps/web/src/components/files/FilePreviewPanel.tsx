@@ -707,7 +707,7 @@ export default function FilePreviewPanel({
   const file = useProjectFileQuery(environmentId, cwd, relativePath);
   const [explorerOpen, setExplorerOpen] = useState(initialExplorerOpen);
   const [saveIndicator, setSaveIndicator] = useState<SaveIndicatorStatus>(null);
-  const [markdownView, setMarkdownView] = useState<{
+  const [markdownSourceView, setMarkdownSourceView] = useState<{
     path: string | null;
     revealRequestId: number | null;
   }>({ path: null, revealRequestId: null });
@@ -739,10 +739,9 @@ export default function FilePreviewPanel({
     }
   }, []);
   const isMarkdown = relativePath ? isMarkdownPreviewFile(relativePath) : false;
-  const renderMarkdown =
-    isMarkdown &&
-    markdownView.path === relativePath &&
-    (revealLine === null || markdownView.revealRequestId === revealRequestId);
+  const renderMarkdownSource =
+    isMarkdown && (markdownSourceView.path === relativePath || revealLine !== null);
+  const renderMarkdown = isMarkdown && !renderMarkdownSource && !file.data?.truncated;
   const canOpenInBrowser =
     relativePath !== null && isPreviewSupportedInRuntime() && isBrowserPreviewFile(relativePath);
   const absolutePath = relativePath ? resolvePathLinkTarget(relativePath, cwd) : null;
@@ -857,9 +856,9 @@ export default function FilePreviewPanel({
                     className="shrink-0"
                     pressed={renderMarkdown}
                     onPressedChange={(pressed) => {
-                      setMarkdownView({
-                        path: pressed ? relativePath : null,
-                        revealRequestId: pressed ? revealRequestId : null,
+                      setMarkdownSourceView({
+                        path: pressed ? null : relativePath,
+                        revealRequestId: pressed ? null : revealRequestId,
                       });
                     }}
                     aria-label={renderMarkdown ? "Show markdown source" : "Show rendered markdown"}

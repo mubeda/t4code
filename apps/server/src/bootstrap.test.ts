@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -71,7 +72,16 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
 
       const fd = yield* Effect.acquireRelease(
         Effect.sync(() => NodeFS.openSync(filePath, "r")),
-        (fd) => Effect.sync(() => NodeFS.closeSync(fd)),
+        (fd) =>
+          Effect.sync(() => {
+            // On win32 resolveFdPath returns undefined, so readBootstrapEnvelope
+            // reads the inherited fd directly with autoClose:true — the stream owns
+            // the fd and closes it asynchronously. Closing it again here races that
+            // async close and surfaces an uncaught EBADF. On POSIX the reader
+            // re-opens via /proc/self/fd (or /dev/fd), leaving the fd for us to close.
+            if (process.platform === "win32") return;
+            NodeFS.closeSync(fd);
+          }),
       );
 
       const payload = yield* readBootstrapEnvelope(TestEnvelopeSchema, fd, { timeoutMs: 100 });
@@ -146,7 +156,7 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
 
   it.effect("returns none when the fd is unavailable", () =>
     Effect.gen(function* () {
-      const fd = NodeFS.openSync("/dev/null", "r");
+      const fd = NodeFS.openSync(NodeOS.devNull, "r");
       NodeFS.closeSync(fd);
 
       const payload = yield* readBootstrapEnvelope(TestEnvelopeSchema, fd, { timeoutMs: 100 });
@@ -157,7 +167,7 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
   it.effect("preserves fd and cause when stat fails for a non-availability reason", () =>
     Effect.gen(function* () {
       const fd = yield* Effect.acquireRelease(
-        Effect.sync(() => NodeFS.openSync("/dev/null", "r")),
+        Effect.sync(() => NodeFS.openSync(NodeOS.devNull, "r")),
         (fd) => Effect.sync(() => NodeFS.closeSync(fd)),
       );
 
@@ -185,7 +195,16 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
 
       const fd = yield* Effect.acquireRelease(
         Effect.sync(() => NodeFS.openSync(filePath, "r")),
-        (fd) => Effect.sync(() => NodeFS.closeSync(fd)),
+        (fd) =>
+          Effect.sync(() => {
+            // On win32 resolveFdPath returns undefined, so readBootstrapEnvelope
+            // reads the inherited fd directly with autoClose:true — the stream owns
+            // the fd and closes it asynchronously. Closing it again here races that
+            // async close and surfaces an uncaught EBADF. On POSIX the reader
+            // re-opens via /proc/self/fd (or /dev/fd), leaving the fd for us to close.
+            if (process.platform === "win32") return;
+            NodeFS.closeSync(fd);
+          }),
       );
       const error = yield* readBootstrapEnvelope(TestEnvelopeSchema, fd, {
         timeoutMs: 100,
@@ -203,6 +222,9 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
 
   it.effect("returns none when the bootstrap read times out before any value arrives", () =>
     Effect.gen(function* () {
+      // FIFOs (mkfifo) and the POSIX `sh` writer used to hold the pipe open are
+      // not available on Windows; skip there (still exercised on CI/Linux).
+      if (process.platform === "win32") return;
       const fs = yield* FileSystem.FileSystem;
       const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-bootstrap-" });
       const fifoPath = NodePath.join(tempDir, "bootstrap.pipe");

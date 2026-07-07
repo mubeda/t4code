@@ -107,13 +107,22 @@ describe("centerPanelStore", () => {
     });
   });
 
-  describe("closeSurface (host protection)", () => {
-    it("is a no-op for the host surface", () => {
+  describe("closeSurface", () => {
+    it("closes the host surface and falls back to the next surface", () => {
       store().openChatPanel(HOST, PANEL_A);
       store().activateSurface(HOST, HOST_SURFACE_ID);
       store().closeSurface(HOST, HOST_SURFACE_ID);
-      expect(surfaceIds()).toEqual([HOST_SURFACE_ID, `chat:${PANEL_A}`]);
-      expect(stateOf().activeSurfaceId).toBe(HOST_SURFACE_ID);
+      expect(surfaceIds()).toEqual([`chat:${PANEL_A}`]);
+      expect(stateOf().activeSurfaceId).toBe(`chat:${PANEL_A}`);
+    });
+
+    it("stores an explicit empty state when the only host surface closes", () => {
+      store().closeSurface(HOST, HOST_SURFACE_ID);
+      expect(surfaceIds()).toEqual([]);
+      expect(stateOf().activeSurfaceId).toBeNull();
+      expect(store().byThreadKey).toEqual({
+        "environment-1:host-1": { surfaces: [], activeSurfaceId: null },
+      });
     });
 
     it("removes a non-host surface and keeps the active selection when it was elsewhere", () => {
@@ -187,14 +196,16 @@ describe("centerPanelStore", () => {
     });
   });
 
-  describe("closeAllSurfaces (host survives)", () => {
-    it("resets to the host surface", () => {
+  describe("closeAllSurfaces", () => {
+    it("closes every surface and keeps an explicit empty state", () => {
       store().openChatPanel(HOST, PANEL_A);
       store().openTerminalPanel(HOST, "term-1");
       store().closeAllSurfaces(HOST);
-      expect(surfaceIds()).toEqual([HOST_SURFACE_ID]);
-      expect(stateOf().activeSurfaceId).toBe(HOST_SURFACE_ID);
-      expect(store().byThreadKey).toEqual({});
+      expect(surfaceIds()).toEqual([]);
+      expect(stateOf().activeSurfaceId).toBeNull();
+      expect(store().byThreadKey).toEqual({
+        "environment-1:host-1": { surfaces: [], activeSurfaceId: null },
+      });
     });
   });
 

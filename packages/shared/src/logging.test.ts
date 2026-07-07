@@ -71,7 +71,11 @@ describe("RotatingFileSink", () => {
 
   it("only treats a missing log file as an empty current size", () => {
     const directory = makeTempDirectory();
-    const filePath = NodePath.join(directory, "a".repeat(300));
+    // 40000 chars exceeds both the POSIX NAME_MAX/PATH_MAX limits and the
+    // Windows 32767-char extended path limit, so statSync raises
+    // ENAMETOOLONG on every platform (a 300-char name maps to ENOENT on
+    // Windows, which the sink intentionally treats as "missing file").
+    const filePath = NodePath.join(directory, "a".repeat(40000));
 
     const thrown = captureError(() => new RotatingFileSink({ filePath, maxBytes: 1, maxFiles: 1 }));
 

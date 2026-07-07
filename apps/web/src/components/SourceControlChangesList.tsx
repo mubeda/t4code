@@ -29,6 +29,8 @@ export interface SourceControlRowActions {
   onOpenExternalEditor?: (path: string) => void;
   onCopyPath?: (path: string, relative: boolean) => void;
   onViewFile?: (path: string, area?: VcsStagingArea) => void;
+  onIgnoreFileName?: (path: string) => void;
+  onIgnoreParentFolder?: (path: string) => void;
 }
 
 interface SourceControlChangesListProps extends SourceControlRowActions {
@@ -39,6 +41,8 @@ interface SourceControlChangesListProps extends SourceControlRowActions {
    * without stage/unstage RPCs) to render no checkbox at all.
    */
   checked?: (file: WorkingTreeFile) => boolean;
+  selected?: (file: WorkingTreeFile) => boolean;
+  onSelect?: (path: string, selected: boolean) => void;
   onToggle: (path: string) => void;
   /** Opens the file's diff; the area lets the panel pick staged vs unstaged scope. */
   onOpenFile: (path: string, area?: VcsStagingArea) => void;
@@ -109,6 +113,14 @@ export function SourceControlChangesList(props: SourceControlChangesListProps) {
                 aria-label={isChecked ? `Unstage ${file.path}` : `Stage ${file.path}`}
               />
             ) : null}
+            {props.onSelect ? (
+              <Checkbox
+                checked={props.selected?.(file) ?? false}
+                onCheckedChange={(selected) => props.onSelect?.(file.path, selected === true)}
+                disabled={props.disabled}
+                aria-label={`Select ${file.path}`}
+              />
+            ) : null}
             <button
               type="button"
               className="flex min-w-0 flex-1 items-center gap-2 text-left"
@@ -128,7 +140,7 @@ export function SourceControlChangesList(props: SourceControlChangesListProps) {
               {props.renderBadge?.(file)}
             </button>
             {rowActions.length > 0 ? (
-              <div className="pointer-events-none absolute inset-y-0.5 right-1 flex items-center gap-0.5 rounded-md bg-accent px-0.5 opacity-0 shadow-sm transition-opacity focus-within:pointer-events-auto focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
+              <div className="pointer-events-none flex shrink-0 items-center gap-0.5 rounded-md bg-accent px-0.5 opacity-0 shadow-sm transition-opacity focus-within:pointer-events-auto focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
                 {rowActions.map(({ action, onClick }) => (
                   <Button
                     key={action.kind}
@@ -160,6 +172,10 @@ export function SourceControlChangesList(props: SourceControlChangesListProps) {
         {...(props.onOpenExternalEditor
           ? { onOpenExternalEditor: props.onOpenExternalEditor }
           : {})}
+        {...(props.onIgnoreFileName ? { onIgnoreFileName: props.onIgnoreFileName } : {})}
+        {...(props.onIgnoreParentFolder
+          ? { onIgnoreParentFolder: props.onIgnoreParentFolder }
+          : {})}
         onClose={() => setMenu(null)}
       />
     </div>
@@ -172,6 +188,8 @@ interface RowContextMenuProps {
   onView: (file: WorkingTreeFile) => void;
   onCopyPath?: (path: string, relative: boolean) => void;
   onOpenExternalEditor?: (path: string) => void;
+  onIgnoreFileName?: (path: string) => void;
+  onIgnoreParentFolder?: (path: string) => void;
   onClose: () => void;
 }
 
@@ -196,6 +214,14 @@ function SourceControlRowContextMenu(props: RowContextMenuProps) {
       case "copy-relative-path": {
         const handler = props.onCopyPath;
         return handler ? () => handler(file.path, true) : undefined;
+      }
+      case "ignore-file-name": {
+        const handler = props.onIgnoreFileName;
+        return handler ? () => handler(file.path) : undefined;
+      }
+      case "ignore-parent-folder": {
+        const handler = props.onIgnoreParentFolder;
+        return handler ? () => handler(file.path) : undefined;
       }
       case "open-external-editor": {
         const handler = props.onOpenExternalEditor;

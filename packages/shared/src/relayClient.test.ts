@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
@@ -18,9 +19,16 @@ import {
   makeCloudflaredRelayClient,
 } from "./relayClient.ts";
 
+// The tests run against the real filesystem (NodeServices.layer), so the mocked
+// platform must match the host: POSIX exec-bit semantics (chmod 0o755, mode & 0o111)
+// cannot be represented on a Windows filesystem. On CI/Linux this resolves to
+// "linux" exactly as before; on Windows it exercises the win32 branch instead.
+const hostPlatform: NodeJS.Platform = process.platform;
+const cloudflaredFileName = hostPlatform === "win32" ? "cloudflared.exe" : "cloudflared";
+
 const hostRuntimeLayer = (env: Record<string, string> = {}) =>
   Layer.mergeAll(
-    Layer.succeed(HostProcessPlatform, "linux"),
+    Layer.succeed(HostProcessPlatform, hostPlatform),
     Layer.succeed(HostProcessArchitecture, "x64"),
     ConfigProvider.layer(ConfigProvider.fromEnv({ env })),
   );
@@ -107,6 +115,7 @@ describe("RelayClient", () => {
   it.effect("downloads, verifies, validates, and atomically installs the managed executable", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-cloudflared-test-",
       });
@@ -128,7 +137,14 @@ describe("RelayClient", () => {
           }
         }),
       );
-      const managedPath = `${baseDir}/tools/cloudflared/${CLOUDFLARED_VERSION}/linux-x64/cloudflared`;
+      const managedPath = path.join(
+        baseDir,
+        "tools",
+        "cloudflared",
+        CLOUDFLARED_VERSION,
+        `${hostPlatform}-x64`,
+        cloudflaredFileName,
+      );
       expect(installed).toEqual({
         status: "available",
         executablePath: managedPath,
@@ -231,11 +247,12 @@ describe("RelayClient", () => {
     const env = { PATH: "" };
     return Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-cloudflared-test-",
       });
-      const binDir = `${baseDir}/bin`;
-      const executablePath = `${binDir}/cloudflared`;
+      const binDir = path.join(baseDir, "bin");
+      const executablePath = path.join(binDir, cloudflaredFileName);
       const manager = yield* makeCloudflaredRelayClient({
         baseDir,
       });

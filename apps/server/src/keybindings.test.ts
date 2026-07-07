@@ -483,6 +483,11 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
 
   it.effect("fails when config directory is not writable", () =>
     Effect.gen(function* () {
+      // POSIX chmod cannot revoke write access to a directory on Windows
+      // (fs.chmod only toggles the read-only file attribute there), so an
+      // unwritable-directory write failure cannot be reproduced. Skip on win32;
+      // still fully exercised on CI/Linux.
+      if (process.platform === "win32") return;
       const fs = yield* FileSystem.FileSystem;
       const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
       const { dirname } = yield* Path.Path;

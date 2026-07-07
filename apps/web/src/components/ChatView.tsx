@@ -142,7 +142,6 @@ import { subscribePreviewAction } from "./preview/previewActionBus";
 import { getConfiguredPreviewUrls } from "./preview/previewEmptyStateLogic";
 import { RightPanelTabs } from "./RightPanelTabs";
 import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
-import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import PlanSidebar from "./PlanSidebar";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
@@ -162,7 +161,6 @@ import { getProviderModelCapabilities, resolveSelectableProvider } from "../prov
 import { useEnvironmentSettings } from "../hooks/useSettings";
 import { resolveAppModelSelectionForInstance } from "../modelSelection";
 import { getTerminalFocusOwner } from "../lib/terminalFocus";
-import { resolveNewDraftStartFromOrigin } from "../lib/chatThreadActions";
 import {
   deriveLogicalProjectKeyFromSettings,
   selectProjectGroupingSettings,
@@ -201,13 +199,7 @@ import { terminalEnvironment } from "../state/terminal";
 import { threadEnvironment } from "../state/threads";
 import { vcsEnvironment } from "../state/vcs";
 import { useEnvironments, usePrimaryEnvironment } from "../state/environments";
-import {
-  useProject,
-  useProjects,
-  useThread,
-  useThreadProposedPlans,
-  useThreadRefs,
-} from "../state/entities";
+import { useProject, useThread, useThreadProposedPlans, useThreadRefs } from "../state/entities";
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
@@ -1178,10 +1170,7 @@ function ChatViewContent(props: ChatViewProps) {
   const [pendingServerThreadEnvMode, setPendingServerThreadEnvMode] =
     useState<DraftThreadEnvMode | null>(null);
   const [pendingServerThreadBranch, setPendingServerThreadBranch] = useState<string | null>();
-  const [
-    pendingServerThreadStartFromOriginByThreadId,
-    setPendingServerThreadStartFromOriginByThreadId,
-  ] = useState<Record<string, boolean>>({});
+  const [pendingServerThreadStartFromOriginByThreadId] = useState<Record<string, boolean>>({});
   const [lastInvokedScriptByProjectId, setLastInvokedScriptByProjectId] = useLocalStorage(
     LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
     {},
@@ -1285,7 +1274,6 @@ function ChatViewContent(props: ChatViewProps) {
   const interactionMode =
     composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
-  const canCheckoutPullRequestIntoThread = isLocalDraftThread;
   const activeThreadId = activeThread?.id ?? null;
   const runningTerminalIds = useThreadRunningTerminalIds({
     environmentId: activeThread?.environmentId ?? null,
@@ -1336,8 +1324,9 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const activeCenterSurface =
     centerPanelState.surfaces.find((surface) => surface.id === centerPanelState.activeSurfaceId) ??
-    centerPanelState.surfaces[0];
+    null;
   const centerHostHidden = !isPanel && activeCenterSurface?.id !== HOST_SURFACE_ID;
+  const centerPanelEmpty = !isPanel && centerPanelState.surfaces.length === 0;
   // Chat-header "+" panel menu → create a sibling chat panel / open a center
   // terminal, both sharing the host thread's workspace. Guarded on a live host
   // thread ref (drafts have no server thread to host siblings yet).
@@ -1502,10 +1491,6 @@ function ChatViewContent(props: ChatViewProps) {
     useRightPanelStore.getState().reconcileFileSurfaces(activeThreadRef, activeProject !== null);
   }, [activeEnvironmentBootstrapComplete, activeProject, activeThreadRef]);
 
-  // Compute the list of environments this logical project spans, used to
-  // drive the environment picker in BranchToolbar.
-  const allProjects = useProjects();
-  const primaryEnvironmentId = primaryEnvironment?.environmentId ?? null;
   const activeEnvironment =
     activeThread == null ? null : (environmentById.get(activeThread.environmentId) ?? null);
   const activeEnvironmentConnectionPhase = activeEnvironment?.connection.phase ?? "available";
@@ -1540,52 +1525,6 @@ function ChatViewContent(props: ChatViewProps) {
     [retryEnvironment],
   );
   const projectGroupingSettings = selectProjectGroupingSettings(settings);
-  const logicalProjectEnvironments = useMemo(() => {
-    if (!activeProject) return [];
-    const logicalKey = deriveLogicalProjectKeyFromSettings(activeProject, projectGroupingSettings);
-    const memberProjects = allProjects.filter(
-      (p) => deriveLogicalProjectKeyFromSettings(p, projectGroupingSettings) === logicalKey,
-    );
-    const seen = new Set<string>();
-    const envs: Array<{
-      environmentId: EnvironmentId;
-      projectId: ProjectId;
-      label: string;
-      isPrimary: boolean;
-    }> = [];
-    for (const p of memberProjects) {
-      if (seen.has(p.environmentId)) continue;
-      seen.add(p.environmentId);
-      const isPrimary = p.environmentId === primaryEnvironmentId;
-      const label = environmentById.get(p.environmentId)?.label ?? p.environmentId;
-      envs.push({
-        environmentId: p.environmentId,
-        projectId: p.id,
-        label,
-        isPrimary,
-      });
-    }
-    // Sort: primary first, then alphabetical
-    envs.sort((a, b) => {
-      if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
-      return a.label.localeCompare(b.label);
-    });
-    return envs;
-  }, [activeProject, allProjects, projectGroupingSettings, primaryEnvironmentId, environmentById]);
-  const hasMultipleEnvironments = logicalProjectEnvironments.length > 1;
-
-  const openPullRequestDialog = useCallback(
-    (reference?: string) => {
-      if (!canCheckoutPullRequestIntoThread) {
-        return;
-      }
-      setPullRequestDialogState({
-        initialReference: reference ?? null,
-        key: Date.now(),
-      });
-    },
-    [canCheckoutPullRequestIntoThread],
-  );
 
   const closePullRequestDialog = useCallback(() => {
     setPullRequestDialogState(null);
@@ -2276,23 +2215,6 @@ function ChatViewContent(props: ChatViewProps) {
     activeThread &&
     (activeThread.messages.length > 0 ||
       (activeThread.session !== null && activeThread.session.status !== "stopped")),
-  );
-
-  // Handle environment change for draft threads.  When the user picks a
-  // different environment we update the draft context to point at the physical
-  // project in that environment while keeping the same logical project.
-  const onEnvironmentChange = useCallback(
-    (nextEnvironmentId: EnvironmentId) => {
-      if (envLocked || !draftId) return;
-      const target = logicalProjectEnvironments.find(
-        (env) => env.environmentId === nextEnvironmentId,
-      );
-      if (!target) return;
-      setDraftThreadContext(draftId, {
-        projectRef: scopeProjectRef(target.environmentId, target.projectId),
-      });
-    },
-    [draftId, envLocked, logicalProjectEnvironments, setDraftThreadContext],
   );
 
   const activeTerminalGroup =
@@ -4927,53 +4849,6 @@ function ChatViewContent(props: ChatViewProps) {
       settings,
     ],
   );
-  const onEnvModeChange = useCallback(
-    (mode: DraftThreadEnvMode) => {
-      if (canOverrideServerThreadEnvMode) {
-        setPendingServerThreadEnvMode(mode);
-        scheduleComposerFocus();
-        return;
-      }
-      if (isLocalDraftThread) {
-        setDraftThreadContext(composerDraftTarget, {
-          envMode: mode,
-          startFromOrigin: resolveNewDraftStartFromOrigin({
-            envMode: mode,
-            newWorktreesStartFromOrigin: settings.newWorktreesStartFromOrigin,
-          }),
-          ...(mode === "worktree" && draftThread?.worktreePath ? { worktreePath: null } : {}),
-        });
-      }
-      scheduleComposerFocus();
-    },
-    [
-      canOverrideServerThreadEnvMode,
-      composerDraftTarget,
-      draftThread?.worktreePath,
-      isLocalDraftThread,
-      settings.newWorktreesStartFromOrigin,
-      setPendingServerThreadEnvMode,
-      scheduleComposerFocus,
-      setDraftThreadContext,
-    ],
-  );
-
-  const onStartFromOriginChange = (nextStartFromOrigin: boolean) => {
-    if (canOverrideServerThreadEnvMode && activeThread) {
-      setPendingServerThreadStartFromOriginByThreadId((current) =>
-        current[activeThread.id] === nextStartFromOrigin
-          ? current
-          : { ...current, [activeThread.id]: nextStartFromOrigin },
-      );
-      return;
-    }
-    if (isLocalDraftThread) {
-      setDraftThreadContext(composerDraftTarget, {
-        startFromOrigin: nextStartFromOrigin,
-      });
-    }
-  };
-
   const onExpandTimelineImage = useCallback((preview: ExpandedImagePreview) => {
     setExpandedImage(preview);
   }, []);
@@ -5164,8 +5039,8 @@ function ChatViewContent(props: ChatViewProps) {
           </header>
         )}
 
-        {/* Center multipanel tab strip — hidden while only the host chat exists */}
-        {!isPanel && activeThreadRef && centerPanelState.surfaces.length > 1 && (
+        {/* Center multipanel tab strip */}
+        {!isPanel && activeThreadRef && centerPanelState.surfaces.length > 0 && (
           <CenterPanelTabs
             surfaces={centerPanelState.surfaces}
             activeSurfaceId={centerPanelState.activeSurfaceId}
@@ -5346,43 +5221,9 @@ function ChatViewContent(props: ChatViewProps) {
               <div
                 className={cn(
                   "chat-composer-horizontal-inset chat-composer-lower-chrome relative z-10",
-                  // Panels never render the BranchToolbar strip below the composer,
-                  // so they take the taller no-toolbar padding — otherwise the
-                  // composer sits glued to the window edge and looks clipped.
-                  !isPanel && isGitRepo
-                    ? "pb-[calc(env(safe-area-inset-bottom)+0.25rem)]"
-                    : "pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:pb-[calc(env(safe-area-inset-bottom)+1rem)]",
+                  "pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:pb-[calc(env(safe-area-inset-bottom)+1rem)]",
                 )}
-              >
-                {!isPanel && isGitRepo && (
-                  <div className="pointer-events-auto">
-                    <BranchToolbar
-                      environmentId={activeThread.environmentId}
-                      threadId={activeThread.id}
-                      {...(routeKind === "draft" && draftId ? { draftId } : {})}
-                      onEnvModeChange={onEnvModeChange}
-                      startFromOrigin={startFromOrigin}
-                      onStartFromOriginChange={onStartFromOriginChange}
-                      {...(canOverrideServerThreadEnvMode
-                        ? { effectiveEnvModeOverride: envMode }
-                        : {})}
-                      {...(canOverrideServerThreadEnvMode
-                        ? {
-                            activeThreadBranchOverride: activeThreadBranch,
-                            onActiveThreadBranchOverrideChange: setPendingServerThreadBranch,
-                          }
-                        : {})}
-                      envLocked={envLocked}
-                      onComposerFocusRequest={scheduleComposerFocus}
-                      {...(canCheckoutPullRequestIntoThread
-                        ? { onCheckoutPullRequestRequest: openPullRequestDialog }
-                        : {})}
-                      {...(hasMultipleEnvironments ? { onEnvironmentChange } : {})}
-                      availableEnvironments={logicalProjectEnvironments}
-                    />
-                  </div>
-                )}
-              </div>
+              />
             </div>
 
             {pullRequestDialogState ? (
@@ -5428,6 +5269,11 @@ function ChatViewContent(props: ChatViewProps) {
             onAddTerminalContext={addTerminalContextToDraft}
             onClose={() => centerPanelActions.closeSurface(activeThreadRef, activeCenterSurface)}
           />
+        ) : null}
+        {centerPanelEmpty ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-sm text-muted-foreground">
+            No chat panels open
+          </div>
         ) : null}
 
         {!isPanel &&

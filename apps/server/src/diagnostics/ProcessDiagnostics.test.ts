@@ -208,6 +208,9 @@ describe("ProcessDiagnostics", () => {
       const diagnostics = yield* Effect.service(ProcessDiagnostics.ProcessDiagnostics).pipe(
         Effect.flatMap((pd) => pd.read),
         Effect.provide(layer),
+        // Pin the POSIX `ps` code path (the mock returns ps-style output); the
+        // host default would select the win32 powershell path on Windows.
+        Effect.provideService(HostProcessPlatform, "linux"),
       );
 
       expect(diagnostics.processes.map((process) => process.pid)).toEqual([4242]);

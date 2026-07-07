@@ -5,7 +5,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { FileTree, useFileTree } from "@pierre/trees/react";
-import { RefreshCw, Search } from "lucide-react";
+import { FolderClosed, FolderOpen, RefreshCw, Search } from "lucide-react";
 import type { MouseEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -71,6 +71,29 @@ function treePath(entry: ProjectEntry): string {
   return entry.kind === "directory" ? `${entry.path}/` : entry.path;
 }
 
+interface CollapsibleTreeItem {
+  collapse?: () => void;
+  isDirectory: () => boolean;
+}
+
+interface CollapsibleTreeModel {
+  getItem: (path: string) => CollapsibleTreeItem | null;
+}
+
+export function expandedDirectoryTreePaths(entries: ReadonlyArray<ProjectEntry>): string[] {
+  return entries.filter((entry) => entry.kind === "directory").map(treePath);
+}
+
+export function collapseDirectoryTreePaths(
+  model: CollapsibleTreeModel,
+  directoryTreePaths: ReadonlyArray<string>,
+): void {
+  for (const path of directoryTreePaths) {
+    const item = model.getItem(path);
+    if (item?.isDirectory()) item.collapse?.();
+  }
+}
+
 export default function FileBrowserPanel({
   environmentId,
   cwd,
@@ -89,6 +112,7 @@ export default function FileBrowserPanel({
   );
   const entryKindsRef = useRef<ReadonlyMap<string, ProjectEntry["kind"]>>(entryKinds);
   const treePaths = useMemo(() => entries.map(treePath), [entries]);
+  const expandedTreePaths = useMemo(() => expandedDirectoryTreePaths(entries), [entries]);
   const previousTreePathsRef = useRef<readonly string[]>([]);
 
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -451,6 +475,22 @@ export default function FileBrowserPanel({
             {entriesQuery.data?.truncated ? " · partial" : ""}
           </div>
         </div>
+        <button
+          type="button"
+          className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+          aria-label="Collapse all folders"
+          onClick={() => collapseDirectoryTreePaths(model, expandedTreePaths)}
+        >
+          <FolderClosed className="size-3.5" />
+        </button>
+        <button
+          type="button"
+          className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+          aria-label="Expand all folders"
+          onClick={() => model.resetPaths(treePaths, { initialExpandedPaths: expandedTreePaths })}
+        >
+          <FolderOpen className="size-3.5" />
+        </button>
         <button
           type="button"
           className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"

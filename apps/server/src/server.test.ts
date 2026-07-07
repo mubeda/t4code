@@ -4257,7 +4257,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.deepEqual(first.config.keybindings, []);
         assert.deepEqual(first.config.issues, []);
         assert.deepEqual(first.config.providers, providers);
-        assert.equal(first.config.observability.logsDirectoryPath.endsWith("/logs"), true);
+        assert.equal(
+          first.config.observability.logsDirectoryPath.replaceAll("\\", "/").endsWith("/logs"),
+          true,
+        );
         assert.equal(first.config.observability.localTracingEnabled, true);
         assert.equal(first.config.observability.otlpTracesUrl, "http://localhost:4318/v1/traces");
         assert.equal(first.config.observability.otlpTracesEnabled, true);
@@ -4511,7 +4514,16 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       });
       const outsideFile = path.join(outsideDir, "outside.txt");
       yield* fs.writeFileString(outsideFile, "outside\n");
-      yield* fs.symlink(outsideFile, path.join(workspaceDir, "linked-outside.txt"));
+      // Windows without the symlink privilege rejects symlink creation with
+      // EPERM; the outside-root read assertion below is skipped there (still
+      // exercised on CI/Linux). The search/list/browse assertions do not depend
+      // on the symlink and always run.
+      const linkedOutside = yield* fs
+        .symlink(outsideFile, path.join(workspaceDir, "linked-outside.txt"))
+        .pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        );
       const resolvedOutsideFile = yield* fs.realPath(outsideFile);
 
       yield* buildAppUnderTest();
@@ -4577,19 +4589,24 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(listError.normalizedCwd, invalidWorkspace);
       assert.isDefined(listError.cause);
 
-      if (results.read._tag !== "Failure" || results.read.failure._tag !== "ProjectReadFileError") {
-        assert.fail("Expected a ProjectReadFileError");
+      if (linkedOutside) {
+        if (
+          results.read._tag !== "Failure" ||
+          results.read.failure._tag !== "ProjectReadFileError"
+        ) {
+          assert.fail("Expected a ProjectReadFileError");
+        }
+        const readError = results.read.failure;
+        assert.equal(
+          readError.message,
+          `Failed to read workspace file 'linked-outside.txt' in '${workspaceDir}'.`,
+        );
+        assert.equal(readError.cwd, workspaceDir);
+        assert.equal(readError.relativePath, "linked-outside.txt");
+        assert.equal(readError.failure, "resolved_path_outside_root");
+        assert.equal(readError.resolvedPath, resolvedOutsideFile);
+        assert.isDefined(readError.cause);
       }
-      const readError = results.read.failure;
-      assert.equal(
-        readError.message,
-        `Failed to read workspace file 'linked-outside.txt' in '${workspaceDir}'.`,
-      );
-      assert.equal(readError.cwd, workspaceDir);
-      assert.equal(readError.relativePath, "linked-outside.txt");
-      assert.equal(readError.failure, "resolved_path_outside_root");
-      assert.equal(readError.resolvedPath, resolvedOutsideFile);
-      assert.isDefined(readError.cause);
 
       if (
         results.browse._tag !== "Failure" ||

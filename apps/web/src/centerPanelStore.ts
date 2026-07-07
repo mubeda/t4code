@@ -3,8 +3,9 @@
  *
  * A "center panel" is a sibling THREAD sharing the host thread's worktree (see
  * .superpowers/multipanel/00-mp-plan.md). Each host thread owns an ordered set
- * of center surfaces: its own chat (the non-closable host surface, always
- * index 0), extra chat panels (kind:"panel" threads), and terminal panels.
+ * of center surfaces: its own chat (the host surface, initially index 0),
+ * extra chat panels (kind:"panel" threads), and terminal panels. The host
+ * surface can be closed, so a thread may temporarily have zero center surfaces.
  *
  * Concurrent writes to the shared worktree by parallel panels are BY DESIGN
  * (users want same-workspace parallel AIs); no locking in v1.
@@ -38,7 +39,7 @@ const CENTER_PANEL_STORAGE_KEY = "t3code:center-panel-state:v1";
 const CENTER_PANEL_STORAGE_VERSION = 1;
 
 export interface ThreadCenterPanelState {
-  activeSurfaceId: string;
+  activeSurfaceId: string | null;
   surfaces: CenterSurface[];
 }
 
@@ -54,9 +55,8 @@ interface CenterPanelStoreState {
   removeThread: (ref: ScopedThreadRef) => void;
 }
 
-// The host surface is always present and always index 0, so a fresh host thread
-// already has exactly one surface — the center strip stays hidden until a second
-// surface is opened, and activeSurfaceId is never null.
+// Fresh host threads still start with the main chat surface. Closing every
+// surface stores an explicit empty state rather than pruning to this default.
 const EMPTY_THREAD_STATE: ThreadCenterPanelState = {
   activeSurfaceId: HOST_SURFACE_ID,
   surfaces: [HOST_SURFACE],
@@ -92,6 +92,9 @@ const normalizeSurfaces = (surfaces: readonly CenterSurface[]): CenterSurface[] 
 
 const isHostOnly = (state: ThreadCenterPanelState): boolean =>
   state.surfaces.length === 1 && state.surfaces[0]?.id === HOST_SURFACE_ID;
+
+const isEmpty = (state: ThreadCenterPanelState): boolean =>
+  state.surfaces.length === 0 && state.activeSurfaceId === null;
 
 const upsertSurface = (
   current: ThreadCenterPanelState,
@@ -204,16 +207,14 @@ export const useCenterPanelStore = create<CenterPanelStoreState>()(
       closeSurface: (ref, surfaceId) =>
         set((state) => ({
           byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => {
-            if (surfaceId === HOST_SURFACE_ID) return current; // host chat is not closable
             const index = current.surfaces.findIndex((surface) => surface.id === surfaceId);
             if (index < 0) return current;
             const surfaces = current.surfaces.filter((surface) => surface.id !== surfaceId);
             if (current.activeSurfaceId !== surfaceId) {
               return { ...current, surfaces };
             }
-            // Host sits at index 0, so a fallback always exists.
-            const fallback = surfaces[Math.min(index, surfaces.length - 1)] ?? HOST_SURFACE;
-            return { surfaces, activeSurfaceId: fallback.id };
+            const fallback = surfaces[Math.min(index, surfaces.length - 1)] ?? null;
+            return { surfaces, activeSurfaceId: fallback?.id ?? null };
           }),
         })),
       closeOtherSurfaces: (ref, surfaceId) =>
@@ -246,9 +247,7 @@ export const useCenterPanelStore = create<CenterPanelStoreState>()(
       closeAllSurfaces: (ref) =>
         set((state) => ({
           byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) =>
-            isHostOnly(current)
-              ? current
-              : { surfaces: [HOST_SURFACE], activeSurfaceId: HOST_SURFACE_ID },
+            isEmpty(current) ? current : { surfaces: [], activeSurfaceId: null },
           ),
         })),
       removeThread: (ref) =>
@@ -282,7 +281,7 @@ export function selectThreadCenterPanelState(
 export function selectActiveCenterSurface(
   byThreadKey: Record<string, ThreadCenterPanelState>,
   ref: ScopedThreadRef | null | undefined,
-): CenterSurface {
+): CenterSurface | null {
   const state = selectThreadCenterPanelState(byThreadKey, ref);
-  return state.surfaces.find((surface) => surface.id === state.activeSurfaceId) ?? HOST_SURFACE;
+  return state.surfaces.find((surface) => surface.id === state.activeSurfaceId) ?? null;
 }

@@ -66,7 +66,9 @@ it.layer(TestLayer)("ProjectFaviconResolverLive", (it) => {
         const resolved = yield* resolver.resolvePath(cwd);
 
         expect(resolved).not.toBeNull();
-        expect(resolved).toContain("public/brand/logo.svg");
+        // Resolved paths use the host separator (\\ on Windows); compare on a
+        // POSIX-normalized copy so the assertion holds cross-platform.
+        expect(resolved?.replaceAll("\\", "/")).toContain("public/brand/logo.svg");
       }),
     );
 
@@ -190,7 +192,9 @@ it.layer(TestLayer)("ProjectFaviconResolverLive", (it) => {
         const resolved = yield* resolver.resolvePath(cwd);
 
         expect(resolved).not.toBeNull();
-        expect(resolved).toContain("public/brand/logo.svg");
+        // Resolved paths use the host separator (\\ on Windows); compare on a
+        // POSIX-normalized copy so the assertion holds cross-platform.
+        expect(resolved?.replaceAll("\\", "/")).toContain("public/brand/logo.svg");
       }),
     );
   });

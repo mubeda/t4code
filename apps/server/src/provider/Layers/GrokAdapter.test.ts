@@ -33,8 +33,53 @@ const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const mockAgentPath = NodePath.join(__dirname, "../../../scripts/acp-mock-agent.ts");
 const mockAgentCommand = process.execPath;
 
+// Escapes an arbitrary string into a double-quoted JS source literal so
+// per-wrapper environment values (which can contain newlines, quotes and
+// backslashes) can be baked into the win32 `--import` preload module. Avoids
+// `JSON.stringify` per repo convention.
+function toJsStringLiteral(value: string): string {
+  return `"${value
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"')
+    .replaceAll("\r", "\\r")
+    .replaceAll("\n", "\\n")}"`;
+}
+
+// Windows cannot spawn a `#!/bin/sh` shebang script, so on win32 we emit a
+// `.cmd` launcher plus a Node `--import` preload module. `resolveSpawnCommand`
+// (the production spawn path) resolves the `.cmd` and runs it via `cmd.exe`,
+// which forwards stdio to the single child node process — keeping the mock ACP
+// agent as the entry point exactly like `exec node <agent> "$@"` on POSIX. The
+// preload bakes the per-wrapper env (and optional prelude behavior) so the mock
+// agent reads the same `T3_ACP_*` variables at module load.
+async function makeWin32AcpWrapper(
+  dir: string,
+  baseName: string,
+  env: Record<string, string>,
+  preludeLines: ReadonlyArray<string> = [],
+): Promise<string> {
+  const preloadPath = NodePath.join(dir, `${baseName}.preload.mjs`);
+  const cmdPath = NodePath.join(dir, `${baseName}.cmd`);
+  const lines = [
+    ...preludeLines,
+    ...Object.entries(env).map(
+      ([key, value]) => `process.env[${toJsStringLiteral(key)}] = ${toJsStringLiteral(value)};`,
+    ),
+  ];
+  await NodeFSP.writeFile(preloadPath, `${lines.join("\n")}\n`, "utf8");
+  const preloadUrl = NodeURL.pathToFileURL(preloadPath).href;
+  // Windows paths never contain `"`, so plain double-quoting is sufficient (and
+  // correct — unlike JSON escaping, which would mangle backslashes for cmd.exe).
+  const cmd = `@echo off\r\n"${mockAgentCommand}" --import "${preloadUrl}" "${mockAgentPath}" %*\r\n`;
+  await NodeFSP.writeFile(cmdPath, cmd, "utf8");
+  return cmdPath;
+}
+
 async function makeMockGrokWrapper(extraEnv?: Record<string, string>) {
   const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-acp-mock-"));
+  if (process.platform === "win32") {
+    return makeWin32AcpWrapper(dir, "fake-grok", extraEnv ?? {});
+  }
   const wrapperPath = NodePath.join(dir, "fake-grok.sh");
   const envExports = Object.entries(extraEnv ?? {})
     .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
@@ -188,7 +233,13 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
     }),
   );
 
-  it.effect("closes the ACP child process when a session stops", () =>
+  // win32: the child is torn down with `taskkill /T /F` (TerminateProcess), so
+  // the mock agent's `SIGTERM`/`exit` handlers never run and the exit log stays
+  // empty — this asserts POSIX signal-delivery semantics that don't exist on
+  // Windows. Skipped there; unchanged on Linux/CI.
+  it.effect.skipIf(process.platform === "win32")(
+    "closes the ACP child process when a session stops",
+    () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-stop-session-close");
       const tempDir = yield* Effect.promise(() =>

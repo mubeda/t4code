@@ -2,7 +2,7 @@ import { ProviderInstanceId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ProviderInstanceEntry } from "~/providerInstances";
-import { buildPanelMenuModel, PROVIDER_NOT_READY_REASON } from "./ChatHeaderPanelMenu.logic";
+import { buildPanelMenuModel } from "./ChatHeaderPanelMenu.logic";
 
 function makeEntry(input: {
   instanceId: string;
@@ -39,14 +39,14 @@ describe("buildPanelMenuModel", () => {
     ]);
   });
 
-  it("enables ready instances and disables not-ready ones with a reason", () => {
+  it("keeps visible providers selectable even when their runtime status is not ready", () => {
     const [ready, notReady] = buildPanelMenuModel([
       makeEntry({ instanceId: "codex" }),
       makeEntry({ instanceId: "claude", isAvailable: false }),
     ]);
     expect(ready?.disabled).toBe(false);
     expect(ready?.disabledReason).toBeUndefined();
-    expect(notReady?.disabled).toBe(true);
-    expect(notReady?.disabledReason).toBe(PROVIDER_NOT_READY_REASON);
+    expect(notReady?.disabled).toBe(false);
+    expect(notReady?.disabledReason).toBeUndefined();
   });
 });

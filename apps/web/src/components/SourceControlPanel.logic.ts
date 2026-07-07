@@ -35,6 +35,24 @@ export function splitFilePath(path: string): FilePathParts {
   return { dir: path.slice(0, index), name: path.slice(index + 1) };
 }
 
+export function ignoreFileNamePattern(path: string): string {
+  return splitFilePath(path.replaceAll("\\", "/")).name;
+}
+
+export function ignoreParentFolderPattern(path: string): string | null {
+  const { dir } = splitFilePath(path.replaceAll("\\", "/"));
+  return dir ? `${dir}/` : null;
+}
+
+export function appendGitignorePattern(contents: string, pattern: string): string {
+  const normalizedPattern = pattern.trim();
+  if (normalizedPattern.length === 0) return contents;
+  const lines = contents.split(/\r?\n/g).map((line) => line.trim());
+  if (lines.includes(normalizedPattern)) return contents;
+  const prefix = contents.length === 0 || contents.endsWith("\n") ? contents : `${contents}\n`;
+  return `${prefix}${normalizedPattern}\n`;
+}
+
 export interface ChangeSelectionSummary {
   readonly totalCount: number;
   readonly insertions: number;

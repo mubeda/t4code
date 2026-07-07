@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import {
   createModelCapabilities,
@@ -51,6 +52,20 @@ const CLAUDE_PRESENTATION = {
 const MINIMUM_CLAUDE_FABLE_5_VERSION = "2.1.169";
 const MINIMUM_CLAUDE_OPUS_4_8_VERSION = "2.1.154";
 const MINIMUM_CLAUDE_OPUS_4_7_VERSION = "2.1.111";
+
+const ClaudeAuthStatusJson = Schema.Struct({
+  authenticated: Schema.optionalKey(Schema.Boolean),
+  loggedIn: Schema.optionalKey(Schema.Boolean),
+  authMethod: Schema.optionalKey(Schema.String),
+  account: Schema.optionalKey(
+    Schema.Struct({
+      email: Schema.optionalKey(Schema.String),
+    }),
+  ),
+});
+const decodeClaudeAuthStatus = Schema.decodeUnknownOption(
+  Schema.fromJsonString(ClaudeAuthStatusJson),
+);
 
 const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
@@ -651,6 +666,40 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   return yield* spawnAndCollect(claudeSettings.binaryPath, command);
 });
 
+interface ClaudeCliAuthProbe {
+  readonly authenticated: boolean;
+  readonly authMethod: string | undefined;
+  readonly email: string | undefined;
+}
+
+const probeClaudeCliAuthStatus = Effect.fn("probeClaudeCliAuthStatus")(function* (
+  claudeSettings: ClaudeSettings,
+  environment?: NodeJS.ProcessEnv,
+): Effect.fn.Return<
+  ClaudeCliAuthProbe | undefined,
+  never,
+  ChildProcessSpawner.ChildProcessSpawner | Path.Path
+> {
+  const result = yield* runClaudeCommand(claudeSettings, ["auth", "status"], environment).pipe(
+    Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
+    Effect.result,
+  );
+  if (Result.isFailure(result) || Option.isNone(result.success)) {
+    return undefined;
+  }
+  const output = result.success.value;
+  const decoded = decodeClaudeAuthStatus(output.stdout);
+  if (Option.isNone(decoded)) {
+    return undefined;
+  }
+  const status = decoded.value;
+  return {
+    authenticated: status.authenticated === true || status.loggedIn === true,
+    authMethod: status.authMethod,
+    email: status.account?.email,
+  };
+});
+
 export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(function* (
   claudeSettings: ClaudeSettings,
   resolveCapabilities?: (
@@ -776,6 +825,32 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const dedupedSlashCommands = dedupeSlashCommands(slashCommands);
 
   if (!capabilities) {
+    const cliAuthStatus = yield* probeClaudeCliAuthStatus(claudeSettings, resolvedEnvironment);
+    if (cliAuthStatus?.authenticated === true) {
+      const authMetadata = claudeAuthMetadata({
+        subscriptionType: undefined,
+        authMethod: cliAuthStatus.authMethod,
+      });
+      return buildServerProvider({
+        presentation: CLAUDE_PRESENTATION,
+        enabled: claudeSettings.enabled,
+        checkedAt,
+        models,
+        slashCommands: dedupedSlashCommands,
+        probe: {
+          installed: true,
+          version: parsedVersion,
+          status: "ready",
+          auth: {
+            status: "authenticated",
+            ...(cliAuthStatus.email ? { email: cliAuthStatus.email } : {}),
+            ...(authMetadata ? authMetadata : {}),
+          },
+          ...(versionUpgradeMessage ? { message: versionUpgradeMessage } : {}),
+        },
+      });
+    }
+
     return buildServerProvider({
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,

@@ -44,10 +44,17 @@ describe("getRowActions", () => {
 });
 
 describe("buildRowContextMenu", () => {
-  it("is navigation-only and includes Open in External Editor in the primary env", () => {
+  it("includes ignore and navigation actions plus Open in External Editor in the primary env", () => {
     const model = buildRowContextMenu({ isPrimaryEnv: true });
     const ids = model.groups.flat().map((item) => item.id);
-    expect(ids).toEqual(["view", "copy-path", "copy-relative-path", "open-external-editor"]);
+    expect(ids).toEqual([
+      "view",
+      "ignore-file-name",
+      "ignore-parent-folder",
+      "copy-path",
+      "copy-relative-path",
+      "open-external-editor",
+    ]);
     expect(ids).not.toContain("stage");
     expect(ids).not.toContain("discard");
     expect(ids).not.toContain("delete");
@@ -56,6 +63,12 @@ describe("buildRowContextMenu", () => {
   it("omits Open in External Editor outside the primary env", () => {
     const model = buildRowContextMenu({ isPrimaryEnv: false });
     const ids = model.groups.flat().map((item) => item.id);
-    expect(ids).toEqual(["view", "copy-path", "copy-relative-path"]);
+    expect(ids).toEqual([
+      "view",
+      "ignore-file-name",
+      "ignore-parent-folder",
+      "copy-path",
+      "copy-relative-path",
+    ]);
   });
 });

@@ -64,6 +64,8 @@ export function getRowActions(
 
 export type RowContextMenuItemId =
   | "view"
+  | "ignore-file-name"
+  | "ignore-parent-folder"
   | "copy-path"
   | "copy-relative-path"
   | "open-external-editor";
@@ -88,6 +90,10 @@ export interface RowContextMenuModel {
 export function buildRowContextMenu(input: { isPrimaryEnv: boolean }): RowContextMenuModel {
   const groups: RowContextMenuItem[][] = [
     [{ id: "view", label: "View", enabled: true }],
+    [
+      { id: "ignore-file-name", label: "Add file name to .gitignore", enabled: true },
+      { id: "ignore-parent-folder", label: "Add parent folder to .gitignore", enabled: true },
+    ],
     [
       { id: "copy-path", label: "Copy Path", enabled: true },
       { id: "copy-relative-path", label: "Copy Relative Path", enabled: true },

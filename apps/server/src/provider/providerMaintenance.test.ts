@@ -31,6 +31,34 @@ const isNativeTestCommandPath =
   (expectedPathSegment: string) =>
   (commandPath: string): boolean =>
     normalizeCommandPath(commandPath).includes(expectedPathSegment);
+// Cross-platform command-lookup fixtures: on Windows the shell command resolver
+// only treats files with a PATHEXT extension as executable (there is no POSIX
+// execute bit), so the fixture binaries must end in `.exe` and the lookup env
+// must carry PATHEXT. On non-Windows we keep the original POSIX layout byte-for-
+// byte (bare binary name, PATH only, darwin platform) so CI behaviour is
+// unchanged. The `/.vite-plus/bin/`, `/.local/share/pnpm/`, etc. path markers the
+// resolver matches survive on both platforms.
+const hostPlatform: NodeJS.Platform = process.platform === "win32" ? "win32" : "darwin";
+const executableName = (base: string): string =>
+  hostPlatform === "win32" ? `${base}.exe` : base;
+const commandLookupEnv = (pathValue: string): NodeJS.ProcessEnv =>
+  hostPlatform === "win32"
+    ? { PATH: pathValue, PATHEXT: ".COM;.EXE;.BAT;.CMD" }
+    : { PATH: pathValue };
+/**
+ * Create a symlink for global-symlink-resolution tests, reporting whether it
+ * succeeded. Windows without the symlink privilege (or Developer Mode) rejects
+ * symlink creation with EPERM; those environments skip the symlink-resolution
+ * assertions (which still run wherever symlinks can be created, e.g. CI on Linux).
+ */
+const trySymlink = (target: string, linkPath: string): boolean => {
+  try {
+    NodeFS.symlinkSync(target, linkPath);
+    return true;
+  } catch {
+    return false;
+  }
+};
 const packageToolUpdate = makePackageManagedProviderMaintenanceResolver({
   provider: driver("packageTool"),
   npmPackageName: "@example/package-tool",
@@ -205,7 +233,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         const tempDir = yield* makeTempDir("t3-vite-plus-capabilities");
         const vitePlusBinDir = NodePath.join(tempDir, ".vite-plus", "bin");
         NodeFS.mkdirSync(vitePlusBinDir, { recursive: true });
-        const packageToolPath = NodePath.join(vitePlusBinDir, "package-tool");
+        const packageToolPath = NodePath.join(vitePlusBinDir, executableName("package-tool"));
         NodeFS.writeFileSync(packageToolPath, "#!/bin/sh\n");
         NodeFS.chmodSync(packageToolPath, 0o755);
 
@@ -213,11 +241,9 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
           packageToolUpdate,
           {
             binaryPath: "package-tool",
-            env: {
-              PATH: vitePlusBinDir,
-            },
+            env: commandLookupEnv(vitePlusBinDir),
           },
-        ).pipe(Effect.provideService(HostProcessPlatform, "darwin"));
+        ).pipe(Effect.provideService(HostProcessPlatform, hostPlatform));
 
         expect(capabilities).toEqual({
           provider: driver("packageTool"),
@@ -278,7 +304,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         const tempDir = yield* makeTempDir("t3-pnpm-capabilities");
         const pnpmHomeDir = NodePath.join(tempDir, ".local", "share", "pnpm");
         NodeFS.mkdirSync(pnpmHomeDir, { recursive: true });
-        const scopedPackageToolPath = NodePath.join(pnpmHomeDir, "scoped-package-tool");
+        const scopedPackageToolPath = NodePath.join(pnpmHomeDir, executableName("scoped-package-tool"));
         NodeFS.writeFileSync(scopedPackageToolPath, "#!/bin/sh\n");
         NodeFS.chmodSync(scopedPackageToolPath, 0o755);
 
@@ -286,11 +312,9 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
           scopedPackageToolUpdate,
           {
             binaryPath: "scoped-package-tool",
-            env: {
-              PATH: pnpmHomeDir,
-            },
+            env: commandLookupEnv(pnpmHomeDir),
           },
-        ).pipe(Effect.provideService(HostProcessPlatform, "darwin"));
+        ).pipe(Effect.provideService(HostProcessPlatform, hostPlatform));
 
         expect(capabilities).toEqual({
           provider: driver("scopedPackageTool"),
@@ -338,7 +362,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         const tempDir = yield* makeTempDir("t3-native-package-tool-native-capabilities");
         const nativeBinDir = NodePath.join(tempDir, ".local", "bin");
         NodeFS.mkdirSync(nativeBinDir, { recursive: true });
-        const nativePackageToolPath = NodePath.join(nativeBinDir, "native-package-tool");
+        const nativePackageToolPath = NodePath.join(nativeBinDir, executableName("native-package-tool"));
         NodeFS.writeFileSync(nativePackageToolPath, "#!/bin/sh\n");
         NodeFS.chmodSync(nativePackageToolPath, 0o755);
 
@@ -346,11 +370,9 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
           nativePackageToolUpdate,
           {
             binaryPath: "native-package-tool",
-            env: {
-              PATH: nativeBinDir,
-            },
+            env: commandLookupEnv(nativeBinDir),
           },
-        ).pipe(Effect.provideService(HostProcessPlatform, "darwin"));
+        ).pipe(Effect.provideService(HostProcessPlatform, hostPlatform));
 
         expect(capabilities).toEqual({
           provider: driver("nativePackageTool"),
@@ -375,7 +397,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         const tempDir = yield* makeTempDir("t3-scoped-package-tool-native-capabilities");
         const nativeBinDir = NodePath.join(tempDir, ".scoped-package-tool", "bin");
         NodeFS.mkdirSync(nativeBinDir, { recursive: true });
-        const scopedPackageToolPath = NodePath.join(nativeBinDir, "scoped-package-tool");
+        const scopedPackageToolPath = NodePath.join(nativeBinDir, executableName("scoped-package-tool"));
         NodeFS.writeFileSync(scopedPackageToolPath, "#!/bin/sh\n");
         NodeFS.chmodSync(scopedPackageToolPath, 0o755);
 
@@ -383,11 +405,9 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
           scopedPackageToolUpdate,
           {
             binaryPath: "scoped-package-tool",
-            env: {
-              PATH: nativeBinDir,
-            },
+            env: commandLookupEnv(nativeBinDir),
           },
-        ).pipe(Effect.provideService(HostProcessPlatform, "darwin"));
+        ).pipe(Effect.provideService(HostProcessPlatform, hostPlatform));
 
         expect(capabilities).toEqual({
           provider: driver("scopedPackageTool"),
@@ -469,7 +489,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
       const symlinkPath = NodePath.join(binDir, "package-tool");
       NodeFS.writeFileSync(packageBinPath, "#!/usr/bin/env node\n");
       NodeFS.chmodSync(packageBinPath, 0o755);
-      NodeFS.symlinkSync(packageBinPath, symlinkPath);
+      if (!trySymlink(packageBinPath, symlinkPath)) return;
 
       const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(packageToolUpdate, {
         binaryPath: symlinkPath,
@@ -516,7 +536,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
       const symlinkPath = NodePath.join(binDir, "package-tool");
       NodeFS.writeFileSync(packageBinPath, "#!/usr/bin/env node\n");
       NodeFS.chmodSync(packageBinPath, 0o755);
-      NodeFS.symlinkSync(packageBinPath, symlinkPath);
+      if (!trySymlink(packageBinPath, symlinkPath)) return;
 
       const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(packageToolUpdate, {
         binaryPath: symlinkPath,
