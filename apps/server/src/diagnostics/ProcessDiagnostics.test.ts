@@ -7,6 +7,7 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as NodeOS from "node:os";
 
 import * as ProcessDiagnostics from "./ProcessDiagnostics.ts";
 
@@ -225,6 +226,7 @@ describe("ProcessDiagnostics", () => {
 
   it.effect("queries Windows process resources with a batched perf-counter lookup", () =>
     Effect.gen(function* () {
+      const logicalProcessorCount = Math.max(1, NodeOS.availableParallelism());
       const commands: Array<{ readonly command: string; readonly args: ReadonlyArray<string> }> =
         [];
       const spawnerLayer = Layer.succeed(
@@ -260,11 +262,46 @@ describe("ProcessDiagnostics", () => {
       );
 
       expect(diagnostics.totalRssBytes).toBe(12_000);
-      expect(diagnostics.totalCpuPercent).toBe(7);
+      expect(diagnostics.totalCpuPercent).toBeCloseTo(7 / logicalProcessorCount);
       expect(commands).toHaveLength(1);
       expect(commands[0]?.command).toBe("powershell.exe");
       expect(commands[0]?.args.join(" ")).toContain("$perfByPid");
       expect(commands[0]?.args.join(" ")).not.toContain("IDProcess = $($_.ProcessId)");
+    }),
+  );
+
+  it.effect("normalizes Windows CPU counters by logical processor count", () =>
+    Effect.gen(function* () {
+      const logicalProcessorCount = Math.max(1, NodeOS.availableParallelism());
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() =>
+          Effect.succeed(
+            mockHandle({
+              stdout: JSON.stringify([
+                {
+                  ProcessId: process.pid,
+                  ParentProcessId: 1,
+                  Name: "node.exe",
+                  CommandLine: "t3 server",
+                  Status: "Live",
+                  WorkingSetSize: 12_000,
+                  PercentProcessorTime: logicalProcessorCount * 25,
+                },
+              ]),
+            }),
+          ),
+        ),
+      );
+
+      const diagnostics = yield* Effect.service(ProcessDiagnostics.ProcessDiagnostics).pipe(
+        Effect.flatMap((pd) => pd.read),
+        Effect.provide(ProcessDiagnostics.layer.pipe(Layer.provide(spawnerLayer))),
+        Effect.provideService(HostProcessPlatform, "win32"),
+      );
+
+      expect(diagnostics.totalCpuPercent).toBe(25);
+      expect(diagnostics.processes[0]?.cpuPercent).toBe(25);
     }),
   );
 

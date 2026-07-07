@@ -3,6 +3,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
+import type * as ProcessDiagnostics from "./ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./ProcessResourceMonitor.ts";
 
 describe("ProcessResourceMonitor", () => {
@@ -121,6 +122,43 @@ describe("ProcessResourceMonitor", () => {
       expect(result.topProcesses[0]?.cpuSecondsApprox).toBe(2);
       expect(result.totalCpuSecondsApprox).toBe(2);
       expect(result.buckets.some((bucket) => bucket.maxCpuPercent === 30)).toBe(true);
+    }),
+  );
+
+  it.effect("uses raw core CPU percent for CPU-time approximations", () =>
+    Effect.sync(() => {
+      const sampledAt = DateTime.makeUnsafe("2026-05-05T10:00:00.000Z");
+      const samples = ProcessResourceMonitor.collectMonitoredSamples({
+        serverPid: 100,
+        sampledAt,
+        sampledAtMs: DateTime.toEpochMillis(sampledAt),
+        rows: [
+          {
+            pid: 100,
+            ppid: 1,
+            pgid: 100,
+            status: "S",
+            cpuPercent: 25,
+            cpuCorePercent: 200,
+            rssBytes: 1_000,
+            elapsed: "01:00",
+            command: "t3 server",
+          } as ProcessDiagnostics.ProcessRow,
+        ],
+      });
+
+      const result = ProcessResourceMonitor.aggregateProcessResourceHistory({
+        samples,
+        readAt: sampledAt,
+        readAtMs: DateTime.toEpochMillis(sampledAt),
+        windowMs: 60_000,
+        bucketMs: 10_000,
+        lastFailure: null,
+      });
+
+      expect(result.topProcesses[0]?.currentCpuPercent).toBe(25);
+      expect(result.topProcesses[0]?.cpuSecondsApprox).toBe(10);
+      expect(result.totalCpuSecondsApprox).toBe(10);
     }),
   );
 

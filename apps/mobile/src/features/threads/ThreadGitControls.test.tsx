@@ -174,6 +174,15 @@ function quickAction() {
   );
 }
 
+function branchStatusAction() {
+  return h.find(
+    "MenuAction",
+    (props) =>
+      props["icon"] === "point.topleft.down.curvedto.point.bottomright.up" &&
+      props["disabled"] === true,
+  );
+}
+
 async function press(props: Record<string, unknown>): Promise<void> {
   await (props["onPress"] as () => void | Promise<void>)();
 }
@@ -209,13 +218,13 @@ describe("ThreadGitControls rendering", () => {
   });
 
   it("labels a missing status as Checking status", () => {
-    const markup = render(baseProps({ gitStatus: null, currentBranch: "main" }));
-    expect(markup).toContain("Checking status");
+    render(baseProps({ gitStatus: null, currentBranch: "main" }));
+    expect(branchStatusAction()["subtitle"]).toBe("Checking status");
   });
 
   it("labels a non-git workspace and disables its quick action", () => {
     const markup = render(baseProps({ gitStatus: status({ isRepo: false }) }));
-    expect(markup).toContain("Not a repo");
+    expect(branchStatusAction()["subtitle"]).toBe("Not a repo");
     expect(markup).toContain("Git unavailable");
     const unavailable = h.find(
       "MenuAction",
@@ -227,7 +236,7 @@ describe("ThreadGitControls rendering", () => {
   });
 
   it("summarizes working-tree changes and an open PR", () => {
-    const markup = render(
+    render(
       baseProps({
         gitStatus: status({
           hasWorkingTreeChanges: true,
@@ -245,15 +254,12 @@ describe("ThreadGitControls rendering", () => {
         }),
       }),
     );
-    expect(markup).toContain("2 changed");
-    expect(markup).toContain("2 ahead");
-    expect(markup).toContain("1 behind");
-    expect(markup).toContain("PR #42");
+    expect(branchStatusAction()["subtitle"]).toBe("2 changed · 2 ahead · 1 behind · PR #42");
   });
 
   it("summarizes a clean checkout", () => {
-    const markup = render(baseProps({ gitStatus: status() }));
-    expect(markup).toContain("Clean");
+    render(baseProps({ gitStatus: status() }));
+    expect(branchStatusAction()["subtitle"]).toBe("Clean");
   });
 });
 

@@ -14,6 +14,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import * as NodeOS from "node:os";
 
 import { collectUint8StreamText } from "../stream/collectUint8StreamText.ts";
 
@@ -23,6 +24,7 @@ export interface ProcessRow {
   readonly pgid: number | null;
   readonly status: string;
   readonly cpuPercent: number;
+  readonly cpuCorePercent?: number;
   readonly rssBytes: number;
   readonly elapsed: string;
   readonly command: string;
@@ -136,6 +138,18 @@ function parseNumber(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function logicalProcessorCount(): number {
+  try {
+    return Math.max(1, NodeOS.availableParallelism());
+  } catch {
+    return Math.max(1, NodeOS.cpus().length || 1);
+  }
+}
+
+function normalizeWindowsCpuPercent(rawCpuPercent: number, processorCount: number): number {
+  return Math.min(100, Math.max(0, rawCpuPercent / Math.max(1, processorCount)));
+}
+
 export function parsePosixProcessRows(output: string): ReadonlyArray<ProcessRow> {
   const rows: ProcessRow[] = [];
   const rowPattern =
@@ -201,7 +215,7 @@ export function parsePosixProcessRows(output: string): ReadonlyArray<ProcessRow>
   return rows;
 }
 
-function normalizeWindowsProcessRow(value: unknown): ProcessRow | null {
+function normalizeWindowsProcessRow(value: unknown, processorCount: number): ProcessRow | null {
   if (typeof value !== "object" || value === null) return null;
   const record = value as Record<string, unknown>;
   const pid = typeof record.ProcessId === "number" ? record.ProcessId : null;
@@ -216,10 +230,11 @@ function normalizeWindowsProcessRow(value: unknown): ProcessRow | null {
     typeof record.WorkingSetSize === "number" && Number.isFinite(record.WorkingSetSize)
       ? Math.max(0, Math.round(record.WorkingSetSize))
       : 0;
-  const cpuPercent =
+  const cpuCorePercent =
     typeof record.PercentProcessorTime === "number" && Number.isFinite(record.PercentProcessorTime)
       ? Math.max(0, record.PercentProcessorTime)
       : 0;
+  const cpuPercent = normalizeWindowsCpuPercent(cpuCorePercent, processorCount);
 
   if (!pid || pid <= 0 || ppid === null || ppid < 0 || !commandLine) return null;
   return {
@@ -228,6 +243,7 @@ function normalizeWindowsProcessRow(value: unknown): ProcessRow | null {
     pgid: null,
     status: typeof record.Status === "string" && record.Status.length > 0 ? record.Status : "Live",
     cpuPercent,
+    cpuCorePercent,
     rssBytes: workingSet,
     elapsed: "",
     command: commandLine,
@@ -239,8 +255,9 @@ function parseWindowsProcessRows(output: string): ReadonlyArray<ProcessRow> {
   try {
     const parsed = JSON.parse(output) as unknown;
     const records = Array.isArray(parsed) ? parsed : [parsed];
+    const processorCount = logicalProcessorCount();
     return records.flatMap((record) => {
-      const row = normalizeWindowsProcessRow(record);
+      const row = normalizeWindowsProcessRow(record, processorCount);
       return row ? [row] : [];
     });
   } catch {

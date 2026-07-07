@@ -29,6 +29,7 @@ export interface ProcessResourceSample {
   readonly ppid: number;
   readonly command: string;
   readonly cpuPercent: number;
+  readonly cpuCorePercent: number;
   readonly rssBytes: number;
   readonly depth: number;
   readonly isServerRoot: boolean;
@@ -84,6 +85,7 @@ export function collectMonitoredSamples(input: {
   const rows = input.rows.filter(
     (row) => !ProcessDiagnostics.isDiagnosticsQueryProcess(row, input.serverPid),
   );
+  const rowByPid = new Map(rows.map((row) => [row.pid, row]));
   const root = findServerRootRow(rows, input.serverPid);
   const descendants = ProcessDiagnostics.buildDescendantEntries(rows, input.serverPid);
   const samples: ProcessResourceSample[] = [];
@@ -97,6 +99,7 @@ export function collectMonitoredSamples(input: {
       ppid: root.ppid,
       command: root.command,
       cpuPercent: root.cpuPercent,
+      cpuCorePercent: root.cpuCorePercent ?? root.cpuPercent,
       rssBytes: root.rssBytes,
       depth: 0,
       isServerRoot: true,
@@ -104,6 +107,7 @@ export function collectMonitoredSamples(input: {
   }
 
   for (const process of descendants) {
+    const sourceRow = rowByPid.get(process.pid);
     samples.push({
       sampledAt: input.sampledAt,
       sampledAtMs: input.sampledAtMs,
@@ -112,6 +116,7 @@ export function collectMonitoredSamples(input: {
       ppid: process.ppid,
       command: process.command,
       cpuPercent: process.cpuPercent,
+      cpuCorePercent: sourceRow?.cpuCorePercent ?? process.cpuPercent,
       rssBytes: process.rssBytes,
       depth: process.depth + 1,
       isServerRoot: false,
@@ -151,7 +156,7 @@ function summarizeProcesses(
       const maxCpuPercent = Math.max(...sorted.map((sample) => sample.cpuPercent));
       const maxRssBytes = Math.max(...sorted.map((sample) => sample.rssBytes));
       const cpuSecondsApprox = sorted.reduce(
-        (total, sample) => total + (sample.cpuPercent / 100) * (SAMPLE_INTERVAL_MS / 1_000),
+        (total, sample) => total + (sample.cpuCorePercent / 100) * (SAMPLE_INTERVAL_MS / 1_000),
         0,
       );
 
@@ -241,7 +246,7 @@ export function aggregateProcessResourceHistory(input: {
   const samples = input.samples.filter((sample) => sample.sampledAtMs >= minSampledAtMs);
   const topProcesses = summarizeProcesses(samples);
   const totalCpuSecondsApprox = samples.reduce(
-    (total, sample) => total + (sample.cpuPercent / 100) * (SAMPLE_INTERVAL_MS / 1_000),
+    (total, sample) => total + (sample.cpuCorePercent / 100) * (SAMPLE_INTERVAL_MS / 1_000),
     0,
   );
 
