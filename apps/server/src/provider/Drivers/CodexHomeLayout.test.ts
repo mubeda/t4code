@@ -38,6 +38,27 @@ const writeTextFile = Effect.fn("CodexHomeLayout.test.writeTextFile")(function* 
   yield* fileSystem.writeFileString(filePath, contents);
 });
 
+/**
+ * Probe whether real symlinks can be created. `materializeCodexShadowHome`
+ * builds the shadow home out of symlinks; Windows without the symlink privilege
+ * (or Developer Mode) rejects symlink creation with EPERM. Those environments
+ * skip the symlink-dependent assertions, which still run wherever symlinks can
+ * be created (e.g. CI on Linux).
+ */
+const symlinkSupported = Effect.fn("CodexHomeLayout.test.symlinkSupported")(function* () {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const probeRoot = yield* makeTempDir("t3code-codex-symlink-probe-");
+  const target = path.join(probeRoot, "target.txt");
+  yield* fileSystem.writeFileString(target, "probe");
+  return yield* fileSystem
+    .symlink(target, path.join(probeRoot, "link.txt"))
+    .pipe(
+      Effect.as(true),
+      Effect.orElseSucceed(() => false),
+    );
+});
+
 it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
   describe("resolveCodexHomeLayout", () => {
     it.effect("uses direct CODEX_HOME when no shadow home is configured", () =>
@@ -86,6 +107,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
   describe("materializeCodexShadowHome", () => {
     it.effect("materializes a shadow home with shared state links and private auth", () =>
       Effect.gen(function* () {
+        if (!(yield* symlinkSupported())) return;
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const sharedHome = yield* makeTempDir("t3code-codex-shared-");
@@ -132,6 +154,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
 
     it.effect("accepts Codex-created shadow-local runtime directories", () =>
       Effect.gen(function* () {
+        if (!(yield* symlinkSupported())) return;
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const sharedHome = yield* makeTempDir("t3code-codex-shared-");
@@ -199,6 +222,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
 
     it.effect("rejects shared entries that already exist in the shadow home as real files", () =>
       Effect.gen(function* () {
+        if (!(yield* symlinkSupported())) return;
         const path = yield* Path.Path;
         const sharedHome = yield* makeTempDir("t3code-codex-shared-");
         const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");

@@ -41,11 +41,58 @@ const mockAgentPath = NodePath.join(__dirname, "../../../scripts/acp-mock-agent.
 const mockAgentCommand = "node";
 const mockAgentArgs = [mockAgentPath] as const;
 
+// Escapes an arbitrary string into a double-quoted JS source literal so
+// per-wrapper environment values (which can contain newlines, quotes and
+// backslashes) can be baked into the win32 `--import` preload module. Avoids
+// `JSON.stringify` per repo convention.
+function toJsStringLiteral(value: string): string {
+  return `"${value
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"')
+    .replaceAll("\r", "\\r")
+    .replaceAll("\n", "\\n")}"`;
+}
+
+// Windows cannot spawn a `#!/bin/sh` shebang script, so on win32 we emit a
+// `.cmd` launcher plus a Node `--import` preload module. `resolveSpawnCommand`
+// (the production spawn path) resolves the `.cmd` and runs it via `cmd.exe`,
+// which forwards stdio to the single child node process — keeping the mock ACP
+// agent as the entry point exactly like `exec node <agent> "$@"` on POSIX. The
+// preload bakes the per-wrapper env (and optional prelude behavior) so the mock
+// agent reads the same `T3_ACP_*` variables at module load.
+async function makeWin32AcpWrapper(
+  dir: string,
+  baseName: string,
+  env: Record<string, string>,
+  preludeLines: ReadonlyArray<string> = [],
+): Promise<string> {
+  const preloadPath = NodePath.join(dir, `${baseName}.preload.mjs`);
+  const cmdPath = NodePath.join(dir, `${baseName}.cmd`);
+  const lines = [
+    ...preludeLines,
+    ...Object.entries(env).map(
+      ([key, value]) => `process.env[${toJsStringLiteral(key)}] = ${toJsStringLiteral(value)};`,
+    ),
+  ];
+  await NodeFSP.writeFile(preloadPath, `${lines.join("\n")}\n`, "utf8");
+  const preloadUrl = NodeURL.pathToFileURL(preloadPath).href;
+  // Windows paths never contain `"`, so plain double-quoting is sufficient (and
+  // correct — unlike JSON escaping, which would mangle backslashes for cmd.exe).
+  const cmd = `@echo off\r\n"${process.execPath}" --import "${preloadUrl}" "${mockAgentPath}" %*\r\n`;
+  await NodeFSP.writeFile(cmdPath, cmd, "utf8");
+  return cmdPath;
+}
+
 async function makeMockAgentWrapper(
   extraEnv?: Record<string, string>,
   options?: { initialDelaySeconds?: number },
 ) {
   const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-acp-mock-"));
+  if (process.platform === "win32") {
+    // `initialDelaySeconds` is only used by the concurrent-start exit-log test,
+    // which is skipped on win32, so the startup delay is a no-op here.
+    return makeWin32AcpWrapper(dir, "fake-agent", extraEnv ?? {});
+  }
   const wrapperPath = NodePath.join(dir, "fake-agent.sh");
   const envExports = Object.entries(extraEnv ?? {})
     .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
@@ -66,6 +113,20 @@ async function makeProbeWrapper(
   extraEnv?: Record<string, string>,
 ) {
   const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-acp-probe-"));
+  if (process.platform === "win32") {
+    // Mirror the POSIX probe: log the forwarded argv (tab-separated, one line
+    // per spawn), then set the request log path before the mock agent loads.
+    const preludeLines = [
+      `import { appendFileSync } from "node:fs";`,
+      `appendFileSync(${toJsStringLiteral(argvLogPath)}, process.argv.slice(2).map((arg) => arg + "\\t").join("") + "\\n");`,
+    ];
+    return makeWin32AcpWrapper(
+      dir,
+      "fake-agent",
+      { T3_ACP_REQUEST_LOG_PATH: requestLogPath, ...extraEnv },
+      preludeLines,
+    );
+  }
   const wrapperPath = NodePath.join(dir, "fake-agent.sh");
   const envExports = Object.entries(extraEnv ?? {})
     .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
@@ -326,7 +387,13 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     }),
   );
 
-  it.effect("closes the ACP child process when a session stops", () =>
+  // win32: the child is torn down with `taskkill /T /F` (TerminateProcess), so
+  // the mock agent's `SIGTERM`/`exit` handlers never run and the exit log stays
+  // empty — this asserts POSIX signal-delivery semantics that don't exist on
+  // Windows. Skipped there; unchanged on Linux/CI.
+  it.effect.skipIf(process.platform === "win32")(
+    "closes the ACP child process when a session stops",
+    () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;
       const settings = yield* ServerSettingsService;
@@ -358,7 +425,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     }),
   );
 
-  it.effect(
+  // win32: skipped for the same `taskkill /T /F` reason as above — it asserts
+  // the exit log records two SIGTERMs, which Windows never delivers.
+  it.effect.skipIf(process.platform === "win32")(
     "serializes concurrent startSession calls for the same thread and closes the replaced ACP session",
     () =>
       Effect.gen(function* () {

@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off - The bootstrap fd tests own the raw descriptor directly (see below).
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 
 import { assert, expect, it } from "@effect/vitest";
@@ -52,7 +54,22 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     const filePath = yield* fs.makeTempFileScoped({ prefix: "t3-bootstrap-", suffix: ".ndjson" });
     const encoded = yield* encodeDesktopBootstrap(payload);
     yield* fs.writeFileString(filePath, `${encoded}\n`);
-    const { fd } = yield* fs.open(filePath, { flag: "r" });
+    // Open the descriptor with the raw syscall rather than the Effect
+    // FileSystem: on Windows the production bootstrap reader consumes the
+    // inherited fd directly with `autoClose: true`, closing it out from under
+    // us. A scoped Effect `File` would then double-close and surface EBADF, so
+    // we own the fd here and tolerate an already-closed descriptor on release.
+    const fd = yield* Effect.acquireRelease(
+      Effect.sync(() => NodeFS.openSync(filePath, "r")),
+      (openFd) =>
+        Effect.sync(() => {
+          try {
+            NodeFS.closeSync(openFd);
+          } catch {
+            // The production reader already closed the inherited fd (win32).
+          }
+        }),
+    );
     return fd;
   });
 
@@ -259,8 +276,11 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
 
   it.effect("uses bootstrap envelope values as fallbacks when flags and env are absent", () =>
     Effect.gen(function* () {
-      const { join } = yield* Path.Path;
-      const baseDir = "/tmp/t3-bootstrap-home";
+      const path = yield* Path.Path;
+      const { join } = path;
+      // Production resolves the configured home via path.resolve; mirror that so
+      // the POSIX "/tmp/..." input matches the drive-qualified path on Windows.
+      const baseDir = path.resolve("/tmp/t3-bootstrap-home");
       const fd = yield* openBootstrapFd(
         makeDesktopBootstrap({
           port: 4888,

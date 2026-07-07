@@ -431,4 +431,45 @@ describe("buildSourceControlMenuItems — always-rendered, disabled-with-reason"
     assert.equal(menuItem(items, "commit_push_pr").label, "Commit, Push & MR");
     assert.equal(menuItem(items, "create_pr").label, "Create MR");
   });
+
+  it("does not offer change-request actions for a generic git remote", () => {
+    const genericStatus = {
+      aheadCount: 2,
+      sourceControlProvider: {
+        kind: "unknown" as const,
+        name: "git.example.test",
+        baseUrl: "https://git.example.test",
+      },
+    };
+    assert.deepInclude(resolveSourceControlPrimaryAction(makeInput({ status: genericStatus })), {
+      kind: "push",
+      label: "Push",
+    });
+    const input = makeInput({
+      status: {
+        ...genericStatus,
+      },
+      stagedCount: 3,
+    });
+    assert.deepEqual(menuIds(buildSourceControlMenuItems(input)), [
+      "commit",
+      "commit_push",
+      "push",
+      "pull",
+    ]);
+  });
+
+  it("hides push-family menu actions on generated worktree refs", () => {
+    const input = makeInput({
+      status: { refName: "t3code/deadbeef", aheadCount: 2 },
+      stagedCount: 3,
+    });
+    assert.deepEqual(menuIds(buildSourceControlMenuItems(input)), ["commit", "pull", "create_pr"]);
+    assert.equal(
+      resolveSourceControlPrimaryAction(
+        makeInput({ status: { refName: "t3code/deadbeef", aheadCount: 2 } }),
+      ).kind,
+      "none",
+    );
+  });
 });

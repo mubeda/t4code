@@ -1,4 +1,5 @@
 import type { GitStackedAction, VcsStatusResult } from "@t3tools/contracts";
+import { isTemporaryWorktreeBranch } from "@t3tools/shared/git";
 import {
   DEFAULT_CHANGE_REQUEST_TERMINOLOGY,
   getChangeRequestTerminology,
@@ -99,6 +100,14 @@ function resolveChangeRequestTerminology(
     : DEFAULT_CHANGE_REQUEST_TERMINOLOGY;
 }
 
+function supportsChangeRequests(gitStatus: VcsStatusResult): boolean {
+  return gitStatus.sourceControlProvider?.kind !== "unknown";
+}
+
+function canPushFromCurrentRef(gitStatus: VcsStatusResult): boolean {
+  return gitStatus.refName === null || !isTemporaryWorktreeBranch(gitStatus.refName);
+}
+
 const NO_STATUS_ACTION: SourceControlPrimaryAction = {
   kind: "none",
   label: "Commit",
@@ -132,6 +141,8 @@ function resolvePrimaryActionForStatus(
 ): SourceControlPrimaryAction {
   const { isDefaultRef, hasPrimaryRemote, stagedCount, stageableCount } = input;
   const terminology = resolveChangeRequestTerminology(gitStatus);
+  const changeRequestsEnabled = supportsChangeRequests(gitStatus);
+  const pushEnabledForRef = canPushFromCurrentRef(gitStatus);
 
   // Staged content always wins — commit the staged index as-is. Enabled even
   // with an empty message (auto-generate divergence); ordering intentionally
@@ -176,18 +187,26 @@ function resolvePrimaryActionForStatus(
 
   if (!gitStatus.hasUpstream) {
     if (!hasPrimaryRemote) {
-      if (hasOpenPr && !isAhead) {
+      if (changeRequestsEnabled && hasOpenPr && !isAhead) {
         return { kind: "open_pr", label: `View ${terminology.shortLabel}`, disabled: false };
       }
       return { kind: "publish", label: "Publish repository", disabled: false };
     }
     if (!isAhead) {
-      if (hasOpenPr) {
+      if (changeRequestsEnabled && hasOpenPr) {
         return { kind: "open_pr", label: `View ${terminology.shortLabel}`, disabled: false };
       }
       return { kind: "push", label: "Push", disabled: true, hint: "No local commits to push." };
     }
-    if (hasOpenPr || isDefaultRef) {
+    if (!pushEnabledForRef) {
+      return {
+        kind: "none",
+        label: "Up to date",
+        disabled: true,
+        hint: "Push is only available from the active project branch.",
+      };
+    }
+    if (!changeRequestsEnabled || hasOpenPr || isDefaultRef) {
       return {
         kind: "push",
         label: "Push",
@@ -218,7 +237,15 @@ function resolvePrimaryActionForStatus(
   }
 
   if (isAhead) {
-    if (hasOpenPr || isDefaultRef) {
+    if (!pushEnabledForRef) {
+      return {
+        kind: "none",
+        label: "Up to date",
+        disabled: true,
+        hint: "Push is only available from the active project branch.",
+      };
+    }
+    if (!changeRequestsEnabled || hasOpenPr || isDefaultRef) {
       return {
         kind: "push",
         label: "Push",
@@ -235,11 +262,11 @@ function resolvePrimaryActionForStatus(
     };
   }
 
-  if (hasOpenPr) {
+  if (changeRequestsEnabled && hasOpenPr) {
     return { kind: "open_pr", label: `View ${terminology.shortLabel}`, disabled: false };
   }
 
-  if (hasDefaultBranchDelta && !isDefaultRef) {
+  if (changeRequestsEnabled && pushEnabledForRef && hasDefaultBranchDelta && !isDefaultRef) {
     return {
       kind: "create_pr",
       label: `Create ${terminology.shortLabel}`,
@@ -278,6 +305,8 @@ export function buildSourceControlMenuItems(
   }
 
   const terminology = resolveChangeRequestTerminology(gitStatus);
+  const changeRequestsEnabled = supportsChangeRequests(gitStatus);
+  const pushEnabledForRef = canPushFromCurrentRef(gitStatus);
   const hasStaged = stagedCount > 0;
   const hasBranch = gitStatus.refName !== null;
   const hasOpenPr = gitStatus.pr?.state === "open";
@@ -304,11 +333,18 @@ export function buildSourceControlMenuItems(
   const commitReason = hasStaged ? undefined : "No staged changes to commit.";
 
   const commitPushReason =
-    commitReason ?? noBranchReason ?? noPushTargetReason ?? behindReason ?? undefined;
+    commitReason ??
+    noBranchReason ??
+    (pushEnabledForRef ? undefined : "Push is only available from the active project branch.") ??
+    noPushTargetReason ??
+    behindReason ??
+    undefined;
   const commitPushPrReason =
-    commitPushReason ?? (hasOpenPr ? `A ${terminology.singular} is already open.` : undefined);
+    commitPushReason ??
+    (!changeRequestsEnabled ? `${terminology.singular} actions are unavailable.` : undefined) ??
+    (hasOpenPr ? `A ${terminology.singular} is already open.` : undefined);
 
-  const items: SourceControlMenuItem[] = [
+  const items: Array<SourceControlMenuItem | null> = [
     {
       id: "commit",
       label: "Commit",
@@ -317,37 +353,6 @@ export function buildSourceControlMenuItems(
       stackedAction: "commit",
       commitStagedIndexAsIs: true,
       ...gate(commitReason),
-    },
-    {
-      id: "commit_push",
-      label: "Commit & Push",
-      group: "commit",
-      kind: "run_stacked",
-      stackedAction: "commit_push",
-      commitStagedIndexAsIs: true,
-      ...gate(commitPushReason),
-    },
-    {
-      id: "commit_push_pr",
-      label: `Commit, Push & ${terminology.shortLabel}`,
-      group: "commit",
-      kind: "run_stacked",
-      stackedAction: "commit_push_pr",
-      commitStagedIndexAsIs: true,
-      ...gate(commitPushPrReason),
-    },
-    {
-      id: "push",
-      label: "Push",
-      group: "remote",
-      kind: "run_stacked",
-      stackedAction: "push",
-      ...gate(
-        noBranchReason ??
-          noPushTargetReason ??
-          behindReason ??
-          (isAhead ? undefined : "No local commits to push."),
-      ),
     },
     {
       id: "pull",
@@ -363,7 +368,7 @@ export function buildSourceControlMenuItems(
               : "Already up to date."),
       ),
     },
-    hasOpenPr
+    changeRequestsEnabled && hasOpenPr
       ? {
           id: "open_pr",
           label: `View ${terminology.shortLabel}`,
@@ -371,25 +376,74 @@ export function buildSourceControlMenuItems(
           kind: "open_pr",
           ...gate(undefined),
         }
-      : {
-          id: "create_pr",
-          label: `Create ${terminology.shortLabel}`,
-          group: "remote",
-          kind: "run_stacked",
-          stackedAction: "create_pr",
-          // No isDefaultRef gate — creating a PR from the default ref is
-          // allowed-but-confirmed (SC-C's default-branch dialog), matching the
-          // chat-header buildMenuItems. Requires commits ahead of default only.
-          ...gate(
-            noBranchReason ??
-              noPushTargetReason ??
-              behindReason ??
-              (hasDefaultBranchDelta
-                ? undefined
-                : `No commits to open a ${terminology.singular} for.`),
-          ),
-        },
+      : changeRequestsEnabled
+        ? {
+            id: "create_pr",
+            label: `Create ${terminology.shortLabel}`,
+            group: "remote",
+            kind: "run_stacked",
+            stackedAction: "create_pr",
+            // No isDefaultRef gate — creating a PR from the default ref is
+            // allowed-but-confirmed (SC-C's default-branch dialog), matching the
+            // chat-header buildMenuItems. Requires commits ahead of default only.
+            ...gate(
+              noBranchReason ??
+                (pushEnabledForRef
+                  ? undefined
+                  : "Push is only available from the active project branch.") ??
+                noPushTargetReason ??
+                behindReason ??
+                (hasDefaultBranchDelta
+                  ? undefined
+                  : `No commits to open a ${terminology.singular} for.`),
+            ),
+          }
+        : null,
   ];
+
+  if (pushEnabledForRef) {
+    const changeRequestCommitItems: SourceControlMenuItem[] = changeRequestsEnabled
+      ? [
+          {
+            id: "commit_push_pr",
+            label: `Commit, Push & ${terminology.shortLabel}`,
+            group: "commit",
+            kind: "run_stacked",
+            stackedAction: "commit_push_pr",
+            commitStagedIndexAsIs: true,
+            ...gate(commitPushPrReason),
+          },
+        ]
+      : [];
+
+    items.splice(
+      1,
+      0,
+      {
+        id: "commit_push",
+        label: "Commit & Push",
+        group: "commit",
+        kind: "run_stacked",
+        stackedAction: "commit_push",
+        commitStagedIndexAsIs: true,
+        ...gate(commitPushReason),
+      },
+      ...changeRequestCommitItems,
+    );
+    items.splice(changeRequestsEnabled ? 3 : 2, 0, {
+      id: "push",
+      label: "Push",
+      group: "remote",
+      kind: "run_stacked",
+      stackedAction: "push",
+      ...gate(
+        noBranchReason ??
+          noPushTargetReason ??
+          behindReason ??
+          (isAhead ? undefined : "No local commits to push."),
+      ),
+    });
+  }
 
   // Publish is only meaningful before a primary remote exists (research §5).
   if (!hasPrimaryRemote) {
@@ -402,5 +456,5 @@ export function buildSourceControlMenuItems(
     });
   }
 
-  return items;
+  return items.filter((item): item is SourceControlMenuItem => item !== null);
 }

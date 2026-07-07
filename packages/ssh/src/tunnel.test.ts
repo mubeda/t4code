@@ -14,15 +14,25 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { SshPasswordPrompt } from "./auth.ts";
 import {
+  SshCommandError,
+  SshHttpBridgeError,
+  SshLaunchError,
+  SshPairingError,
+} from "./errors.ts";
+import {
   buildRemoteLaunchScript,
+  buildRemoteNodeEnvScript,
   buildRemotePairingScript,
   buildRemoteStopScript,
   buildRemoteT3RunnerScript,
   describeReadinessCause,
   issueRemotePairingToken,
   launchOrReuseRemoteServer,
+  normalizeSshErrorMessage,
   REMOTE_PICK_PORT_SCRIPT,
+  resolveLoopbackSshHttpBaseUrl,
   SshEnvironmentManager,
+  stopRemoteServer,
   waitForHttpReady,
 } from "./tunnel.ts";
 

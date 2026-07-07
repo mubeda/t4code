@@ -25,12 +25,57 @@ function shellSingleQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
+// Escapes an arbitrary string into a double-quoted JS source literal so
+// per-wrapper environment values (which can contain newlines, quotes and
+// backslashes) can be baked into the win32 `--import` preload module. Avoids
+// `JSON.stringify` per repo convention.
+function toJsStringLiteral(value: string): string {
+  return `"${value
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"')
+    .replaceAll("\r", "\\r")
+    .replaceAll("\n", "\\n")}"`;
+}
+
 const GrokTextGenerationTestLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-grok-text-generation-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
+// Windows cannot spawn a `#!/bin/sh` shebang script, so on win32 we emit a
+// `grok.cmd` launcher plus a Node `--import` preload module. `resolveSpawnCommand`
+// (the production spawn path) resolves the `.cmd` and runs it via `cmd.exe`,
+// which forwards stdio to the single child node process — keeping the mock ACP
+// agent as the entry point exactly like `exec node <agent>` on POSIX. The
+// preload reproduces the shell wrapper's `agent stdio` argument check and bakes
+// the per-wrapper env so the mock agent reads the same variables at module load.
+function makeWin32AcpGrokWrapper(binDir: string, env: Record<string, string>): string {
+  NodeFS.mkdirSync(binDir, { recursive: true });
+  const preloadPath = NodePath.join(binDir, "grok.preload.mjs");
+  const cmdPath = NodePath.join(binDir, "grok.cmd");
+  const lines = [
+    `const __args = process.argv.slice(2);`,
+    `if (__args[0] !== "agent" || __args[1] !== "stdio") {`,
+    `  process.stderr.write("unexpected args: " + __args.join(" ") + "\\n");`,
+    `  process.exit(11);`,
+    `}`,
+    ...Object.entries(env).map(
+      ([key, value]) => `process.env[${toJsStringLiteral(key)}] = ${toJsStringLiteral(value)};`,
+    ),
+  ];
+  NodeFS.writeFileSync(preloadPath, `${lines.join("\n")}\n`, "utf8");
+  const preloadUrl = NodeURL.pathToFileURL(preloadPath).href;
+  // Windows paths never contain `"`, so plain double-quoting is sufficient (and
+  // correct — unlike JSON escaping, which would mangle backslashes for cmd.exe).
+  const cmd = `@echo off\r\n"${process.execPath}" --import "${preloadUrl}" "${mockAgentPath}" %*\r\n`;
+  NodeFS.writeFileSync(cmdPath, cmd, "utf8");
+  return cmdPath;
+}
+
 function makeAcpGrokWrapper(dir: string, env: Record<string, string>): string {
   const binDir = NodePath.join(dir, "bin");
+  if (process.platform === "win32") {
+    return makeWin32AcpGrokWrapper(binDir, env);
+  }
   const grokPath = NodePath.join(binDir, "grok");
   NodeFS.mkdirSync(binDir, { recursive: true });
   NodeFS.writeFileSync(

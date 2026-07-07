@@ -83,6 +83,22 @@ exec ${mockAgentCommand} "$@"
 `;
   yield* fileSystem.writeFileString(wrapperPath, script);
   yield* fileSystem.chmod(wrapperPath, 0o755);
+  // Windows cannot execute the `#!/bin/sh` wrapper; emit an equivalent `.cmd`
+  // launcher (env vars via `set`, mock agent via the current Node) and return
+  // its path. The POSIX script is left untouched so Linux/CI keep the identical
+  // fixture. `resolveSpawnCommand` runs the `.cmd` through cmd.exe.
+  if (process.platform === "win32") {
+    const cmdPath = path.join(dir, "fake-agent.cmd");
+    const setLines = Object.entries(extraEnv ?? {}).map(([key, value]) => `set "${key}=${value}"`);
+    const cmdScript = [
+      "@echo off",
+      ...setLines,
+      `"${process.execPath}" "${mockAgentPath}" %*`,
+      "",
+    ].join("\r\n");
+    yield* fileSystem.writeFileString(cmdPath, cmdScript);
+    return cmdPath;
+  }
   return wrapperPath;
 });
 
@@ -106,6 +122,34 @@ exec ${mockAgentCommand} "$@"
 `;
   yield* fileSystem.writeFileString(wrapperPath, script);
   yield* fileSystem.chmod(wrapperPath, 0o755);
+  // Windows equivalent of the `#!/bin/sh` wrapper: a Node reimplementation that
+  // emits the same `about` output and otherwise defers to the mock agent, wired
+  // through a `.cmd` launcher `resolveSpawnCommand` can run. The POSIX script is
+  // untouched so Linux/CI keep the identical fixture.
+  if (process.platform === "win32") {
+    const aboutMjsPath = path.join(dir, "fake-agent.mjs");
+    yield* fileSystem.writeFileString(
+      aboutMjsPath,
+      [
+        'import { spawnSync } from "node:child_process";',
+        'if (process.argv[2] === "about") {',
+        '  process.stdout.write("CLI Version         2026.04.09-f2b0fcd\\n");',
+        '  process.stdout.write("User Email          cursor@example.com\\n");',
+        "  process.exit(0);",
+        "}",
+        // @effect-diagnostics-next-line preferSchemaOverJson:off - Quoting a filesystem path into generated JS source, not serializing data.
+        `const result = spawnSync(process.execPath, [${JSON.stringify(mockAgentPath)}, ...process.argv.slice(2)], { stdio: "inherit" });`,
+        "process.exit(result.status ?? 0);",
+        "",
+      ].join("\n"),
+    );
+    const cmdPath = path.join(dir, "fake-agent.cmd");
+    yield* fileSystem.writeFileString(
+      cmdPath,
+      ["@echo off", `"${process.execPath}" "${aboutMjsPath}" %*`, ""].join("\r\n"),
+    );
+    return cmdPath;
+  }
   return wrapperPath;
 });
 
@@ -494,7 +538,12 @@ describe("discoverCursorModelsViaAcp", () => {
     ]);
   });
 
-  it("closes the ACP probe runtime after discovery completes", async () => {
+  // Windows terminates the ACP probe child via TerminateProcess (no SIGTERM
+  // delivery), so the mock agent's SIGTERM handler never records its exit; skip
+  // on win32 (still fully exercised on CI/Linux).
+  it.skipIf(process.platform === "win32")(
+    "closes the ACP probe runtime after discovery completes",
+    async () => {
     const { exitLogPath, wrapperPath } = await runNode(
       makeExitLogFixture("cursor-provider-exit-log-"),
     );

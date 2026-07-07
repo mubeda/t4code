@@ -170,7 +170,12 @@ type ProviderRuntimeTestCheckpoint = ProviderRuntimeTestThread["checkpoints"][nu
 async function waitForThread(
   readModel: () => Promise<ProviderRuntimeTestReadModel>,
   predicate: (thread: ProviderRuntimeTestThread) => boolean,
-  timeoutMs = 2000,
+  // Real-wall-clock poll deadline. Each projection completes in ~1s in
+  // isolation, but under the full serial suite on a loaded Windows host the
+  // async projection can exceed a 2s budget and spuriously time out. Use a
+  // generous ceiling — raising it cannot make a passing test fail, it only
+  // avoids load-sensitive flakes (still well under the 120s test timeout).
+  timeoutMs = 45000,
   threadId: ThreadId = asThreadId("thread-1"),
 ) {
   const deadline = (await Effect.runPromise(Clock.currentTimeMillis)) + timeoutMs;

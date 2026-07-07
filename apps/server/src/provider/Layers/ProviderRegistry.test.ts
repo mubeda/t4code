@@ -32,6 +32,7 @@ import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 
 import { checkCodexProviderStatus, type CodexAppServerProviderSnapshot } from "./CodexProvider.ts";
 import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
+import { resolveClaudeHomePath } from "../Drivers/ClaudeHome.ts";
 import * as OpenCodeRuntime from "../opencodeRuntime.ts";
 import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
 import { ProviderInstanceRegistryHydrationLive } from "./ProviderInstanceRegistryHydration.ts";
@@ -832,11 +833,17 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             let cachedProvider = yield* readProviderStatusCache(filePath);
             for (
               let attempt = 0;
-              attempt < 50 && cachedProvider?.checkedAt !== refreshedProvider.checkedAt;
+              attempt < 200 && cachedProvider?.checkedAt !== refreshedProvider.checkedAt;
               attempt += 1
             ) {
               yield* TestClock.adjust("10 millis");
               yield* Effect.yieldNow;
+              // The provider-status cache write lands on a background fiber doing
+              // real FS I/O; TestClock advancement + yieldNow alone never gives the
+              // async write a real scheduler tick to flush, so poll with a real
+              // setTimeout as well (matches the sibling poll loop in this file).
+              // @effect-diagnostics-next-line globalTimers:off - Real event-loop tick to flush the async cache write; TestClock cannot advance real FS I/O.
+              yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
               cachedProvider = yield* readProviderStatusCache(filePath);
             }
 
@@ -1266,7 +1273,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             // executable. This verifies the public settings-to-probe behavior
             // without depending on timestamps assigned by TestClock.
             const refreshed = yield* Effect.gen(function* () {
-              for (let attempts = 0; attempts < 60; attempts += 1) {
+              for (let attempts = 0; attempts < 200; attempts += 1) {
                 const providers = yield* registry.getProviders;
                 const codex = providers.find((provider) => provider.instanceId === "codex");
                 if (
@@ -1278,6 +1285,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 }
                 yield* TestClock.adjust("50 millis");
                 yield* Effect.yieldNow;
+                // @effect-diagnostics-next-line globalTimers:off - Real event-loop tick to let the injected process boundary observe the reprobe; TestClock alone cannot advance real spawns.
+                yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
               }
               return yield* registry.getProviders;
             });
@@ -1731,6 +1740,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         });
 
         return Effect.gen(function* () {
+          // Production resolves `homePath` through path.resolve, which on Windows
+          // rewrites a POSIX "/tmp/..." input to a drive-qualified absolute path;
+          // assert against the same resolution so this holds cross-platform.
+          const expectedHome = yield* resolveClaudeHomePath({ homePath: claudeHome });
           const status = yield* checkClaudeProviderStatus(
             {
               ...defaultClaudeSettings,
@@ -1741,7 +1754,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           assert.strictEqual(status.status, "ready");
           assert.deepStrictEqual(
             recorded.commands.map((command) => command.env?.HOME),
-            [claudeHome],
+            [expectedHome],
           );
         }).pipe(Effect.provide(recorded.layer));
       });
@@ -1922,6 +1935,33 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                   stdout: '{"loggedIn":false}\n',
                   stderr: "",
                   code: 1,
+                };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("uses claude auth status when the initialization result is unavailable", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            noClaudeCapabilities,
+          );
+          assert.strictEqual(status.status, "ready");
+          assert.strictEqual(status.auth.status, "authenticated");
+          assert.strictEqual(status.auth.email, "cli@example.com");
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
+              if (joined === "auth status")
+                return {
+                  stdout:
+                    '{"loggedIn":true,"authMethod":"claude.ai","account":{"email":"cli@example.com"}}\n',
+                  stderr: "",
+                  code: 0,
                 };
               throw new Error(`Unexpected args: ${joined}`);
             }),

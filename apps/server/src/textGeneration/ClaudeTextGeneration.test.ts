@@ -64,8 +64,67 @@ function makeFakeClaudeBinary(dir: string) {
       ].join("\n"),
     );
     yield* fs.chmod(claudePath, 0o755);
+
+    if (process.platform === "win32") {
+      // Windows cannot execute the `#!/bin/sh` fake binary directly, so emit a
+      // Node reimplementation of the same env-driven fake CLI plus a `.cmd`
+      // launcher that `resolveSpawnCommand` resolves from PATH. The POSIX shell
+      // script above is left unchanged so Linux/CI keep the identical fixture.
+      const claudeMjsPath = path.join(binDir, "claude.mjs");
+      const claudeCmdPath = path.join(binDir, "claude.cmd");
+      yield* fs.writeFileString(claudeMjsPath, buildFakeClaudeNodeScript());
+      yield* fs.writeFileString(
+        claudeCmdPath,
+        `@echo off\r\n"${process.execPath}" "${claudeMjsPath}" %*\r\n`,
+      );
+    }
+
     return binDir;
   });
+}
+
+/**
+ * Node reimplementation of the `#!/bin/sh` fake `claude` CLI, used only on
+ * win32. Reads the same `T3_FAKE_CLAUDE_*` environment variables the shell
+ * script reads (they are set on `process.env` by {@link withFakeClaudeEnv} and
+ * inherited by the spawned child), so its observable behavior is identical.
+ */
+function buildFakeClaudeNodeScript(): string {
+  return [
+    'import * as fs from "node:fs";',
+    "",
+    'const args = process.argv.slice(2).join(" ");',
+    'const stdinContent = fs.readFileSync(0, "utf8");',
+    "",
+    "const argsMustContain = process.env.T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN;",
+    "if (argsMustContain && !args.includes(argsMustContain)) {",
+    '  process.stderr.write("args missing expected content\\n");',
+    "  process.exit(2);",
+    "}",
+    "const argsMustNotContain = process.env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN;",
+    "if (argsMustNotContain && args.includes(argsMustNotContain)) {",
+    '  process.stderr.write("args contained forbidden content\\n");',
+    "  process.exit(3);",
+    "}",
+    "const stdinMustContain = process.env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN;",
+    "if (stdinMustContain && !stdinContent.includes(stdinMustContain)) {",
+    '  process.stderr.write("stdin missing expected content\\n");',
+    "  process.exit(4);",
+    "}",
+    "const homeMustBe = process.env.T3_FAKE_CLAUDE_HOME_MUST_BE;",
+    "if (homeMustBe && process.env.HOME !== homeMustBe) {",
+    '  process.stderr.write("HOME was " + (process.env.HOME ?? "") + "\\n");',
+    "  process.exit(5);",
+    "}",
+    "const stderrValue = process.env.T3_FAKE_CLAUDE_STDERR;",
+    "if (stderrValue) {",
+    '  process.stderr.write(stderrValue + "\\n");',
+    "}",
+    'process.stdout.write(process.env.T3_FAKE_CLAUDE_OUTPUT ?? "");',
+    "const exitCode = process.env.T3_FAKE_CLAUDE_EXIT_CODE;",
+    "process.exit(exitCode ? Number(exitCode) : 0);",
+    "",
+  ].join("\n");
 }
 
 function withFakeClaudeEnv<A, E, R>(
@@ -96,7 +155,7 @@ function withFakeClaudeEnv<A, E, R>(
 
     yield* Effect.acquireRelease(
       Effect.sync(() => {
-        process.env.PATH = `${binDir}:${previousPath ?? ""}`;
+        process.env.PATH = `${binDir}${process.platform === "win32" ? ";" : ":"}${previousPath ?? ""}`;
         process.env.T3_FAKE_CLAUDE_OUTPUT = input.output;
 
         if (input.exitCode !== undefined) {

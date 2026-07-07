@@ -2,8 +2,11 @@ import type { VcsStatusResult } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  appendGitignorePattern,
   discardPathsOf,
   groupFilesByArea,
+  ignoreFileNamePattern,
+  ignoreParentFolderPattern,
   isFileStaged,
   type PendingDiscard,
   resolveDiscardDialogCopy,
@@ -29,6 +32,25 @@ describe("splitFilePath", () => {
 
   it("returns a null dir for a top-level file", () => {
     expect(splitFilePath("tasks.md")).toEqual({ dir: null, name: "tasks.md" });
+  });
+});
+
+describe("gitignore helpers", () => {
+  it("derives a file-name pattern from nested and Windows-style paths", () => {
+    expect(ignoreFileNamePattern("docs/generated/output.log")).toBe("output.log");
+    expect(ignoreFileNamePattern("tmp\\cache.bin")).toBe("cache.bin");
+  });
+
+  it("derives a parent-folder pattern when the file is nested", () => {
+    expect(ignoreParentFolderPattern("docs/generated/output.log")).toBe("docs/generated/");
+    expect(ignoreParentFolderPattern("output.log")).toBeNull();
+  });
+
+  it("appends gitignore patterns without duplicating existing entries", () => {
+    expect(appendGitignorePattern("", "dist/")).toBe("dist/\n");
+    expect(appendGitignorePattern("node_modules/\n", "dist/")).toBe("node_modules/\ndist/\n");
+    expect(appendGitignorePattern("dist/\n", "dist/")).toBe("dist/\n");
+    expect(appendGitignorePattern("dist/", "cache/")).toBe("dist/\ncache/\n");
   });
 });
 

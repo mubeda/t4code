@@ -4,7 +4,6 @@ import { Bot, MessageSquare, TerminalSquare, X } from "lucide-react";
 import { type MouseEvent as ReactMouseEvent, useCallback, useEffect, useRef } from "react";
 
 import type { CenterSurface } from "~/centerPanelStore";
-import { HOST_SURFACE_ID } from "~/centerPanelStore";
 import { cn } from "~/lib/utils";
 import { readLocalApi } from "~/localApi";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
@@ -12,7 +11,7 @@ import { ScrollArea } from "~/components/ui/scroll-area";
 
 interface CenterPanelTabsProps {
   surfaces: readonly CenterSurface[];
-  activeSurfaceId: string;
+  activeSurfaceId: string | null;
   terminalLabelsById?: ReadonlyMap<string, string>;
   onActivate: (surface: CenterSurface) => void;
   onCloseSurface: (surface: CenterSurface) => void;
@@ -62,16 +61,15 @@ export function CenterPanelTabs(props: CenterPanelTabsProps) {
       const surfaceIndex = props.surfaces.findIndex((entry) => entry.id === surface.id);
       if (surfaceIndex < 0) return;
 
-      const isHost = surface.id === HOST_SURFACE_ID;
       const items: ContextMenuItem<TabContextMenuAction>[] = [
-        { id: "close", label: "Close", disabled: isHost },
+        { id: "close", label: "Close" },
         { id: "close-others", label: "Close others", disabled: props.surfaces.length <= 1 },
         {
           id: "close-to-right",
           label: "Close to the right",
           disabled: surfaceIndex >= props.surfaces.length - 1,
         },
-        { id: "close-all", label: "Close all", disabled: props.surfaces.length <= 1 },
+        { id: "close-all", label: "Close all", disabled: props.surfaces.length === 0 },
       ];
 
       const action = await api.contextMenu.show(items, { x: event.clientX, y: event.clientY });
@@ -105,7 +103,6 @@ export function CenterPanelTabs(props: CenterPanelTabsProps) {
       if (event.button !== 1) return;
       event.preventDefault();
       event.stopPropagation();
-      if (surface.id === HOST_SURFACE_ID) return; // host chat is not closable
       props.onCloseSurface(surface);
     },
     [props],
@@ -116,9 +113,7 @@ export function CenterPanelTabs(props: CenterPanelTabsProps) {
     activeTab?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [props.activeSurfaceId]);
 
-  // Single-panel UX is unchanged: with only the host surface there is nothing to
-  // switch between, so the strip is not rendered.
-  if (props.surfaces.length <= 1) return null;
+  if (props.surfaces.length === 0) return null;
 
   return (
     <div
@@ -135,7 +130,6 @@ export function CenterPanelTabs(props: CenterPanelTabsProps) {
         <div className="flex h-full w-max min-w-full items-center gap-1">
           {props.surfaces.map((surface) => {
             const active = surface.id === props.activeSurfaceId;
-            const closable = surface.id !== HOST_SURFACE_ID;
             const title = centerSurfaceTitle(surface, props.terminalLabelsById);
             return (
               <div
@@ -166,16 +160,14 @@ export function CenterPanelTabs(props: CenterPanelTabsProps) {
                   />
                   <TooltipPopup>{title}</TooltipPopup>
                 </Tooltip>
-                {closable ? (
-                  <button
-                    type="button"
-                    className="flex size-4 shrink-0 items-center justify-center rounded opacity-0 hover:bg-muted focus:opacity-100 group-hover:opacity-100"
-                    aria-label={`Close ${title}`}
-                    onClick={() => props.onCloseSurface(surface)}
-                  >
-                    <X className="size-3" />
-                  </button>
-                ) : null}
+                <button
+                  type="button"
+                  className="flex size-4 shrink-0 items-center justify-center rounded opacity-0 hover:bg-muted focus:opacity-100 group-hover:opacity-100"
+                  aria-label={`Close ${title}`}
+                  onClick={() => props.onCloseSurface(surface)}
+                >
+                  <X className="size-3" />
+                </button>
               </div>
             );
           })}

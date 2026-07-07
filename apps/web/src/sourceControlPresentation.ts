@@ -21,6 +21,7 @@ export interface SourceControlPresentation {
   readonly providerName: string;
   readonly terminology: ChangeRequestTerminology;
   readonly Icon: ElementType<{ className?: string }>;
+  readonly showProviderIcon: boolean;
 }
 
 export function getSourceControlPresentation(
@@ -33,30 +34,35 @@ export function getSourceControlPresentation(
         providerName: provider?.name || presentation.providerName,
         terminology: getChangeRequestTerminology(provider),
         Icon: GitHubIcon,
+        showProviderIcon: true,
       };
     case "gitlab":
       return {
         providerName: provider?.name || presentation.providerName,
         terminology: getChangeRequestTerminology(provider),
         Icon: GitLabIcon,
+        showProviderIcon: true,
       };
     case "azure-devops":
       return {
         providerName: provider?.name || presentation.providerName,
         terminology: getChangeRequestTerminology(provider),
         Icon: AzureDevOpsIcon,
+        showProviderIcon: true,
       };
     case "bitbucket":
       return {
         providerName: provider?.name || presentation.providerName,
         terminology: getChangeRequestTerminology(provider),
         Icon: BitbucketIcon,
+        showProviderIcon: true,
       };
     case "change-request":
       return {
         providerName: provider?.name || presentation.providerName,
         terminology: getChangeRequestTerminology(provider),
         Icon: GitPullRequestIcon,
+        showProviderIcon: false,
       };
   }
 }

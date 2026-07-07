@@ -14,10 +14,12 @@ import {
   CloudUploadIcon,
   DownloadIcon,
   GitCommitIcon,
+  ListChecksIcon,
   SparklesIcon,
   SquareIcon,
+  Undo2Icon,
 } from "lucide-react";
-import { Fragment, useCallback, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import {
@@ -57,7 +59,9 @@ import { usePrimaryEnvironmentId } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
 import { primaryServerAvailableEditorsAtom } from "~/state/server";
 import { shellEnvironment } from "~/state/shell";
+import { projectEnvironment } from "~/state/projects";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { vcsEnvironment } from "~/state/vcs";
 
 import { DiffPanelShell, type DiffPanelMode } from "./DiffPanelShell";
@@ -76,8 +80,11 @@ import {
   type SourceControlMenuItem,
 } from "./SourceControlPrimaryAction.logic";
 import {
+  appendGitignorePattern,
   discardPathsOf,
   groupFilesByArea,
+  ignoreFileNamePattern,
+  ignoreParentFolderPattern,
   isFileStaged,
   type PendingDiscard,
   resolveDiscardDialogCopy,
@@ -151,9 +158,17 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
   const [pendingDiscard, setPendingDiscard] = useState<PendingDiscard | null>(null);
   // Bumped on every successful git action so <SourceControlCommits> refetches.
   const [commitSignal, setCommitSignal] = useState(0);
+  const [selectedFilePaths, setSelectedFilePaths] = useState<ReadonlySet<string>>(() => new Set());
 
   const files = useMemo(() => workingTreeFiles(status), [status]);
   const groups = useMemo(() => groupFilesByArea(files), [files]);
+  const selectedFiles = useMemo(
+    () => files.filter((file) => selectedFilePaths.has(file.path)),
+    [files, selectedFilePaths],
+  );
+  const selectedPaths = useMemo(() => selectedFiles.map((file) => file.path), [selectedFiles]);
+  const selectedAllUntracked =
+    selectedFiles.length > 0 && selectedFiles.every((file) => file.area === "untracked");
   // Legacy servers omit the optional `area` field; when none carry it we fall
   // back to Plan-01 behavior (one flat list, commit by explicit filePaths).
   const hasAreas = useMemo(() => files.some((file) => file.area !== undefined), [files]);
@@ -215,8 +230,22 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
   const availableEditors = useAtomValue(primaryServerAvailableEditorsAtom);
   const [preferredEditor] = usePreferredEditor(availableEditors);
   const openInEditor = useAtomCommand(shellEnvironment.openInEditor, "open in editor");
+  const readProjectFile = useAtomQueryRunner(projectEnvironment.readFile, {
+    reportFailure: false,
+  });
+  const writeProjectFile = useAtomCommand(projectEnvironment.writeFile, {
+    reportFailure: false,
+  });
 
   const threadToastData = useMemo(() => ({ threadRef }), [threadRef]);
+
+  useEffect(() => {
+    setSelectedFilePaths((current) => {
+      const available = new Set(files.map((file) => file.path));
+      const next = new Set([...current].filter((path) => available.has(path)));
+      return next.size === current.size ? current : next;
+    });
+  }, [files]);
 
   const runGitAction = useCallback(
     async (action: GitStackedAction, options?: { skipConfirm?: boolean }) => {
@@ -342,8 +371,8 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
 
   const surfaceFileActionFailure = useCallback(
     (result: Awaited<ReturnType<typeof stageAction.run>>, title: string) => {
-      if (result._tag !== "Failure") return;
-      if (isAtomCommandInterrupted(result)) return;
+      if (result._tag !== "Failure") return true;
+      if (isAtomCommandInterrupted(result)) return false;
       const error = squashAtomCommandFailure(result);
       toastManager.add(
         stackedThreadToast({
@@ -353,29 +382,130 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
           data: threadToastData,
         }),
       );
+      return false;
     },
     [threadToastData],
   );
 
   const runStage = useCallback(
     async (filePaths: string[]) => {
-      surfaceFileActionFailure(await stageAction.run(filePaths), "Could not stage files");
+      return surfaceFileActionFailure(await stageAction.run(filePaths), "Could not stage files");
     },
     [stageAction, surfaceFileActionFailure],
   );
 
   const runUnstage = useCallback(
     async (filePaths: string[]) => {
-      surfaceFileActionFailure(await unstageAction.run(filePaths), "Could not unstage files");
+      return surfaceFileActionFailure(
+        await unstageAction.run(filePaths),
+        "Could not unstage files",
+      );
     },
     [unstageAction, surfaceFileActionFailure],
   );
 
   const runDiscard = useCallback(
     async (filePaths: readonly string[]) => {
-      surfaceFileActionFailure(await discardAction.run([...filePaths]), "Could not discard files");
+      return surfaceFileActionFailure(
+        await discardAction.run([...filePaths]),
+        "Could not discard files",
+      );
     },
     [discardAction, surfaceFileActionFailure],
+  );
+
+  const stagedPathsForDiscard = useCallback(
+    (pending: PendingDiscard): string[] => {
+      if (pending.kind === "entry") {
+        return pending.file.area === "staged" ? [pending.file.path] : [];
+      }
+      const pendingPaths = new Set(pending.paths);
+      return files
+        .filter((file) => file.area === "staged" && pendingPaths.has(file.path))
+        .map((file) => file.path);
+    },
+    [files],
+  );
+
+  const runConfirmedDiscard = useCallback(
+    async (pending: PendingDiscard) => {
+      const paths = discardPathsOf(pending);
+      if (paths.length === 0) return;
+      const stagedPaths = stagedPathsForDiscard(pending);
+      if (stagedPaths.length > 0 && !(await runUnstage(stagedPaths))) return;
+      await runDiscard(paths);
+    },
+    [runDiscard, runUnstage, stagedPathsForDiscard],
+  );
+
+  const toggleSelectedFile = useCallback((path: string, selected: boolean) => {
+    setSelectedFilePaths((current) => {
+      const next = new Set(current);
+      if (selected) {
+        next.add(path);
+      } else {
+        next.delete(path);
+      }
+      return next;
+    });
+  }, []);
+
+  const runIgnorePatterns = useCallback(
+    async (patterns: readonly string[], pathsToDiscard: readonly string[]) => {
+      if (!gitCwd || patterns.length === 0) return;
+      const uniquePatterns = Array.from(new Set(patterns));
+      const readResult = await readProjectFile({
+        environmentId,
+        input: { cwd: gitCwd, relativePath: ".gitignore" },
+      });
+      const currentContents = readResult._tag === "Success" ? readResult.value.contents : "";
+      const nextContents = uniquePatterns.reduce(
+        (contents, pattern) => appendGitignorePattern(contents, pattern),
+        currentContents,
+      );
+      const writeResult = await writeProjectFile({
+        environmentId,
+        input: { cwd: gitCwd, relativePath: ".gitignore", contents: nextContents },
+      });
+      if (writeResult._tag === "Failure") {
+        if (isAtomCommandInterrupted(writeResult)) return;
+        const error = squashAtomCommandFailure(writeResult);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not update .gitignore",
+            description: error instanceof Error ? error.message : "An error occurred.",
+            data: threadToastData,
+          }),
+        );
+        return;
+      }
+      if (pathsToDiscard.length > 0) {
+        await runDiscard(pathsToDiscard);
+      }
+      setSelectedFilePaths((current) => {
+        if (pathsToDiscard.length === 0) return current;
+        const discarded = new Set(pathsToDiscard);
+        return new Set([...current].filter((path) => !discarded.has(path)));
+      });
+    },
+    [environmentId, gitCwd, readProjectFile, runDiscard, threadToastData, writeProjectFile],
+  );
+
+  const onIgnoreFileName = useCallback(
+    (path: string) => {
+      void runIgnorePatterns([ignoreFileNamePattern(path)], [path]);
+    },
+    [runIgnorePatterns],
+  );
+
+  const onIgnoreParentFolder = useCallback(
+    (path: string) => {
+      const pattern = ignoreParentFolderPattern(path);
+      if (!pattern) return;
+      void runIgnorePatterns([pattern], [path]);
+    },
+    [runIgnorePatterns],
   );
 
   // Per-file checkbox toggle (VS Code-style staging): resolve stage vs.
@@ -593,6 +723,8 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
     onStageFile: (path: string) => void runStage([path]),
     onUnstageFile: (path: string) => void runUnstage([path]),
     onRequestDiscardFile,
+    onIgnoreFileName,
+    onIgnoreParentFolder,
     onCopyPath,
     onOpenExternalEditor,
     isPrimaryEnv,
@@ -629,6 +761,50 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
         </div>
 
         <div className="flex items-center gap-1">
+          {selectedPaths.length > 0 ? (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={isBusy}
+                onClick={() =>
+                  setPendingDiscard({
+                    kind: "bulk",
+                    paths: selectedPaths,
+                    variant: selectedAllUntracked ? "delete-untracked" : "discard",
+                  })
+                }
+              >
+                <ListChecksIcon className="size-3.5" aria-hidden />
+                {selectedAllUntracked ? "Delete Selected" : "Discard Selected"}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={isBusy}
+                onClick={() =>
+                  void runIgnorePatterns(selectedPaths.map(ignoreFileNamePattern), selectedPaths)
+                }
+              >
+                Ignore Selected
+              </Button>
+            </>
+          ) : null}
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={isBusy || files.length === 0}
+            onClick={() =>
+              setPendingDiscard({
+                kind: "bulk",
+                paths: files.map((file) => file.path),
+                variant: "discard",
+              })
+            }
+          >
+            <Undo2Icon className="size-3.5" aria-hidden />
+            Discard All
+          </Button>
           {hasAreas ? (
             <>
               <Button
@@ -667,9 +843,9 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
                           <DownloadIcon />
                         ) : item.id === "push" || item.id === "publish" ? (
                           <CloudUploadIcon />
-                        ) : (
+                        ) : presentation.showProviderIcon ? (
                           <presentation.Icon />
-                        )}
+                        ) : null}
                         {item.label}
                       </MenuItem>
                     </Fragment>
@@ -715,9 +891,9 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
                         <GitCommitIcon />
                       ) : item.icon === "push" ? (
                         <CloudUploadIcon />
-                      ) : (
+                      ) : presentation.showProviderIcon ? (
                         <presentation.Icon />
-                      )}
+                      ) : null}
                       {item.label}
                     </MenuItem>
                   ))}
@@ -759,6 +935,8 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
                 }}
                 disabled={isBusy}
                 {...rowActionProps}
+                selected={(file) => selectedFilePaths.has(file.path)}
+                onSelect={toggleSelectedFile}
               />
               <SourceControlSection
                 title="Changes"
@@ -780,6 +958,8 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
                 }
                 disabled={isBusy}
                 {...rowActionProps}
+                selected={(file) => selectedFilePaths.has(file.path)}
+                onSelect={toggleSelectedFile}
               />
               <SourceControlSection
                 title="Untracked Files"
@@ -802,6 +982,8 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
                 discardVariant="delete-untracked"
                 disabled={isBusy}
                 {...rowActionProps}
+                selected={(file) => selectedFilePaths.has(file.path)}
+                onSelect={toggleSelectedFile}
               />
             </>
           )}
@@ -862,9 +1044,9 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
               size="sm"
               {...(pendingDiscardCopy?.destructive ? { variant: "destructive" as const } : {})}
               onClick={() => {
-                const paths = pendingDiscard ? discardPathsOf(pendingDiscard) : null;
+                const pending = pendingDiscard;
                 setPendingDiscard(null);
-                if (paths) void runDiscard(paths);
+                if (pending) void runConfirmedDiscard(pending);
               }}
             >
               {pendingDiscardCopy?.confirmLabel ?? "Discard"}

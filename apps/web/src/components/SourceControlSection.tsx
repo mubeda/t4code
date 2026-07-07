@@ -14,6 +14,8 @@ interface SourceControlSectionProps extends SourceControlRowActions {
   files: readonly WorkingTreeFile[];
   /** See `SourceControlChangesListProps.checked` — omit to render no checkbox. */
   checked?: (file: WorkingTreeFile) => boolean;
+  selected?: (file: WorkingTreeFile) => boolean;
+  onSelect?: (path: string, selected: boolean) => void;
   onToggle: (path: string) => void;
   onOpenFile: (path: string, area?: VcsStagingArea) => void;
   primaryAction?: { icon: "stage" | "unstage"; label: string; onClick: () => void };
@@ -86,6 +88,8 @@ export function SourceControlSection(props: SourceControlSectionProps) {
           onToggle={props.onToggle}
           onOpenFile={props.onOpenFile}
           {...(props.checked ? { checked: props.checked } : {})}
+          {...(props.selected ? { selected: props.selected } : {})}
+          {...(props.onSelect ? { onSelect: props.onSelect } : {})}
           {...(props.disabled !== undefined ? { disabled: props.disabled } : {})}
           {...(props.isPrimaryEnv !== undefined ? { isPrimaryEnv: props.isPrimaryEnv } : {})}
           {...(props.onStageFile ? { onStageFile: props.onStageFile } : {})}
@@ -98,6 +102,10 @@ export function SourceControlSection(props: SourceControlSectionProps) {
             : {})}
           {...(props.onCopyPath ? { onCopyPath: props.onCopyPath } : {})}
           {...(props.onViewFile ? { onViewFile: props.onViewFile } : {})}
+          {...(props.onIgnoreFileName ? { onIgnoreFileName: props.onIgnoreFileName } : {})}
+          {...(props.onIgnoreParentFolder
+            ? { onIgnoreParentFolder: props.onIgnoreParentFolder }
+            : {})}
           renderBadge={(file) => {
             const badge = workingTreeStatusBadge(file.status);
             return (

@@ -25,20 +25,114 @@ const CodexTextGenerationTestLayer = ServerConfig.ServerConfig.layerTest(process
   prefix: "t3code-codex-text-generation-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
-function makeFakeCodexBinary(
-  dir: string,
-  input: {
-    output: string;
-    exitCode?: number;
-    stderr?: string;
-    requireImage?: boolean;
-    requireServiceTier?: string;
-    requireReasoningEffort?: string;
-    forbidReasoningEffort?: boolean;
-    stdinMustContain?: string;
-    stdinMustNotContain?: string;
-  },
-) {
+type FakeCodexBinaryInput = {
+  output: string;
+  exitCode?: number;
+  stderr?: string;
+  requireImage?: boolean;
+  requireServiceTier?: string;
+  requireReasoningEffort?: string;
+  forbidReasoningEffort?: boolean;
+  stdinMustContain?: string;
+  stdinMustNotContain?: string;
+};
+
+/**
+ * Windows cannot execute the `#!/bin/sh` fake binary directly (CreateProcess
+ * ignores shebangs), so on win32 we additionally emit a Node reimplementation
+ * of the same fake CLI plus a `.cmd` launcher that `resolveSpawnCommand`
+ * resolves. The POSIX shell script above is left byte-for-byte unchanged so
+ * Linux/CI keep exercising the exact same fixture.
+ */
+function buildFakeCodexNodeScript(input: FakeCodexBinaryInput): string {
+  return [
+    'import * as fs from "node:fs";',
+    "",
+    `const input = ${JSON.stringify(input)};`,
+    "",
+    "const args = process.argv.slice(2);",
+    'let outputPath = "";',
+    'let seenImage = "0";',
+    'let seenServiceTier = "";',
+    'let seenReasoningEffort = "";',
+    "let i = 0;",
+    "while (i < args.length) {",
+    "  const arg = args[i];",
+    '  if (arg === "--image") {',
+    "    i += 1;",
+    '    if (i < args.length && typeof args[i] === "string" && args[i].length > 0) {',
+    '      seenImage = "1";',
+    "    }",
+    "    i += 1;",
+    "    continue;",
+    "  }",
+    '  if (arg === "--config") {',
+    "    i += 1;",
+    '    const value = i < args.length && typeof args[i] === "string" ? args[i] : "";',
+    '    if (value.startsWith("service_tier=")) {',
+    "      seenServiceTier = value;",
+    "    }",
+    '    if (value.startsWith("model_reasoning_effort=")) {',
+    "      seenReasoningEffort = value;",
+    "    }",
+    "    i += 1;",
+    "    continue;",
+    "  }",
+    '  if (arg === "--output-last-message") {',
+    "    i += 1;",
+    '    outputPath = i < args.length && typeof args[i] === "string" ? args[i] : "";',
+    "    i += 1;",
+    "    continue;",
+    "  }",
+    "  i += 1;",
+    "}",
+    "",
+    'const stdinContent = fs.readFileSync(0, "utf8");',
+    "",
+    "function fail(message, code) {",
+    '  process.stderr.write(message + "\\n");',
+    "  process.exit(code);",
+    "}",
+    "",
+    'if (input.requireImage && seenImage !== "1") {',
+    '  fail("missing --image input", 2);',
+    "}",
+    "if (",
+    "  input.requireServiceTier &&",
+    "  seenServiceTier !== 'service_tier=\"' + input.requireServiceTier + '\"'",
+    ") {",
+    '  fail("unexpected service tier config: " + seenServiceTier, 5);',
+    "}",
+    "if (",
+    "  input.requireReasoningEffort !== undefined &&",
+    "  seenReasoningEffort !== 'model_reasoning_effort=\"' + input.requireReasoningEffort + '\"'",
+    ") {",
+    '  fail("unexpected reasoning effort config: " + seenReasoningEffort, 6);',
+    "}",
+    "if (input.forbidReasoningEffort && seenReasoningEffort.length > 0) {",
+    '  fail("reasoning effort config should be omitted: " + seenReasoningEffort, 7);',
+    "}",
+    "if (input.stdinMustContain !== undefined && !stdinContent.includes(input.stdinMustContain)) {",
+    '  fail("stdin missing expected content", 3);',
+    "}",
+    "if (",
+    "  input.stdinMustNotContain !== undefined &&",
+    "  stdinContent.includes(input.stdinMustNotContain)",
+    ") {",
+    '  fail("stdin contained forbidden content", 4);',
+    "}",
+    "if (input.stderr !== undefined) {",
+    '  process.stderr.write(input.stderr + "\\n");',
+    "}",
+    "if (outputPath.length > 0) {",
+    '  fs.writeFileSync(outputPath, input.output + "\\n");',
+    "}",
+    'process.exit(typeof input.exitCode === "number" ? input.exitCode : 0);',
+    "",
+  ].join("\n");
+}
+
+function makeFakeCodexBinary(dir: string, input: FakeCodexBinaryInput) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -153,6 +247,17 @@ function makeFakeCodexBinary(
       ].join("\n"),
     );
     yield* fs.chmod(codexPath, 0o755);
+
+    if (process.platform === "win32") {
+      const codexMjsPath = path.join(binDir, "codex.mjs");
+      const codexCmdPath = path.join(binDir, "codex.cmd");
+      yield* fs.writeFileString(codexMjsPath, buildFakeCodexNodeScript(input));
+      yield* fs.writeFileString(
+        codexCmdPath,
+        `@echo off\r\n"${process.execPath}" "${codexMjsPath}" %*\r\n`,
+      );
+    }
+
     return codexPath;
   });
 }

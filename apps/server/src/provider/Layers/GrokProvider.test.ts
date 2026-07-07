@@ -10,6 +10,28 @@ import { buildInitialGrokProviderSnapshot, checkGrokProviderStatus } from "./Gro
 
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
+/**
+ * On Windows the `#!/bin/sh` fake `grok` binaries below cannot be executed
+ * directly. Emit a Node reimplementation plus a `.cmd` launcher alongside the
+ * shell script: `resolveSpawnCommand` appends the PATHEXT candidates to the
+ * extension-less `binaryPath`, so it resolves `grok.cmd` and runs it through
+ * cmd.exe. The POSIX scripts are left untouched so Linux/CI keep the identical
+ * fixtures.
+ */
+const writeWin32GrokLauncher = Effect.fn("writeWin32GrokLauncher")(function* (
+  dir: string,
+  nodeScript: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const grokMjsPath = path.join(dir, "grok.mjs");
+  yield* fs.writeFileString(grokMjsPath, nodeScript);
+  yield* fs.writeFileString(
+    path.join(dir, "grok.cmd"),
+    `@echo off\r\n"${process.execPath}" "${grokMjsPath}" %*\r\n`,
+  );
+});
+
 describe("buildInitialGrokProviderSnapshot", () => {
   it.effect("returns a disabled snapshot when settings.enabled is false", () =>
     Effect.gen(function* () {
@@ -66,6 +88,12 @@ it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
             ["#!/bin/sh", `printf "%s\\n" "${secretStderr}" >&2`, "exit 2", ""].join("\n"),
           );
           yield* fs.chmod(grokPath, 0o755);
+          if (process.platform === "win32") {
+            yield* writeWin32GrokLauncher(
+              dir,
+              [`process.stderr.write("${secretStderr}\\n");`, "process.exit(2);", ""].join("\n"),
+            );
+          }
 
           return yield* checkGrokProviderStatus(
             decodeGrokSettings({ enabled: true, binaryPath: grokPath }),
@@ -94,6 +122,12 @@ it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
             ["#!/bin/sh", 'printf "grok-cli 0.0.99\\n"', "exit 0", ""].join("\n"),
           );
           yield* fs.chmod(grokPath, 0o755);
+          if (process.platform === "win32") {
+            yield* writeWin32GrokLauncher(
+              dir,
+              ['process.stdout.write("grok-cli 0.0.99\\n");', "process.exit(0);", ""].join("\n"),
+            );
+          }
 
           return yield* checkGrokProviderStatus(
             decodeGrokSettings({ enabled: true, binaryPath: grokPath }),

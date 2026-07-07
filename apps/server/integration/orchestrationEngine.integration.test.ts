@@ -869,8 +869,13 @@ it.live("reverts to an earlier checkpoint and trims checkpoint projections + git
         ),
         true,
       );
+      // Git checks out working-tree files with the platform line ending (CRLF on
+      // Windows via autocrlf); normalize before comparing to the LF fixture.
       assert.equal(
-        NodeFS.readFileSync(NodePath.join(harness.workspaceDir, "README.md"), "utf8"),
+        NodeFS.readFileSync(NodePath.join(harness.workspaceDir, "README.md"), "utf8").replaceAll(
+          "\r\n",
+          "\n",
+        ),
         "v2\n",
       );
       assert.equal(

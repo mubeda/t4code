@@ -48,7 +48,6 @@ import {
   DEFAULT_MODEL,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
-  DEFAULT_SERVER_SETTINGS,
   EDITORS,
   ProjectId,
   ProviderInstanceId,
@@ -93,7 +92,6 @@ import {
 } from "../sidebarWorkspaceMetaStore";
 import { useProjectBranchPolling } from "../hooks/useProjectBranchPolling";
 import {
-  readThreadShell,
   useProject,
   useProjects,
   useServerConfigs,
@@ -133,11 +131,7 @@ import { shellEnvironment } from "../state/shell";
 import { threadEnvironment, useEnvironmentThread } from "../state/threads";
 import { vcsEnvironment } from "../state/vcs";
 import { useEnvironment, useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
-import {
-  buildThreadRouteParams,
-  resolveThreadRouteRef,
-  resolveThreadRouteTarget,
-} from "../threadRoutes";
+import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { SettingsSidebarNav } from "./settings/SettingsSidebarNav";
@@ -199,7 +193,6 @@ import {
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useOpenAddProjectCommandPalette } from "../commandPaletteContext";
 import {
-  findDefaultThread,
   formatSessionDuration,
   getSidebarThreadIdsToPrewarm,
   orderRowsWithPins,
@@ -207,8 +200,6 @@ import {
   isContextMenuPointerDown,
   isTrailingDoubleClick,
   resolveProjectStatusIndicator,
-  resolveSidebarNewThreadSeedContext,
-  resolveSidebarNewThreadEnvMode,
   resolveSidebarStageBadgeLabel,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
@@ -1240,7 +1231,6 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     isThreadListExpanded,
     activeRouteThreadKey,
     newThreadShortcutLabel,
-    handleNewThread,
     openCreateWorktreeDialog,
     archiveThread,
     deleteThread,
@@ -2495,11 +2485,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     ],
   );
 
-  // Orca-parity context menu for the primary (project checkout) row --
-  // mirrors `handleThreadContextMenu` above but scoped to `project.workspaceRoot`
-  // and reuses `handleRemoveProject` (already handles the grouped-project
-  // submenu case) for "Remove Project…" instead of "Delete Worktree" (the
-  // primary row's worktree is the checkout itself and can't be deleted).
+  // Orca-parity context menu for the primary (project checkout) row. The
+  // primary checkout is read-only in the project tree, so destructive project
+  // removal stays on the project header menu instead of this branch row.
   const handlePrimaryRowContextMenu = useCallback(
     (event: React.MouseEvent) => {
       event.preventDefault();
@@ -2515,19 +2503,6 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         const openInEditorOptions = EDITORS.filter((editor) =>
           availableEditors.includes(editor.id),
         );
-        const removeProjectItem: ContextMenuItem<string> =
-          project.memberProjects.length === 1
-            ? { id: "remove-project", label: "Remove Project…", destructive: true, icon: "trash" }
-            : {
-                id: "remove-project",
-                label: "Remove Project…",
-                destructive: true,
-                icon: "trash",
-                children: project.memberProjects.map((member) => ({
-                  id: `remove-project:${member.physicalProjectKey}`,
-                  label: formatProjectMemberActionLabel(member, project.groupedProjectCount),
-                })),
-              };
         const clicked = await api.contextMenu.show(
           [
             { id: "update", label: "Update" },
@@ -2550,7 +2525,6 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
                   { id: "toggle-pin", label: isPinned ? "Unpin" : "Pin" },
                 ]
               : []),
-            removeProjectItem,
           ],
           { x: event.clientX, y: event.clientY },
         );
@@ -2615,28 +2589,11 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           togglePinnedThreadKey(primaryThreadKey);
           return;
         }
-        if (clicked === "remove-project") {
-          if (project.memberProjects.length === 1) {
-            await handleRemoveProject(project.memberProjects[0]!);
-          }
-          return;
-        }
-        if (typeof clicked === "string" && clicked.startsWith("remove-project:")) {
-          const physicalKey = clicked.slice("remove-project:".length);
-          const member = project.memberProjects.find(
-            (candidate) => candidate.physicalProjectKey === physicalKey,
-          );
-          if (member) {
-            await handleRemoveProject(member);
-          }
-          return;
-        }
       })();
     },
     [
       availableEditors,
       copyPathToClipboard,
-      handleRemoveProject,
       markThreadRowRead,
       markThreadRowUnread,
       openInEditorMutation,
