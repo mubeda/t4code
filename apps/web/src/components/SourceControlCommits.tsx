@@ -58,7 +58,6 @@ export function SourceControlCommits({
     setPreviousPages([]);
     setCursor(null);
     query.refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadToken, expanded]);
 
   const currentPage = query.data?.commits ?? [];

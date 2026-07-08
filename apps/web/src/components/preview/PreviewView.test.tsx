@@ -326,7 +326,7 @@ function renderView(props: ViewProps = baseProps()): string {
 }
 
 function captured<T = Record<string, unknown>>(kind: string): T {
-  const entry = [...h.captures].reverse().find((c) => c.kind === kind);
+  const entry = [...h.captures].toReversed().find((c) => c.kind === kind);
   expect(entry, `expected captured props for ${kind}`).toBeDefined();
   return entry!.props as T;
 }
@@ -337,7 +337,7 @@ function hasCapture(kind: string): boolean {
 
 function runEffects(): Array<() => void> {
   const cleanups: Array<() => void> = [];
-  for (const effect of [...h.effects]) {
+  for (const effect of Array.from(h.effects)) {
     const cleanup = effect();
     if (typeof cleanup === "function") cleanups.push(cleanup);
   }
@@ -388,10 +388,12 @@ function seedSession(
 }
 
 function makeBridge(): Record<string, unknown> {
-  const record = (method: string) => (...args: unknown[]) => {
-    h.bridgeCalls.push({ method, args });
-    return Promise.resolve();
-  };
+  const record =
+    (method: string) =>
+    (...args: unknown[]) => {
+      h.bridgeCalls.push({ method, args });
+      return Promise.resolve();
+    };
   return {
     navigate: record("navigate"),
     refresh: record("refresh"),
@@ -413,9 +415,7 @@ function makeBridge(): Record<string, unknown> {
     },
     copyArtifactToClipboard: () => {
       h.bridgeCalls.push({ method: "copyArtifactToClipboard", args: [] });
-      return h.copyArtifactRejects
-        ? Promise.reject(new Error("copy boom"))
-        : Promise.resolve();
+      return h.copyArtifactRejects ? Promise.reject(new Error("copy boom")) : Promise.resolve();
     },
     revealArtifact: record("revealArtifact"),
   };
@@ -515,7 +515,7 @@ describe("PreviewView rendering", () => {
   it("renders the empty state when there is no session", () => {
     h.showEmptyState = true;
     const markup = renderView();
-    expect(markup).toContain("data-mock=\"empty-state\"");
+    expect(markup).toContain('data-mock="empty-state"');
     const empty = captured("emptyState");
     expect(empty.environmentId).toBe(environmentId);
     expect(empty.recentlySeenUrls).toEqual([]);
@@ -545,7 +545,7 @@ describe("PreviewView rendering", () => {
 
     // The browser surface slot renders for a live, reachable session.
     expect(hasCapture("surfaceSlot")).toBe(true);
-    expect(markup).toContain("data-mock=\"surface-slot\"");
+    expect(markup).toContain('data-mock="surface-slot"');
     // Zoom indicator + agent cursor render when a desktop overlay exists.
     expect(hasCapture("zoomIndicator")).toBe(true);
     expect(hasCapture("agentCursor")).toBe(true);
@@ -780,14 +780,17 @@ describe("handleCapture: screenshots", () => {
     expect(bridgeMethodCalls("copyArtifactToClipboard")).toHaveLength(1);
 
     // Copy path (first additional action) → clipboard writeText.
-    const additional = (toast.data as { additionalActions: Array<{ props: { onClick: () => void } }> })
-      .additionalActions;
+    const additional = (
+      toast.data as { additionalActions: Array<{ props: { onClick: () => void } }> }
+    ).additionalActions;
     additional[0]!.props.onClick();
     await flush();
     expect(h.clipboardWriteCalls).toContain("/shot.png");
 
     // Reveal in file explorer (secondary action).
-    (toast.data as { secondaryActionProps: { onClick: () => void } }).secondaryActionProps.onClick();
+    (
+      toast.data as { secondaryActionProps: { onClick: () => void } }
+    ).secondaryActionProps.onClick();
     expect(bridgeMethodCalls("revealArtifact")).toHaveLength(1);
   });
 
@@ -799,9 +802,7 @@ describe("handleCapture: screenshots", () => {
     const toast = h.toasts.find((t) => t.toast.title === "Screenshot saved")!.toast;
     (toast.actionProps as { onClick: () => void }).onClick();
     await flush();
-    expect(
-      h.toastUpdates.some((u) => u.toast.title === "Unable to copy screenshot"),
-    ).toBe(true);
+    expect(h.toastUpdates.some((u) => u.toast.title === "Unable to copy screenshot")).toBe(true);
   });
 
   it("reports a copy-path failure when the clipboard API is unavailable", async () => {
@@ -811,12 +812,13 @@ describe("handleCapture: screenshots", () => {
     onCapture(false);
     await flush();
     const toast = h.toasts.find((t) => t.toast.title === "Screenshot saved")!.toast;
-    const additional = (toast.data as { additionalActions: Array<{ props: { onClick: () => void } }> })
-      .additionalActions;
+    const additional = (
+      toast.data as { additionalActions: Array<{ props: { onClick: () => void } }> }
+    ).additionalActions;
     additional[0]!.props.onClick();
-    expect(
-      h.toastUpdates.some((u) => u.toast.title === "Unable to copy screenshot path"),
-    ).toBe(true);
+    expect(h.toastUpdates.some((u) => u.toast.title === "Unable to copy screenshot path")).toBe(
+      true,
+    );
   });
 
   it("reports a screenshot capture failure", async () => {
@@ -878,7 +880,9 @@ describe("handleCapture: recording", () => {
     const toast = saved!.toast;
 
     // Copy path from the secondary action.
-    (toast.data as { secondaryActionProps: { onClick: () => void } }).secondaryActionProps.onClick();
+    (
+      toast.data as { secondaryActionProps: { onClick: () => void } }
+    ).secondaryActionProps.onClick();
     await flush();
     expect(h.clipboardWriteCalls).toContain("/rec.webm");
 
@@ -996,7 +1000,7 @@ describe("effects and the preview action bus", () => {
 
     expect(h.previewActionSubscribers.length).toBeGreaterThanOrEqual(1);
     const notify = (action: string) => {
-      for (const sub of [...h.previewActionSubscribers]) sub(action);
+      for (const sub of Array.from(h.previewActionSubscribers)) sub(action);
     };
 
     notify("refresh");

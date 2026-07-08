@@ -83,7 +83,6 @@ function ChildRepoScanRow({
   useEffect(() => {
     if (hasGit === null) return;
     onScanned({ name: entry.name, fullPath: entry.fullPath, hasGit });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasGit, entry.fullPath, entry.name]);
 
   if (childBrowse.isPending || hasGit === null) {
@@ -229,7 +228,6 @@ export function AddProjectDialog({ open, onOpenChange }: AddProjectDialogProps) 
     try {
       let succeeded = 0;
       for (const childPath of selectedChildPaths) {
-        // eslint-disable-next-line no-await-in-loop
         const ok = await runCreateProject(childPath);
         if (ok) succeeded += 1;
       }

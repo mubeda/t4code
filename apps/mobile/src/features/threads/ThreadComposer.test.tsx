@@ -66,7 +66,7 @@ const h = vi.hoisted(() => {
     },
     runEffects(): Array<() => void> {
       const cleanups: Array<() => void> = [];
-      for (const effect of [...state.effects]) {
+      for (const effect of Array.from(state.effects)) {
         const cleanup = effect();
         if (typeof cleanup === "function") cleanups.push(cleanup);
       }
@@ -213,12 +213,14 @@ function modelSelection(overrides: Partial<ModelSelection> = {}): ModelSelection
   return { instanceId: INSTANCE, model: "gpt-5", ...overrides } as ModelSelection;
 }
 
-function makeThreadShell(overrides: {
-  readonly sessionStatus?: string | null;
-  readonly runtimeMode?: RuntimeMode;
-  readonly interactionMode?: ProviderInteractionMode | undefined;
-  readonly modelSelection?: ModelSelection;
-} = {}): OrchestrationThreadShell {
+function makeThreadShell(
+  overrides: {
+    readonly sessionStatus?: string | null;
+    readonly runtimeMode?: RuntimeMode;
+    readonly interactionMode?: ProviderInteractionMode | undefined;
+    readonly modelSelection?: ModelSelection;
+  } = {},
+): OrchestrationThreadShell {
   return {
     id: ThreadId.make("thread-1"),
     projectId: ProjectId.make("project-1"),
@@ -368,9 +370,7 @@ describe("ThreadComposer collapsed rendering", () => {
   });
 
   it("renders collapsed attachment thumbnails with an overflow badge", () => {
-    const markup = render(
-      baseProps({ draftAttachments: attachments("a", "b", "c", "d") }),
-    );
+    const markup = render(baseProps({ draftAttachments: attachments("a", "b", "c", "d") }));
     // Only the first three thumbnails render, plus the "+1" overflow badge.
     expect(h.filter("Image")).toHaveLength(3);
     expect(markup).toContain("+1");
@@ -413,7 +413,9 @@ describe("ThreadComposer connection status", () => {
 
   it("invokes the reconnect callback from the status pill", () => {
     let reconnected = 0;
-    render(baseProps({ connectionState: "offline", onReconnectEnvironment: () => (reconnected += 1) }));
+    render(
+      baseProps({ connectionState: "offline", onReconnectEnvironment: () => (reconnected += 1) }),
+    );
     const pill = h.find("Pressable", (props) => typeof props["onPress"] === "function");
     (pill["onPress"] as () => void)();
     expect(reconnected).toBe(1);
@@ -425,7 +427,10 @@ describe("ThreadComposer expanded rendering", () => {
     seedExpanded();
     const markup = render(baseProps());
     expect(markup).toContain("data-toolbar-row");
-    const model = h.find("ComposerToolbarTrigger", (props) => props["accessibilityLabel"] === "Model");
+    const model = h.find(
+      "ComposerToolbarTrigger",
+      (props) => props["accessibilityLabel"] === "Model",
+    );
     expect(model["label"]).toBe("GPT-5");
     expect(h.filter("ComposerToolbarTrigger")).toHaveLength(2);
   });
@@ -446,7 +451,9 @@ describe("ThreadComposer expanded rendering", () => {
         draftAttachments: attachments("a"),
       }),
     );
-    expect(h.filter("ComposerToolbarButton", (props) => props["icon"] === "stop.fill")).toHaveLength(1);
+    expect(
+      h.filter("ComposerToolbarButton", (props) => props["icon"] === "stop.fill"),
+    ).toHaveLength(1);
     expect(h.filter("ComposerAttachmentStrip")).toHaveLength(1);
   });
 
@@ -528,7 +535,9 @@ describe("ThreadComposer trigger menus", () => {
   });
 
   it("omits the popover when the trigger has no matching items", () => {
-    const markup = render(baseProps({ draftMessage: "@nothing", serverConfig: makeServerConfig() }));
+    const markup = render(
+      baseProps({ draftMessage: "@nothing", serverConfig: makeServerConfig() }),
+    );
     expect(markup).not.toContain("data-command-popover");
   });
 });
@@ -603,13 +612,17 @@ describe("ThreadComposer menu handlers", () => {
       "ControlPillMenu",
       (props) =>
         Array.isArray(props["actions"]) &&
-        (props["actions"] as Array<{ id: string }>).some((action) => action.id.startsWith("provider:")),
+        (props["actions"] as Array<{ id: string }>).some((action) =>
+          action.id.startsWith("provider:"),
+        ),
     );
     const optionsMenu = h.find(
       "ControlPillMenu",
       (props) =>
         Array.isArray(props["actions"]) &&
-        (props["actions"] as Array<{ id: string }>).some((action) => action.id === "options-runtime"),
+        (props["actions"] as Array<{ id: string }>).some(
+          (action) => action.id === "options-runtime",
+        ),
     );
     return { modelMenu, optionsMenu, modelSelections, runtimeModes, interactionModes };
   }
@@ -699,7 +712,9 @@ describe("ThreadComposer editor callbacks", () => {
     (editor["onFocus"] as () => void)();
     (editor["onBlur"] as () => void)();
     expect(expandedChanges).toEqual([true, false]);
-    const focusUpdates = h.setStateCalls.filter((call) => call.applied === true || call.applied === false);
+    const focusUpdates = h.setStateCalls.filter(
+      (call) => call.applied === true || call.applied === false,
+    );
     expect(focusUpdates.length).toBeGreaterThanOrEqual(2);
   });
 
@@ -709,7 +724,9 @@ describe("ThreadComposer editor callbacks", () => {
       start: 1,
       end: 3,
     });
-    expect(h.setStateCalls.some((call) => (call.applied as { end?: number })?.end === 3)).toBe(true);
+    expect(h.setStateCalls.some((call) => (call.applied as { end?: number })?.end === 3)).toBe(
+      true,
+    );
     (editor["onPasteImages"] as (uris: ReadonlyArray<string>) => void)(["u1", "u2"]);
     expect(pasted).toEqual([["u1", "u2"]]);
   });
@@ -718,7 +735,9 @@ describe("ThreadComposer editor callbacks", () => {
     render(baseProps({ draftMessage: "hi" }));
     h.runEffects();
     const clamped = h.setStateCalls.filter(
-      (call) => typeof call.next === "function" && (call.applied as { start?: number })?.start !== undefined,
+      (call) =>
+        typeof call.next === "function" &&
+        (call.applied as { start?: number })?.start !== undefined,
     );
     expect(clamped.length).toBeGreaterThanOrEqual(1);
   });

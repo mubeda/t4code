@@ -222,7 +222,9 @@ describe("PairingPendingSurface", () => {
 
 describe("PairingRouteSurface markup", () => {
   it("describes a one-time-token gate and supported methods", () => {
-    const markup = render(<PairingRouteSurface auth={auth(["one-time-token"])} onAuthenticated={vi.fn()} />);
+    const markup = render(
+      <PairingRouteSurface auth={auth(["one-time-token"])} onAuthenticated={vi.fn()} />,
+    );
     expect(markup).toContain("Enter a pairing token to start a session");
     expect(markup).toContain("This environment accepts one-time pairing tokens");
     expect(markup).toContain("Continue");
@@ -244,7 +246,9 @@ describe("PairingRouteSurface markup", () => {
         onAuthenticated={vi.fn()}
       />,
     );
-    expect(markup).toContain("Desktop-managed pairing and one-time pairing tokens are both accepted");
+    expect(markup).toContain(
+      "Desktop-managed pairing and one-time pairing tokens are both accepted",
+    );
   });
 
   it("prefills the token from the url and shows an initial error", () => {
@@ -316,7 +320,9 @@ describe("PairingRouteSurface auto-submit effect", () => {
     render(<PairingRouteSurface auth={auth([])} onAuthenticated={vi.fn()} />);
     harness.runEffects();
     await flush();
-    expect(harness.setStateCalls.some((call) => call.applied === "plain string failure")).toBe(true);
+    expect(harness.setStateCalls.some((call) => call.applied === "plain string failure")).toBe(
+      true,
+    );
   });
 
   it("falls back to a generic message for empty or non-error rejections", async () => {
@@ -438,8 +444,7 @@ describe("HostedPairingRouteSurface", () => {
     await flush();
     expect(
       harness.setStateCalls.some(
-        (call) =>
-          typeof call.applied === "string" && call.applied.includes("already submitted"),
+        (call) => typeof call.applied === "string" && call.applied.includes("already submitted"),
       ),
     ).toBe(true);
     expect(testState.connect).not.toHaveBeenCalled();

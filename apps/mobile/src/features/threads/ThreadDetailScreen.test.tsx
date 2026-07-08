@@ -264,7 +264,7 @@ function render(
 
 function runEffects(): Array<() => void> {
   const cleanups: Array<() => void> = [];
-  for (const effect of [...h.effects]) {
+  for (const effect of Array.from(h.effects)) {
     const cleanup = effect();
     if (typeof cleanup === "function") {
       cleanups.push(cleanup);
@@ -433,7 +433,11 @@ describe("ThreadDetailScreen effects", () => {
           id: "m0",
           message: { id: "m0", role: "assistant", streaming: true, text: "streaming" },
         },
-        { type: "message", id: "m1", message: { id: "m1", role: "user", streaming: false, text: "hi" } },
+        {
+          type: "message",
+          id: "m1",
+          message: { id: "m1", role: "user", streaming: false, text: "hi" },
+        },
         { type: "activity", id: "a1" },
       ] as never,
     });
@@ -449,7 +453,11 @@ describe("ThreadDetailScreen effects", () => {
 
 describe("ThreadDetailScreen anchor scroll", () => {
   const anchorFeed = [
-    { type: "message", id: "m9", message: { id: "m9", role: "assistant", streaming: false, text: "done" } },
+    {
+      type: "message",
+      id: "m9",
+      message: { id: "m9", role: "assistant", streaming: false, text: "done" },
+    },
   ] as never;
 
   // anchorMessageId is the second useState in the component (index 1).
@@ -458,7 +466,10 @@ describe("ThreadDetailScreen anchor scroll", () => {
   ];
 
   it("scrolls to the anchored message once content is ready", () => {
-    render({ selectedThreadFeed: anchorFeed, contentPresentation: { kind: "ready" } as never }, seedAnchor("m9"));
+    render(
+      { selectedThreadFeed: anchorFeed, contentPresentation: { kind: "ready" } as never },
+      seedAnchor("m9"),
+    );
     const cleanups = runEffects();
     expect(h.scrollCalls.length).toBeGreaterThanOrEqual(1);
     for (const cleanup of cleanups) cleanup();
@@ -474,14 +485,20 @@ describe("ThreadDetailScreen anchor scroll", () => {
   });
 
   it("skips scrolling when the anchor is not present in the feed", () => {
-    render({ selectedThreadFeed: anchorFeed, contentPresentation: { kind: "ready" } as never }, seedAnchor("absent"));
+    render(
+      { selectedThreadFeed: anchorFeed, contentPresentation: { kind: "ready" } as never },
+      seedAnchor("absent"),
+    );
     runEffects();
     expect(h.scrollCalls).toHaveLength(0);
   });
 
   it("recovers by unfreezing when the scroll rejects", async () => {
     h.scrollRejects = true;
-    render({ selectedThreadFeed: anchorFeed, contentPresentation: { kind: "ready" } as never }, seedAnchor("m9"));
+    render(
+      { selectedThreadFeed: anchorFeed, contentPresentation: { kind: "ready" } as never },
+      seedAnchor("m9"),
+    );
     const cleanups = runEffects();
     expect(h.scrollCalls.length).toBeGreaterThanOrEqual(1);
     // flush the rejected-scroll catch microtask

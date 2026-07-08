@@ -1,5 +1,7 @@
+/* oxlint-disable t3code/no-global-process-runtime */
 import { ClaudeSettings, ProviderInstanceId } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeOS from "node:os";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -65,7 +67,7 @@ function makeFakeClaudeBinary(dir: string) {
     );
     yield* fs.chmod(claudePath, 0o755);
 
-    if (process.platform === "win32") {
+    if (NodeOS.platform() === "win32") {
       // Windows cannot execute the `#!/bin/sh` fake binary directly, so emit a
       // Node reimplementation of the same env-driven fake CLI plus a `.cmd`
       // launcher that `resolveSpawnCommand` resolves from PATH. The POSIX shell
@@ -155,7 +157,7 @@ function withFakeClaudeEnv<A, E, R>(
 
     yield* Effect.acquireRelease(
       Effect.sync(() => {
-        process.env.PATH = `${binDir}${process.platform === "win32" ? ";" : ":"}${previousPath ?? ""}`;
+        process.env.PATH = `${binDir}${NodeOS.platform() === "win32" ? ";" : ":"}${previousPath ?? ""}`;
         process.env.T3_FAKE_CLAUDE_OUTPUT = input.output;
 
         if (input.exitCode !== undefined) {

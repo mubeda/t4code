@@ -320,12 +320,10 @@ describe("VcsStatusBroadcaster", () => {
       // directory symlink creation with EPERM; skip the CWD-normalization
       // assertions there (still fully exercised wherever symlinks can be
       // created, e.g. CI on Linux).
-      const linked = yield* fileSystem
-        .symlink(realDir, linkDir)
-        .pipe(
-          Effect.as(true),
-          Effect.orElseSucceed(() => false),
-        );
+      const linked = yield* fileSystem.symlink(realDir, linkDir).pipe(
+        Effect.as(true),
+        Effect.orElseSucceed(() => false),
+      );
       if (!linked) return;
       const realPath = yield* fileSystem.realPath(realDir);
 

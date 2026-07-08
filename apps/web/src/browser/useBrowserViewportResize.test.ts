@@ -13,10 +13,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { createElement } from "react";
-import type {
-  KeyboardEvent as ReactKeyboardEvent,
-  PointerEvent as ReactPointerEvent,
-} from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 
 import { browserViewportSettingKey } from "./browserViewportLayout";
 
@@ -158,7 +155,9 @@ function makeWindowStub() {
       listeners.push({ type, handler });
     },
     removeEventListener: (type: string, handler: (event: unknown) => void) => {
-      const index = listeners.findIndex((entry) => entry.type === type && entry.handler === handler);
+      const index = listeners.findIndex(
+        (entry) => entry.type === type && entry.handler === handler,
+      );
       if (index >= 0) listeners.splice(index, 1);
     },
   };
@@ -239,10 +238,12 @@ describe("derived layout", () => {
   it("promotes a matching seeded drag into the effective freeform viewport", () => {
     const options = baseOptions();
     const sourceKey = browserViewportSettingKey(options.viewport);
-    harness.seedState(
-      (initial) => initial === null,
-      { sourceKey, width: 950, height: 640, direction: "east" },
-    );
+    harness.seedState((initial) => initial === null, {
+      sourceKey,
+      width: 950,
+      height: 640,
+      direction: "east",
+    });
     const result = renderHook(options);
     expect(result.activeDrag).toEqual({
       sourceKey,
@@ -260,7 +261,10 @@ describe("derived layout", () => {
 
   it("falls back to fill layout when the toolbar is visible but viewport fills the panel", () => {
     const result = renderHook(
-      baseOptions({ deviceToolbarVisible: true, viewport: { _tag: "fill" } as HookOptions["viewport"] }),
+      baseOptions({
+        deviceToolbarVisible: true,
+        viewport: { _tag: "fill" } as HookOptions["viewport"],
+      }),
     );
     expect(result.layout.fillsPanel).toBe(true);
   });
@@ -292,7 +296,9 @@ describe("commitViewportChange", () => {
 
 describe("handleResizeKeyDown", () => {
   it("ignores keyboard resize while the viewport fills the panel", () => {
-    const result = renderHook(baseOptions({ viewport: { _tag: "fill" } as HookOptions["viewport"] }));
+    const result = renderHook(
+      baseOptions({ viewport: { _tag: "fill" } as HookOptions["viewport"] }),
+    );
     result.handleResizeKeyDown("east", keyEvent({ key: "ArrowRight" }));
     expect(harness.setStateCalls).toHaveLength(0);
     expect(commit.calls).toHaveLength(0);
@@ -385,7 +391,9 @@ describe("handleResizeKeyDown", () => {
 
 describe("handleResizePointerDown", () => {
   it("ignores a pointer drag while the viewport fills the panel", () => {
-    const result = renderHook(baseOptions({ viewport: { _tag: "fill" } as HookOptions["viewport"] }));
+    const result = renderHook(
+      baseOptions({ viewport: { _tag: "fill" } as HookOptions["viewport"] }),
+    );
     result.handleResizePointerDown("east", pointerDownEvent());
     expect(windowStub.listeners).toHaveLength(0);
     expect(harness.setStateCalls).toHaveLength(0);
@@ -404,7 +412,12 @@ describe("handleResizePointerDown", () => {
     // Clear the initial `setDragViewport` recorded by pointer-down so the next
     // object update is unambiguously the move.
     harness.setStateCalls.length = 0;
-    windowHandler("pointermove")({ pointerId: 7, clientX: 260, clientY: 100, preventDefault: vi.fn() });
+    windowHandler("pointermove")({
+      pointerId: 7,
+      clientX: 260,
+      clientY: 100,
+      preventDefault: vi.fn(),
+    });
     const move = harness.setStateCalls.find(
       (call) => typeof call.next === "object" && call.next !== null,
     );
@@ -423,7 +436,12 @@ describe("handleResizePointerDown", () => {
     result.handleResizePointerDown("east", pointerDownEvent());
     harness.setStateCalls.length = 0;
 
-    windowHandler("pointermove")({ pointerId: 999, clientX: 260, clientY: 100, preventDefault: vi.fn() });
+    windowHandler("pointermove")({
+      pointerId: 999,
+      clientX: 260,
+      clientY: 100,
+      preventDefault: vi.fn(),
+    });
     expect(harness.setStateCalls).toHaveLength(0);
 
     windowHandler("pointerup")({ pointerId: 999 });
@@ -449,7 +467,12 @@ describe("handleResizePointerDown", () => {
     sourceViewportKeyRef().current = "freeform:1:1:";
     harness.setStateCalls.length = 0;
 
-    windowHandler("pointermove")({ pointerId: 7, clientX: 260, clientY: 100, preventDefault: vi.fn() });
+    windowHandler("pointermove")({
+      pointerId: 7,
+      clientX: 260,
+      clientY: 100,
+      preventDefault: vi.fn(),
+    });
     expect(harness.setStateCalls.some((call) => call.next === null)).toBe(true);
     expect(commit.calls).toHaveLength(0);
   });
@@ -457,7 +480,12 @@ describe("handleResizePointerDown", () => {
   it("clears the drag without committing when the source changes before pointer up", () => {
     const result = renderHook(baseOptions());
     result.handleResizePointerDown("east", pointerDownEvent());
-    windowHandler("pointermove")({ pointerId: 7, clientX: 260, clientY: 100, preventDefault: vi.fn() });
+    windowHandler("pointermove")({
+      pointerId: 7,
+      clientX: 260,
+      clientY: 100,
+      preventDefault: vi.fn(),
+    });
     sourceViewportKeyRef().current = "freeform:1:1:";
     harness.setStateCalls.length = 0;
 
@@ -485,7 +513,10 @@ describe("handleResizePointerDown", () => {
 
   it("stays functional when pointer capture is unavailable", () => {
     const result = renderHook(baseOptions());
-    result.handleResizePointerDown("east", pointerDownEvent({ currentTarget: makeTarget({ captureThrows: true }) }));
+    result.handleResizePointerDown(
+      "east",
+      pointerDownEvent({ currentTarget: makeTarget({ captureThrows: true }) }),
+    );
     expect(windowStub.listeners.length).toBeGreaterThan(0);
   });
 
@@ -495,7 +526,12 @@ describe("handleResizePointerDown", () => {
       "east",
       pointerDownEvent({ currentTarget: makeTarget({ releaseThrows: true }) }),
     );
-    windowHandler("pointermove")({ pointerId: 7, clientX: 260, clientY: 100, preventDefault: vi.fn() });
+    windowHandler("pointermove")({
+      pointerId: 7,
+      clientX: 260,
+      clientY: 100,
+      preventDefault: vi.fn(),
+    });
     // Cleanup runs during finish; releasePointerCapture throwing must be caught.
     expect(() => windowHandler("pointerup")({ pointerId: 7 })).not.toThrow();
     await flush();

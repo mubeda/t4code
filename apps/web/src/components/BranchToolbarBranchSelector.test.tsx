@@ -1,9 +1,4 @@
-import {
-  EnvironmentId,
-  ThreadId,
-  type VcsRef,
-  type VcsStatusResult,
-} from "@t3tools/contracts";
+import { EnvironmentId, ThreadId, type VcsRef, type VcsStatusResult } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import type { Dispatch, ReactElement, SetStateAction } from "react";
@@ -134,21 +129,6 @@ const hooks = vi.hoisted(() => {
     },
   };
 });
-
-interface QueryView {
-  data: VcsStatusResult | null;
-  error: string | null;
-  isPending: boolean;
-  refresh: ReturnType<typeof vi.fn>;
-}
-
-interface BranchState {
-  refs: VcsRef[];
-  data: { nextCursor: number | null; totalCount: number } | null;
-  isPending: boolean;
-  refresh: ReturnType<typeof vi.fn>;
-  loadNext: ReturnType<typeof vi.fn>;
-}
 
 const testState = vi.hoisted(() => ({
   serverThread: null as Record<string, unknown> | null,
@@ -381,9 +361,7 @@ vi.mock("./ui/combobox", () => ({
   ComboboxStatus: (props: { children?: unknown }) => (
     <div data-testid="status">{props.children as never}</div>
   ),
-  ComboboxListVirtualized: (props: { children?: unknown }) => (
-    <div>{props.children as never}</div>
-  ),
+  ComboboxListVirtualized: (props: { children?: unknown }) => <div>{props.children as never}</div>,
 }));
 
 vi.mock("./ui/switch", () => ({
@@ -593,8 +571,11 @@ describe("BranchToolbarBranchSelector", () => {
     // The pill button opens the PR link.
     const pill = captured.tooltipTriggers[0]?.render;
     expect(pill?.type).toBe("button");
+    if (!pill) {
+      throw new Error("Expected pull request pill trigger");
+    }
     const event = { preventDefault: vi.fn(), stopPropagation: vi.fn() };
-    (pill?.props.onClick as (event: unknown) => void)(event);
+    (pill.props.onClick as (event: unknown) => void)(event);
     expect(testState.openPrLink).toHaveBeenCalledWith(event, "https://example.com/pr/12");
   });
 

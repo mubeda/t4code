@@ -267,9 +267,10 @@ describe("resolveQuickAction", () => {
   });
 
   it("commits and pushes when dirty on the default branch", () => {
-    expect(
-      resolveQuickAction(status({ hasWorkingTreeChanges: true }), false, true),
-    ).toMatchObject({ kind: "run_action", action: "commit_push" });
+    expect(resolveQuickAction(status({ hasWorkingTreeChanges: true }), false, true)).toMatchObject({
+      kind: "run_action",
+      action: "commit_push",
+    });
   });
 
   it("commits, pushes and creates a PR when dirty on a feature branch", () => {
@@ -326,9 +327,11 @@ describe("resolveQuickAction", () => {
   });
 
   it("pushes and creates a PR without an upstream when ahead on a feature branch", () => {
-    expect(
-      resolveQuickAction(status({ hasUpstream: false, aheadCount: 2 }), false),
-    ).toMatchObject({ label: "Push & create PR", kind: "run_action", action: "create_pr" });
+    expect(resolveQuickAction(status({ hasUpstream: false, aheadCount: 2 }), false)).toMatchObject({
+      label: "Push & create PR",
+      kind: "run_action",
+      action: "create_pr",
+    });
   });
 
   it("shows a diverged sync hint when both ahead and behind", () => {
@@ -684,9 +687,7 @@ function runResult(overrides: Partial<GitRunStackedActionResult> = {}): GitRunSt
 describe("resolveThreadBranchUpdate", () => {
   it("returns the created branch name", () => {
     expect(
-      resolveThreadBranchUpdate(
-        runResult({ branch: { status: "created", name: "feature/new" } }),
-      ),
+      resolveThreadBranchUpdate(runResult({ branch: { status: "created", name: "feature/new" } })),
     ).toEqual({ branch: "feature/new" });
   });
 

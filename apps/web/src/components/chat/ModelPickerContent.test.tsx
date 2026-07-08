@@ -142,10 +142,7 @@ interface CapturedComboboxProps {
   items: string[];
   filteredItems: string[];
   value: string;
-  onItemHighlighted: (
-    value: unknown,
-    eventDetails: { reason: string; index: number },
-  ) => void;
+  onItemHighlighted: (value: unknown, eventDetails: { reason: string; index: number }) => void;
   onValueChange: (value: unknown) => void;
 }
 
@@ -363,11 +360,25 @@ const claudeModels: ModelEsque[] = [{ slug: "opus", name: "Claude Opus", subProv
 const jumpKeybindings = [
   {
     command: "modelPicker.jump.1",
-    shortcut: { key: "1", metaKey: false, ctrlKey: true, shiftKey: false, altKey: false, modKey: false },
+    shortcut: {
+      key: "1",
+      metaKey: false,
+      ctrlKey: true,
+      shiftKey: false,
+      altKey: false,
+      modKey: false,
+    },
   },
   {
     command: "modelPicker.jump.2",
-    shortcut: { key: "2", metaKey: false, ctrlKey: true, shiftKey: false, altKey: false, modKey: false },
+    shortcut: {
+      key: "2",
+      metaKey: false,
+      ctrlKey: true,
+      shiftKey: false,
+      altKey: false,
+      modKey: false,
+    },
   },
 ] as unknown as ResolvedKeybindingsConfig;
 

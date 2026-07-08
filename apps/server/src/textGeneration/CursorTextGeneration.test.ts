@@ -1,3 +1,4 @@
+/* oxlint-disable t3code/no-global-process-runtime */
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
@@ -75,7 +76,7 @@ function makeWin32AcpAgentWrapper(binDir: string, env: Record<string, string>): 
 
 function makeAcpAgentWrapper(dir: string, env: Record<string, string>): string {
   const binDir = NodePath.join(dir, "bin");
-  if (process.platform === "win32") {
+  if (NodeOS.platform() === "win32") {
     return makeWin32AcpAgentWrapper(binDir, env);
   }
   const agentPath = NodePath.join(binDir, "agent");
@@ -288,43 +289,44 @@ it.layer(CursorTextGenerationTestLayer)("CursorTextGeneration", (it) => {
   // node process, so its graceful-exit handler cannot run. This verifies POSIX
   // single-process (`exec node`) termination semantics that have no Windows
   // equivalent from the fixture; the other tests already cover generation itself.
-  it.effect.skipIf(process.platform === "win32")(
+  it.effect.skipIf(NodeOS.platform() === "win32")(
     "closes the ACP child process after text generation completes",
     () => {
       const exitLogDir = NodeFS.mkdtempSync(
-      NodePath.join(NodeOS.tmpdir(), "t3code-cursor-text-exit-log-"),
-    );
-    const exitLogPath = NodePath.join(exitLogDir, "exit.log");
+        NodePath.join(NodeOS.tmpdir(), "t3code-cursor-text-exit-log-"),
+      );
+      const exitLogPath = NodePath.join(exitLogDir, "exit.log");
 
-    return withFakeAcpAgent(
-      {
-        T3_ACP_EXIT_LOG_PATH: exitLogPath,
-        T3_ACP_PROMPT_RESPONSE_TEXT: JSON.stringify({
-          subject: "Close runtime after generation",
-          body: "",
-        }),
-      },
-      (textGeneration) =>
-        Effect.gen(function* () {
-          const generated = yield* textGeneration.generateCommitMessage({
-            cwd: process.cwd(),
-            branch: "feature/cursor-runtime-close",
-            stagedSummary: "M apps/server/src/textGeneration/CursorTextGeneration.ts",
-            stagedPatch:
-              "diff --git a/apps/server/src/textGeneration/CursorTextGeneration.ts b/apps/server/src/textGeneration/CursorTextGeneration.ts",
-            modelSelection: {
-              instanceId: ProviderInstanceId.make("cursor"),
-              model: "composer-2",
-            },
-          });
+      return withFakeAcpAgent(
+        {
+          T3_ACP_EXIT_LOG_PATH: exitLogPath,
+          T3_ACP_PROMPT_RESPONSE_TEXT: JSON.stringify({
+            subject: "Close runtime after generation",
+            body: "",
+          }),
+        },
+        (textGeneration) =>
+          Effect.gen(function* () {
+            const generated = yield* textGeneration.generateCommitMessage({
+              cwd: process.cwd(),
+              branch: "feature/cursor-runtime-close",
+              stagedSummary: "M apps/server/src/textGeneration/CursorTextGeneration.ts",
+              stagedPatch:
+                "diff --git a/apps/server/src/textGeneration/CursorTextGeneration.ts b/apps/server/src/textGeneration/CursorTextGeneration.ts",
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("cursor"),
+                model: "composer-2",
+              },
+            });
 
-          expect(generated.subject).toBe("Close runtime after generation");
+            expect(generated.subject).toBe("Close runtime after generation");
 
-          const exitLog = yield* waitForFileContent(exitLogPath);
-          expect(exitLog).toContain("exit:0");
+            const exitLog = yield* waitForFileContent(exitLogPath);
+            expect(exitLog).toContain("exit:0");
 
-          NodeFS.rmSync(exitLogDir, { recursive: true, force: true });
-        }),
-    );
-  });
+            NodeFS.rmSync(exitLogDir, { recursive: true, force: true });
+          }),
+      );
+    },
+  );
 });

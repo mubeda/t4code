@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
-import type { EnvironmentThreadShell, EnvironmentProject } from "@t3tools/client-runtime/state/shell";
+import type {
+  EnvironmentThreadShell,
+  EnvironmentProject,
+} from "@t3tools/client-runtime/state/shell";
 import type { GitActionRequestInput } from "@t3tools/client-runtime/state/vcs";
 
 // ── Instrumented hooks harness (see AddProjectScreen.test.tsx) ────────
@@ -331,7 +334,11 @@ describe("branch mutations", () => {
     const createCall = commandCallsFor("createRef")[0]!.input as {
       input: { cwd: string; refName: string; switchRef: boolean };
     };
-    expect(createCall.input).toEqual({ cwd: "/repo/worktree", refName: "new-branch", switchRef: true });
+    expect(createCall.input).toEqual({
+      cwd: "/repo/worktree",
+      refName: "new-branch",
+      switchRef: true,
+    });
     expect(commandCallsFor("updateMetadata")[0]!.input).toBeDefined();
   });
 
@@ -474,7 +481,9 @@ describe("onRunSelectedThreadGitAction", () => {
       });
 
     const actions = useSelectedThreadGitActions();
-    await actions.onRunSelectedThreadGitAction({ action: "commit" } as unknown as GitActionRequestInput);
+    await actions.onRunSelectedThreadGitAction({
+      action: "commit",
+    } as unknown as GitActionRequestInput);
 
     const actionInput = commandCallsFor("runStackedAction")[0]!.input as {
       commitMessage?: string;

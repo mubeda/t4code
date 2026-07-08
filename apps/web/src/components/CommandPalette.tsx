@@ -1,5 +1,7 @@
 "use client";
 
+/* oxlint-disable react/no-unstable-nested-components */
+
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   isAtomCommandInterrupted,
@@ -919,32 +921,6 @@ function OpenCommandPaletteDialog(props: {
       });
     },
     [browseEnvironmentId, buildAddProjectSourceGroups, sourceControlDiscovery.data],
-  );
-
-  const addProjectEnvironmentItems: CommandPaletteActionItem[] = addProjectEnvironmentOptions.map(
-    (option) => ({
-      kind: "action",
-      value: `action:add-project:environment:${option.environmentId}`,
-      searchTerms: [option.label, option.environmentId, option.isPrimary ? "this device" : ""],
-      title: option.label,
-      description: option.isPrimary ? "This device" : option.environmentId,
-      icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
-      keepOpen: true,
-      run: async () => {
-        startAddProjectSourceSelection(option.environmentId);
-      },
-    }),
-  );
-
-  const addProjectEnvironmentGroups = useMemo<CommandPaletteView["groups"]>(
-    () => [
-      {
-        value: "environments",
-        label: "Environments",
-        items: addProjectEnvironmentItems,
-      },
-    ],
-    [addProjectEnvironmentItems],
   );
 
   const openAddProjectFlow = useCallback(() => {

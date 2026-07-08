@@ -1036,10 +1036,7 @@ describe("deriveThreadFeedPresentation edge cases", () => {
     const feed = buildThreadFeed(thread);
     const collapsed = deriveThreadFeedPresentation(feed, thread.latestTurn, new Set());
     expect(collapsed.some((entry) => entry.type === "turn-fold")).toBe(false);
-    expect(collapsed.map((entry) => entry.id)).toEqual([
-      "assistant-commentary",
-      "assistant-final",
-    ]);
+    expect(collapsed.map((entry) => entry.id)).toEqual(["assistant-commentary", "assistant-final"]);
   });
 
   it("drops an activity group once every neutral tool row is filtered", () => {
@@ -1254,10 +1251,7 @@ describe("derivePendingUserInputs", () => {
 
 describe("setPendingUserInputCustomAnswer", () => {
   it("keeps only the custom answer once text is entered", () => {
-    const result = setPendingUserInputCustomAnswer(
-      { selectedOptionLabel: "Yes" },
-      "typed answer",
-    );
+    const result = setPendingUserInputCustomAnswer({ selectedOptionLabel: "Yes" }, "typed answer");
     expect(result).toEqual({ customAnswer: "typed answer" });
   });
 

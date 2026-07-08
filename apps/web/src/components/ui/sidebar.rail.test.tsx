@@ -9,7 +9,7 @@
  */
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import type { ReactElement, ReactNode } from "react";
+import type { ReactNode } from "react";
 
 const harness = vi.hoisted(() => {
   const state = {
@@ -269,9 +269,7 @@ function renderRail(
       </Sidebar>
     </SidebarProvider>,
   );
-  const trigger = harness.triggers.find(
-    (entry) => entry.props["data-slot"] === "sidebar-rail",
-  );
+  const trigger = harness.triggers.find((entry) => entry.props["data-slot"] === "sidebar-rail");
   if (!trigger) throw new Error("Rail render element was not captured");
   return { rail: trigger.props as RailProps, markup };
 }
@@ -481,8 +479,7 @@ describe("SidebarRail pointer-down guards", () => {
     const wrapper = { style: fakeStyle() };
     const sidebarRoot = { querySelector: () => null };
     const orphanRail = {
-      closest: (selector: string) =>
-        selector.includes("sidebar-wrapper") ? wrapper : sidebarRoot,
+      closest: (selector: string) => (selector.includes("sidebar-wrapper") ? wrapper : sidebarRoot),
       setPointerCapture: vi.fn(),
     };
     rail.onPointerDown?.(pointerEvent(orphanRail));
@@ -500,7 +497,13 @@ describe("SidebarRail click behavior", () => {
     rafCallbacks[0]!();
     rail.onPointerUp?.(pointerEvent(dom.rail));
 
-    const click = { defaultPrevented: false, prevented: false, preventDefault(this: { prevented: boolean }) { this.prevented = true; } };
+    const click = {
+      defaultPrevented: false,
+      prevented: false,
+      preventDefault(this: { prevented: boolean }) {
+        this.prevented = true;
+      },
+    };
     rail.onClick?.(click);
     expect(click.prevented).toBe(true);
     // The toggle was suppressed, so the open cookie was not written by a click.
@@ -509,7 +512,13 @@ describe("SidebarRail click behavior", () => {
 
   it("prevents the default toggle while resize is active without a drag", () => {
     const { rail } = renderRail({ minWidth: 200, maxWidth: 400, storageKey: "sb" });
-    const click = { defaultPrevented: false, prevented: false, preventDefault(this: { prevented: boolean }) { this.prevented = true; } };
+    const click = {
+      defaultPrevented: false,
+      prevented: false,
+      preventDefault(this: { prevented: boolean }) {
+        this.prevented = true;
+      },
+    };
     rail.onClick?.(click);
     expect(click.prevented).toBe(true);
     expect(cookieSets).toHaveLength(0);

@@ -1,12 +1,14 @@
+// @effect-diagnostics nodeBuiltinImport:off - beforeAll creates test fixtures without spinning an Effect runtime.
 import { describe, it } from "@effect/vitest";
 import { afterEach, beforeAll, expect } from "vite-plus/test";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
@@ -359,32 +361,21 @@ const buildWslLayer = (options: {
   );
 
   return wslLayer.pipe(
-    Layer.provideMerge(
-      Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, options.spawner),
-    ),
+    Layer.provideMerge(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, options.spawner)),
     Layer.provideMerge(environmentLayer),
     Layer.provideMerge(NodeServices.layer),
   );
 };
 
 describe("DesktopWslEnvironment layer", () => {
-  beforeAll(async () => {
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
+  beforeAll(() => {
+    windirWithWsl = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-wsl-yes-"));
+    const withWslSystem32 = NodePath.join(windirWithWsl, "System32");
+    NodeFS.mkdirSync(withWslSystem32, { recursive: true });
+    NodeFS.writeFileSync(NodePath.join(withWslSystem32, "wsl.exe"), "");
 
-        windirWithWsl = yield* fileSystem.makeTempDirectory({ prefix: "t3-wsl-yes-" });
-        const withWslSystem32 = path.join(windirWithWsl, "System32");
-        yield* fileSystem.makeDirectory(withWslSystem32, { recursive: true });
-        yield* fileSystem.writeFileString(path.join(withWslSystem32, "wsl.exe"), "");
-
-        windirWithoutWsl = yield* fileSystem.makeTempDirectory({ prefix: "t3-wsl-no-" });
-        yield* fileSystem.makeDirectory(path.join(windirWithoutWsl, "System32"), {
-          recursive: true,
-        });
-      }).pipe(Effect.provide(NodeServices.layer)),
-    );
+    windirWithoutWsl = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-wsl-no-"));
+    NodeFS.mkdirSync(NodePath.join(windirWithoutWsl, "System32"), { recursive: true });
   });
 
   afterEach(() => {
@@ -507,7 +498,9 @@ describe("DesktopWslEnvironment layer", () => {
       expect(yield* env.getUserHome("Ubuntu")).toStrictEqual(Option.none());
     }).pipe(
       Effect.provide(
-        buildWslLayer({ spawner: makeWslSpawner({ getent: { stdout: "not-a-path\n", exitCode: 0 } }) }),
+        buildWslLayer({
+          spawner: makeWslSpawner({ getent: { stdout: "not-a-path\n", exitCode: 0 } }),
+        }),
       ),
     ),
   );
@@ -531,7 +524,9 @@ describe("DesktopWslEnvironment layer", () => {
       expect(yield* env.getDistroIp("Ubuntu")).toStrictEqual(Option.none());
     }).pipe(
       Effect.provide(
-        buildWslLayer({ spawner: makeWslSpawner({ hostname: { stdout: "fe80::1\n", exitCode: 0 } }) }),
+        buildWslLayer({
+          spawner: makeWslSpawner({ hostname: { stdout: "fe80::1\n", exitCode: 0 } }),
+        }),
       ),
     ),
   );
@@ -541,7 +536,9 @@ describe("DesktopWslEnvironment layer", () => {
       const env = yield* DesktopWslEnvironment;
       yield* env.preWarm("Ubuntu");
       yield* env.preWarm(null);
-    }).pipe(Effect.provide(buildWslLayer({ spawner: makeWslSpawner({ preWarm: { exitCode: 0 } }) }))),
+    }).pipe(
+      Effect.provide(buildWslLayer({ spawner: makeWslSpawner({ preWarm: { exitCode: 0 } }) })),
+    ),
   );
 
   describe("ensureNodePty", () => {
@@ -730,7 +727,11 @@ describe("DesktopWslEnvironment.layerTest", () => {
       expect(yield* env.getUserHome("Ubuntu")).toStrictEqual(Option.some("/home/josh"));
       expect(yield* env.getDistroIp("Ubuntu")).toStrictEqual(Option.some("172.20.10.2"));
       const ensured = yield* env.ensureNodePty("Ubuntu", "C:/repo");
-      expect(ensured).toStrictEqual({ ok: true, nodePath: "/usr/bin/node", resolvedPath: "/usr/bin" });
+      expect(ensured).toStrictEqual({
+        ok: true,
+        nodePath: "/usr/bin/node",
+        resolvedPath: "/usr/bin",
+      });
       yield* env.preWarm("Ubuntu");
     }).pipe(
       Effect.provide(

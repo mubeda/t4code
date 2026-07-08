@@ -220,8 +220,7 @@ it.layer(NodeServices.layer)("ServerSecretStore.layer", (it) => {
 
       assert.isTrue(
         chmodCalls.some(
-          (call) =>
-            call.mode === 0o700 && call.path.replaceAll("\\", "/").endsWith("/secrets"),
+          (call) => call.mode === 0o700 && call.path.replaceAll("\\", "/").endsWith("/secrets"),
         ),
       );
       assert.isAtLeast(chmodCalls.filter((call) => call.mode === 0o600).length, 2);

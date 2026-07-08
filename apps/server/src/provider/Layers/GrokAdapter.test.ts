@@ -1,3 +1,4 @@
+/* oxlint-disable t3code/no-global-process-runtime */
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
@@ -77,7 +78,7 @@ async function makeWin32AcpWrapper(
 
 async function makeMockGrokWrapper(extraEnv?: Record<string, string>) {
   const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-acp-mock-"));
-  if (process.platform === "win32") {
+  if (NodeOS.platform() === "win32") {
     return makeWin32AcpWrapper(dir, "fake-grok", extraEnv ?? {});
   }
   const wrapperPath = NodePath.join(dir, "fake-grok.sh");
@@ -237,36 +238,36 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
   // the mock agent's `SIGTERM`/`exit` handlers never run and the exit log stays
   // empty — this asserts POSIX signal-delivery semantics that don't exist on
   // Windows. Skipped there; unchanged on Linux/CI.
-  it.effect.skipIf(process.platform === "win32")(
+  it.effect.skipIf(NodeOS.platform() === "win32")(
     "closes the ACP child process when a session stops",
     () =>
-    Effect.gen(function* () {
-      const threadId = ThreadId.make("grok-stop-session-close");
-      const tempDir = yield* Effect.promise(() =>
-        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-adapter-exit-log-")),
-      );
-      const exitLogPath = NodePath.join(tempDir, "exit.log");
+      Effect.gen(function* () {
+        const threadId = ThreadId.make("grok-stop-session-close");
+        const tempDir = yield* Effect.promise(() =>
+          NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-adapter-exit-log-")),
+        );
+        const exitLogPath = NodePath.join(tempDir, "exit.log");
 
-      const wrapperPath = yield* Effect.promise(() =>
-        makeMockGrokWrapper({
-          T3_ACP_EXIT_LOG_PATH: exitLogPath,
-        }),
-      );
-      const adapter = yield* makeTestAdapter(wrapperPath);
+        const wrapperPath = yield* Effect.promise(() =>
+          makeMockGrokWrapper({
+            T3_ACP_EXIT_LOG_PATH: exitLogPath,
+          }),
+        );
+        const adapter = yield* makeTestAdapter(wrapperPath);
 
-      yield* adapter.startSession({
-        threadId,
-        provider: ProviderDriverKind.make("grok"),
-        cwd: process.cwd(),
-        runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-build" },
-      });
+        yield* adapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("grok"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-build" },
+        });
 
-      yield* adapter.stopSession(threadId);
+        yield* adapter.stopSession(threadId);
 
-      const exitLog = yield* waitForFileContent(exitLogPath);
-      assert.include(exitLog, "SIGTERM");
-    }),
+        const exitLog = yield* waitForFileContent(exitLogPath);
+        assert.include(exitLog, "SIGTERM");
+      }),
   );
 
   it.effect("reports a Grok session running only while the prompt is in flight", () =>

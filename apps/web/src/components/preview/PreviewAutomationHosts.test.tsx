@@ -24,7 +24,9 @@ const h = vi.hoisted(() => {
     effects: [] as Array<() => void | (() => void)>,
     cleanups: [] as Array<() => void>,
     // atom-react seams
-    setRequestHandlerCalls: [] as Array<{ handle: (r: PreviewAutomationRequest) => Promise<unknown> }>,
+    setRequestHandlerCalls: [] as Array<{
+      handle: (r: PreviewAutomationRequest) => Promise<unknown>;
+    }>,
     automationConnectionId: null as string | null,
     consumerAtom: { __consumer: true } as unknown,
     // environment/electron gating
@@ -270,7 +272,7 @@ function mountHost(): Handle {
     </RegistryContext.Provider>,
   );
   // Run captured effects (first is the setRequestHandler mount effect).
-  for (const effect of [...h.effects]) {
+  for (const effect of Array.from(h.effects)) {
     const cleanup = effect();
     if (typeof cleanup === "function") h.cleanups.push(cleanup as () => void);
   }
@@ -399,10 +401,7 @@ describe("PreviewAutomationHosts wrapper", () => {
   });
 
   it("renders one host per environment when automation is available", () => {
-    h.environments = [
-      { environmentId },
-      { environmentId: EnvironmentId.make("environment-2") },
-    ];
+    h.environments = [{ environmentId }, { environmentId: EnvironmentId.make("environment-2") }];
     h.stateCalls.length = 0;
     renderToStaticMarkup(
       <RegistryContext.Provider value={registry as never}>
@@ -546,9 +545,7 @@ describe("handleRequest: open", () => {
     h.openTab = null;
     h.commandResults.open = () => ({ _tag: "Failure", error: new Error("open boom") });
 
-    const error = await handle(
-      makeRequest({ operation: "open", input: {} as unknown }),
-    ).then(
+    const error = await handle(makeRequest({ operation: "open", input: {} as unknown })).then(
       () => null,
       (e) => e,
     );
@@ -627,14 +624,19 @@ describe("handleRequest: passthrough bridge operations", () => {
       const result = await handle(
         makeRequest({ operation, tabId: "tab-1", input: { any: true } as unknown }),
       );
-      const expected = operation === "evaluate" ? h.automationEvaluateResult : h.automationResults[key];
+      const expected =
+        operation === "evaluate" ? h.automationEvaluateResult : h.automationResults[key];
       expect(result).toEqual(expected);
     });
   }
 
   it("raises a target-unavailable failure when no ready tab exists", async () => {
     const handle = mountHost();
-    h.previewState = { snapshot: null, sessions: { "tab-1": { tabId: "tab-1" } }, desktopByTabId: {} };
+    h.previewState = {
+      snapshot: null,
+      sessions: { "tab-1": { tabId: "tab-1" } },
+      desktopByTabId: {},
+    };
     h.needsSync = false;
     // request has explicit tab but bridge is missing
     h.previewBridge = null;
@@ -719,9 +721,7 @@ describe("focus reporting effect", () => {
 
     // The focus effect ran during mountHost(); it should have registered
     // listeners and reported focus through the command.
-    expect(h.windowListeners.map((l) => l.type)).toEqual(
-      expect.arrayContaining(["focus", "blur"]),
-    );
+    expect(h.windowListeners.map((l) => l.type)).toEqual(expect.arrayContaining(["focus", "blur"]));
     expect(h.commandCalls.some((c) => c.label === "focusAutomationHost")).toBe(true);
   });
 
@@ -730,8 +730,6 @@ describe("focus reporting effect", () => {
     mountHost();
     expect(h.commandCalls.some((c) => c.label === "focusAutomationHost")).toBe(false);
     // Listeners are still registered so a later connection can report.
-    expect(h.windowListeners.map((l) => l.type)).toEqual(
-      expect.arrayContaining(["focus", "blur"]),
-    );
+    expect(h.windowListeners.map((l) => l.type)).toEqual(expect.arrayContaining(["focus", "blur"]));
   });
 });

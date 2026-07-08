@@ -1,3 +1,5 @@
+/* oxlint-disable react/no-unstable-nested-components */
+
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useLocalSearchParams } from "expo-router";
 import Stack from "expo-router/stack";

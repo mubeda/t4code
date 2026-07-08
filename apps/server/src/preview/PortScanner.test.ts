@@ -212,45 +212,48 @@ effectIt.effect("scan() falls back to common-port probes when lsof fails on posi
   }).pipe(Effect.provide(layer));
 });
 
-effectIt.effect("scan() parses lsof -F output, dedupes, sorts, and attributes terminals on posix", () => {
-  const lsof = [
-    "p1000",
-    "cnode",
-    "n127.0.0.1:5173",
-    "n*:5173", // duplicate port -> ignored
-    "p2000",
-    "cvite",
-    "n[::1]:3000",
-    "p3000",
-    "cother",
-    "n192.168.1.5:9999", // non-local host -> skipped
-    "p-1", // invalid pid -> null
-    "nlocalhost:8080",
-    "", // blank line -> skipped
-  ].join("\n");
-  const layer = makeScannerLayer("linux", () => Effect.succeed(successOutput(lsof)));
-  return Effect.gen(function* () {
-    const scanner = yield* PortScanner.PortDiscovery;
-    yield* scanner.registerTerminalProcesses({
-      threadId: "thread-x",
-      terminalId: "term-1",
-      processIds: [2000],
-    });
-    const result = yield* scanner.scan();
+effectIt.effect(
+  "scan() parses lsof -F output, dedupes, sorts, and attributes terminals on posix",
+  () => {
+    const lsof = [
+      "p1000",
+      "cnode",
+      "n127.0.0.1:5173",
+      "n*:5173", // duplicate port -> ignored
+      "p2000",
+      "cvite",
+      "n[::1]:3000",
+      "p3000",
+      "cother",
+      "n192.168.1.5:9999", // non-local host -> skipped
+      "p-1", // invalid pid -> null
+      "nlocalhost:8080",
+      "", // blank line -> skipped
+    ].join("\n");
+    const layer = makeScannerLayer("linux", () => Effect.succeed(successOutput(lsof)));
+    return Effect.gen(function* () {
+      const scanner = yield* PortScanner.PortDiscovery;
+      yield* scanner.registerTerminalProcesses({
+        threadId: "thread-x",
+        terminalId: "term-1",
+        processIds: [2000],
+      });
+      const result = yield* scanner.scan();
 
-    expect(result.map((server) => server.port)).toEqual([3000, 5173, 8080]);
-    const byPort = new Map(result.map((server) => [server.port, server]));
-    expect(byPort.get(5173)).toMatchObject({
-      host: "localhost",
-      url: "http://localhost:5173",
-      processName: "node",
-      pid: 1000,
-      terminal: null,
-    });
-    expect(byPort.get(3000)?.terminal).toEqual({ threadId: "thread-x", terminalId: "term-1" });
-    expect(byPort.get(8080)).toMatchObject({ pid: null, terminal: null });
-  }).pipe(Effect.provide(layer));
-});
+      expect(result.map((server) => server.port)).toEqual([3000, 5173, 8080]);
+      const byPort = new Map(result.map((server) => [server.port, server]));
+      expect(byPort.get(5173)).toMatchObject({
+        host: "localhost",
+        url: "http://localhost:5173",
+        processName: "node",
+        pid: 1000,
+        terminal: null,
+      });
+      expect(byPort.get(3000)?.terminal).toEqual({ threadId: "thread-x", terminalId: "term-1" });
+      expect(byPort.get(8080)).toMatchObject({ pid: null, terminal: null });
+    }).pipe(Effect.provide(layer));
+  },
+);
 
 effectIt.effect("scan() parses Windows listener output, dedupes, and attributes terminals", () => {
   const listeners = [
@@ -329,32 +332,37 @@ effectIt.effect("registerTerminalProcesses filters invalid pids and unregisters 
   }).pipe(Effect.provide(layer));
 });
 
-effectIt.effect("retain triggers an immediate scan and broadcasts only when the snapshot changes", () => {
-  let stdout = "p1000\ncnode\nn127.0.0.1:5173\n";
-  const layer = makeScannerLayer("linux", () => Effect.succeed(successOutput(stdout)));
-  const received: ReadonlyArray<ReadonlyArray<number>> = [];
-  const push = (ports: ReadonlyArray<number>) => (received as Array<ReadonlyArray<number>>).push(ports);
-  return Effect.gen(function* () {
-    const scanner = yield* PortScanner.PortDiscovery;
-    yield* scanner.subscribe((servers) =>
-      Effect.sync(() => push(servers.map((server) => server.port))),
-    );
+effectIt.effect(
+  "retain triggers an immediate scan and broadcasts only when the snapshot changes",
+  () => {
+    let stdout = "p1000\ncnode\nn127.0.0.1:5173\n";
+    const layer = makeScannerLayer("linux", () => Effect.succeed(successOutput(stdout)));
+    const received: ReadonlyArray<ReadonlyArray<number>> = [];
+    const push = (ports: ReadonlyArray<number>) =>
+      (received as Array<ReadonlyArray<number>>).push(ports);
+    return Effect.gen(function* () {
+      const scanner = yield* PortScanner.PortDiscovery;
+      yield* scanner.subscribe((servers) =>
+        Effect.sync(() => push(servers.map((server) => server.port))),
+      );
 
-    yield* Effect.scoped(scanner.retain); // idle -> immediate scan -> broadcast [5173]
-    stdout = "p1000\ncnode\nn127.0.0.1:3000\n";
-    yield* Effect.scoped(scanner.retain); // equal length, different port -> broadcast [3000]
-    yield* Effect.scoped(scanner.retain); // identical snapshot -> no broadcast
+      yield* Effect.scoped(scanner.retain); // idle -> immediate scan -> broadcast [5173]
+      stdout = "p1000\ncnode\nn127.0.0.1:3000\n";
+      yield* Effect.scoped(scanner.retain); // equal length, different port -> broadcast [3000]
+      yield* Effect.scoped(scanner.retain); // identical snapshot -> no broadcast
 
-    expect(received).toEqual([[5173], [3000]]);
-  }).pipe(Effect.provide(layer));
-});
+      expect(received).toEqual([[5173], [3000]]);
+    }).pipe(Effect.provide(layer));
+  },
+);
 
 effectIt.effect("a nested retain does not trigger a second immediate scan", () => {
   const layer = makeScannerLayer("linux", () =>
     Effect.succeed(successOutput("p1000\ncnode\nn127.0.0.1:5173\n")),
   );
   const received: ReadonlyArray<ReadonlyArray<number>> = [];
-  const push = (ports: ReadonlyArray<number>) => (received as Array<ReadonlyArray<number>>).push(ports);
+  const push = (ports: ReadonlyArray<number>) =>
+    (received as Array<ReadonlyArray<number>>).push(ports);
   return Effect.gen(function* () {
     const scanner = yield* PortScanner.PortDiscovery;
     yield* scanner.subscribe((servers) =>

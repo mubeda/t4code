@@ -57,7 +57,10 @@ vi.mock("react-native", () => ({
 
 vi.mock("react-native-reanimated", () => ({
   default: {
-    View: (props: { readonly children?: ReactNode; readonly exiting?: (v: unknown) => unknown }) => {
+    View: (props: {
+      readonly children?: ReactNode;
+      readonly exiting?: (v: unknown) => unknown;
+    }) => {
       h.animatedExiting.push(props.exiting);
       return <div data-animated="true">{props.children}</div>;
     },
@@ -236,9 +239,10 @@ interface Handlers {
   readonly onOpenEnvironments: Array<number>;
 }
 
-function makeProps(
-  overrides: Partial<Parameters<typeof HomeScreen>[0]> = {},
-): { props: Parameters<typeof HomeScreen>[0]; handlers: Handlers } {
+function makeProps(overrides: Partial<Parameters<typeof HomeScreen>[0]> = {}): {
+  props: Parameters<typeof HomeScreen>[0];
+  handlers: Handlers;
+} {
   const handlers: Handlers = {
     onSelectThread: [],
     onArchiveThread: [],
@@ -559,7 +563,8 @@ describe("HomeScreen connection status pill", () => {
     expect(markup).toContain("Not connected");
 
     const pill = h.pressables.find(
-      (pressable) => typeof pressable["onPress"] === "function" && pressable["className"] !== undefined,
+      (pressable) =>
+        typeof pressable["onPress"] === "function" && pressable["className"] !== undefined,
     );
     // The status pill is the only Pressable carrying the rounded-full pill styling.
     const statusPill = h.pressables.find((pressable) =>
@@ -750,10 +755,11 @@ describe("HomeScreen project grouping", () => {
     const { props } = makeProps({ projects: [project], threads });
     render(<HomeScreen {...props} />);
 
-    const toggle = h.pressables.find((pressable) =>
-      String(JSON.stringify(pressable["hitSlop"] ?? "")).length > 0 &&
-      typeof pressable["onPress"] === "function" &&
-      pressable["accessibilityLabel"] === undefined,
+    const toggle = h.pressables.find(
+      (pressable) =>
+        String(JSON.stringify(pressable["hitSlop"] ?? "")).length > 0 &&
+        typeof pressable["onPress"] === "function" &&
+        pressable["accessibilityLabel"] === undefined,
     );
     // The "N more" toggle Pressable carries a hitSlop and no accessibilityLabel.
     expect(toggle).toBeDefined();

@@ -51,12 +51,10 @@ const symlinkSupported = Effect.fn("CodexHomeLayout.test.symlinkSupported")(func
   const probeRoot = yield* makeTempDir("t3code-codex-symlink-probe-");
   const target = path.join(probeRoot, "target.txt");
   yield* fileSystem.writeFileString(target, "probe");
-  return yield* fileSystem
-    .symlink(target, path.join(probeRoot, "link.txt"))
-    .pipe(
-      Effect.as(true),
-      Effect.orElseSucceed(() => false),
-    );
+  return yield* fileSystem.symlink(target, path.join(probeRoot, "link.txt")).pipe(
+    Effect.as(true),
+    Effect.orElseSucceed(() => false),
+  );
 });
 
 it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {

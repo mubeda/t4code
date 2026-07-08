@@ -91,7 +91,6 @@ export function useProjectBranchPolling(input: {
     };
     const interval = window.setInterval(tick, ACTIVE_PROJECT_POLL_INTERVAL_MS);
     return () => window.clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- interval reads latest project via ref
   }, [activeProject?.key, refreshStatus]);
 
   useEffect(() => {

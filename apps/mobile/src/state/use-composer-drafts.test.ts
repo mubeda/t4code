@@ -49,7 +49,9 @@ vi.mock("@effect/atom-react", () => ({
 
 vi.mock("expo-file-system", () => {
   class Directory {
-    constructor(..._args: ReadonlyArray<unknown>) {}
+    constructor(..._args: ReadonlyArray<unknown>) {
+      void _args;
+    }
     create(_options?: unknown): void {
       if (fs.throwOnCreateDir) {
         throw new Error("mkdir failed");
@@ -57,7 +59,9 @@ vi.mock("expo-file-system", () => {
     }
   }
   class File {
-    constructor(..._args: ReadonlyArray<unknown>) {}
+    constructor(..._args: ReadonlyArray<unknown>) {
+      void _args;
+    }
     get exists(): boolean {
       return fs.exists;
     }
@@ -90,11 +94,9 @@ import {
   clearComposerDraft,
   clearComposerDraftContent,
   clearComposerDraftContentState,
-  clearComposerDraftsEnvironment,
   composerDraftsAtom,
   ComposerDraftPersistenceError,
   decodePersistedComposerDrafts,
-  ensureComposerDraftsLoaded,
   getComposerDraftSnapshot,
   removeComposerDraftAttachment,
   removeComposerDraftsForEnvironment,
@@ -435,7 +437,9 @@ describe("useComposerDraft hook (instrumented)", () => {
 
   it("returns the normalized draft for a known key", () => {
     const key = "environment-1:thread-1";
-    appAtomRegistry.set(composerDraftsAtom, { [key]: { text: "draft", attachments: [ATTACHMENT] } });
+    appAtomRegistry.set(composerDraftsAtom, {
+      [key]: { text: "draft", attachments: [ATTACHMENT] },
+    });
     const result = useComposerDraft(key);
     expect(result).toEqual({ text: "draft", attachments: [ATTACHMENT] });
   });

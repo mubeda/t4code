@@ -336,7 +336,9 @@ describe("header + status", () => {
   it("falls back to the driver-option icon when the driver kind is invalid", () => {
     const markup = render(
       baseProps({
-        instance: instanceConfig({ driver: "1-not-a-slug" as unknown as ProviderInstanceConfig["driver"] }),
+        instance: instanceConfig({
+          driver: "1-not-a-slug" as unknown as ProviderInstanceConfig["driver"],
+        }),
         driverOption: driverOption(),
       }),
     );
@@ -348,7 +350,9 @@ describe("header + status", () => {
   it("falls back to a status dot when there is no driver kind or icon", () => {
     const markup = render(
       baseProps({
-        instance: instanceConfig({ driver: "1-not-a-slug" as unknown as ProviderInstanceConfig["driver"] }),
+        instance: instanceConfig({
+          driver: "1-not-a-slug" as unknown as ProviderInstanceConfig["driver"],
+        }),
         driverOption: undefined,
       }),
     );
@@ -607,7 +611,10 @@ describe("environment variables", () => {
       }),
     );
     expect(markup).toContain("API_KEY");
-    const valueInput = ui.find("DraftInput", (p) => p["aria-label"] === "Environment variable value 1");
+    const valueInput = ui.find(
+      "DraftInput",
+      (p) => p["aria-label"] === "Environment variable value 1",
+    );
     expect(valueInput.type).toBe("password");
     expect(String(valueInput.placeholder)).toContain("Stored secret");
   });
@@ -625,8 +632,16 @@ describe("environment variables", () => {
 
   it("updates a variable name and publishes the cleaned list", () => {
     const onUpdate = vi.fn();
-    render(baseProps({ instance: envInstance([{ name: "OLD", value: "v", sensitive: true }]), onUpdate }));
-    const nameInput = ui.find("DraftInput", (p) => p["aria-label"] === "Environment variable name 1");
+    render(
+      baseProps({
+        instance: envInstance([{ name: "OLD", value: "v", sensitive: true }]),
+        onUpdate,
+      }),
+    );
+    const nameInput = ui.find(
+      "DraftInput",
+      (p) => p["aria-label"] === "Environment variable name 1",
+    );
     (nameInput.onCommit as (value: string) => void)("NEW_NAME");
     expect(onUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -637,8 +652,13 @@ describe("environment variables", () => {
 
   it("does not publish while a variable name is invalid but non-empty", () => {
     const onUpdate = vi.fn();
-    render(baseProps({ instance: envInstance([{ name: "OK", value: "v", sensitive: true }]), onUpdate }));
-    const nameInput = ui.find("DraftInput", (p) => p["aria-label"] === "Environment variable name 1");
+    render(
+      baseProps({ instance: envInstance([{ name: "OK", value: "v", sensitive: true }]), onUpdate }),
+    );
+    const nameInput = ui.find(
+      "DraftInput",
+      (p) => p["aria-label"] === "Environment variable name 1",
+    );
     (nameInput.onCommit as (value: string) => void)("1bad");
     expect(onUpdate).not.toHaveBeenCalled();
   });
@@ -652,17 +672,26 @@ describe("environment variables", () => {
         { id: "draft-x", name: "", value: "", sensitive: true },
       ],
     );
-    render(baseProps({ instance: envInstance([{ name: "OK", value: "v", sensitive: true }]), onUpdate }));
-    const valueInput = ui.find("DraftInput", (p) => p["aria-label"] === "Environment variable value 1");
+    render(
+      baseProps({ instance: envInstance([{ name: "OK", value: "v", sensitive: true }]), onUpdate }),
+    );
+    const valueInput = ui.find(
+      "DraftInput",
+      (p) => p["aria-label"] === "Environment variable value 1",
+    );
     (valueInput.onCommit as (value: string) => void)("v2");
     expect(onUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ environment: [expect.objectContaining({ name: "OK", value: "v2" })] }),
+      expect.objectContaining({
+        environment: [expect.objectContaining({ name: "OK", value: "v2" })],
+      }),
     );
   });
 
   it("toggles the sensitive checkbox", () => {
     const onUpdate = vi.fn();
-    render(baseProps({ instance: envInstance([{ name: "OK", value: "v", sensitive: true }]), onUpdate }));
+    render(
+      baseProps({ instance: envInstance([{ name: "OK", value: "v", sensitive: true }]), onUpdate }),
+    );
     const checkbox = ui.find("Checkbox");
     (checkbox.onCheckedChange as (checked: boolean) => void)(false);
     expect(onUpdate).toHaveBeenCalledWith(
@@ -672,7 +701,9 @@ describe("environment variables", () => {
 
   it("removes a variable, publishing the empty list", () => {
     const onUpdate = vi.fn();
-    render(baseProps({ instance: envInstance([{ name: "OK", value: "v", sensitive: true }]), onUpdate }));
+    render(
+      baseProps({ instance: envInstance([{ name: "OK", value: "v", sensitive: true }]), onUpdate }),
+    );
     const removeButton = ui.byLabel("Button", "Remove environment variable OK");
     (removeButton.onClick as () => void)();
     // The card drops the environment key entirely when it becomes empty.

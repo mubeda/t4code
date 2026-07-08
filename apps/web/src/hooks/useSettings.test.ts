@@ -34,7 +34,10 @@ vi.mock("react", async (importOriginal) => {
     ...actual,
     useCallback: (<T>(fn: T) => fn) as typeof actual.useCallback,
     useMemo: (<T>(fn: () => T) => fn()) as typeof actual.useMemo,
-    useSyncExternalStore: ((subscribe: (l: () => void) => () => void, getSnapshot: () => unknown) => {
+    useSyncExternalStore: ((
+      subscribe: (l: () => void) => () => void,
+      getSnapshot: () => unknown,
+    ) => {
       const unsubscribe = subscribe(() => {});
       h.unsubs.push(unsubscribe);
       return getSnapshot();
@@ -261,9 +264,7 @@ describe("useUpdateClientSettings", () => {
 
     expect(getClientSettings()).toMatchObject({ wordWrap: false });
     expect(h.setClientSettings).toHaveBeenCalledTimes(1);
-    expect(h.setClientSettings).toHaveBeenCalledWith(
-      expect.objectContaining({ wordWrap: false }),
-    );
+    expect(h.setClientSettings).toHaveBeenCalledWith(expect.objectContaining({ wordWrap: false }));
   });
 
   it("logs a persistence failure without throwing", async () => {

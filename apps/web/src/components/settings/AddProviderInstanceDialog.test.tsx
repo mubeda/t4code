@@ -124,7 +124,13 @@ vi.mock("./providerDriverMeta", () => {
   const claude = ProviderDriverKind.make("claudeAgent");
   const options = [
     { value: codex, label: "Codex", icon: IconStub, settingsSchema: {} },
-    { value: claude, label: "Claude", icon: IconStub, badgeLabel: "Early Access", settingsSchema: {} },
+    {
+      value: claude,
+      label: "Claude",
+      icon: IconStub,
+      badgeLabel: "Early Access",
+      settingsSchema: {},
+    },
   ];
   return {
     DRIVER_OPTIONS: options,
@@ -274,9 +280,7 @@ describe("instance id validation markup", () => {
   });
 
   it("rejects an over-long instance id", () => {
-    expect(renderWithOverride(`codex_${"x".repeat(70)}`)).toContain(
-      "64 characters or fewer",
-    );
+    expect(renderWithOverride(`codex_${"x".repeat(70)}`)).toContain("64 characters or fewer");
   });
 
   it("rejects an instance id that breaks the slug pattern", () => {
@@ -327,7 +331,10 @@ describe("field editing handlers", () => {
     (labelInput.onChange as (event: unknown) => void)({ target: { value: "Work" } });
     expect(harness.setStateCalls.some((call) => call.applied === "Work")).toBe(true);
 
-    const idInput = ui.find("Input", (p) => typeof p.placeholder === "string" && String(p.placeholder).endsWith("_work"));
+    const idInput = ui.find(
+      "Input",
+      (p) => typeof p.placeholder === "string" && String(p.placeholder).endsWith("_work"),
+    );
     (idInput.onChange as (event: unknown) => void)({ target: { value: "codex_custom" } });
     expect(harness.setStateCalls.some((call) => call.applied === "codex_custom")).toBe(true);
   });
@@ -382,7 +389,8 @@ describe("saving an instance", () => {
     harness.seedState((initial) => initial === "", "  My Codex  "); // label (first "" slot)
     harness.seedState((initial) => initial === "", "#2563EB"); // accentColor (second "" slot)
     harness.seedState(
-      (initial) => typeof initial === "object" && initial !== null && Object.keys(initial).length === 0,
+      (initial) =>
+        typeof initial === "object" && initial !== null && Object.keys(initial).length === 0,
       { codex: { binaryPath: "/bin" } },
     ); // configByDriver
     render();

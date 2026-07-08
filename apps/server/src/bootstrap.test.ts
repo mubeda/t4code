@@ -1,3 +1,4 @@
+/* oxlint-disable t3code/no-global-process-runtime */
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -79,7 +80,7 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
             // the fd and closes it asynchronously. Closing it again here races that
             // async close and surfaces an uncaught EBADF. On POSIX the reader
             // re-opens via /proc/self/fd (or /dev/fd), leaving the fd for us to close.
-            if (process.platform === "win32") return;
+            if (NodeOS.platform() === "win32") return;
             NodeFS.closeSync(fd);
           }),
       );
@@ -202,7 +203,7 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
             // the fd and closes it asynchronously. Closing it again here races that
             // async close and surfaces an uncaught EBADF. On POSIX the reader
             // re-opens via /proc/self/fd (or /dev/fd), leaving the fd for us to close.
-            if (process.platform === "win32") return;
+            if (NodeOS.platform() === "win32") return;
             NodeFS.closeSync(fd);
           }),
       );
@@ -224,7 +225,7 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
     Effect.gen(function* () {
       // FIFOs (mkfifo) and the POSIX `sh` writer used to hold the pipe open are
       // not available on Windows; skip there (still exercised on CI/Linux).
-      if (process.platform === "win32") return;
+      if (NodeOS.platform() === "win32") return;
       const fs = yield* FileSystem.FileSystem;
       const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-bootstrap-" });
       const fifoPath = NodePath.join(tempDir, "bootstrap.pipe");

@@ -28,10 +28,7 @@ const h = vi.hoisted(() => {
     turnDiffSummaries: [] as unknown[],
     inferredCheckpointTurnCountByTurnId: {} as Record<string, number>,
     queryDataByKey: new Map<string, unknown>(),
-    queryStateByKey: new Map<
-      string,
-      { error?: unknown; isPending?: boolean }
-    >(),
+    queryStateByKey: new Map<string, { error?: unknown; isPending?: boolean }>(),
     checkpointDiff: { data: undefined as unknown, error: null as unknown, isPending: false },
     renderablePatch: null as unknown,
     baseRefChoices: [] as unknown[],
@@ -308,7 +305,9 @@ vi.mock("./ui/tooltip", () => ({
   TooltipPopup: ({ children }: { children?: ReactNode }) => (
     <div data-mock="tooltip-popup">{children}</div>
   ),
-  TooltipTrigger: (props: Record<string, unknown> & { render?: ReactNode; children?: ReactNode }) => {
+  TooltipTrigger: (
+    props: Record<string, unknown> & { render?: ReactNode; children?: ReactNode },
+  ) => {
     h.capture("tooltipTrigger", props);
     return <div data-mock="tooltip-trigger">{props.render ?? props.children}</div>;
   },
@@ -357,10 +356,7 @@ function render(mode?: "inline" | "sheet" | "sidebar" | "embedded"): string {
   h.effects.length = 0;
   h.stateIndex = 0;
   return renderToStaticMarkup(
-    <DiffPanel
-      mode={mode ?? "inline"}
-      composerDraftTarget={routeRef as never}
-    />,
+    <DiffPanel mode={mode ?? "inline"} composerDraftTarget={routeRef as never} />,
   );
 }
 
@@ -417,7 +413,10 @@ beforeEach(() => {
   ]);
   h.queryStateByKey = new Map();
   h.checkpointDiff = { data: undefined, error: null, isPending: false };
-  h.renderablePatch = { kind: "files", files: [fileDiff("src/a.ts", "file-a"), fileDiff("src/b.ts", "file-b")] };
+  h.renderablePatch = {
+    kind: "files",
+    files: [fileDiff("src/a.ts", "file-a"), fileDiff("src/b.ts", "file-b")],
+  };
   h.baseRefChoices = [];
   h.filteredBaseRefChoices = [];
   h.storeApi.reconcileTurnSelection.mockClear();
@@ -541,7 +540,12 @@ describe("DiffPanel: files patch", () => {
   it("skips scrolling when the selected file is not among the rendered files", () => {
     h.turnDiffSummaries = [summary(turnIdA, 2, "2026-01-02T00:00:00.000Z")];
     h.inferredCheckpointTurnCountByTurnId = { [turnIdA]: 2 };
-    h.diffSelection = { kind: "turn", turnId: turnIdA, filePath: "does/not/exist.ts", revealRequestId: 1 };
+    h.diffSelection = {
+      kind: "turn",
+      turnId: turnIdA,
+      filePath: "does/not/exist.ts",
+      revealRequestId: 1,
+    };
     h.checkpointDiff = { data: { diff: "CP" }, error: null, isPending: false };
     render();
     const codeView = capturedLast("annotatableCodeView");

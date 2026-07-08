@@ -26,7 +26,6 @@ import {
   requireThreadNotArchived,
   requireThreadNotDefault,
 } from "./commandInvariants.ts";
-import { projectEvent } from "./projector.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 

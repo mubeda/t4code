@@ -41,8 +41,9 @@ const h = vi.hoisted(() => {
     keyboardRemoveCalls: [] as string[],
     keyboardDismissCalls: 0,
     savePreferencesCalls: [] as unknown[],
-    loadPreferencesImpl: (() =>
-      Promise.resolve({ terminalFontSize: 14 })) as () => Promise<{ terminalFontSize: number }>,
+    loadPreferencesImpl: (() => Promise.resolve({ terminalFontSize: 14 })) as () => Promise<{
+      terminalFontSize: number;
+    }>,
     timers: [] as Array<() => void>,
     record(kind: string, props: unknown) {
       if (props && typeof props === "object") {
@@ -63,7 +64,7 @@ const h = vi.hoisted(() => {
     },
     runEffects(): Array<() => void> {
       const cleanups: Array<() => void> = [];
-      for (const effect of [...state.effects]) {
+      for (const effect of Array.from(state.effects)) {
         const cleanup = effect();
         if (typeof cleanup === "function") cleanups.push(cleanup);
       }
@@ -104,7 +105,9 @@ vi.mock("react", async (importOriginal) => {
 
 vi.mock("expo-symbols", () => ({
   SymbolView: (props: { readonly name?: { ios?: string } | string }) => (
-    <i data-symbol={typeof props.name === "object" ? (props.name?.ios ?? "") : String(props.name)} />
+    <i
+      data-symbol={typeof props.name === "object" ? (props.name?.ios ?? "") : String(props.name)}
+    />
   ),
 }));
 
@@ -176,7 +179,9 @@ vi.mock("../../components/ComposerToolbarTrigger", () => ({
     );
   },
   ComposerToolbarRow: (props: { readonly children?: ReactNode }) => <div>{props.children}</div>,
-  ComposerToolbarScroller: (props: { readonly children?: ReactNode }) => <div>{props.children}</div>,
+  ComposerToolbarScroller: (props: { readonly children?: ReactNode }) => (
+    <div>{props.children}</div>
+  ),
 }));
 
 vi.mock("../../components/EmptyState", () => ({
@@ -269,10 +274,7 @@ vi.mock("./terminalDebugLog", () => ({
 }));
 
 import { ThreadTerminalRouteScreen } from "./ThreadTerminalRouteScreen";
-import {
-  stagePendingTerminalLaunch,
-  takePendingTerminalLaunch,
-} from "./terminalLaunchContext";
+import { stagePendingTerminalLaunch, takePendingTerminalLaunch } from "./terminalLaunchContext";
 import { cacheTerminalFontSize, resetTerminalUiStateCaches } from "./terminalUiState";
 
 /** Hook results are read before any early return, so mocks must never be null. */
@@ -318,12 +320,14 @@ function makeTerminal(overrides: Record<string, unknown> = {}): unknown {
   };
 }
 
-function makeSelection(overrides: {
-  readonly environmentLabel?: string | null;
-  readonly workspaceRoot?: string | null;
-  readonly worktreePath?: string | null;
-  readonly title?: string | null;
-} = {}): unknown {
+function makeSelection(
+  overrides: {
+    readonly environmentLabel?: string | null;
+    readonly workspaceRoot?: string | null;
+    readonly worktreePath?: string | null;
+    readonly title?: string | null;
+  } = {},
+): unknown {
   return {
     selectedThread: {
       environmentId: ENV,
@@ -341,7 +345,9 @@ function makeSelection(overrides: {
   };
 }
 
-function makePresentation(overrides: { readonly phase?: string; readonly isReady?: boolean } = {}): unknown {
+function makePresentation(
+  overrides: { readonly phase?: string; readonly isReady?: boolean } = {},
+): unknown {
   return {
     presentation: {
       connection: { phase: overrides.phase ?? "connected", error: null, traceId: null },
@@ -352,18 +358,23 @@ function makePresentation(overrides: { readonly phase?: string; readonly isReady
 }
 
 /** Wire up the standard "connected, running terminal" happy-path scene. */
-function connectedScene(overrides: {
-  readonly selection?: Parameters<typeof makeSelection>[0];
-  readonly presentation?: Parameters<typeof makePresentation>[0];
-  readonly terminal?: Record<string, unknown>;
-  readonly knownSessions?: unknown[];
-  readonly keyboardVisible?: boolean;
-} = {}): void {
+function connectedScene(
+  overrides: {
+    readonly selection?: Parameters<typeof makeSelection>[0];
+    readonly presentation?: Parameters<typeof makePresentation>[0];
+    readonly terminal?: Record<string, unknown>;
+    readonly knownSessions?: unknown[];
+    readonly keyboardVisible?: boolean;
+  } = {},
+): void {
   h.selection = makeSelection(overrides.selection ?? {});
   h.presentation = makePresentation(overrides.presentation ?? {});
   h.terminal = makeTerminal(overrides.terminal ?? {});
   h.knownSessions = overrides.knownSessions ?? [];
-  h.keyboardState = { height: overrides.keyboardVisible ? 300 : 0, isVisible: !!overrides.keyboardVisible };
+  h.keyboardState = {
+    height: overrides.keyboardVisible ? 300 : 0,
+    isVisible: !!overrides.keyboardVisible,
+  };
 }
 
 function render(): string {
@@ -421,7 +432,11 @@ beforeEach(() => {
   vi.stubGlobal("clearTimeout", (() => undefined) as unknown as typeof clearTimeout);
 
   // Drain any launch staged by a previous test's render.
-  takePendingTerminalLaunch({ environmentId: ENV, threadId: THREAD, terminalId: DEFAULT_TERMINAL_ID });
+  takePendingTerminalLaunch({
+    environmentId: ENV,
+    threadId: THREAD,
+    terminalId: DEFAULT_TERMINAL_ID,
+  });
 });
 
 afterEach(() => {
@@ -556,7 +571,9 @@ describe("ThreadTerminalRouteScreen terminal input", () => {
     for (const char of ["a", "@", "[", "\\", "]", "^", "_", "?", "1"]) {
       onInput(char);
     }
-    const writes = commandsFor("write").map((value) => (value as { input: { data: string } }).input.data);
+    const writes = commandsFor("write").map(
+      (value) => (value as { input: { data: string } }).input.data,
+    );
     expect(writes[0]).toBe(""); // ctrl-a
     expect(writes[1]).toBe(" "); // ctrl-@
     expect(writes[2]).toBe(""); // ctrl-[
@@ -579,7 +596,10 @@ describe("ThreadTerminalRouteScreen resize", () => {
     connectedScene();
     render();
     const surface = h.find("TerminalSurface");
-    (surface["onResize"] as (size: { cols: number; rows: number }) => void)({ cols: 120, rows: 40 });
+    (surface["onResize"] as (size: { cols: number; rows: number }) => void)({
+      cols: 120,
+      rows: 40,
+    });
     h.flushTimers();
 
     const resize = commandsFor("resize")[0] as { input: { cols: number; rows: number } };

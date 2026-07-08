@@ -1,4 +1,6 @@
+/* oxlint-disable t3code/no-global-process-runtime */
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeOS from "node:os";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -88,7 +90,7 @@ it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
             ["#!/bin/sh", `printf "%s\\n" "${secretStderr}" >&2`, "exit 2", ""].join("\n"),
           );
           yield* fs.chmod(grokPath, 0o755);
-          if (process.platform === "win32") {
+          if (NodeOS.platform() === "win32") {
             yield* writeWin32GrokLauncher(
               dir,
               [`process.stderr.write("${secretStderr}\\n");`, "process.exit(2);", ""].join("\n"),
@@ -122,7 +124,7 @@ it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
             ["#!/bin/sh", 'printf "grok-cli 0.0.99\\n"', "exit 0", ""].join("\n"),
           );
           yield* fs.chmod(grokPath, 0o755);
-          if (process.platform === "win32") {
+          if (NodeOS.platform() === "win32") {
             yield* writeWin32GrokLauncher(
               dir,
               ['process.stdout.write("grok-cli 0.0.99\\n");', "process.exit(0);", ""].join("\n"),

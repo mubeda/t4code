@@ -249,7 +249,9 @@ describe("preload desktopBridge", () => {
       state.invoke.mockResolvedValueOnce({ ok: true });
       const result = await bridge().ensureSshEnvironment("host-a");
       expect(result).toEqual({ ok: true });
-      expect(lastInvoke(IpcChannels.ENSURE_SSH_ENVIRONMENT_CHANNEL)).toEqual([{ target: "host-a" }]);
+      expect(lastInvoke(IpcChannels.ENSURE_SSH_ENVIRONMENT_CHANNEL)).toEqual([
+        { target: "host-a" },
+      ]);
     });
 
     it("passes target and options when options are provided", async () => {
@@ -411,7 +413,9 @@ describe("preload desktopBridge", () => {
       expect(lastInvoke(IpcChannels.PREVIEW_CLEAR_CACHE_CHANNEL)).toEqual([]);
 
       preview.getPreviewConfig("env-1");
-      expect(lastInvoke(IpcChannels.PREVIEW_GET_CONFIG_CHANNEL)).toEqual([{ environmentId: "env-1" }]);
+      expect(lastInvoke(IpcChannels.PREVIEW_GET_CONFIG_CHANNEL)).toEqual([
+        { environmentId: "env-1" },
+      ]);
 
       preview.setAnnotationTheme({ colorScheme: "dark" });
       expect(lastInvoke(IpcChannels.PREVIEW_SET_ANNOTATION_THEME_CHANNEL)).toEqual([
@@ -424,7 +428,9 @@ describe("preload desktopBridge", () => {
       ]);
 
       preview.copyArtifactToClipboard("/tmp/a.png");
-      expect(lastInvoke(IpcChannels.PREVIEW_COPY_ARTIFACT_CHANNEL)).toEqual([{ path: "/tmp/a.png" }]);
+      expect(lastInvoke(IpcChannels.PREVIEW_COPY_ARTIFACT_CHANNEL)).toEqual([
+        { path: "/tmp/a.png" },
+      ]);
     });
 
     it("forwards recording commands and guards frame payloads", () => {
@@ -466,7 +472,9 @@ describe("preload desktopBridge", () => {
       const automation = bridge().preview.automation;
 
       automation.status("tab-1");
-      expect(lastInvoke(IpcChannels.PREVIEW_AUTOMATION_STATUS_CHANNEL)).toEqual([{ tabId: "tab-1" }]);
+      expect(lastInvoke(IpcChannels.PREVIEW_AUTOMATION_STATUS_CHANNEL)).toEqual([
+        { tabId: "tab-1" },
+      ]);
 
       automation.snapshot("tab-1");
       expect(lastInvoke(IpcChannels.PREVIEW_AUTOMATION_SNAPSHOT_CHANNEL)).toEqual([

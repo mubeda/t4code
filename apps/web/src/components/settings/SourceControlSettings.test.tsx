@@ -167,7 +167,9 @@ vi.mock("../ui/empty", () => ({
 }));
 
 vi.mock("../ui/skeleton", () => ({
-  Skeleton: (props: Record<string, unknown>) => <span data-skeleton className={props.className as string | undefined} />,
+  Skeleton: (props: Record<string, unknown>) => (
+    <span data-skeleton className={props.className as string | undefined} />
+  ),
 }));
 
 vi.mock("../ui/number-field", () => ({
@@ -244,7 +246,9 @@ function vcsItem(overrides: Partial<VcsDiscoveryItem> = {}): VcsDiscoveryItem {
   } as VcsDiscoveryItem;
 }
 
-function providerAuth(overrides: Partial<SourceControlProviderAuth> = {}): SourceControlProviderAuth {
+function providerAuth(
+  overrides: Partial<SourceControlProviderAuth> = {},
+): SourceControlProviderAuth {
   return {
     status: "authenticated",
     account: Option.some("octocat"),
@@ -270,7 +274,9 @@ function providerItem(
   } as SourceControlProviderDiscoveryItem;
 }
 
-function result(overrides: Partial<SourceControlDiscoveryResult> = {}): SourceControlDiscoveryResult {
+function result(
+  overrides: Partial<SourceControlDiscoveryResult> = {},
+): SourceControlDiscoveryResult {
   return {
     versionControlSystems: [],
     sourceControlProviders: [],
@@ -311,7 +317,10 @@ describe("panel-level states", () => {
     const markup = render();
     expect(markup).toContain("Nothing detected yet");
 
-    const scan = ui.find("Button", (p) => p["aria-label"] === undefined && p.children !== undefined);
+    const scan = ui.find(
+      "Button",
+      (p) => p["aria-label"] === undefined && p.children !== undefined,
+    );
     (scan.onClick as () => void)();
     expect(testState.discovery.refresh).toHaveBeenCalledTimes(1);
   });
@@ -382,9 +391,7 @@ describe("version control rows", () => {
   it("reports a VCS that is not available on the server", () => {
     testState.discovery = {
       data: result({
-        versionControlSystems: [
-          vcsItem({ status: "missing", installHint: "Install Git first." }),
-        ],
+        versionControlSystems: [vcsItem({ status: "missing", installHint: "Install Git first." })],
       }),
       error: null,
       isPending: false,

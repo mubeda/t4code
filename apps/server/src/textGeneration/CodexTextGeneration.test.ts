@@ -1,4 +1,6 @@
+/* oxlint-disable t3code/no-global-process-runtime */
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeOS from "node:os";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -248,7 +250,7 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexBinaryInput) {
     );
     yield* fs.chmod(codexPath, 0o755);
 
-    if (process.platform === "win32") {
+    if (NodeOS.platform() === "win32") {
       const codexMjsPath = path.join(binDir, "codex.mjs");
       const codexCmdPath = path.join(binDir, "codex.cmd");
       yield* fs.writeFileString(codexMjsPath, buildFakeCodexNodeScript(input));

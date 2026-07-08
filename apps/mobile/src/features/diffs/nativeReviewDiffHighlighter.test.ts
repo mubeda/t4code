@@ -43,7 +43,10 @@ function lineRow(
   return { kind: "line", id, fileId, content, change };
 }
 
-function diffFile(id: string, language: NativeReviewDiffFile["language"] = "typescript"): NativeReviewDiffFile {
+function diffFile(
+  id: string,
+  language: NativeReviewDiffFile["language"] = "typescript",
+): NativeReviewDiffFile {
   return { id, path: `${id}.ts`, language, additions: 0, deletions: 0 };
 }
 
@@ -393,10 +396,7 @@ describe("streamNativeReviewDiffTokens", () => {
     const onChunk = vi.fn();
 
     await mod.streamNativeReviewDiffTokens({
-      rows: [
-        { kind: "line", id: "f1:noContent", fileId: "f1" },
-        lineRow("f1:l0", "f1", "kept"),
-      ],
+      rows: [{ kind: "line", id: "f1:noContent", fileId: "f1" }, lineRow("f1:l0", "f1", "kept")],
       files: [diffFile("f1"), diffFile("f2")],
       scheme: "dark",
       engine: "javascript",
