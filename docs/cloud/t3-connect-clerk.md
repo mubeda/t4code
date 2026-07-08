@@ -1,6 +1,6 @@
 # T4 Connect Clerk Setup
 
-T4 Connect uses one Clerk application for web, desktop, and mobile authentication. The relay accepts
+T4 Connect uses one Clerk application for web and desktop authentication. The relay accepts
 Clerk JWTs only when they are generated from the `t3-relay` template with the shared
 `t3-code-relay` audience.
 
@@ -16,9 +16,9 @@ T3CODE_CLERK_CLI_OAUTH_CLIENT_ID=<public OAuth application client ID>
 T3CODE_RELAY_URL=https://relay.example.com
 ```
 
-The shared client loader projects these canonical values into framework-specific `VITE_*` and
-`EXPO_PUBLIC_*` aliases. Existing aliases remain accepted as overrides for compatibility, but new
-client configuration should use the canonical names.
+The shared client loader projects these canonical values into framework-specific `VITE_*` aliases.
+Existing aliases remain accepted as overrides for compatibility, but new client configuration should
+use the canonical names.
 
 Configuration precedence is:
 
@@ -28,12 +28,10 @@ Configuration precedence is:
 
 The Clerk publishable key, JWT template name, CLI OAuth client ID, and relay URL are public
 identifiers, not secrets.
-Web, desktop, mobile, and bundled server builds statically inject the values they consume during
+Web, desktop, and bundled server builds statically inject the values they consume during
 their build step. A built artifact does not need an environment file at runtime. CI release builds
 should set `T3CODE_CLERK_PUBLISHABLE_KEY`, `T3CODE_CLERK_JWT_TEMPLATE`,
-`T3CODE_CLERK_CLI_OAUTH_CLIENT_ID`, and `T3CODE_RELAY_URL` before building. EAS preview and
-production builds only need the Clerk publishable key, JWT template name, and relay URL in their EAS
-environment.
+`T3CODE_CLERK_CLI_OAUTH_CLIENT_ID`, and `T3CODE_RELAY_URL` before building.
 
 When any client-facing public value is absent, cloud UI is omitted. When the CLI public values are
 absent, the `t3 connect` CLI command group is omitted. The bundled server still accepts runtime
@@ -121,7 +119,7 @@ selects the concrete relay deployment, but changing that URL does not require a 
 
 The desktop app opens OAuth in the system browser and returns to the app with a custom URL scheme.
 In **Clerk Dashboard > Native applications**, enable the Native API and add these entries under the
-mobile SSO redirect allowlist:
+native SSO redirect allowlist:
 
 ```text
 t3code-dev://app/
@@ -201,9 +199,6 @@ codesign --verify --deep --strict "/Applications/T4Code (Alpha).app"
 codesign -d --entitlements :- "/Applications/T4Code (Alpha).app"
 ```
 
-The current mobile UI uses Clerk's native authentication view. If a future mobile browser OAuth
-flow uses a custom redirect URI, add that exact URI to the same allowlist.
-
 ## Enable Waitlist Access
 
 For a private beta where people should request access, use **Clerk Dashboard > Waitlist**:
@@ -214,11 +209,6 @@ For a private beta where people should request access, use **Clerk Dashboard > W
 Approved signed-in users manage T4 Connect under **Connections**. The web and desktop sidebars do
 not expose a dedicated account or waitlist control. Signed-out users reach Clerk's waitlist and
 sign-in flow contextually from the T4 Connect controls on the Connections page.
-
-On mobile, signed-out users open **Settings > T4 Account** to reach `/settings/waitlist` within the
-Settings form sheet. It submits enrollment through Clerk's `useWaitlist()` flow because the prebuilt
-`<Waitlist />` component is web-only in the Expo SDK. Approved users can use **Sign in** from that
-screen.
 
 ## Alternative: Known-User Allowlist
 

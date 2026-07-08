@@ -148,7 +148,6 @@ export class EnvironmentConnector extends Context.Service<
       readonly userId: string;
       readonly environmentId: string;
       readonly clientProofKeyThumbprint: string;
-      readonly deviceId?: string;
     }) => Effect.Effect<RelayEnvironmentConnectResponse, EnvironmentConnectorError>;
     readonly status: (input: {
       readonly userId: string;
@@ -554,8 +553,6 @@ const make = Effect.gen(function* () {
       yield* Effect.annotateCurrentSpan({
         "relay.environment_id": input.environmentId,
         "relay.operation": "connect",
-        "relay.connect.has_device_id": input.deviceId !== undefined,
-        ...(input.deviceId ? { "relay.mobile.device_id": input.deviceId } : {}),
       });
       if (input.clientProofKeyThumbprint.trim().length === 0) {
         return yield* new EnvironmentConnectNotAuthorized({
@@ -614,7 +611,6 @@ const make = Effect.gen(function* () {
         environmentId: link.environmentId,
         clientProofKeyThumbprint: input.clientProofKeyThumbprint,
         cnf: { jkt: input.clientProofKeyThumbprint },
-        ...(input.deviceId ? { deviceId: input.deviceId } : {}),
         nonce,
         scope: ["environment:connect"],
       } satisfies RelayCloudMintCredentialProofPayload;

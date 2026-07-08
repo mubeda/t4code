@@ -688,12 +688,12 @@ describe("providerMaintenanceRunner", () => {
       // that shell mode was used.
       assert.match(call.command, /npm\.cmd/i);
       assert.strictEqual(call.shell, true);
-      // Args are escaped for cmd.exe shell mode (each quoted) but still carry
-      // the original install command (`install -g @openai/codex@latest`) in order.
-      assert.strictEqual(call.args.length, 3);
-      assert.match(call.args[0] ?? "", /install/);
-      assert.match(call.args[1] ?? "", /-g/);
-      assert.match(call.args[2] ?? "", /@openai\/codex@latest/);
+      // The shell command string carries the original install command, while
+      // args are empty to avoid Node's shell+args deprecation warning.
+      assert.strictEqual(call.args.length, 0);
+      assert.match(call.command, /install/);
+      assert.match(call.command, /-g/);
+      assert.match(call.command, /@openai\/codex@latest/);
       assert.strictEqual(result.providers[0]?.updateState?.status, "succeeded");
     }).pipe(
       Effect.provide(

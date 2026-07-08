@@ -33,9 +33,6 @@ import RelayStack from "../alchemy.run.ts";
 
 const relayDeployOutputFields = [
   "url",
-  "mobileTracingUrl",
-  "mobileTracingDataset",
-  "mobileTracingToken",
   "clientTracingUrl",
   "clientTracingDataset",
   "clientTracingToken",
@@ -93,9 +90,6 @@ export interface RelayDeployOptions {
 
 export interface RelayPublicConfig {
   readonly relayUrl: string;
-  readonly mobileTracingUrl: string;
-  readonly mobileTracingDataset: string;
-  readonly mobileTracingToken: string;
   readonly clientTracingUrl: string;
   readonly clientTracingDataset: string;
   readonly clientTracingToken: string;
@@ -104,9 +98,6 @@ export interface RelayPublicConfig {
 const publicConfigEnvEntries = (config: RelayPublicConfig) =>
   ({
     T3CODE_RELAY_URL: config.relayUrl,
-    T3CODE_MOBILE_OTLP_TRACES_URL: config.mobileTracingUrl,
-    T3CODE_MOBILE_OTLP_TRACES_DATASET: config.mobileTracingDataset,
-    T3CODE_MOBILE_OTLP_TRACES_TOKEN: config.mobileTracingToken,
     T3CODE_RELAY_CLIENT_OTLP_TRACES_URL: config.clientTracingUrl,
     T3CODE_RELAY_CLIENT_OTLP_TRACES_DATASET: config.clientTracingDataset,
     T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN: config.clientTracingToken,
@@ -133,15 +124,11 @@ export function reconcileRootEnvPublicConfig(contents: string, config: RelayPubl
 export function reconcileRootEnvRelayUrl(contents: string, relayUrl: string): string {
   return reconcileRootEnvPublicConfig(contents, {
     relayUrl,
-    mobileTracingUrl: "",
-    mobileTracingDataset: "",
-    mobileTracingToken: "",
     clientTracingUrl: "",
     clientTracingDataset: "",
     clientTracingToken: "",
   })
     .split("\n")
-    .filter((line) => !line.startsWith("T3CODE_MOBILE_OTLP_TRACES_"))
     .filter((line) => !line.startsWith("T3CODE_RELAY_CLIENT_OTLP_TRACES_"))
     .join("\n");
 }
@@ -275,9 +262,6 @@ function relayPublicConfigValues(
   if (typeof output !== "object" || output === null) {
     return {
       url: undefined,
-      mobileTracingUrl: undefined,
-      mobileTracingDataset: undefined,
-      mobileTracingToken: undefined,
       clientTracingUrl: undefined,
       clientTracingDataset: undefined,
       clientTracingToken: undefined,
@@ -298,9 +282,6 @@ function relayPublicConfigValues(
   };
   return {
     url: text("url"),
-    mobileTracingUrl: text("mobileTracingUrl"),
-    mobileTracingDataset: text("mobileTracingDataset"),
-    mobileTracingToken: secret("mobileTracingToken"),
     clientTracingUrl: text("clientTracingUrl"),
     clientTracingDataset: text("clientTracingDataset"),
     clientTracingToken: secret("clientTracingToken"),
@@ -327,9 +308,6 @@ export function publicConfigFromOutput(output: unknown): RelayPublicConfig | nul
   }
   return {
     relayUrl: values.url,
-    mobileTracingUrl: values.mobileTracingUrl,
-    mobileTracingDataset: values.mobileTracingDataset,
-    mobileTracingToken: values.mobileTracingToken,
     clientTracingUrl: values.clientTracingUrl,
     clientTracingDataset: values.clientTracingDataset,
     clientTracingToken: values.clientTracingToken,

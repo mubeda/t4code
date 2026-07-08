@@ -4,7 +4,6 @@ import {
   EnvironmentOwnedDataCleanup,
   PlatformConnectionSource,
   PrimaryEnvironmentAuth,
-  RelayDeviceIdentity,
   SshEnvironmentGateway,
 } from "@t3tools/client-runtime/platform";
 import {
@@ -203,9 +202,6 @@ const capabilitiesLayer = Layer.effectContext(
         return token;
       }),
     });
-    const identity = RelayDeviceIdentity.of({
-      deviceId: Effect.succeed(Option.none()),
-    });
     const primaryAuth = PrimaryEnvironmentAuth.of({
       bearerToken: Effect.tryPromise({
         try: readDesktopPrimaryBearerToken,
@@ -276,7 +272,6 @@ const capabilitiesLayer = Layer.effectContext(
 
     return Context.make(CloudSession, cloudSession).pipe(
       Context.add(PrimaryEnvironmentAuth, primaryAuth),
-      Context.add(RelayDeviceIdentity, identity),
       Context.add(ClientPresentation, presentation),
       Context.add(SshEnvironmentGateway, ssh),
     );

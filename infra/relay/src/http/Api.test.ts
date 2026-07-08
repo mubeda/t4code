@@ -5,25 +5,21 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
 import * as Tracer from "effect/Tracer";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import { RelayEnvironmentAuth } from "@t3tools/contracts/relay";
 
 import {
   relayCors,
   relayDocsRedirectRoute,
-  relayEnvironmentAuthLayer,
   relayNotFoundRoute,
   traceRelayHttpRequestWith,
   verifyRelayClientBearerToken,
   withoutCapturedParentSpan,
 } from "./Api.ts";
 import * as RelayConfiguration from "../Config.ts";
-import * as EnvironmentCredentials from "../environments/EnvironmentCredentials.ts";
 
 vi.mock("@clerk/backend", () => ({
   createClerkClient: vi.fn(),
@@ -32,17 +28,9 @@ vi.mock("@clerk/backend", () => ({
 
 const relaySettings: RelayConfiguration.RelayConfiguration["Service"] = {
   relayIssuer: "https://relay.example.test",
-  apns: {
-    teamId: "apns-team",
-    keyId: "apns-key",
-    privateKey: Redacted.make("apns-private-key"),
-    bundleId: "com.example.t3",
-    environment: "sandbox",
-  },
   clerkSecretKey: Redacted.make("clerk-secret-key"),
   clerkPublishableKey: "pk_test_test",
   clerkJwtAudience: "t3-code-relay",
-  apnsDeliveryJobSigningSecret: Redacted.make("apns-delivery-secret"),
   cloudMintPrivateKey: Redacted.make("cloud-mint-private-key"),
   cloudMintPublicKey: "cloud-mint-public-key",
   managedEndpointBaseDomain: undefined,
@@ -105,52 +93,6 @@ describe("relay client authentication", () => {
   );
 });
 
-describe("relay environment authentication", () => {
-  it.effect("preserves credential lookup persistence failures as internal errors", () => {
-    const failure = new EnvironmentCredentials.EnvironmentCredentialAuthenticatePersistenceError({
-      stage: "lookup-credential",
-      cause: "database unavailable",
-    });
-    const credentials: EnvironmentCredentials.EnvironmentCredentials["Service"] = {
-      create: () => Effect.die("unused create"),
-      authenticate: () => Effect.fail(failure),
-      revokeForEnvironmentPublicKey: () => Effect.die("unused revoke"),
-    };
-
-    return Effect.gen(function* () {
-      const auth = yield* RelayEnvironmentAuth;
-      const error = yield* Effect.flip(
-        auth.environmentBearer(Effect.succeed(HttpServerResponse.empty()), {
-          credential: Redacted.make("environment-credential"),
-          endpoint: {} as never,
-          group: {} as never,
-        }),
-      );
-
-      expect(Predicate.isTagged(error, "RelayInternalError")).toBe(true);
-      if (Predicate.isTagged(error, "RelayInternalError")) {
-        expect(error.reason).toBe("persistence_failed");
-      }
-    }).pipe(
-      Effect.provideService(
-        HttpServerRequest.HttpServerRequest,
-        HttpServerRequest.fromWeb(new Request("https://relay.test/v1/server/link")),
-      ),
-      Effect.provideService(HttpServerRequest.ParsedSearchParams, {}),
-      Effect.provideService(HttpRouter.RouteContext, {
-        params: {},
-        route: {} as never,
-      }),
-      Effect.provide(
-        relayEnvironmentAuthLayer.pipe(
-          Layer.provide(Layer.succeed(EnvironmentCredentials.EnvironmentCredentials, credentials)),
-        ),
-      ),
-      Effect.scoped,
-    );
-  });
-});
-
 describe("relay request tracing", () => {
   it.effect(
     "does not parent endpoint spans to an ambient parent captured while building handlers",
@@ -180,7 +122,7 @@ describe("relay request tracing", () => {
           ),
         ).pipe(Effect.provideService(Tracer.ParentSpan, ambientParent));
         const request = HttpServerRequest.fromWeb(
-          new Request("https://relay.test/v1/mobile/devices?client=mobile", {
+          new Request("https://relay.test/v1/environments?client=web", {
             method: "POST",
             headers: {
               authorization: "Bearer secret",
@@ -195,7 +137,7 @@ describe("relay request tracing", () => {
 
         expect(spans.map((span) => span.name)).toEqual(["http.server POST", "relay.test.endpoint"]);
         expect(spans[0]?.kind).toBe("server");
-        expect(spans[0]?.attributes.get("url.path")).toBe("/v1/mobile/devices");
+        expect(spans[0]?.attributes.get("url.path")).toBe("/v1/environments");
         expect(spans[0]?.attributes.get("http.response.status_code")).toBe(204);
         expect(spans[0]?.attributes.get("http.request.header.authorization")).toBe("<redacted>");
         expect(spans[0]?.attributes.get("http.request.header.dpop")).toBe("<redacted>");

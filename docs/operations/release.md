@@ -61,10 +61,6 @@ Required `production` environment variables:
 - `CLERK_JWT_AUDIENCE`
 - `CLERK_JWT_TEMPLATE`
 - `CLERK_CLI_OAUTH_CLIENT_ID`
-- `APNS_ENVIRONMENT`
-- `APNS_TEAM_ID`
-- `APNS_KEY_ID`
-- `APNS_BUNDLE_ID`
 
 Optional `production` environment variables:
 
@@ -73,7 +69,6 @@ Optional `production` environment variables:
 Required `production` environment secrets:
 
 - `CLERK_SECRET_KEY`
-- `APNS_PRIVATE_KEY`
 
 The account-scoped repository credentials are consumed by Alchemy while provisioning relay stages; they
 are not bound into the relay Worker. The production deployment uses an Axiom personal access token,
