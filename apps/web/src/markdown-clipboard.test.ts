@@ -93,8 +93,8 @@ class FakeElement {
   }
 
   get classList(): { contains: (name: string) => boolean } {
-    const classes = this.className.split(/\s+/).filter(Boolean);
-    return { contains: (name: string) => classes.includes(name) };
+    const classes = new Set(this.className.split(/\s+/).filter(Boolean));
+    return { contains: (name: string) => classes.has(name) };
   }
 
   getAttribute(name: string): string | null {
@@ -109,7 +109,7 @@ class FakeElement {
 
   appendChild(child: FakeNode | FakeFragment): FakeNode | FakeFragment {
     if (child instanceof FakeFragment) {
-      for (const grandchild of [...child.childNodes]) {
+      for (const grandchild of Array.from(child.childNodes)) {
         this.appendChild(grandchild);
       }
       return child;
@@ -188,7 +188,14 @@ class FakeElement {
   }
 
   closest(selector: string): FakeElement | null {
-    let current: FakeElement | null = this;
+    if (selector === "[data-language]" && this.hasAttribute("data-language")) return this;
+    if (
+      selector === ".chat-markdown-file-link" &&
+      this.classList.contains("chat-markdown-file-link")
+    ) {
+      return this;
+    }
+    let current: FakeElement | null = this.parentElement;
     while (current) {
       if (selector === "[data-language]" && current.hasAttribute("data-language")) return current;
       if (
@@ -384,7 +391,11 @@ describe("serializeRenderedMarkdownFragment: inline code and code blocks", () =>
   });
 
   it("serializes a fenced code block and strips the trailing newline", () => {
-    const pre = el("pre", { "data-language": "ts" }, el("code", { class: "language-ts" }, "const a = 1\n"));
+    const pre = el(
+      "pre",
+      { "data-language": "ts" },
+      el("code", { class: "language-ts" }, "const a = 1\n"),
+    );
     expect(serialize(pre)).toBe("```ts\nconst a = 1\n```");
   });
 
@@ -406,7 +417,9 @@ describe("serializeRenderedMarkdownFragment: inline code and code blocks", () =>
 
 describe("serializeRenderedMarkdownFragment: links and images", () => {
   it("renders an http link", () => {
-    expect(serialize(el("a", { href: "https://ex.com" }, "Example"))).toBe("[Example](https://ex.com)");
+    expect(serialize(el("a", { href: "https://ex.com" }, "Example"))).toBe(
+      "[Example](https://ex.com)",
+    );
   });
 
   it("returns the raw url when label equals href", () => {
@@ -646,7 +659,9 @@ describe("chatMarkdownClipboardPayload", () => {
     const range = new FakeRange(false, [
       el("p", {}, "text ", el("button", {}, "toolbar"), fileLink, selfClassedKept),
     ]);
-    const payload = chatMarkdownClipboardPayload(new FakeSelection([range]) as unknown as Selection);
+    const payload = chatMarkdownClipboardPayload(
+      new FakeSelection([range]) as unknown as Selection,
+    );
     expect(payload).not.toBeNull();
     const html = payload!.html;
     expect(html).not.toContain("<svg");

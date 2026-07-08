@@ -1,5 +1,7 @@
+/* oxlint-disable t3code/no-global-process-runtime */
 import { sha256 } from "@noble/hashes/sha2";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeOS from "node:os";
 import { describe, expect, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
@@ -23,7 +25,7 @@ import {
 // platform must match the host: POSIX exec-bit semantics (chmod 0o755, mode & 0o111)
 // cannot be represented on a Windows filesystem. On CI/Linux this resolves to
 // "linux" exactly as before; on Windows it exercises the win32 branch instead.
-const hostPlatform: NodeJS.Platform = process.platform;
+const hostPlatform: NodeJS.Platform = NodeOS.platform();
 const cloudflaredFileName = hostPlatform === "win32" ? "cloudflared.exe" : "cloudflared";
 
 const hostRuntimeLayer = (env: Record<string, string> = {}) =>

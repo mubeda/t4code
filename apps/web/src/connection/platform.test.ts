@@ -202,10 +202,7 @@ function makeBridge(calls: string[], options: BridgeOptions = {}): DesktopBridge
 }
 
 function stubBrowser(options: { desktopBridge?: DesktopBridge; platform?: string } = {}): void {
-  vi.stubGlobal(
-    "window",
-    options.desktopBridge ? { desktopBridge: options.desktopBridge } : {},
-  );
+  vi.stubGlobal("window", options.desktopBridge ? { desktopBridge: options.desktopBridge } : {});
   vi.stubGlobal("navigator", {
     platform: options.platform ?? "Win32",
     onLine: true,
@@ -253,10 +250,10 @@ function makeDomStubs(options: { desktopBridge?: DesktopBridge } = {}): DomStubs
     windowListeners: (type) => windowListeners.get(type) ?? [],
     documentListeners: (type) => documentListeners.get(type) ?? [],
     fireWindow: (type) => {
-      for (const handler of [...(windowListeners.get(type) ?? [])]) handler();
+      for (const handler of Array.from(windowListeners.get(type) ?? [])) handler();
     },
     fireDocument: (type) => {
-      for (const handler of [...(documentListeners.get(type) ?? [])]) handler();
+      for (const handler of Array.from(documentListeners.get(type) ?? [])) handler();
     },
   };
 }

@@ -291,7 +291,7 @@ describe("ThreadFilesTreeScreen", () => {
 
     const treeProps = h.fileTreeProps[0];
     expect(treeProps?.entries).toEqual([{ name: "a.ts", path: "a.ts" }]);
-    (treeProps?.onSelectFile as (path: string) => void)("src/a.ts");
+    (treeProps!.onSelectFile as (path: string) => void)("src/a.ts");
     const pushed = h.routerPush[0] as { pathname: string; params: Record<string, unknown> };
     expect(pushed.pathname).toBe("/threads/[environmentId]/[threadId]/files/[...path]");
     expect(pushed.params).toMatchObject({
@@ -320,7 +320,7 @@ describe("ThreadFilesTreeScreen", () => {
     const refreshButton = h.toolbarButtons.find(
       (button) => button.accessibilityLabel === "Refresh files",
     );
-    (refreshButton?.onPress as () => void)();
+    (refreshButton!.onPress as () => void)();
     expect(refreshed).toBe(1);
 
     const options = h.screenOptions.find((entry) => entry.headerSearchBarOptions);
@@ -406,7 +406,7 @@ describe("ThreadFileScreen", () => {
     expect(markup).not.toContain(">Preview<");
 
     const refreshButton = h.toolbarButtons[0];
-    (refreshButton?.onPress as () => void)();
+    (refreshButton!.onPress as () => void)();
     expect(refreshed).toBe(1);
   });
 
@@ -446,9 +446,9 @@ describe("ThreadFileScreen", () => {
     expect(markup).toContain(">Preview<");
     expect(markup).toContain(">Source<");
     // markdown is not a browser file, so no safari button is shown
-    expect(h.pressables.some((entry) => entry.accessibilityLabel === "Open preview in Safari")).toBe(
-      false,
-    );
+    expect(
+      h.pressables.some((entry) => entry.accessibilityLabel === "Open preview in Safari"),
+    ).toBe(false);
     // default mode is source for markdown
     expect(markup).toContain('data-source-surface="README.md"');
 
@@ -458,7 +458,7 @@ describe("ThreadFileScreen", () => {
         entry.accessibilityRole === "button" &&
         (entry.accessibilityState as { selected?: boolean } | undefined)?.selected !== undefined,
     );
-    (modeButton?.onPress as () => void)();
+    (modeButton!.onPress as () => void)();
   });
 
   it("renders a browser file preview with a working safari button", () => {
@@ -478,7 +478,7 @@ describe("ThreadFileScreen", () => {
 
     // refresh on a browser preview bumps the preview revision instead of refetching
     const refreshButton = h.toolbarButtons[0];
-    (refreshButton?.onPress as () => void)();
+    (refreshButton!.onPress as () => void)();
     expect(h.readFileArgs).toEqual([]);
   });
 
@@ -529,11 +529,17 @@ describe("ThreadFileScreen", () => {
     render(<ThreadFileScreen />);
     const breadcrumbScroll = h.scrollViews.find((entry) => typeof entry.onScroll === "function");
     expect(breadcrumbScroll).toBeDefined();
-    (breadcrumbScroll?.onContentSizeChange as (width: number) => void)(400);
-    (breadcrumbScroll?.onLayout as (event: { nativeEvent: { layout: { width: number } } }) => void)({
-      nativeEvent: { layout: { width: 100 } },
-    });
-    (breadcrumbScroll?.onScroll as (event: { nativeEvent: { contentOffset: { x: number } } }) => void)({
+    (breadcrumbScroll!.onContentSizeChange as (width: number) => void)(400);
+    (breadcrumbScroll!.onLayout as (event: { nativeEvent: { layout: { width: number } } }) => void)(
+      {
+        nativeEvent: { layout: { width: 100 } },
+      },
+    );
+    (
+      breadcrumbScroll!.onScroll as (event: {
+        nativeEvent: { contentOffset: { x: number } };
+      }) => void
+    )({
       nativeEvent: { contentOffset: { x: 50 } },
     });
   });

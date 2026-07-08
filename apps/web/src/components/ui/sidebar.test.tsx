@@ -112,9 +112,7 @@ describe("simple sidebar slots render their data-slot markers", () => {
     expect(renderToStaticMarkup(<SidebarFooter>foot</SidebarFooter>)).toContain(
       'data-slot="sidebar-footer"',
     );
-    expect(renderToStaticMarkup(<SidebarSeparator />)).toContain(
-      'data-slot="sidebar-separator"',
-    );
+    expect(renderToStaticMarkup(<SidebarSeparator />)).toContain('data-slot="sidebar-separator"');
   });
 
   it("renders the scrollable content region", () => {
@@ -130,15 +128,15 @@ describe("simple sidebar slots render their data-slot markers", () => {
     expect(renderToStaticMarkup(<SidebarGroup>g</SidebarGroup>)).toContain(
       'data-slot="sidebar-group"',
     );
-    expect(
-      renderToStaticMarkup(<SidebarGroupLabel>Projects</SidebarGroupLabel>),
-    ).toContain('data-slot="sidebar-group-label"');
+    expect(renderToStaticMarkup(<SidebarGroupLabel>Projects</SidebarGroupLabel>)).toContain(
+      'data-slot="sidebar-group-label"',
+    );
     expect(
       renderToStaticMarkup(<SidebarGroupAction aria-label="Add">+</SidebarGroupAction>),
     ).toContain('data-slot="sidebar-group-action"');
-    expect(
-      renderToStaticMarkup(<SidebarGroupContent>content</SidebarGroupContent>),
-    ).toContain('data-slot="sidebar-group-content"');
+    expect(renderToStaticMarkup(<SidebarGroupContent>content</SidebarGroupContent>)).toContain(
+      'data-slot="sidebar-group-content"',
+    );
   });
 
   it("renders a group label through a custom render element", () => {

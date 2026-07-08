@@ -152,7 +152,11 @@ describe("buildNativeReviewDiffData: language detection", () => {
       { id: "f22", path: "assets/logo", hint: null, expected: "diff" },
     ];
     const data = buildNativeReviewDiffData(
-      filesDiff(specs.map((spec) => renderableFile({ id: spec.id, path: spec.path, languageHint: spec.hint }))),
+      filesDiff(
+        specs.map((spec) =>
+          renderableFile({ id: spec.id, path: spec.path, languageHint: spec.hint }),
+        ),
+      ),
     );
 
     for (const spec of specs) {
@@ -284,7 +288,7 @@ describe("buildNativeReviewDiffData: word diff ranges", () => {
     const addRow = data.rows.find((row) => row.kind === "line" && row.change === "add");
     expect(deleteRow?.wordDiffRanges).toBeDefined();
     expect(addRow?.wordDiffRanges).toBeDefined();
-    expect((deleteRow?.wordDiffRanges?.length ?? 0)).toBeGreaterThan(0);
+    expect(deleteRow?.wordDiffRanges?.length ?? 0).toBeGreaterThan(0);
   });
 
   it("skips word diff ranges when the whole line changed", () => {
@@ -429,10 +433,7 @@ describe("buildNativeReviewDiffData: inline comments", () => {
           rows: [lineRow({ id: "l0", change: "add", content: "one" })],
         }),
       ]),
-      comments: [
-        comment({ id: "first", endIndex: 0 }),
-        comment({ id: "second", endIndex: 0 }),
-      ],
+      comments: [comment({ id: "first", endIndex: 0 }), comment({ id: "second", endIndex: 0 })],
     });
     const commentIds = data.rows.filter((row) => row.kind === "comment").map((row) => row.id);
     expect(commentIds).toEqual(["first", "second"]);

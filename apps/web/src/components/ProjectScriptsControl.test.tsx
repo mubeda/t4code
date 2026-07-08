@@ -15,10 +15,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import * as React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import type {
-  NewProjectScriptInput,
-  ProjectScriptActionResult,
-} from "./ProjectScriptsControl";
+import type { NewProjectScriptInput, ProjectScriptActionResult } from "./ProjectScriptsControl";
 
 const h = vi.hoisted(() => {
   const state = {
@@ -393,10 +390,7 @@ describe("rendering", () => {
 
   it("prefers the explicitly preferred script for the primary slot", () => {
     renderControl(baseProps({ preferredScriptId: "test" }));
-    const runButton = mustFind(
-      (props) => props["aria-label"] === "Run Test",
-      "run test button",
-    );
+    const runButton = mustFind((props) => props["aria-label"] === "Run Test", "run test button");
     expect(runButton).toBeDefined();
   });
 

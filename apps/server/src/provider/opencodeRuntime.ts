@@ -1,3 +1,4 @@
+// @effect-diagnostics globalTimersInEffect:off - OpenCode startup/shutdown guards real child-process I/O and must not use TestClock.
 import * as NodeURL from "node:url";
 
 import type { ChatAttachment, ProviderApprovalDecision, RuntimeMode } from "@t3tools/contracts";
@@ -19,7 +20,6 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as P from "effect/Predicate";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
@@ -39,6 +39,26 @@ const OPENCODE_EMPTY_CONFIG_CONTENT = "{}";
 const OPENCODE_SERVER_READY_PREFIX = "opencode server listening";
 const DEFAULT_OPENCODE_SERVER_TIMEOUT_MS = 5_000;
 const DEFAULT_HOSTNAME = "127.0.0.1";
+
+const realSleep = (durationMs: number): Effect.Effect<void> =>
+  Effect.callback<void>((resume) => {
+    // @effect-diagnostics-next-line globalTimersInEffect:off - This waits on real child-process I/O; Effect.sleep would use TestClock and hang process tests.
+    const timeout = setTimeout(() => resume(Effect.void), durationMs);
+    return Effect.sync(() => clearTimeout(timeout));
+  });
+
+const realStartupTimeout = (timeoutMs: number): Effect.Effect<never, OpenCodeRuntimeError> =>
+  realSleep(timeoutMs).pipe(
+    Effect.andThen(
+      Effect.fail(
+        new OpenCodeRuntimeError({
+          operation: "startOpenCodeServerProcess",
+          detail: `Timed out waiting for OpenCode server start after ${timeoutMs}ms.`,
+        }),
+      ),
+    ),
+  );
+
 export interface OpenCodeServerProcess {
   readonly url: string;
   readonly exitCode: Effect.Effect<number, never>;
@@ -368,7 +388,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
 
       const killOpenCodeProcessGroup = (signal: NodeJS.Signals) =>
         hostPlatform === "win32"
-          ? child.kill({ killSignal: signal, forceKillAfter: "1 second" }).pipe(Effect.asVoid)
+          ? child.kill({ killSignal: signal }).pipe(Effect.asVoid)
           : Effect.sync(() => {
               try {
                 process.kill(-Number(child.pid), signal);
@@ -379,7 +399,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
               }
             });
       const terminateChild = killOpenCodeProcessGroup("SIGTERM").pipe(
-        Effect.andThen(Effect.sleep("1 second")),
+        Effect.andThen(realSleep(1_000)),
         Effect.andThen(killOpenCodeProcessGroup("SIGKILL")),
         Effect.ignore,
       );
@@ -439,7 +459,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       );
 
       const readyExit = yield* Effect.exit(
-        Deferred.await(readyDeferred).pipe(Effect.timeoutOption(timeoutMs)),
+        Effect.raceFirst(Deferred.await(readyDeferred), realStartupTimeout(timeoutMs)),
       );
 
       // Startup-time fibers are no longer needed once ready has resolved (either
@@ -458,17 +478,8 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         );
       }
 
-      const readyOption = readyExit.value;
-      if (Option.isNone(readyOption)) {
-        yield* Fiber.interrupt(exitFiber).pipe(Effect.ignore);
-        return yield* new OpenCodeRuntimeError({
-          operation: "startOpenCodeServerProcess",
-          detail: `Timed out waiting for OpenCode server start after ${timeoutMs}ms.`,
-        });
-      }
-
       return {
-        url: readyOption.value,
+        url: readyExit.value,
         exitCode: child.exitCode.pipe(
           Effect.map(Number),
           Effect.orElseSucceed(() => 0),

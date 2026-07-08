@@ -38,6 +38,7 @@ const emptyCatalog = {
   remoteDpopTokens: [],
 } as const;
 const decodeCatalog = Schema.decodeUnknownSync(Schema.fromJsonString(ConnectionCatalogDocument));
+const encodeCatalog = Schema.encodeSync(Schema.fromJsonString(ConnectionCatalogDocument));
 
 // ── In-memory IndexedDB fake ─────────────────────────────────────────
 // The production storage code attaches listeners *then* triggers the op, so
@@ -76,18 +77,16 @@ class FakeTransaction {
     for (const handler of this.listeners.get(type) ?? []) handler();
   }
   objectStore(_name: string) {
-    const store = this.store;
-    const tx = this;
     return {
       get: (key: IDBValidKey) => {
         const request = new FakeRequest();
         queueMicrotask(() => {
-          if (tx.fault === "get") {
+          if (this.fault === "get") {
             request.error = new Error("boom-get");
             request.fire("error");
             return;
           }
-          request.result = store.has(key) ? store.get(key) : undefined;
+          request.result = this.store.has(key) ? this.store.get(key) : undefined;
           request.fire("success");
         });
         return request;
@@ -95,36 +94,36 @@ class FakeTransaction {
       put: (value: unknown, key: IDBValidKey) => {
         const request = new FakeRequest();
         queueMicrotask(() => {
-          if (tx.fault === "put") {
-            tx.error = new Error("boom-put");
-            tx.fire("error");
+          if (this.fault === "put") {
+            this.error = new Error("boom-put");
+            this.fire("error");
             return;
           }
-          store.set(key, value);
+          this.store.set(key, value);
           request.result = key;
           request.fire("success");
-          tx.fire("complete");
+          this.fire("complete");
         });
         return request;
       },
       delete: (key: IDBValidKey) => {
         const request = new FakeRequest();
         queueMicrotask(() => {
-          store.delete(key);
+          this.store.delete(key);
           request.fire("success");
-          tx.fire("complete");
+          this.fire("complete");
         });
         return request;
       },
       openCursor: (range: { includes: (key: IDBValidKey) => boolean }) => {
         const request = new FakeRequest();
         queueMicrotask(() => {
-          if (tx.fault === "cursor") {
+          if (this.fault === "cursor") {
             request.error = new Error("boom-cursor");
             request.fire("error");
             return;
           }
-          const keys = [...store.keys()]
+          const keys = [...this.store.keys()]
             .filter((key) => range.includes(key))
             .sort() as IDBValidKey[];
           let index = 0;
@@ -132,13 +131,13 @@ class FakeTransaction {
             if (index >= keys.length) {
               request.result = null;
               request.fire("success");
-              tx.fire("complete");
+              this.fire("complete");
               return;
             }
             const key = keys[index++]!;
             request.result = {
               delete: () => {
-                store.delete(key);
+                this.store.delete(key);
               },
               continue: () => {
                 queueMicrotask(step);
@@ -183,7 +182,9 @@ function makeFakeDatabase(fault: FaultMode = "none"): FakeDatabaseHandle {
 
 type OpenMode = "success" | "error" | "undefined";
 
-function installFakeIndexedDb(options: { open?: OpenMode; fault?: FaultMode } = {}): FakeDatabaseHandle {
+function installFakeIndexedDb(
+  options: { open?: OpenMode; fault?: FaultMode } = {},
+): FakeDatabaseHandle {
   const handle = makeFakeDatabase(options.fault ?? "none");
   const openMode = options.open ?? "success";
   if (openMode === "undefined") {
@@ -208,8 +209,7 @@ function installFakeIndexedDb(options: { open?: OpenMode; fault?: FaultMode } = 
   }
   vi.stubGlobal("IDBKeyRange", {
     bound: (lower: string, upper: string) => ({
-      includes: (key: IDBValidKey) =>
-        typeof key === "string" && key >= lower && key <= upper,
+      includes: (key: IDBValidKey) => typeof key === "string" && key >= lower && key <= upper,
     }),
   });
   vi.stubGlobal("window", {});
@@ -378,9 +378,7 @@ describe("makeCatalogStore", () => {
   );
 
   it.effect("decodes and caches a well-formed stored catalog", () => {
-    const encoded = Schema.encodeSync(Schema.fromJsonString(ConnectionCatalogDocument))(
-      emptyCatalog,
-    );
+    const encoded = encodeCatalog(emptyCatalog);
     return Effect.gen(function* () {
       let reads = 0;
       const store = yield* makeCatalogStore({

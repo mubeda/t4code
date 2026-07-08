@@ -80,7 +80,7 @@ vi.mock("expo-file-system", () => {
     delete(): void {
       fs.dirs.delete(this.path);
       const prefix = `${this.path}/`;
-      for (const key of [...fs.files.keys()]) {
+      for (const key of Array.from(fs.files.keys())) {
         if (key.startsWith(prefix)) {
           fs.files.delete(key);
         }
@@ -127,6 +127,8 @@ import {
 
 // ── Fixtures ──────────────────────────────────────────────────────────
 const ENV = EnvironmentId.make("environment-1");
+const decodeOrchestrationShellSnapshot = Schema.decodeUnknownSync(OrchestrationShellSnapshot);
+const decodeOrchestrationThread = Schema.decodeUnknownSync(OrchestrationThread);
 
 function relayRegistration(environmentId: EnvironmentId = ENV, label = "Relay env") {
   return new RelayConnectionRegistration({
@@ -173,17 +175,15 @@ function dpopToken(environmentId: EnvironmentId = ENV) {
   });
 }
 
-const shellSnapshot: OrchestrationShellSnapshot = Schema.decodeUnknownSync(OrchestrationShellSnapshot)(
-  {
-    snapshotSequence: 0,
-    projects: [],
-    threads: [],
-    updatedAt: "2026-06-01T00:00:00.000Z",
-  },
-);
+const shellSnapshot: OrchestrationShellSnapshot = decodeOrchestrationShellSnapshot({
+  snapshotSequence: 0,
+  projects: [],
+  threads: [],
+  updatedAt: "2026-06-01T00:00:00.000Z",
+});
 
 function makeThread(id = "thread-1"): OrchestrationThread {
-  return Schema.decodeUnknownSync(OrchestrationThread)({
+  return decodeOrchestrationThread({
     id,
     projectId: ProjectId.make("project-1"),
     title: "Thread title",
@@ -304,7 +304,10 @@ describe("connectionStorageLayer profiles, credentials, and tokens", () => {
 
       expect(Option.isNone(yield* credentialStore.get("connection-1"))).toBe(true);
 
-      yield* credentialStore.put("connection-1", new BearerConnectionCredential({ token: "secret" }));
+      yield* credentialStore.put(
+        "connection-1",
+        new BearerConnectionCredential({ token: "secret" }),
+      );
       const stored = yield* credentialStore.get("connection-1");
       expect(Option.isSome(stored)).toBe(true);
       expect(Option.getOrThrow(stored).token).toBe("secret");

@@ -1,16 +1,16 @@
 // @effect-diagnostics nodeBuiltinImport:off - Codex usage needs a short-lived Codex CLI app-server child process.
 // @effect-diagnostics preferSchemaOverJson:off - Codex app-server uses newline-delimited JSON-RPC.
 // @effect-diagnostics globalTimers:off - The child-process line reader owns a Node timeout around each RPC read.
-import { spawn } from "node:child_process";
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import type { ChildProcessWithoutNullStreams } from "node:child_process";
 
 import type { ServerProviderUsageSnapshot, ServerProviderUsageWindow } from "@t3tools/contracts";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 const CODEX_RPC_TIMEOUT_MS = 10_000;
 
@@ -229,19 +229,16 @@ function codexAuthExists(): boolean {
   return NodeFS.existsSync(NodePath.join(resolveCodexHomePath(), "auth.json"));
 }
 
-function startNodeCodexAppServer(): Effect.Effect<
-  CodexAppServerTransport,
-  CodexUsageDependencyError
-> {
+function startNodeCodexAppServer(
+  platform: NodeJS.Platform,
+): Effect.Effect<CodexAppServerTransport, CodexUsageDependencyError> {
   return Effect.try({
     try: () => {
       const codexCommand = process.env.CODEX_BIN ?? "codex";
       const codexArgs = ["-s", "read-only", "-a", "untrusted", "app-server"];
-      const command =
-        process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : codexCommand;
-      const args =
-        process.platform === "win32" ? ["/d", "/c", codexCommand, ...codexArgs] : codexArgs;
-      const child = spawn(command, args, {
+      const command = platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : codexCommand;
+      const args = platform === "win32" ? ["/d", "/c", codexCommand, ...codexArgs] : codexArgs;
+      const child = NodeChildProcess.spawn(command, args, {
         cwd: process.cwd(),
         env: process.env,
         stdio: ["pipe", "pipe", "pipe"],
@@ -257,7 +254,9 @@ function startNodeCodexAppServer(): Effect.Effect<
   });
 }
 
-function makeNodeTransport(child: ChildProcessWithoutNullStreams): CodexAppServerTransport {
+function makeNodeTransport(
+  child: NodeChildProcess.ChildProcessWithoutNullStreams,
+): CodexAppServerTransport {
   let buffer = "";
   let stderr = "";
   const lines: string[] = [];
@@ -355,10 +354,13 @@ function makeNodeTransport(child: ChildProcessWithoutNullStreams): CodexAppServe
 }
 
 function fetchCodexUsageFromEnvironment(now: DateTime.Utc) {
-  return fetchCodexUsageSnapshotWithDependencies({
-    now,
-    authExists: Effect.sync(codexAuthExists),
-    startAppServer: startNodeCodexAppServer,
+  return Effect.gen(function* () {
+    const platform = yield* HostProcessPlatform;
+    return yield* fetchCodexUsageSnapshotWithDependencies({
+      now,
+      authExists: Effect.sync(codexAuthExists),
+      startAppServer: () => startNodeCodexAppServer(platform),
+    });
   });
 }
 

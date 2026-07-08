@@ -34,7 +34,11 @@ interface DraftShape {
   modelSelection?: ModelSelection;
   runtimeMode?: string;
   interactionMode?: string;
-  workspaceSelection?: { mode: "local" | "worktree"; branch: string | null; worktreePath: string | null };
+  workspaceSelection?: {
+    mode: "local" | "worktree";
+    branch: string | null;
+    worktreePath: string | null;
+  };
 }
 
 const h = vi.hoisted(() => {
@@ -126,11 +130,7 @@ vi.mock("../../state/use-remote-environment-registry", () => ({
   },
 }));
 
-import {
-  NewTaskFlowProvider,
-  useNewTaskFlow,
-  branchBadgeLabel,
-} from "./new-task-flow-provider";
+import { NewTaskFlowProvider, useNewTaskFlow, branchBadgeLabel } from "./new-task-flow-provider";
 
 const renderToStaticMarkup = renderToStaticMarkupUntyped as (element: ReactElement) => string;
 
@@ -212,7 +212,7 @@ function render(): FlowValue {
 
 function runEffects(): Array<() => void> {
   const cleanups: Array<() => void> = [];
-  for (const effect of [...h.effects]) {
+  for (const effect of Array.from(h.effects)) {
     const cleanup = effect();
     if (typeof cleanup === "function") {
       cleanups.push(cleanup);
@@ -227,7 +227,14 @@ beforeEach(() => {
   h.savedConnectionsById = {};
   h.serverConfig = null;
   h.draft = { text: "", attachments: [] };
-  h.branchView = { data: null, error: null, isPending: false, refresh: () => { h.refreshCalls += 1; } };
+  h.branchView = {
+    data: null,
+    error: null,
+    isPending: false,
+    refresh: () => {
+      h.refreshCalls += 1;
+    },
+  };
   h.settingsCalls.length = 0;
   h.textCalls.length = 0;
   h.replaceCalls.length = 0;
@@ -248,9 +255,9 @@ describe("branchBadgeLabel", () => {
   const proj = project({ workspaceRoot: "/repo" });
 
   it("labels the current branch", () => {
-    expect(branchBadgeLabel({ branch: branch({ name: "main", current: true }), project: proj })).toBe(
-      "current",
-    );
+    expect(
+      branchBadgeLabel({ branch: branch({ name: "main", current: true }), project: proj }),
+    ).toBe("current");
   });
 
   it("labels a worktree branch when its path differs from the workspace root", () => {
@@ -338,9 +345,7 @@ describe("NewTaskFlowProvider derived state", () => {
     const flow = render();
 
     expect(flow.logicalProjects).toHaveLength(2);
-    expect(flow.environments).toEqual([
-      { environmentId: ENV_ALPHA, environmentLabel: "Alpha" },
-    ]);
+    expect(flow.environments).toEqual([{ environmentId: ENV_ALPHA, environmentLabel: "Alpha" }]);
     // Default selected environment is the first project's environment.
     expect(flow.selectedEnvironmentId).toBe(ENV_ALPHA);
     expect(flow.selectedProject?.id).toBe("p1");
@@ -481,7 +486,10 @@ describe("NewTaskFlowProvider handlers", () => {
     flow.setSelectedModelKey("codex:gpt-4");
     expect(h.settingsCalls).toHaveLength(1);
     expect(h.settingsCalls[0]?.key).toBe(draftKey);
-    expect(h.settingsCalls[0]?.settings.modelSelection).toEqual({ instanceId: "codex", model: "gpt-4" });
+    expect(h.settingsCalls[0]?.settings.modelSelection).toEqual({
+      instanceId: "codex",
+      model: "gpt-4",
+    });
   });
 
   it("setSelectedModelKey ignores a null key and an unknown option", () => {
@@ -649,23 +657,19 @@ describe("NewTaskFlowProvider worktree branch effect", () => {
   }
 
   it("selects the current branch when none is chosen yet", () => {
-    seedWorktree([
-      branch({ name: "topic" }),
-      branch({ name: "main", current: true }),
-    ]);
+    seedWorktree([branch({ name: "topic" }), branch({ name: "main", current: true })]);
     render();
     runEffects();
     expect(h.settingsCalls.at(-1)?.settings.workspaceSelection).toMatchObject({ branch: "main" });
   });
 
   it("falls back to the default branch when there is no current branch", () => {
-    seedWorktree([
-      branch({ name: "topic" }),
-      branch({ name: "release", isDefault: true }),
-    ]);
+    seedWorktree([branch({ name: "topic" }), branch({ name: "release", isDefault: true })]);
     render();
     runEffects();
-    expect(h.settingsCalls.at(-1)?.settings.workspaceSelection).toMatchObject({ branch: "release" });
+    expect(h.settingsCalls.at(-1)?.settings.workspaceSelection).toMatchObject({
+      branch: "release",
+    });
   });
 
   it("does nothing when a branch is already selected", () => {

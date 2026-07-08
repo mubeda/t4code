@@ -62,8 +62,7 @@ vi.mock("react", async (importOriginal) => {
   // react-dom-server's useEffectEvent returns a function that throws when
   // invoked ("can't be called during rendering"); the suite drives DOM event
   // handlers after the render pass, so return the callback unchanged instead.
-  const passthroughEffectEvent = ((callback: unknown) =>
-    callback) as typeof actual.useEffectEvent;
+  const passthroughEffectEvent = ((callback: unknown) => callback) as typeof actual.useEffectEvent;
   return {
     ...actual,
     useEffect: queueEffect,
@@ -369,11 +368,7 @@ function setRangeSelection(
  * expose `selectionTransform`, so assign the fields directly and give the node
  * prototype the TextNode no-op.
  */
-function setDoctoredTokenSelection(
-  editor: LexicalEditor,
-  tokenType: string,
-  offset: number,
-): void {
+function setDoctoredTokenSelection(editor: LexicalEditor, tokenType: string, offset: number): void {
   editor.update(
     () => {
       const children = $paragraph().getChildren();
@@ -451,9 +446,11 @@ describe("ComposerPromptEditor rendering", () => {
     const expected = `Check ${MENTION_SOURCE} then $refactor\nrun ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER} tail `;
     expect(readRootText(editor)).toBe(expected);
 
-    const types = editor
-      .getEditorState()
-      .read(() => $paragraph().getChildren().map((child) => child.getType()));
+    const types = editor.getEditorState().read(() =>
+      $paragraph()
+        .getChildren()
+        .map((child) => child.getType()),
+    );
     expect(types).toContain("composer-mention");
     expect(types).toContain("composer-skill");
     expect(types).toContain("composer-terminal-context");
@@ -463,14 +460,12 @@ describe("ComposerPromptEditor rendering", () => {
   it("falls back to the formatted skill name when metadata is missing", () => {
     const { editor } = renderEditor({ value: "use $unknown now", skills });
     expect(readRootText(editor)).toBe("use $unknown now");
-    const skillTypes = editor
-      .getEditorState()
-      .read(() =>
-        $paragraph()
-          .getChildren()
-          .filter((child) => child.getType() === "composer-skill")
-          .map((child) => child.getTextContent()),
-      );
+    const skillTypes = editor.getEditorState().read(() =>
+      $paragraph()
+        .getChildren()
+        .filter((child) => child.getType() === "composer-skill")
+        .map((child) => child.getTextContent()),
+    );
     expect(skillTypes).toEqual(["$unknown"]);
   });
 });
@@ -613,9 +608,7 @@ describe("ComposerPromptEditor inline token nodes", () => {
     const { editor } = renderTokens();
     const nodes = tokenNodes(editor);
     const decorate = (node: LexicalNode) =>
-      renderToStaticMarkup(
-        (node as unknown as { decorate: () => React.ReactElement }).decorate(),
-      );
+      renderToStaticMarkup((node as unknown as { decorate: () => React.ReactElement }).decorate());
 
     const mentionMarkup = decorate(nodes.mention);
     expect(mentionMarkup).toContain('data-composer-mention-chip="true"');

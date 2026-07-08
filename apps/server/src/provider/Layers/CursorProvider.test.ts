@@ -1,3 +1,4 @@
+/* oxlint-disable t3code/no-global-process-runtime */
 import * as NodeOS from "node:os";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -87,7 +88,7 @@ exec ${mockAgentCommand} "$@"
   // launcher (env vars via `set`, mock agent via the current Node) and return
   // its path. The POSIX script is left untouched so Linux/CI keep the identical
   // fixture. `resolveSpawnCommand` runs the `.cmd` through cmd.exe.
-  if (process.platform === "win32") {
+  if (NodeOS.platform() === "win32") {
     const cmdPath = path.join(dir, "fake-agent.cmd");
     const setLines = Object.entries(extraEnv ?? {}).map(([key, value]) => `set "${key}=${value}"`);
     const cmdScript = [
@@ -126,7 +127,7 @@ exec ${mockAgentCommand} "$@"
   // emits the same `about` output and otherwise defers to the mock agent, wired
   // through a `.cmd` launcher `resolveSpawnCommand` can run. The POSIX script is
   // untouched so Linux/CI keep the identical fixture.
-  if (process.platform === "win32") {
+  if (NodeOS.platform() === "win32") {
     const aboutMjsPath = path.join(dir, "fake-agent.mjs");
     yield* fileSystem.writeFileString(
       aboutMjsPath,
@@ -541,25 +542,26 @@ describe("discoverCursorModelsViaAcp", () => {
   // Windows terminates the ACP probe child via TerminateProcess (no SIGTERM
   // delivery), so the mock agent's SIGTERM handler never records its exit; skip
   // on win32 (still fully exercised on CI/Linux).
-  it.skipIf(process.platform === "win32")(
+  it.skipIf(NodeOS.platform() === "win32")(
     "closes the ACP probe runtime after discovery completes",
     async () => {
-    const { exitLogPath, wrapperPath } = await runNode(
-      makeExitLogFixture("cursor-provider-exit-log-"),
-    );
+      const { exitLogPath, wrapperPath } = await runNode(
+        makeExitLogFixture("cursor-provider-exit-log-"),
+      );
 
-    await runNode(
-      discoverCursorModelsViaAcp({
-        enabled: true,
-        binaryPath: wrapperPath,
-        apiEndpoint: "",
-        customModels: [],
-      }),
-    );
+      await runNode(
+        discoverCursorModelsViaAcp({
+          enabled: true,
+          binaryPath: wrapperPath,
+          apiEndpoint: "",
+          customModels: [],
+        }),
+      );
 
-    const exitLog = await runNode(waitForFileContent(exitLogPath));
-    expect(exitLog).toContain("SIGTERM");
-  });
+      const exitLog = await runNode(waitForFileContent(exitLogPath));
+      expect(exitLog).toContain("SIGTERM");
+    },
+  );
 });
 
 describe("parseCursorAboutOutput", () => {

@@ -2563,16 +2563,18 @@ describe("composerDraftStore terminal context editing", () => {
     const orphanDraftId = DraftId.make("draft-without-session");
     store.addTerminalContext(orphanDraftId, makeTerminalContext({ id: "ctx-orphan" }));
     expect(store.getComposerDraft(orphanDraftId)).toBeNull();
-    expect(store.addElementContext(orphanDraftId, {
-      pageUrl: "https://example.com",
-      pageTitle: null,
-      tagName: "div",
-      selector: null,
-      htmlPreview: "<div />",
-      componentName: null,
-      source: null,
-      styles: "",
-    })).toBe(false);
+    expect(
+      store.addElementContext(orphanDraftId, {
+        pageUrl: "https://example.com",
+        pageTitle: null,
+        tagName: "div",
+        selector: null,
+        htmlPreview: "<div />",
+        componentName: null,
+        source: null,
+        styles: "",
+      }),
+    ).toBe(false);
   });
 });
 
@@ -2659,7 +2661,10 @@ describe("composerDraftStore preview annotations", () => {
 
   it("adds annotations and strips screenshot payload data", () => {
     const store = useComposerDraftStore.getState();
-    store.addPreviewAnnotation(threadRef, makePreviewAnnotation({ id: "ann-1", withScreenshot: true }));
+    store.addPreviewAnnotation(
+      threadRef,
+      makePreviewAnnotation({ id: "ann-1", withScreenshot: true }),
+    );
 
     const draft = draftFor(threadId, TEST_ENVIRONMENT_ID);
     expect(draft?.previewAnnotations).toHaveLength(1);
@@ -2926,9 +2931,9 @@ describe("composerDraftStore draft session getters", () => {
     expect(useComposerDraftStore.getState().listDraftThreadKeys()).toEqual([
       scopedThreadKey(scopeThreadRef(TEST_ENVIRONMENT_ID, threadId)),
     ]);
-    expect(
-      useComposerDraftStore.getState().hasDraftThreadsInEnvironment(TEST_ENVIRONMENT_ID),
-    ).toBe(true);
+    expect(useComposerDraftStore.getState().hasDraftThreadsInEnvironment(TEST_ENVIRONMENT_ID)).toBe(
+      true,
+    );
     expect(
       useComposerDraftStore.getState().hasDraftThreadsInEnvironment(OTHER_TEST_ENVIRONMENT_ID),
     ).toBe(false);
@@ -2978,9 +2983,7 @@ describe("composerDraftStore draft session getters", () => {
     store.setProjectDraftThreadId(projectRef, draftId, { threadId });
 
     markPromotedDraftThreadByRef(threadRef);
-    expect(useComposerDraftStore.getState().getDraftThread(draftId)?.promotedTo).toEqual(
-      threadRef,
-    );
+    expect(useComposerDraftStore.getState().getDraftThread(draftId)?.promotedTo).toEqual(threadRef);
 
     finalizePromotedDraftThreadsByRef([threadRef]);
     expect(useComposerDraftStore.getState().getDraftThread(draftId)).toBeNull();
@@ -3074,8 +3077,9 @@ describe("composerDraftStore setter edge cases", () => {
     store.setModelOptions(threadRef, providerModelOptions({ codex: { fastMode: true } }));
     store.setModelOptions(threadRef, { codex: [] });
 
-    const selection =
-      draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CODEX_INSTANCE];
+    const selection = draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[
+      CODEX_INSTANCE
+    ];
     expect(selection?.options).toBeUndefined();
     expect(selection?.model.length).toBeGreaterThan(0);
   });
@@ -3092,10 +3096,7 @@ describe("composerDraftStore setter edge cases", () => {
 
   it("setProviderModelOptions clears draft and sticky options with a null bag", () => {
     const store = useComposerDraftStore.getState();
-    store.setModelSelection(
-      threadRef,
-      modelSelection(CODEX_DRIVER, "gpt-5.4", { fastMode: true }),
-    );
+    store.setModelSelection(threadRef, modelSelection(CODEX_DRIVER, "gpt-5.4", { fastMode: true }));
     store.setStickyModelSelection(modelSelection(CODEX_DRIVER, "gpt-5.4", { fastMode: true }));
 
     store.setProviderModelOptions(threadRef, CODEX_DRIVER, null, { persistSticky: true });
@@ -3154,7 +3155,10 @@ describe("composerDraftStore setter edge cases", () => {
   it("setStickyModelSelection ignores unparseable selections", () => {
     const store = useComposerDraftStore.getState();
     store.setStickyModelSelection(null);
-    store.setStickyModelSelection({ instanceId: "!!bad!!", model: "x" } as unknown as ModelSelection);
+    store.setStickyModelSelection({
+      instanceId: "!!bad!!",
+      model: "x",
+    } as unknown as ModelSelection);
     expect(useComposerDraftStore.getState().stickyModelSelectionByProvider).toEqual({});
     expect(useComposerDraftStore.getState().stickyActiveProvider).toBeNull();
   });

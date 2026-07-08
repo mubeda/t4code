@@ -1,3 +1,5 @@
+/* oxlint-disable react/no-unstable-nested-components */
+
 import Stack from "expo-router/stack";
 import { SymbolView } from "expo-symbols";
 import { useLocalSearchParams, useRouter } from "expo-router";

@@ -212,7 +212,9 @@ describe("render + effect wiring", () => {
   });
 
   it("does not prompt when there is no update candidate", () => {
-    testState.providers = [provider({ advisoryStatus: "current", latestVersion: "1.0.0", canUpdate: false })];
+    testState.providers = [
+      provider({ advisoryStatus: "current", latestVersion: "1.0.0", canUpdate: false }),
+    ];
     render();
     harness.runEffects();
     expect(testState.toastAdds).toHaveLength(0);
@@ -270,7 +272,10 @@ describe("one-click update prompt", () => {
 
     expect(testState.updateProvider).toHaveBeenCalledWith({
       environmentId: testState.primaryEnvironment!.environmentId,
-      input: { provider: ProviderDriverKind.make("codex"), instanceId: ProviderInstanceId.make("codex") },
+      input: {
+        provider: ProviderDriverKind.make("codex"),
+        instanceId: ProviderInstanceId.make("codex"),
+      },
     });
     // Immediately flips the active toast to an in-flight update.
     expect((activeToastRef().current as { kind: string }).kind).toBe("update");
@@ -342,7 +347,9 @@ describe("settings-only prompt", () => {
 
   it("omits the leading icon for a driver without a known icon", () => {
     const latestVersion = uniqueLatestVersion();
-    testState.providers = [provider({ driver: "opencode", instanceId: "opencode", latestVersion, canUpdate: false })];
+    testState.providers = [
+      provider({ driver: "opencode", instanceId: "opencode", latestVersion, canUpdate: false }),
+    ];
     render();
     harness.runEffects();
     // Single provider still carries a leading icon element (the fallback download

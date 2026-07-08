@@ -104,7 +104,12 @@ vi.mock("@base-ui/react/toast", () => {
       const { children } = props as { children?: React.ReactNode };
       const forwarded: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(props)) {
-        if (key === "className" || key === "style" || key.startsWith("data-") || key.startsWith("aria-")) {
+        if (
+          key === "className" ||
+          key === "style" ||
+          key.startsWith("data-") ||
+          key.startsWith("aria-")
+        ) {
           forwarded[key] = value;
         }
       }
@@ -138,8 +143,9 @@ vi.mock("~/components/ui/button", () => ({
 }));
 
 vi.mock("~/composerDraftStore", () => ({
-  useComposerDraftStore: (selector: (store: { getDraftSession: (id: unknown) => unknown }) => unknown) =>
-    selector({ getDraftSession: () => testState.draftSession }),
+  useComposerDraftStore: (
+    selector: (store: { getDraftSession: (id: unknown) => unknown }) => unknown,
+  ) => selector({ getDraftSession: () => testState.draftSession }),
 }));
 
 vi.mock("~/hooks/useCopyToClipboard", () => ({
@@ -168,12 +174,7 @@ vi.mock("./tooltip", () => ({
   },
 }));
 
-import {
-  ToastProvider,
-  AnchoredToastProvider,
-  toastManager,
-  anchoredToastManager,
-} from "./toast";
+import { ToastProvider, AnchoredToastProvider, toastManager, anchoredToastManager } from "./toast";
 
 // ── Fake window/document for the auto-dismiss effect ──────────────────────────
 interface FakeTimer {
@@ -448,7 +449,10 @@ describe("expandable content", () => {
     const triggers = ui.filter("TooltipTrigger");
     const disclosureTrigger = triggers.find((props) => {
       const render = props["render"] as React.ReactElement | undefined;
-      return React.isValidElement(render) && (render.props as Record<string, unknown>)["role"] === "button";
+      return (
+        React.isValidElement(render) &&
+        (render.props as Record<string, unknown>)["role"] === "button"
+      );
     });
     expect(disclosureTrigger).toBeDefined();
     const render = disclosureTrigger!["render"] as React.ReactElement;
@@ -531,14 +535,18 @@ describe("thread-scoped rendering", () => {
 
   it("hides a thread-scoped toast when no thread is active", () => {
     testState.routeTarget = null;
-    testState.toasts = [makeToast({ type: "info", data: { threadRef: { environmentId, threadId } } })];
+    testState.toasts = [
+      makeToast({ type: "info", data: { threadRef: { environmentId, threadId } } }),
+    ];
     const markup = renderProvider(<ToastProvider />);
     expect(markup).not.toContain('data-slot="toast-title"');
   });
 
   it("shows a thread-scoped toast for the active server thread", () => {
     testState.routeTarget = { kind: "server", threadRef: { environmentId, threadId } };
-    testState.toasts = [makeToast({ type: "info", data: { threadRef: { environmentId, threadId } } })];
+    testState.toasts = [
+      makeToast({ type: "info", data: { threadRef: { environmentId, threadId } } }),
+    ];
     const markup = renderProvider(<ToastProvider />);
     expect(markup).toContain('data-slot="toast-title"');
   });
@@ -546,7 +554,9 @@ describe("thread-scoped rendering", () => {
   it("resolves the active thread from a draft route target", () => {
     testState.routeTarget = { kind: "draft", draftId: "draft-1" };
     testState.draftSession = { environmentId, threadId };
-    testState.toasts = [makeToast({ type: "info", data: { threadRef: { environmentId, threadId } } })];
+    testState.toasts = [
+      makeToast({ type: "info", data: { threadRef: { environmentId, threadId } } }),
+    ];
     const markup = renderProvider(<ToastProvider />);
     expect(markup).toContain('data-slot="toast-title"');
   });
@@ -554,7 +564,9 @@ describe("thread-scoped rendering", () => {
   it("treats a draft route without a session as no active thread", () => {
     testState.routeTarget = { kind: "draft", draftId: "draft-1" };
     testState.draftSession = null;
-    testState.toasts = [makeToast({ type: "info", data: { threadRef: { environmentId, threadId } } })];
+    testState.toasts = [
+      makeToast({ type: "info", data: { threadRef: { environmentId, threadId } } }),
+    ];
     const markup = renderProvider(<ToastProvider />);
     expect(markup).not.toContain('data-slot="toast-title"');
   });
@@ -577,7 +589,9 @@ describe("auto-dismiss effect", () => {
   });
 
   it("schedules a timer while visible+focused and closes the toast when it fires", () => {
-    testState.toasts = [makeToast({ id: "auto-close", type: "info", data: { dismissAfterVisibleMs: 4000 } })];
+    testState.toasts = [
+      makeToast({ id: "auto-close", type: "info", data: { dismissAfterVisibleMs: 4000 } }),
+    ];
     renderProvider(<ToastProvider />);
 
     const cleanups = harness.runEffects();
@@ -597,7 +611,9 @@ describe("auto-dismiss effect", () => {
   });
 
   it("pauses the timer when the window loses focus and resumes on focus", () => {
-    testState.toasts = [makeToast({ id: "auto-pause", type: "info", data: { dismissAfterVisibleMs: 5000 } })];
+    testState.toasts = [
+      makeToast({ id: "auto-pause", type: "info", data: { dismissAfterVisibleMs: 5000 } }),
+    ];
     renderProvider(<ToastProvider />);
     const cleanups = harness.runEffects();
 
@@ -620,7 +636,9 @@ describe("auto-dismiss effect", () => {
 
   it("does not arm a timer while the document is hidden", () => {
     docState.visibilityState = "hidden";
-    testState.toasts = [makeToast({ id: "auto-hidden", type: "info", data: { dismissAfterVisibleMs: 5000 } })];
+    testState.toasts = [
+      makeToast({ id: "auto-hidden", type: "info", data: { dismissAfterVisibleMs: 5000 } }),
+    ];
     renderProvider(<ToastProvider />);
     harness.runEffects();
     expect(timers).toHaveLength(0);
@@ -628,7 +646,9 @@ describe("auto-dismiss effect", () => {
 
   it("prunes stale timeout bookkeeping for toasts no longer present", () => {
     // A first render with an auto-dismiss toast populates the module-level map.
-    testState.toasts = [makeToast({ id: "auto-prune", type: "info", data: { dismissAfterVisibleMs: 5000 } })];
+    testState.toasts = [
+      makeToast({ id: "auto-prune", type: "info", data: { dismissAfterVisibleMs: 5000 } }),
+    ];
     renderProvider(<ToastProvider />);
     harness.runEffects();
 

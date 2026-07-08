@@ -117,7 +117,10 @@ const hooks = vi.hoisted(() => {
       };
       return [stateSlots.get(index) as T, setValue];
     },
-    useReducer<S, A>(reducer: (state: S, action: A) => S, initialState: S): [S, (action: A) => void] {
+    useReducer<S, A>(
+      reducer: (state: S, action: A) => S,
+      initialState: S,
+    ): [S, (action: A) => void] {
       const index = cursor;
       cursor += 1;
       if (!stateSlots.has(index)) {
@@ -205,9 +208,7 @@ const testState = vi.hoisted(() => ({
   createProject: vi.fn(),
   cloneRepository: vi.fn(),
   lookupRepository: vi.fn(),
-  localApi: undefined as
-    | { dialogs: { pickFolder: ReturnType<typeof vi.fn> } }
-    | undefined,
+  localApi: undefined as { dialogs: { pickFolder: ReturnType<typeof vi.fn> } } | undefined,
   desktopLocalBootstraps: [] as Array<{
     id: string;
     httpBaseUrl: string;
@@ -375,9 +376,7 @@ vi.mock("../keybindings", () => ({
 vi.mock("./AddProjectDialog", () => ({
   AddProjectDialog: (props: { open: boolean; onOpenChange: (open: boolean) => void }) => {
     captured.addProjectDialogs.push(props);
-    return (
-      <div data-testid="add-project-dialog" data-open={props.open ? "true" : "false"} />
-    );
+    return <div data-testid="add-project-dialog" data-open={props.open ? "true" : "false"} />;
   },
 }));
 
@@ -1486,9 +1485,9 @@ describe("add project sources and clone flow", () => {
     expect(resultsProps().emptyStateMessage).toBe(
       "Choose a destination path and press Enter to clone.",
     );
-    expect(
-      resultsProps().groups.some((group) => group.label === "Select where to clone"),
-    ).toBe(true);
+    expect(resultsProps().groups.some((group) => group.label === "Select where to clone")).toBe(
+      true,
+    );
 
     lastCommandInput().onKeyDown?.(enterKey());
     await flushPromises();

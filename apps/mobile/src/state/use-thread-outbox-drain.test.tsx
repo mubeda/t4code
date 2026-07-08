@@ -155,7 +155,7 @@ function commandCallsFor(key: string): Array<{ key: string; input: unknown }> {
 
 function runEffects(): Array<() => void> {
   const cleanups: Array<() => void> = [];
-  for (const effect of [...h.effects]) {
+  for (const effect of Array.from(h.effects)) {
     const cleanup = effect();
     if (typeof cleanup === "function") cleanups.push(cleanup);
   }

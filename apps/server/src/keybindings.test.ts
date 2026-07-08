@@ -1,5 +1,7 @@
+/* oxlint-disable t3code/no-global-process-runtime */
 import { KeybindingCommand, KeybindingRule, KeybindingsConfig } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeOS from "node:os";
 import { assert, it } from "@effect/vitest";
 import { assertFailure } from "@effect/vitest/utils";
 import * as Cause from "effect/Cause";
@@ -487,7 +489,7 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
       // (fs.chmod only toggles the read-only file attribute there), so an
       // unwritable-directory write failure cannot be reproduced. Skip on win32;
       // still fully exercised on CI/Linux.
-      if (process.platform === "win32") return;
+      if (NodeOS.platform() === "win32") return;
       const fs = yield* FileSystem.FileSystem;
       const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
       const { dirname } = yield* Path.Path;

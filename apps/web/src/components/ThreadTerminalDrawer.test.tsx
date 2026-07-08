@@ -10,11 +10,15 @@ import { describe, expect, it, vi } from "vite-plus/test";
 // the mocks only need to satisfy the render-time hook calls.
 
 vi.mock("@xterm/xterm", () => ({
-  Terminal: class MockTerminal {},
+  Terminal: class MockTerminal {
+    readonly isMockTerminal = true;
+  },
 }));
 
 vi.mock("@xterm/addon-fit", () => ({
-  FitAddon: class MockFitAddon {},
+  FitAddon: class MockFitAddon {
+    readonly isMockFitAddon = true;
+  },
 }));
 
 vi.mock("@effect/atom-react", () => ({

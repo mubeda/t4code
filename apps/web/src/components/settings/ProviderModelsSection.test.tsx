@@ -146,10 +146,7 @@ const CODEX = ProviderDriverKind.make("codex");
 
 type Props = Parameters<typeof ProviderModelsSection>[0];
 
-function model(
-  slug: string,
-  overrides: Partial<ServerProviderModel> = {},
-): ServerProviderModel {
+function model(slug: string, overrides: Partial<ServerProviderModel> = {}): ServerProviderModel {
   return {
     slug,
     name: slug,

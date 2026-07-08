@@ -380,7 +380,7 @@ describe("ThreadRouteScreen: full render", () => {
 
     // the header title press target carries an onLongPress rename hook
     const longPress = h.pressables.find((entry) => typeof entry.onLongPress === "function");
-    (longPress?.onLongPress as () => void)();
+    (longPress!.onLongPress as () => void)();
   });
 
   it("uses the route runtime connection state and server config when present", () => {
@@ -475,7 +475,11 @@ describe("ThreadRouteScreen: terminal handlers", () => {
     (gitControls().onOpenTerminal as (id?: string | null) => void)("term-5");
     const pushed = h.routerPush[0] as { pathname: string; params: Record<string, unknown> };
     expect(pushed.pathname).toBe("/threads/[environmentId]/[threadId]/terminal");
-    expect(pushed.params).toMatchObject({ environmentId: ENV, threadId: THREAD, terminalId: "term-5" });
+    expect(pushed.params).toMatchObject({
+      environmentId: ENV,
+      threadId: THREAD,
+      terminalId: "term-5",
+    });
   });
 
   it("opens a new terminal for the thread", () => {

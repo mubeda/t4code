@@ -307,10 +307,7 @@ vi.mock("../../state/threads", () => ({
 }));
 
 import { type ChatComposerHandle, type ChatComposerProps, ChatComposer } from "./ChatComposer";
-import {
-  type ComposerImageAttachment,
-  useComposerDraftStore,
-} from "../../composerDraftStore";
+import { type ComposerImageAttachment, useComposerDraftStore } from "../../composerDraftStore";
 import {
   INLINE_TERMINAL_CONTEXT_PLACEHOLDER,
   type TerminalContextDraft,
@@ -342,7 +339,9 @@ const STATE = {
 // Globals: window / document / DOM classes / FileReader.
 // ---------------------------------------------------------------------------
 
-class FakeNode {}
+class FakeNode {
+  readonly isFakeNode = true;
+}
 class FakeElement extends FakeNode {
   closestResult: unknown = null;
   closest(): unknown {
@@ -424,7 +423,7 @@ function flushQueuedEffects(): void {
 
 /** Re-run every executed effect: simulates a controlled re-render pass. */
 function reflushExecutedEffects(): void {
-  for (const effect of [...h.executed]) {
+  for (const effect of Array.from(h.executed)) {
     effect();
   }
 }
@@ -632,7 +631,7 @@ function makeElementContext(id: string): ElementContextDraft {
     pageTitle: "App",
     tagName: "button",
     selector: "#save",
-    htmlPreview: "<button id=\"save\">Save</button>",
+    htmlPreview: '<button id="save">Save</button>',
     componentName: "SaveButton",
     source: null,
     styles: "",
@@ -1234,9 +1233,7 @@ describe("ChatComposer command menu", () => {
     // "mod" matches /model plus descriptions mentioning "mode"; the provider
     // command does not match and is filtered out.
     expect(items[0]?.["id"]).toBe("slash:model");
-    expect(items.map((item) => item["id"])).not.toContain(
-      "provider-slash-command:codex:review",
-    );
+    expect(items.map((item) => item["id"])).not.toContain("provider-slash-command:codex:review");
     expect(findCapture("ComposerCommandMenu")["groupSlashCommandSections"]).toBe(false);
   });
 
@@ -1589,8 +1586,9 @@ describe("ChatComposer paste and drag", () => {
 
     onPaste(event);
 
-    expect((event as unknown as { preventDefault: ReturnType<typeof vi.fn> }).preventDefault)
-      .toHaveBeenCalled();
+    expect(
+      (event as unknown as { preventDefault: ReturnType<typeof vi.fn> }).preventDefault,
+    ).toHaveBeenCalled();
     expect(draftOf(threadRef)?.images).toHaveLength(1);
     expect(draftOf(threadRef)?.images[0]?.previewUrl).toContain("blob:generated-");
     expect(spies.setThreadError).toHaveBeenCalledWith(threadId, null);
@@ -1646,9 +1644,7 @@ describe("ChatComposer paste and drag", () => {
   });
 
   it("reports unsupported types, oversized files, and the attachment cap on drop", () => {
-    const preloaded = Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS }, () =>
-      makeImage(),
-    );
+    const preloaded = Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS }, () => makeImage());
     const { spies, props } = renderComposer({
       composerImagesRef: { current: [] },
     });
@@ -1669,9 +1665,7 @@ describe("ChatComposer paste and drag", () => {
       size: PROVIDER_SEND_TURN_MAX_IMAGE_BYTES + 1,
     } as unknown as File;
     onDrop(dragEvent({ files: [oversized] }));
-    expect(String(spies.setThreadError.mock.calls.at(-1)?.[1])).toContain(
-      "exceeds the",
-    );
+    expect(String(spies.setThreadError.mock.calls.at(-1)?.[1])).toContain("exceeds the");
 
     // Attachment cap.
     props.composerImagesRef.current = preloaded;
@@ -2186,7 +2180,7 @@ describe("ChatComposer effects", () => {
   });
 
   it("measures footer compactness when the form element is attached", () => {
-    const { } = renderComposer();
+    renderComposer();
     // Re-run the layout effect with an attached form element.
     const form = findHost((element) => element.type === "form");
     const formRef = form.props["ref"] as { current: unknown } | undefined;

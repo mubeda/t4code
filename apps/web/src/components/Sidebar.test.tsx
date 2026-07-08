@@ -33,7 +33,6 @@ const h = vi.hoisted(() => {
     readonly props: Record<string, unknown>;
   }
 
-  /* eslint-disable @typescript-eslint/no-explicit-any */
   const state: any = {
     React: null,
     captures: [] as Captured[],
@@ -198,8 +197,6 @@ const h = vi.hoisted(() => {
   state.selection = selectionStore;
   state.meta = metaStore;
   state.terminalUi = terminalUiStore;
-  /* eslint-enable @typescript-eslint/no-explicit-any */
-
   return {
     state,
     spies,

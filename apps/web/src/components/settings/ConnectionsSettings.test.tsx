@@ -386,7 +386,13 @@ vi.mock("../ui/input", () => ({
       label: (props.placeholder as string | undefined) ?? (props.type as string | undefined) ?? "",
       props,
     });
-    return <input placeholder={props.placeholder as string | undefined} readOnly defaultValue={props.value as string | undefined} />;
+    return (
+      <input
+        placeholder={props.placeholder as string | undefined}
+        readOnly
+        defaultValue={props.value as string | undefined}
+      />
+    );
   },
 }));
 
@@ -780,7 +786,12 @@ function environment(input: {
   readonly targetTag?: string;
   readonly connection?: TestConnection;
   readonly relayManaged?: boolean;
-  readonly sshTarget?: { alias: string; hostname: string; username: string | null; port: number | null };
+  readonly sshTarget?: {
+    alias: string;
+    hostname: string;
+    username: string | null;
+    port: number | null;
+  };
   readonly serverConfig?: unknown;
 }) {
   return {
@@ -811,9 +822,7 @@ function relayEnvironmentEntry(input: {
     environment: { environmentId: EnvironmentId.make(input.id), label: input.label },
     availability: input.availability,
     error:
-      input.errorMessage === undefined
-        ? Option.none()
-        : Option.some(new Error(input.errorMessage)),
+      input.errorMessage === undefined ? Option.none() : Option.some(new Error(input.errorMessage)),
   };
 }
 
@@ -1328,7 +1337,9 @@ describe("ConnectionsSettings", () => {
 
     // Add-environment dialog (remote mode by default on desktop).
     const hostInput = control("input", "backend.example.com");
-    invoke(hostInput, "onChange", { target: { value: "https://pairhost.example.com/pair?token=abc123" } });
+    invoke(hostInput, "onChange", {
+      target: { value: "https://pairhost.example.com/pair?token=abc123" },
+    });
     invoke(hostInput, "onChange", { target: { value: "plain-host.example.com" } });
     invoke(hostInput, "onChange", { target: { value: "   " } });
     invoke(hostInput, "onChange", {
@@ -1561,8 +1572,20 @@ describe("ConnectionsSettings", () => {
       clientSessions: [clientSession({ sessionId: "session-busy", connected: true })],
     });
     h.sshHostsQuery.data = [
-      { alias: "devbox", hostname: "devbox.internal", username: "dev", port: 22, source: "ssh-config" },
-      { alias: "spare", hostname: "spare.internal", username: null, port: null, source: "known-hosts" },
+      {
+        alias: "devbox",
+        hostname: "devbox.internal",
+        username: "dev",
+        port: 22,
+        source: "ssh-config",
+      },
+      {
+        alias: "spare",
+        hostname: "spare.internal",
+        username: null,
+        port: null,
+        source: "known-hosts",
+      },
     ] satisfies ReadonlyArray<DesktopDiscoveredSshHost>;
 
     const markup = render();
@@ -1659,7 +1682,7 @@ describe("ConnectionsSettings", () => {
     await flush();
     expect(h.commands.connectSsh).toHaveBeenCalledTimes(1);
     const target = (
-      h.commands.connectSsh.mock.calls[0]?.[0] as {
+      h.commands.connectSsh.mock.calls[0]![0] as {
         target: { hostname: string; username: string | null; port: number | null };
       }
     ).target;
@@ -1871,11 +1894,47 @@ describe("ConnectionsSettings", () => {
     h.relayDiscovery = {
       refreshing: false,
       environments: new Map([
-        ["environment-online", relayEnvironmentEntry({ id: "environment-online", label: "Online Env", availability: "online" })],
-        ["environment-offline", relayEnvironmentEntry({ id: "environment-offline", label: "Offline Env", availability: "offline" })],
-        ["environment-checking", relayEnvironmentEntry({ id: "environment-checking", label: "Checking Env", availability: "checking" })],
-        ["environment-error", relayEnvironmentEntry({ id: "environment-error", label: "Error Env", availability: "error", errorMessage: "relay probe failed" })],
-        ["environment-primary", relayEnvironmentEntry({ id: "environment-primary", label: "Primary", availability: "online" })],
+        [
+          "environment-online",
+          relayEnvironmentEntry({
+            id: "environment-online",
+            label: "Online Env",
+            availability: "online",
+          }),
+        ],
+        [
+          "environment-offline",
+          relayEnvironmentEntry({
+            id: "environment-offline",
+            label: "Offline Env",
+            availability: "offline",
+          }),
+        ],
+        [
+          "environment-checking",
+          relayEnvironmentEntry({
+            id: "environment-checking",
+            label: "Checking Env",
+            availability: "checking",
+          }),
+        ],
+        [
+          "environment-error",
+          relayEnvironmentEntry({
+            id: "environment-error",
+            label: "Error Env",
+            availability: "error",
+            errorMessage: "relay probe failed",
+          }),
+        ],
+        [
+          "environment-primary",
+          relayEnvironmentEntry({
+            id: "environment-primary",
+            label: "Primary",
+            availability: "online",
+          }),
+        ],
       ]),
     };
 

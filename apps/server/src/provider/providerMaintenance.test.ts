@@ -1,3 +1,4 @@
+/* oxlint-disable t3code/no-global-process-runtime */
 // @effect-diagnostics nodeBuiltinImport:off
 import { expect, it } from "@effect/vitest";
 import * as NodeFS from "node:fs";
@@ -38,9 +39,8 @@ const isNativeTestCommandPath =
 // byte (bare binary name, PATH only, darwin platform) so CI behaviour is
 // unchanged. The `/.vite-plus/bin/`, `/.local/share/pnpm/`, etc. path markers the
 // resolver matches survive on both platforms.
-const hostPlatform: NodeJS.Platform = process.platform === "win32" ? "win32" : "darwin";
-const executableName = (base: string): string =>
-  hostPlatform === "win32" ? `${base}.exe` : base;
+const hostPlatform: NodeJS.Platform = NodeOS.platform() === "win32" ? "win32" : "darwin";
+const executableName = (base: string): string => (hostPlatform === "win32" ? `${base}.exe` : base);
 const commandLookupEnv = (pathValue: string): NodeJS.ProcessEnv =>
   hostPlatform === "win32"
     ? { PATH: pathValue, PATHEXT: ".COM;.EXE;.BAT;.CMD" }
@@ -304,7 +304,10 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         const tempDir = yield* makeTempDir("t3-pnpm-capabilities");
         const pnpmHomeDir = NodePath.join(tempDir, ".local", "share", "pnpm");
         NodeFS.mkdirSync(pnpmHomeDir, { recursive: true });
-        const scopedPackageToolPath = NodePath.join(pnpmHomeDir, executableName("scoped-package-tool"));
+        const scopedPackageToolPath = NodePath.join(
+          pnpmHomeDir,
+          executableName("scoped-package-tool"),
+        );
         NodeFS.writeFileSync(scopedPackageToolPath, "#!/bin/sh\n");
         NodeFS.chmodSync(scopedPackageToolPath, 0o755);
 
@@ -362,7 +365,10 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         const tempDir = yield* makeTempDir("t3-native-package-tool-native-capabilities");
         const nativeBinDir = NodePath.join(tempDir, ".local", "bin");
         NodeFS.mkdirSync(nativeBinDir, { recursive: true });
-        const nativePackageToolPath = NodePath.join(nativeBinDir, executableName("native-package-tool"));
+        const nativePackageToolPath = NodePath.join(
+          nativeBinDir,
+          executableName("native-package-tool"),
+        );
         NodeFS.writeFileSync(nativePackageToolPath, "#!/bin/sh\n");
         NodeFS.chmodSync(nativePackageToolPath, 0o755);
 
@@ -397,7 +403,10 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         const tempDir = yield* makeTempDir("t3-scoped-package-tool-native-capabilities");
         const nativeBinDir = NodePath.join(tempDir, ".scoped-package-tool", "bin");
         NodeFS.mkdirSync(nativeBinDir, { recursive: true });
-        const scopedPackageToolPath = NodePath.join(nativeBinDir, executableName("scoped-package-tool"));
+        const scopedPackageToolPath = NodePath.join(
+          nativeBinDir,
+          executableName("scoped-package-tool"),
+        );
         NodeFS.writeFileSync(scopedPackageToolPath, "#!/bin/sh\n");
         NodeFS.chmodSync(scopedPackageToolPath, 0o755);
 

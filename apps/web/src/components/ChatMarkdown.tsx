@@ -1,3 +1,5 @@
+/* oxlint-disable react/no-unstable-nested-components */
+
 import { useAtomValue } from "@effect/atom-react";
 import { DiffsHighlighter, getSharedHighlighter, SupportedLanguages } from "@pierre/diffs";
 import {

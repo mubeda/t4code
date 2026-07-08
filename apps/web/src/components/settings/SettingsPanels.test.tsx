@@ -663,7 +663,11 @@ describe("GeneralSettingsPanel", () => {
     invoke(control("button", "Reset text generation model to default"), "onClick");
     expect(h.updateSettings).toHaveBeenCalledTimes(12);
 
-    invoke(control("switch", "Start new worktrees from origin by default"), "onCheckedChange", false);
+    invoke(
+      control("switch", "Start new worktrees from origin by default"),
+      "onCheckedChange",
+      false,
+    );
     expect(h.updateSettings).toHaveBeenCalledWith({ newWorktreesStartFromOrigin: false });
   });
 

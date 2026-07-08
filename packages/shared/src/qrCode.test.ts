@@ -85,7 +85,7 @@ describe("QrCode.encodeSegments", () => {
 
   it("throws Data too long when the payload exceeds maxVersion capacity", () => {
     // Version 1 LOW holds 19 data codewords; 30 bytes cannot fit.
-    const seg = QrSegment.makeBytes(new Array<number>(30).fill(0));
+    const seg = QrSegment.makeBytes(Array.from({ length: 30 }, () => 0));
     expect(() => QrCode.encodeSegments([seg], QrCode.Ecc.LOW, 1, 1)).toThrow("Data too long");
   });
 
@@ -182,32 +182,41 @@ describe("QrCode structural invariants", () => {
 describe("QrCode low-level constructor", () => {
   it("builds a symbol from raw data codewords", () => {
     // Version 1 LOW carries exactly 19 data codewords.
-    const qr = new QrCode(1, QrCode.Ecc.LOW, new Array<number>(19).fill(0), 0);
+    const qr = new QrCode(
+      1,
+      QrCode.Ecc.LOW,
+      Array.from({ length: 19 }, () => 0),
+      0,
+    );
     expect(qr.size).toBe(21);
     expect(qr.mask).toBe(0);
     expect(qr.errorCorrectionLevel).toBe(QrCode.Ecc.LOW);
   });
 
   it("rejects versions outside 1-40", () => {
-    const codewords = new Array<number>(19).fill(0);
-    expect(() => new QrCode(0, QrCode.Ecc.LOW, codewords, 0)).toThrow(
-      "Version value out of range",
-    );
+    const codewords = Array.from({ length: 19 }, () => 0);
+    expect(() => new QrCode(0, QrCode.Ecc.LOW, codewords, 0)).toThrow("Version value out of range");
     expect(() => new QrCode(41, QrCode.Ecc.LOW, codewords, 0)).toThrow(
       "Version value out of range",
     );
   });
 
   it("rejects masks outside -1..7", () => {
-    const codewords = new Array<number>(19).fill(0);
+    const codewords = Array.from({ length: 19 }, () => 0);
     expect(() => new QrCode(1, QrCode.Ecc.LOW, codewords, 8)).toThrow("Mask value out of range");
     expect(() => new QrCode(1, QrCode.Ecc.LOW, codewords, -2)).toThrow("Mask value out of range");
   });
 
   it("rejects a data codeword array of the wrong length", () => {
-    expect(() => new QrCode(1, QrCode.Ecc.LOW, new Array<number>(18).fill(0), 0)).toThrow(
-      RangeError,
-    );
+    expect(
+      () =>
+        new QrCode(
+          1,
+          QrCode.Ecc.LOW,
+          Array.from({ length: 18 }, () => 0),
+          0,
+        ),
+    ).toThrow(RangeError);
   });
 });
 

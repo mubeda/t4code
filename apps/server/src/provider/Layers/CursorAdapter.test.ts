@@ -1,3 +1,4 @@
+/* oxlint-disable t3code/no-global-process-runtime */
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
@@ -88,7 +89,7 @@ async function makeMockAgentWrapper(
   options?: { initialDelaySeconds?: number },
 ) {
   const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-acp-mock-"));
-  if (process.platform === "win32") {
+  if (NodeOS.platform() === "win32") {
     // `initialDelaySeconds` is only used by the concurrent-start exit-log test,
     // which is skipped on win32, so the startup delay is a no-op here.
     return makeWin32AcpWrapper(dir, "fake-agent", extraEnv ?? {});
@@ -113,7 +114,7 @@ async function makeProbeWrapper(
   extraEnv?: Record<string, string>,
 ) {
   const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-acp-probe-"));
-  if (process.platform === "win32") {
+  if (NodeOS.platform() === "win32") {
     // Mirror the POSIX probe: log the forwarded argv (tab-separated, one line
     // per spawn), then set the request log path before the mock agent loads.
     const preludeLines = [
@@ -391,43 +392,43 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
   // the mock agent's `SIGTERM`/`exit` handlers never run and the exit log stays
   // empty — this asserts POSIX signal-delivery semantics that don't exist on
   // Windows. Skipped there; unchanged on Linux/CI.
-  it.effect.skipIf(process.platform === "win32")(
+  it.effect.skipIf(NodeOS.platform() === "win32")(
     "closes the ACP child process when a session stops",
     () =>
-    Effect.gen(function* () {
-      const adapter = yield* CursorAdapter;
-      const settings = yield* ServerSettingsService;
-      const threadId = ThreadId.make("cursor-stop-session-close");
-      const tempDir = yield* Effect.promise(() =>
-        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-adapter-exit-log-")),
-      );
-      const exitLogPath = NodePath.join(tempDir, "exit.log");
+      Effect.gen(function* () {
+        const adapter = yield* CursorAdapter;
+        const settings = yield* ServerSettingsService;
+        const threadId = ThreadId.make("cursor-stop-session-close");
+        const tempDir = yield* Effect.promise(() =>
+          NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-adapter-exit-log-")),
+        );
+        const exitLogPath = NodePath.join(tempDir, "exit.log");
 
-      const wrapperPath = yield* Effect.promise(() =>
-        makeMockAgentWrapper({
-          T3_ACP_EXIT_LOG_PATH: exitLogPath,
-        }),
-      );
-      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+        const wrapperPath = yield* Effect.promise(() =>
+          makeMockAgentWrapper({
+            T3_ACP_EXIT_LOG_PATH: exitLogPath,
+          }),
+        );
+        yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
 
-      yield* adapter.startSession({
-        threadId,
-        provider: ProviderDriverKind.make("cursor"),
-        cwd: process.cwd(),
-        runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
-      });
+        yield* adapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("cursor"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        });
 
-      yield* adapter.stopSession(threadId);
+        yield* adapter.stopSession(threadId);
 
-      const exitLog = yield* Effect.promise(() => waitForFileContent(exitLogPath));
-      assert.include(exitLog, "SIGTERM");
-    }),
+        const exitLog = yield* Effect.promise(() => waitForFileContent(exitLogPath));
+        assert.include(exitLog, "SIGTERM");
+      }),
   );
 
   // win32: skipped for the same `taskkill /T /F` reason as above — it asserts
   // the exit log records two SIGTERMs, which Windows never delivers.
-  it.effect.skipIf(process.platform === "win32")(
+  it.effect.skipIf(NodeOS.platform() === "win32")(
     "serializes concurrent startSession calls for the same thread and closes the replaced ACP session",
     () =>
       Effect.gen(function* () {

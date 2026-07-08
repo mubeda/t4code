@@ -202,7 +202,7 @@ class FakeElement {
   }
 
   dispatch(type: string, event: object = {}): void {
-    for (const listener of [...(this.listeners.get(type) ?? [])]) {
+    for (const listener of Array.from(this.listeners.get(type) ?? [])) {
       (listener as (value: unknown) => void)(event);
     }
   }
@@ -230,7 +230,8 @@ class FakeElement {
   }
 
   closest(_selector: string): FakeElement | null {
-    let current: FakeElement | null = this;
+    if (this.hasAttribute(OVERLAY_ATTRIBUTE)) return this;
+    let current: FakeElement | null = this.parentElement;
     while (current) {
       if (current.hasAttribute(OVERLAY_ATTRIBUTE)) return current;
       current = current.parentElement;
@@ -417,13 +418,13 @@ Object.defineProperties(globalThis, {
 });
 
 const fireWindow = (type: string, event: object): void => {
-  for (const listener of [...(windowListeners.get(type) ?? [])]) {
+  for (const listener of Array.from(windowListeners.get(type) ?? [])) {
     (listener as (value: unknown) => void)(event);
   }
 };
 
 const fireChannel = (channel: string, ...args: Array<unknown>): void => {
-  for (const listener of [...(ipcState.handlers.get(channel) ?? [])]) {
+  for (const listener of Array.from(ipcState.handlers.get(channel) ?? [])) {
     listener(...args);
   }
 };
@@ -498,7 +499,7 @@ interface SessionHandles {
 
 const currentSession = (): SessionHandles => {
   const host = [...documentElement.childNodes]
-    .reverse()
+    .toReversed()
     .find((child) => child.tagName === "DIV" && child.hasAttribute(OVERLAY_ATTRIBUTE));
   if (!host) throw new Error("no active annotation session host");
   const shadowRoot = host.childNodes.find((child) => child.tagName === "#SHADOW-ROOT");
@@ -551,8 +552,7 @@ const fieldControls = (panel: FakeElement, labelText: string): Array<FakeElement
   const field = panel
     .descendants()
     .find(
-      (element) =>
-        element.tagName === "LABEL" && element.childNodes[0]?.textContent === labelText,
+      (element) => element.tagName === "LABEL" && element.childNodes[0]?.textContent === labelText,
     );
   if (!field) throw new Error(`missing style field: ${labelText}`);
   return field
@@ -629,13 +629,8 @@ describe("PickPreload", () => {
   });
 
   it("reports only trusted human input to the host process", () => {
-    fireWindow(
-      "pointerdown",
-      pointerEvent({ isTrusted: true, clientX: 5, clientY: 6, button: 1 }),
-    );
-    expect(sendsTo(HUMAN_INPUT_CHANNEL)).toEqual([
-      [{ kind: "pointer", x: 5, y: 6, button: 1 }],
-    ]);
+    fireWindow("pointerdown", pointerEvent({ isTrusted: true, clientX: 5, clientY: 6, button: 1 }));
+    expect(sendsTo(HUMAN_INPUT_CHANNEL)).toEqual([[{ kind: "pointer", x: 5, y: 6, button: 1 }]]);
 
     fireWindow("pointerdown", pointerEvent({ isTrusted: false, clientX: 9, clientY: 9 }));
     expect(sendsTo(HUMAN_INPUT_CHANNEL)).toHaveLength(1);
@@ -728,12 +723,14 @@ describe("PickPreload", () => {
 
     const swallow = pointerEvent({ target });
     fireWindow("click", swallow);
-    expect((swallow as { preventDefault: ReturnType<typeof vi.fn> }).preventDefault)
-      .toHaveBeenCalledOnce();
+    expect(
+      (swallow as { preventDefault: ReturnType<typeof vi.fn> }).preventDefault,
+    ).toHaveBeenCalledOnce();
     const ignored = pointerEvent({ target: session.hoverOutline });
     fireWindow("click", ignored);
-    expect((ignored as { preventDefault: ReturnType<typeof vi.fn> }).preventDefault)
-      .not.toHaveBeenCalled();
+    expect(
+      (ignored as { preventDefault: ReturnType<typeof vi.fn> }).preventDefault,
+    ).not.toHaveBeenCalled();
   });
 
   it("selects elements, toggles them, and submits the annotation", async () => {

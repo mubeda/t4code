@@ -1358,8 +1358,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         const finishedRef = yield* Ref.make<ReadonlyArray<string>>([]);
         yield* driver.commit(cwd, "Add hooked", "", {
           progress: {
-            onHookStarted: (hookName) =>
-              Ref.update(startedRef, (names) => [...names, hookName]),
+            onHookStarted: (hookName) => Ref.update(startedRef, (names) => [...names, hookName]),
             onHookFinished: ({ hookName }) =>
               Ref.update(finishedRef, (names) => [...names, hookName]),
           },
@@ -1442,9 +1441,9 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         const headSha = yield* git(cwd, ["rev-parse", "HEAD"]);
         yield* git(cwd, ["checkout", headSha]);
 
-        const error = yield* (yield* GitVcsDriver.GitVcsDriver).pullCurrentBranch(cwd).pipe(
-          Effect.flip,
-        );
+        const error = yield* (yield* GitVcsDriver.GitVcsDriver)
+          .pullCurrentBranch(cwd)
+          .pipe(Effect.flip);
         assert.equal(error._tag, "GitCommandError");
         assert.include(error.detail ?? "", "detached HEAD");
       }),
@@ -1455,9 +1454,9 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         const cwd = yield* makeTmpDir();
         yield* initRepoWithCommit(cwd);
 
-        const error = yield* (yield* GitVcsDriver.GitVcsDriver).pullCurrentBranch(cwd).pipe(
-          Effect.flip,
-        );
+        const error = yield* (yield* GitVcsDriver.GitVcsDriver)
+          .pullCurrentBranch(cwd)
+          .pipe(Effect.flip);
         assert.equal(error._tag, "GitCommandError");
         assert.include(error.detail ?? "", "no upstream");
       }),
@@ -1635,9 +1634,12 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           localBranch: "feature/remote-mat",
         });
         assert.equal(
-          yield* git(cwd, ["show-ref", "--verify", "--quiet", "refs/heads/feature/remote-mat"]).pipe(
-            Effect.as("exists"),
-          ),
+          yield* git(cwd, [
+            "show-ref",
+            "--verify",
+            "--quiet",
+            "refs/heads/feature/remote-mat",
+          ]).pipe(Effect.as("exists")),
           "exists",
         );
 
@@ -1665,22 +1667,18 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         const driver = yield* GitVcsDriver.GitVcsDriver;
 
         // Drop the remote-tracking ref so fetchRemoteTrackingBranch must recreate it.
-        yield* git(cwd, [
-          "update-ref",
-          "-d",
-          `refs/remotes/origin/${initialBranch}`,
-        ]).pipe(Effect.ignore);
+        yield* git(cwd, ["update-ref", "-d", `refs/remotes/origin/${initialBranch}`]).pipe(
+          Effect.ignore,
+        );
         yield* driver.fetchRemoteTrackingBranch({
           cwd,
           remoteName: "origin",
           remoteBranch: initialBranch,
         });
         assert.equal(
-          yield* git(cwd, [
-            "rev-parse",
-            "--verify",
-            `refs/remotes/origin/${initialBranch}`,
-          ]).pipe(Effect.as("ok")),
+          yield* git(cwd, ["rev-parse", "--verify", `refs/remotes/origin/${initialBranch}`]).pipe(
+            Effect.as("ok"),
+          ),
           "ok",
         );
 

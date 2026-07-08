@@ -259,7 +259,9 @@ vi.mock("react/compiler-runtime", () => ({
 
 vi.mock("@effect/atom-react", () => ({
   useAtomValue: (atom: unknown) =>
-    atom !== null && typeof atom === "object" && (atom as { kind?: string }).kind === "server-config"
+    atom !== null &&
+    typeof atom === "object" &&
+    (atom as { kind?: string }).kind === "server-config"
       ? testState.serverConfig
       : undefined,
 }));
@@ -623,18 +625,6 @@ async function flushPromises(): Promise<void> {
 function buttonByText(text: string): CapturedButtonProps | undefined {
   return (captured.buttons as CapturedButtonProps[]).find(
     (button) => collectText(button.children).trim() === text,
-  );
-}
-
-function buttonContaining(text: string): CapturedButtonProps | undefined {
-  return (captured.buttons as CapturedButtonProps[]).find((button) =>
-    collectText(button.children).includes(text),
-  );
-}
-
-function buttonByAriaLabel(label: string): CapturedButtonProps | undefined {
-  return (captured.buttons as CapturedButtonProps[]).find(
-    (button) => button["aria-label"] === label,
   );
 }
 
@@ -1317,8 +1307,11 @@ describe("stacked action results", () => {
       ([, options]) => (options as { type?: string }).type === "success",
     );
     expect(successUpdate).toBeDefined();
+    if (!successUpdate) {
+      throw new Error("Expected success toast update");
+    }
     const actionProps = (
-      successUpdate?.[1] as {
+      successUpdate[1] as {
         actionProps: { children: string; onClick: () => void };
       }
     ).actionProps;
@@ -1347,8 +1340,11 @@ describe("stacked action results", () => {
     const successUpdate = testState.toast.update.mock.calls.find(
       ([, options]) => (options as { type?: string }).type === "success",
     );
+    if (!successUpdate) {
+      throw new Error("Expected success toast update");
+    }
     const actionProps = (
-      successUpdate?.[1] as {
+      successUpdate[1] as {
         actionProps: { children: string; onClick: () => void };
       }
     ).actionProps;
@@ -1624,7 +1620,9 @@ describe("publish repository dialog", () => {
     expect(markup).toContain("Setup Required");
     expect(markup).toContain("Run glab auth login.");
     expect(markup).toContain("Install the Bitbucket CLI first.");
-    expect(markup).toContain("Provider status unavailable. Open Settings -&gt; Source Control and rescan.");
+    expect(markup).toContain(
+      "Provider status unavailable. Open Settings -&gt; Source Control and rescan.",
+    );
   });
 
   it("falls back to a generic hint when an unauthenticated provider has no detail", () => {

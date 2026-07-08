@@ -114,7 +114,7 @@ vi.mock("react", async (importOriginal) => {
 // disables memoization while keeping the components dispatcher-free, so they
 // can be invoked directly in tests.
 vi.mock("react/compiler-runtime", () => ({
-  c: (size: number) => new Array(size).fill(Symbol.for("react.memo_cache_sentinel")),
+  c: (size: number) => Array.from({ length: size }, () => Symbol.for("react.memo_cache_sentinel")),
 }));
 
 vi.mock("../color-selector", () => ({
@@ -137,7 +137,9 @@ vi.mock("../ui/button", () => ({
 
 vi.mock("../ui/popover", () => ({
   Popover: ({ children }: { children?: ReactNode }) => <div data-popover>{children}</div>,
-  PopoverTrigger: ({ render }: { render?: ReactNode }) => <span data-popover-trigger>{render}</span>,
+  PopoverTrigger: ({ render }: { render?: ReactNode }) => (
+    <span data-popover-trigger>{render}</span>
+  ),
   PopoverPopup: (props: Record<string, unknown>) => {
     ui.record("PopoverPopup", props);
     return <div data-popover-popup>{props.children as ReactNode}</div>;
@@ -185,7 +187,7 @@ describe("rendering", () => {
   it("omits the description when not provided", () => {
     const markup = render(baseProps());
     expect(markup).toContain("Accent color");
-    expect(markup).not.toContain("text-muted-foreground\">undefined");
+    expect(markup).not.toContain('text-muted-foreground">undefined');
   });
 
   it("selects a matching swatch and hides custom selection", () => {
@@ -402,9 +404,7 @@ describe("custom color panel", () => {
   it("clamps plane coordinates that fall outside the bounds", () => {
     const onCommit = vi.fn();
     const { plane } = renderPanel(onCommit);
-    (plane.onPointerDown as (e: unknown) => void)(
-      pointerEvent({ clientX: 9999, clientY: -9999 }),
-    );
+    (plane.onPointerDown as (e: unknown) => void)(pointerEvent({ clientX: 9999, clientY: -9999 }));
     expect(onCommit).toHaveBeenCalledTimes(1);
   });
 

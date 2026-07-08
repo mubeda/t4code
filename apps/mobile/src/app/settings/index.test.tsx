@@ -526,7 +526,10 @@ describe("ConfiguredSettingsRouteScreen live activity switch", () => {
     renderScreen();
     liveActivitySwitch()(false);
     await flush();
-    expect(h.liveActivityInputs.at(-1)).toMatchObject({ enabled: false, clerkToken: "clerk-token" });
+    expect(h.liveActivityInputs.at(-1)).toMatchObject({
+      enabled: false,
+      clerkToken: "clerk-token",
+    });
     expect(h.managedRefreshes).toHaveLength(1);
   });
 

@@ -1298,15 +1298,15 @@ const makeWebContents = (options: FakeWebContentsOptions = {}) => {
     mocks,
     sendCommand,
     emit: (event: string, ...args: Array<unknown>): void => {
-      for (const listener of [...(listeners.get(event) ?? [])]) {
+      for (const listener of Array.from(listeners.get(event) ?? [])) {
         (listener as (...values: Array<unknown>) => void)(...args);
       }
     },
     emitIpc: (channel: string, ...args: Array<unknown>): void => {
-      for (const listener of [...(ipcListeners.get(channel) ?? [])]) listener(...args);
+      for (const listener of Array.from(ipcListeners.get(channel) ?? [])) listener(...args);
     },
     emitDebuggerMessage: (method: string, params: Record<string, unknown>): void => {
-      for (const listener of [...debuggerListeners]) listener({}, method, params);
+      for (const listener of Array.from(debuggerListeners)) listener({}, method, params);
     },
   };
 };
@@ -1485,9 +1485,9 @@ describe("PreviewManager webview operations", () => {
   effectIt.effect("validates webview registration ownership and type", () =>
     withManager((manager) =>
       Effect.gen(function* () {
-        expect(failedError(yield* Effect.exit(manager.registerWebview("missing", 42)))).toMatchObject(
-          { _tag: "PreviewTabNotFoundError", tabId: "missing" },
-        );
+        expect(
+          failedError(yield* Effect.exit(manager.registerWebview("missing", 42))),
+        ).toMatchObject({ _tag: "PreviewTabNotFoundError", tabId: "missing" });
 
         const windowContents = makeWebContents({ id: 42, type: "window" });
         const webviewContents = makeWebContents({ id: 43 });
@@ -1495,15 +1495,23 @@ describe("PreviewManager webview operations", () => {
           id === 42 ? windowContents.wc : id === 43 ? webviewContents.wc : null) as never);
 
         yield* manager.createTab("tab_reg");
-        expect(failedError(yield* Effect.exit(manager.registerWebview("tab_reg", 42)))).toMatchObject(
-          { _tag: "PreviewWebContentsNotFoundError", tabId: "tab_reg", webContentsId: 42 },
-        );
+        expect(
+          failedError(yield* Effect.exit(manager.registerWebview("tab_reg", 42))),
+        ).toMatchObject({
+          _tag: "PreviewWebContentsNotFoundError",
+          tabId: "tab_reg",
+          webContentsId: 42,
+        });
 
         const mainWindow = { isDestroyed: () => false, webContents: { sendInputEvent: vi.fn() } };
         yield* manager.setMainWindow(mainWindow as never);
-        expect(failedError(yield* Effect.exit(manager.registerWebview("tab_reg", 43)))).toMatchObject(
-          { _tag: "PreviewWebContentsNotFoundError", tabId: "tab_reg", webContentsId: 43 },
-        );
+        expect(
+          failedError(yield* Effect.exit(manager.registerWebview("tab_reg", 43))),
+        ).toMatchObject({
+          _tag: "PreviewWebContentsNotFoundError",
+          tabId: "tab_reg",
+          webContentsId: 43,
+        });
 
         webviewContents.state.hostWebContents = mainWindow.webContents;
         yield* manager.registerWebview("tab_reg", 43);
@@ -2173,7 +2181,12 @@ describe("PreviewManager webview operations", () => {
         harness.mocks.capturePage.mockRejectedValueOnce(new Error("capture failed"));
         const uncroppedPick = yield* manager.pickElement("tab_pick").pipe(Effect.forkChild);
         yield* flushRuntime;
-        harness.emitIpc("preview:element-picked", {}, annotationPayload, { x: 0, y: 0, width: -5, height: 2 });
+        harness.emitIpc("preview:element-picked", {}, annotationPayload, {
+          x: 0,
+          y: 0,
+          width: -5,
+          height: 2,
+        });
         yield* flushRuntime;
         const uncropped = yield* Fiber.join(uncroppedPick);
         expect(uncropped).toMatchObject({ id: "annotation_1", screenshot: null });
@@ -2335,7 +2348,9 @@ describe("PreviewManager error surfaces", () => {
         selectorKind: "selector",
         selectorLength: 5,
       }).message,
-    ).toBe("Preview automation type found selector (5 characters), but it is not editable in tab tab_x");
+    ).toBe(
+      "Preview automation type found selector (5 characters), but it is not editable in tab tab_x",
+    );
     expect(
       new PreviewManager.PreviewAutomationCoordinatesOutsideViewportError({
         tabId: "tab_x",
@@ -2419,8 +2434,8 @@ describe("PreviewManager error surfaces", () => {
       detailLength: 0,
       cause: null,
     });
-    expect(
-      PreviewManager.PreviewAutomationEvaluationError.toTimelineMessage(evaluationError),
-    ).toBe(evaluationError.message);
+    expect(PreviewManager.PreviewAutomationEvaluationError.toTimelineMessage(evaluationError)).toBe(
+      evaluationError.message,
+    );
   });
 });

@@ -23,10 +23,7 @@ import {
 } from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { createModelSelection } from "@t3tools/shared/model";
-import {
-  scopeThreadRef,
-  scopedThreadKey,
-} from "@t3tools/client-runtime/environment";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type {
   EnvironmentProject,
   EnvironmentThreadShell,
@@ -180,7 +177,10 @@ function makeSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
   } as ThreadSession;
 }
 
-function makeShell(id: string, overrides: Partial<EnvironmentThreadShell> = {}): EnvironmentThreadShell {
+function makeShell(
+  id: string,
+  overrides: Partial<EnvironmentThreadShell> = {},
+): EnvironmentThreadShell {
   return {
     id: ThreadId.make(id),
     projectId: PROJECT,
@@ -418,11 +418,7 @@ describe("deleteThread", () => {
 
     const result = await actions.deleteThread(ref);
     expect(result._tag).toBe("Success");
-    expect(commandKeys()).toEqual([
-      "thread.stopSession",
-      "terminal.close",
-      "thread.delete",
-    ]);
+    expect(commandKeys()).toEqual(["thread.stopSession", "terminal.close", "thread.delete"]);
     expect(h.refreshArchived).toHaveBeenCalledWith(ENV);
     expect(h.clearDraftThread).toHaveBeenCalledWith(ref);
     expect(h.clearProjectDraftThreadById).toHaveBeenCalled();
@@ -579,7 +575,10 @@ describe("deleteThread", () => {
     expect(result._tag).toBe("Failure");
     expect(commandKeys()).not.toContain("vcs.refreshStatus");
     expect(h.toastAdd).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "error", title: "Thread deleted, but worktree removal failed" }),
+      expect.objectContaining({
+        type: "error",
+        title: "Thread deleted, but worktree removal failed",
+      }),
     );
     errorSpy.mockRestore();
   });

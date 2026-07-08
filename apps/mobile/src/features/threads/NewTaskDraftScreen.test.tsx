@@ -49,7 +49,10 @@ const h = vi.hoisted(() => ({
   toolbarButtons: [] as Array<ToolbarButtonProps>,
   menus: [] as Array<MenuProps>,
   composerEditors: [] as Array<ComposerEditorProps>,
-  attachmentStrips: [] as Array<{ attachments: ReadonlyArray<unknown>; onRemove?: (id: string) => void }>,
+  attachmentStrips: [] as Array<{
+    attachments: ReadonlyArray<unknown>;
+    onRemove?: (id: string) => void;
+  }>,
   triggers: [] as Array<Record<string, unknown>>,
   keyboardVisible: false,
   effects: [] as Array<() => void | (() => void)>,
@@ -180,7 +183,12 @@ vi.mock("../../state/entities", () => ({
 vi.mock("./new-task-flow-provider", () => ({
   useNewTaskFlow: () => h.flow,
   branchBadgeLabel: (input: {
-    branch: { current?: boolean; worktreePath?: string | null; isDefault?: boolean; isRemote?: boolean };
+    branch: {
+      current?: boolean;
+      worktreePath?: string | null;
+      isDefault?: boolean;
+      isRemote?: boolean;
+    };
     project: { workspaceRoot?: string } | null;
   }) => {
     if (input.branch.current) return "current";
@@ -224,7 +232,12 @@ function project(overrides: {
 type FlowOverrides = Record<string, unknown>;
 
 function makeFlow(overrides: FlowOverrides = {}): Record<string, unknown> {
-  const selected = project({ id: "p1", environmentId: ENV_ALPHA, title: "Demo", workspaceRoot: "/repo" });
+  const selected = project({
+    id: "p1",
+    environmentId: ENV_ALPHA,
+    title: "Demo",
+    workspaceRoot: "/repo",
+  });
   return {
     logicalProjects: [{ key: "k1", project: selected }],
     selectedProject: selected,
@@ -236,8 +249,16 @@ function makeFlow(overrides: FlowOverrides = {}): Record<string, unknown> {
         providerKey: "codex",
         providerLabel: "Codex",
         models: [
-          { key: "codex:gpt-5", label: "GPT-5", selection: { instanceId: "codex", model: "gpt-5" } },
-          { key: "codex:gpt-4", label: "GPT-4", selection: { instanceId: "codex", model: "gpt-4" } },
+          {
+            key: "codex:gpt-5",
+            label: "GPT-5",
+            selection: { instanceId: "codex", model: "gpt-5" },
+          },
+          {
+            key: "codex:gpt-4",
+            label: "GPT-4",
+            selection: { instanceId: "codex", model: "gpt-4" },
+          },
         ],
       },
     ],
@@ -290,7 +311,7 @@ function render(props: Parameters<typeof NewTaskDraftScreen>[0] = {}): string {
 
 function runEffects(): Array<() => void> {
   const cleanups: Array<() => void> = [];
-  for (const effect of [...h.effects]) {
+  for (const effect of Array.from(h.effects)) {
     const cleanup = effect();
     if (typeof cleanup === "function") {
       cleanups.push(cleanup);
@@ -334,7 +355,10 @@ beforeEach(() => {
     modelSelection: { instanceId: "codex", model: "gpt-5" },
     attachments: [],
   };
-  h.createResult = { _tag: "Success", value: { environmentId: ENV_ALPHA, threadId: ProjectId.make("thread-1") } };
+  h.createResult = {
+    _tag: "Success",
+    value: { environmentId: ENV_ALPHA, threadId: ProjectId.make("thread-1") },
+  };
   h.createCalls.length = 0;
   h.interrupted = false;
   h.squashed = new Error("boom");
@@ -402,7 +426,9 @@ describe("NewTaskDraftScreen rendering", () => {
     // the workspace label variants which flow through useMemo.
     h.flow = makeFlow({ workspaceMode: "worktree", selectedBranchName: "feature" });
     render();
-    const workspaceTrigger = h.triggers.find((trigger) => trigger.accessibilityLabel === "Workspace");
+    const workspaceTrigger = h.triggers.find(
+      (trigger) => trigger.accessibilityLabel === "Workspace",
+    );
     expect(String(workspaceTrigger?.label ?? "")).toContain("New worktree");
   });
 });
@@ -415,9 +441,9 @@ describe("NewTaskDraftScreen menus", () => {
   it("builds the workspace menu with branch entries and badges", () => {
     render();
     const workspaceMenu = h.menus[MENU.workspace];
-    const branchGroup = workspaceMenu?.actions.find((action) => action.id === "workspace:branch") as
-      | { subactions?: Array<{ id: string; subtitle?: string; state?: string }> }
-      | undefined;
+    const branchGroup = workspaceMenu?.actions.find(
+      (action) => action.id === "workspace:branch",
+    ) as { subactions?: Array<{ id: string; subtitle?: string; state?: string }> } | undefined;
     const branchAction = branchGroup?.subactions?.find(
       (action) => action.id === "workspace:branch:main",
     );
@@ -431,9 +457,9 @@ describe("NewTaskDraftScreen menus", () => {
     h.flow = makeFlow({ availableBranches: [], branchesLoading: true });
     render();
     const workspaceMenu = h.menus[MENU.workspace];
-    const branchGroup = workspaceMenu?.actions.find((action) => action.id === "workspace:branch") as
-      | { subactions?: Array<{ title?: string }> }
-      | undefined;
+    const branchGroup = workspaceMenu?.actions.find(
+      (action) => action.id === "workspace:branch",
+    ) as { subactions?: Array<{ title?: string }> } | undefined;
     expect(branchGroup?.subactions?.[0]?.title).toBe("Loading branches…");
   });
 
@@ -441,9 +467,9 @@ describe("NewTaskDraftScreen menus", () => {
     h.flow = makeFlow({ availableBranches: [], branchesLoading: false });
     render();
     const workspaceMenu = h.menus[MENU.workspace];
-    const branchGroup = workspaceMenu?.actions.find((action) => action.id === "workspace:branch") as
-      | { subactions?: Array<{ title?: string }> }
-      | undefined;
+    const branchGroup = workspaceMenu?.actions.find(
+      (action) => action.id === "workspace:branch",
+    ) as { subactions?: Array<{ title?: string }> } | undefined;
     expect(branchGroup?.subactions?.[0]?.title).toBe("No branches available");
   });
 
@@ -476,9 +502,9 @@ describe("NewTaskDraftScreen menus", () => {
     const runtime = optionsMenu?.actions.find((action) => action.id === "options-runtime") as
       | { subtitle?: string }
       | undefined;
-    const interaction = optionsMenu?.actions.find((action) => action.id === "options-interaction") as
-      | { subtitle?: string }
-      | undefined;
+    const interaction = optionsMenu?.actions.find(
+      (action) => action.id === "options-interaction",
+    ) as { subtitle?: string } | undefined;
     expect(runtime?.subtitle).toBe("Approve actions");
     expect(interaction?.subtitle).toBe("Plan");
   });
@@ -486,9 +512,9 @@ describe("NewTaskDraftScreen menus", () => {
   it("covers auto-accept and full-access runtime subtitles", () => {
     h.flow = makeFlow({ runtimeMode: "auto-accept-edits" });
     render();
-    let runtime = h.menus[MENU.options]?.actions.find((action) => action.id === "options-runtime") as
-      | { subtitle?: string }
-      | undefined;
+    let runtime = h.menus[MENU.options]?.actions.find(
+      (action) => action.id === "options-runtime",
+    ) as { subtitle?: string } | undefined;
     expect(runtime?.subtitle).toBe("Auto-accept edits");
 
     h.flow = makeFlow({ runtimeMode: "full-access" });
@@ -545,9 +571,7 @@ describe("NewTaskDraftScreen menu actions", () => {
     fire(MENU.workspace, "workspace:mode:worktree");
     expect(flow.setWorkspaceMode).toHaveBeenCalledWith("worktree");
     fire(MENU.workspace, "workspace:branch:dev");
-    expect(flow.selectBranch).toHaveBeenCalledWith(
-      expect.objectContaining({ name: "dev" }),
-    );
+    expect(flow.selectBranch).toHaveBeenCalledWith(expect.objectContaining({ name: "dev" }));
     // unknown branch is a no-op
     fire(MENU.workspace, "workspace:branch:ghost");
     expect((flow.selectBranch as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
@@ -671,7 +695,11 @@ describe("NewTaskDraftScreen start action", () => {
   });
 
   it("does not submit when the prompt is empty", async () => {
-    h.draftSnapshot = { text: "   ", modelSelection: { instanceId: "codex", model: "gpt-5" }, attachments: [] };
+    h.draftSnapshot = {
+      text: "   ",
+      modelSelection: { instanceId: "codex", model: "gpt-5" },
+      attachments: [],
+    };
     render();
     primaryButton().onPress?.();
     await flushAsync();

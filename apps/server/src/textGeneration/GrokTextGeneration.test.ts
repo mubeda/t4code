@@ -1,3 +1,4 @@
+/* oxlint-disable t3code/no-global-process-runtime */
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
@@ -73,7 +74,7 @@ function makeWin32AcpGrokWrapper(binDir: string, env: Record<string, string>): s
 
 function makeAcpGrokWrapper(dir: string, env: Record<string, string>): string {
   const binDir = NodePath.join(dir, "bin");
-  if (process.platform === "win32") {
+  if (NodeOS.platform() === "win32") {
     return makeWin32AcpGrokWrapper(binDir, env);
   }
   const grokPath = NodePath.join(binDir, "grok");

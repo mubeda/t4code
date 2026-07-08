@@ -1,9 +1,4 @@
-import {
-  EnvironmentId,
-  MessageId,
-  ThreadId,
-  TurnId,
-} from "@t3tools/contracts";
+import { EnvironmentId, MessageId, ThreadId, TurnId } from "@t3tools/contracts";
 import type { ReactElement, ReactNode } from "react";
 import type { SharedValue } from "react-native-reanimated";
 // @ts-expect-error -- react-dom ships no bundled types and apps/mobile has no @types/react-dom
@@ -64,9 +59,7 @@ vi.mock("react-native-nitro-markdown", () => ({
   Markdown: (props: { readonly children?: unknown } & Record<string, unknown>) => {
     h.markdownProps.push(props);
     return (
-      <div data-markdown="true">
-        {typeof props.children === "string" ? props.children : null}
-      </div>
+      <div data-markdown="true">{typeof props.children === "string" ? props.children : null}</div>
     );
   },
 }));
