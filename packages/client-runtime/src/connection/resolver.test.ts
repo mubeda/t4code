@@ -75,15 +75,11 @@ function relayClient(
   return ManagedRelay.ManagedRelayClient.of({
     relayUrl: "https://relay.example.test",
     listEnvironments: () => unsupported("listEnvironments"),
-    listDevices: () => unsupported("listDevices"),
     createEnvironmentLinkChallenge: () => unsupported("createEnvironmentLinkChallenge"),
     linkEnvironment: () => unsupported("linkEnvironment"),
     unlinkEnvironment: () => unsupported("unlinkEnvironment"),
     getEnvironmentStatus: () => unsupported("getEnvironmentStatus"),
     connectEnvironment,
-    registerDevice: () => unsupported("registerDevice"),
-    unregisterDevice: () => unsupported("unregisterDevice"),
-    registerLiveActivity: () => unsupported("registerLiveActivity"),
     resetTokenCache: Effect.void,
   });
 }
@@ -171,12 +167,6 @@ const makeDependencies = Effect.fn("TestConnectionResolver.makeDependencies")((o
       ClientCapabilities.PrimaryEnvironmentAuth,
       ClientCapabilities.PrimaryEnvironmentAuth.of({
         bearerToken: Effect.succeed(Option.fromNullishOr(options?.primaryBearerToken)),
-      }),
-    ),
-    Layer.succeed(
-      ClientCapabilities.RelayDeviceIdentity,
-      ClientCapabilities.RelayDeviceIdentity.of({
-        deviceId: Effect.succeed(Option.some("device-1")),
       }),
     ),
     Layer.succeed(RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization, remote),
@@ -298,13 +288,12 @@ describe("ConnectionResolver", () => {
     }),
   );
 
-  it.effect("brokers relay credentials with the current cloud session and device identity", () =>
+  it.effect("brokers relay credentials with the current cloud session", () =>
     Effect.gen(function* () {
       const relayInputs = yield* Ref.make<
         ReadonlyArray<{
           readonly clerkToken: string;
           readonly scopes: ReadonlyArray<string>;
-          readonly deviceId?: string;
         }>
       >([]);
       const bootstrapCredentials = yield* Ref.make<ReadonlyArray<string>>([]);
@@ -319,7 +308,6 @@ describe("ConnectionResolver", () => {
             {
               clerkToken: input.clerkToken,
               scopes: input.scopes,
-              ...(input.deviceId ? { deviceId: input.deviceId } : {}),
             },
           ]).pipe(
             Effect.as({
@@ -353,7 +341,6 @@ describe("ConnectionResolver", () => {
         {
           clerkToken: "clerk-session",
           scopes: [RelayEnvironmentConnectScope],
-          deviceId: "device-1",
         },
       ]);
       expect(yield* Ref.get(bootstrapCredentials)).toEqual(["relay-bootstrap"]);

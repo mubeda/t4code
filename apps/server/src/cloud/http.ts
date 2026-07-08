@@ -62,7 +62,6 @@ import {
   CLOUD_LINKED_USER_ID,
   CLOUD_MINT_PUBLIC_KEY,
   encodeEndpointRuntimeConfigJson,
-  PUBLISH_AGENT_ACTIVITY_SECRET,
   RELAY_ENVIRONMENT_CREDENTIAL_SECRET,
   RELAY_ISSUER_SECRET,
   RELAY_URL_SECRET,
@@ -379,7 +378,7 @@ const makeCloudLinkProof = Effect.fn("environment.cloud.makeLinkProof")(function
     environmentPublicKey: normalizePemForSignedPayload(keyPair.publicKey),
     endpoint: request.endpoint,
     origin: request.origin,
-    scopes: ["agent_activity_notifications", "managed_tunnels"],
+    scopes: ["managed_tunnels"],
   } satisfies RelayEnvironmentLinkProofPayload;
   return yield* signRelayJwt({
     privateKey: keyPair.privateKey,
@@ -542,8 +541,6 @@ const reconcileDesiredCloudLinkWith = Effect.fn("environment.cloud.reconcileDesi
       url: `${relayUrl}/v1/client/environment-link-challenges`,
       token: token.accessToken,
       payload: {
-        notificationsEnabled: true,
-        liveActivitiesEnabled: true,
         managedTunnelsEnabled: true,
       },
       schema: RelayEnvironmentLinkChallengeResponse,
@@ -570,8 +567,6 @@ const reconcileDesiredCloudLinkWith = Effect.fn("environment.cloud.reconcileDesi
       token: token.accessToken,
       payload: {
         proof,
-        notificationsEnabled: true,
-        liveActivitiesEnabled: true,
         managedTunnelsEnabled: true,
       },
       schema: RelayEnvironmentLinkResponse,
@@ -608,23 +603,19 @@ export const reconcileDesiredCloudLink = Effect.fn("environment.cloud.reconcileD
 const readCloudLinkState = Effect.fn("environment.cloud.readLinkState")(function* (
   dependencies: CloudHttpDependencies,
 ) {
-  const [cloudUserId, relayUrl, relayIssuer, publishAgentActivity] = yield* Effect.all(
+  const [cloudUserId, relayUrl, relayIssuer] = yield* Effect.all(
     [
       dependencies.secrets.get(CLOUD_LINKED_USER_ID),
       dependencies.secrets.get(RELAY_URL_SECRET),
       dependencies.secrets.get(RELAY_ISSUER_SECRET),
-      dependencies.secrets.get(PUBLISH_AGENT_ACTIVITY_SECRET),
     ],
-    { concurrency: 4 },
+    { concurrency: 3 },
   );
   return {
     linked: Option.isSome(cloudUserId),
     cloudUserId: Option.isSome(cloudUserId) ? bytesToString(cloudUserId.value) : null,
     relayUrl: Option.isSome(relayUrl) ? bytesToString(relayUrl.value) : null,
     relayIssuer: Option.isSome(relayIssuer) ? bytesToString(relayIssuer.value) : null,
-    publishAgentActivity: Option.isSome(publishAgentActivity)
-      ? bytesToString(publishAgentActivity.value) === "true"
-      : false,
   } satisfies EnvironmentCloudLinkStateResult;
 });
 
@@ -651,9 +642,8 @@ const cloudUnlinkHandler = Effect.fn("environment.cloud.unlink")(
         dependencies.secrets.remove(RELAY_ENVIRONMENT_CREDENTIAL_SECRET),
         dependencies.secrets.remove(CLOUD_MINT_PUBLIC_KEY),
         dependencies.secrets.remove(CLOUD_ENDPOINT_RUNTIME_CONFIG),
-        dependencies.secrets.remove(PUBLISH_AGENT_ACTIVITY_SECRET),
       ],
-      { concurrency: 7 },
+      { concurrency: 6 },
     );
     yield* setCliDesiredCloudLink(false);
     return { ok: true, endpointRuntimeStatus } satisfies EnvironmentCloudRelayConfigResult;
@@ -661,24 +651,6 @@ const cloudUnlinkHandler = Effect.fn("environment.cloud.unlink")(
   Effect.catchIf(
     ServerSecretStore.isSecretStoreError,
     failEnvironmentCloudInternalError("Could not remove environment relay configuration."),
-  ),
-);
-
-const cloudPreferencesHandler = Effect.fn("environment.cloud.preferences")(
-  function* (
-    dependencies: CloudHttpDependencies,
-    payload: { readonly publishAgentActivity: boolean },
-  ) {
-    yield* requireEnvironmentScope(AuthRelayWriteScope);
-    yield* dependencies.secrets.set(
-      PUBLISH_AGENT_ACTIVITY_SECRET,
-      stringToBytes(String(payload.publishAgentActivity)),
-    );
-    return yield* readCloudLinkState(dependencies);
-  },
-  Effect.catchIf(
-    ServerSecretStore.isSecretStoreError,
-    failEnvironmentCloudInternalError("Could not persist environment cloud preferences."),
   ),
 );
 
@@ -931,7 +903,6 @@ export const connectHttpApiLayer = HttpApiBuilder.group(
       .handle("relayConfig", ({ payload }) => cloudRelayConfigHandler(dependencies, payload))
       .handle("linkState", () => cloudLinkStateHandler(dependencies))
       .handle("unlink", () => cloudUnlinkHandler(dependencies))
-      .handle("preferences", ({ payload }) => cloudPreferencesHandler(dependencies, payload))
       .handle("health", ({ payload }) => cloudEnvironmentHealthHandler(dependencies, payload))
       .handle("mintCredential", ({ payload }) => cloudMintCredentialHandler(dependencies, payload))
       .handle("t3MintCredential", ({ payload }) =>

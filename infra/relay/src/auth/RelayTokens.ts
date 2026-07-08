@@ -2,8 +2,6 @@ import {
   RelayDpopAccessTokenScope,
   RelayEnvironmentConnectScope,
   RelayEnvironmentStatusScope,
-  RelayMobileClientId,
-  RelayMobileRegistrationScope,
   RelayWebClientId,
   type RelayPublicClientId,
   type RelayEnvironmentLinkChallengeRequest,
@@ -36,8 +34,6 @@ const LinkChallengeClaims = Schema.Struct({
   jti: Schema.String,
   iat: Schema.Int,
   exp: Schema.Int,
-  notificationsEnabled: Schema.Boolean,
-  liveActivitiesEnabled: Schema.Boolean,
   managedTunnelsEnabled: Schema.Boolean,
 });
 export type LinkChallengeClaims = typeof LinkChallengeClaims.Type;
@@ -49,7 +45,7 @@ const RelayDpopAccessTokenClaims = Schema.Struct({
   jti: Schema.String,
   iat: Schema.Int,
   exp: Schema.Int,
-  client_id: Schema.Literals([RelayMobileClientId, RelayWebClientId]),
+  client_id: Schema.Literal(RelayWebClientId),
   scope: Schema.String,
   cnf: Schema.Struct({ jkt: Schema.String }),
 });
@@ -64,11 +60,6 @@ const allowedScopesByClientId: Record<
   RelayPublicClientId,
   ReadonlySet<RelayDpopAccessTokenScope>
 > = {
-  [RelayMobileClientId]: new Set([
-    RelayEnvironmentConnectScope,
-    RelayEnvironmentStatusScope,
-    RelayMobileRegistrationScope,
-  ]),
   [RelayWebClientId]: new Set([RelayEnvironmentConnectScope, RelayEnvironmentStatusScope]),
 };
 
@@ -153,8 +144,6 @@ const make = Effect.gen(function* () {
       Effect.map((claims) => {
         if (
           claims.sub !== input.userId ||
-          (input.request.notificationsEnabled && claims.notificationsEnabled !== true) ||
-          (input.request.liveActivitiesEnabled && claims.liveActivitiesEnabled !== true) ||
           (input.request.managedTunnelsEnabled && claims.managedTunnelsEnabled !== true)
         ) {
           return null;

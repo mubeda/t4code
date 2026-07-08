@@ -63,14 +63,6 @@ function requestBodyText(request: HttpClientRequest.HttpClientRequest): string {
 
 const settings = RelayConfiguration.RelayConfiguration.of({
   relayIssuer: "https://relay.example.test",
-  apns: {
-    environment: "sandbox",
-    teamId: "team-id",
-    keyId: "key-id",
-    privateKey: Redacted.make("private-key"),
-    bundleId: "com.t3tools.t3code.dev",
-  },
-  apnsDeliveryJobSigningSecret: Redacted.make("job-secret"),
   clerkSecretKey: Redacted.make("clerk-secret"),
   clerkPublishableKey: "pk_test_test",
   clerkJwtAudience: "t3-code-relay",
@@ -206,7 +198,6 @@ function makeLinks(
   return {
     upsert: () => Effect.void,
     listUsersForEnvironment: () => Effect.succeed([]),
-    listDeliveryUsersForEnvironment: () => Effect.succeed([]),
     listPublicKeysForEnvironment: () => Effect.succeed([environmentKeyPair.publicKey]),
     listForUser: () => Effect.succeed([]),
     getForUser: () =>
@@ -661,7 +652,6 @@ describe("EnvironmentConnector", () => {
         userId: "user_123",
         environmentId: "env-connector-test",
         clientProofKeyThumbprint: "client-proof-key-thumbprint",
-        deviceId: "device-123",
       });
 
       expect(seenUrls).toEqual(["https://env.example.test/api/t3-connect/mint-credential"]);
@@ -672,7 +662,6 @@ describe("EnvironmentConnector", () => {
         environmentId: "env-connector-test",
         clientProofKeyThumbprint: "client-proof-key-thumbprint",
         cnf: { jkt: "client-proof-key-thumbprint" },
-        deviceId: "device-123",
         scope: ["environment:connect"],
       });
       expect(result).toMatchObject({

@@ -299,6 +299,13 @@ export const ProviderRegistryLive = Layer.effect(
           cacheDir: config.providerStatusCacheDir,
           instanceId: key,
         }).pipe(Effect.provideService(Path.Path, path));
+        const currentProviders = yield* Ref.get(providersRef);
+        const currentProvider = currentProviders.find(
+          (candidate) => snapshotInstanceKey(candidate) === key,
+        );
+        if (!Equal.equals(currentProvider, provider)) {
+          return;
+        }
         yield* writeProviderStatusCache({ filePath, provider }).pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
@@ -364,13 +371,14 @@ export const ProviderRegistryLive = Layer.effect(
         },
       );
 
+      if (options?.persist !== false) {
+        yield* Effect.forEach(providersToPersist, persistProvider, {
+          concurrency: "unbounded",
+          discard: true,
+        });
+      }
+
       if (haveProvidersChanged(previousProviders, providers)) {
-        if (options?.persist !== false) {
-          yield* Effect.forEach(providersToPersist, persistProvider, {
-            concurrency: "unbounded",
-            discard: true,
-          });
-        }
         if (options?.publish !== false) {
           yield* PubSub.publish(changesPubSub, providers);
         }

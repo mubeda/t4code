@@ -42,7 +42,7 @@ describe("EnvironmentLinks", () => {
     );
   });
 
-  it.effect("identifies delivery-user list failures without retaining key material", () => {
+  it.effect("identifies user-list failures without retaining key material", () => {
     const cause = new Error("database unavailable");
     const fakeDb = {
       select: () => ({
@@ -57,16 +57,11 @@ describe("EnvironmentLinks", () => {
 
     return Effect.gen(function* () {
       const links = yield* EnvironmentLinks.EnvironmentLinks;
-      const error = yield* Effect.flip(
-        links.listDeliveryUsersForEnvironment({
-          environmentId: "env-1",
-          environmentPublicKey: "sensitive-public-key-material",
-        }),
-      );
+      const error = yield* Effect.flip(links.listUsersForEnvironment({ environmentId: "env-1" }));
 
       expect(error).toMatchObject({
         _tag: "EnvironmentLinkUserListPersistenceError",
-        operation: "list-delivery-users",
+        operation: "list-users",
         environmentId: "env-1",
       });
       expect(error.cause).toBe(cause);
@@ -78,7 +73,7 @@ describe("EnvironmentLinks", () => {
     );
   });
 
-  it.effect("selects users when either notifications or Live Activities are enabled", () => {
+  it.effect("selects active linked users for an environment", () => {
     const whereConditions: Array<unknown> = [];
     const fakeDb = {
       select: (selection: unknown) => {
@@ -105,10 +100,9 @@ describe("EnvironmentLinks", () => {
       const query = new PgDialect().sqlToQuery(whereConditions[0] as never);
       expect(query.sql).toContain('"relay_environment_links"."environment_id" = $1');
       expect(query.sql).toContain('"relay_environment_links"."revoked_at" is null');
-      expect(query.sql).toContain('"relay_environment_links"."notifications_enabled" = $2');
-      expect(query.sql).toContain('"relay_environment_links"."live_activities_enabled" = $3');
-      expect(query.sql).toContain(" or ");
-      expect(query.params).toEqual(["env-1", true, true]);
+      expect(query.sql).not.toContain("notifications_enabled");
+      expect(query.sql).not.toContain("live_activities_enabled");
+      expect(query.params).toEqual(["env-1"]);
     }).pipe(
       Effect.provide(
         EnvironmentLinks.layer.pipe(Layer.provide(Layer.succeed(RelayDb.RelayDb, fakeDb))),

@@ -16,11 +16,6 @@ const workspaceFiles = [
   "apps/server/package.json",
   "apps/desktop/package.json",
   "apps/web/package.json",
-  "apps/mobile/package.json",
-  "apps/mobile/deps/react-native-nitro-markdown-0.5.0.tgz",
-  "apps/mobile/modules/t3-markdown-text/package.json",
-  "apps/mobile/modules/t3-review-diff/package.json",
-  "apps/mobile/modules/t3-terminal/package.json",
   "apps/marketing/package.json",
   "infra/relay/package.json",
   "oxlint-plugin-t3code/package.json",
@@ -157,6 +152,54 @@ nsis:
 
   return { arm64Path, x64Path };
 }
+
+function mergeWindowsManifestFixtures(targetRoot: string): void {
+  const assetDirectory = NodePath.resolve(targetRoot, "release-assets");
+  let foundWindowsManifest = false;
+
+  for (const fileName of NodeFS.readdirSync(assetDirectory).sort()) {
+    if (!fileName.endsWith("-win-x64.yml") || fileName.startsWith("builder-debug-")) {
+      continue;
+    }
+
+    const x64Manifest = NodePath.resolve(assetDirectory, fileName);
+    const arm64Manifest = NodePath.resolve(
+      assetDirectory,
+      fileName.replace("-x64.yml", "-arm64.yml"),
+    );
+    const outputManifest = NodePath.resolve(
+      assetDirectory,
+      fileName.replace("-win-x64.yml", ".yml"),
+    );
+    if (!NodeFS.existsSync(arm64Manifest)) {
+      throw new Error(`Missing matching arm64 Windows manifest for ${x64Manifest}`);
+    }
+
+    foundWindowsManifest = true;
+    NodeChildProcess.execFileSync(
+      process.execPath,
+      [
+        NodePath.resolve(repoRoot, "scripts/merge-update-manifests.ts"),
+        "--platform",
+        "win",
+        arm64Manifest,
+        x64Manifest,
+        outputManifest,
+      ],
+      {
+        cwd: repoRoot,
+        stdio: "inherit",
+      },
+    );
+    NodeFS.rmSync(arm64Manifest, { force: true });
+    NodeFS.rmSync(x64Manifest, { force: true });
+  }
+
+  if (!foundWindowsManifest) {
+    throw new Error("No Windows updater manifests found to merge.");
+  }
+}
+
 function assertContains(haystack: string, needle: string, message: string): void {
   if (!haystack.includes(needle)) {
     throw new Error(message);
@@ -185,6 +228,40 @@ function assertMissing(path: string, message: string): void {
   }
 }
 
+function writeFilteredInstallOutput(output: string, stream: NodeJS.WriteStream): void {
+  const filteredOutput = output
+    .split(/\r?\n/)
+    .filter((line) => !line.includes("deprecated subdependencies found"))
+    .join("\n");
+
+  if (filteredOutput.trim() !== "") {
+    stream.write(`${filteredOutput.replace(/\n+$/, "")}\n`);
+  }
+}
+
+function runLockfileInstall(targetRoot: string): void {
+  const result = NodeChildProcess.spawnSync(
+    "vp",
+    ["install", "--lockfile-only", "--ignore-scripts"],
+    {
+      cwd: targetRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+
+  writeFilteredInstallOutput(result.stdout, process.stdout);
+  writeFilteredInstallOutput(result.stderr, process.stderr);
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  if (result.status !== 0) {
+    throw new Error(`Command failed: vp install --lockfile-only --ignore-scripts`);
+  }
+}
+
 const tempRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-release-smoke-"));
 
 try {
@@ -206,10 +283,7 @@ try {
 
   NodeFS.rmSync(NodePath.resolve(tempRoot, "pnpm-lock.yaml"), { force: true });
 
-  NodeChildProcess.execFileSync("vp", ["install", "--lockfile-only", "--ignore-scripts"], {
-    cwd: tempRoot,
-    stdio: "inherit",
-  });
+  runLockfileInstall(tempRoot);
 
   const lockfile = NodeFS.readFileSync(NodePath.resolve(tempRoot, "pnpm-lock.yaml"), "utf8");
   assertContains(lockfile, "lockfileVersion:", "Expected pnpm-lock.yaml to be regenerated.");
@@ -298,45 +372,7 @@ try {
   const mergedPreviewWindowsManifestPath = NodePath.resolve(tempRoot, "release-assets/preview.yml");
   const { arm64Path: winDebugArm64Path, x64Path: winDebugX64Path } =
     writeWindowsBuilderDebugFixtures(tempRoot);
-  NodeChildProcess.execFileSync(
-    "bash",
-    [
-      "-lc",
-      `
-        release_assets_dir=${JSON.stringify(NodePath.resolve(tempRoot, "release-assets"))}
-        shopt -s nullglob
-        found_windows_manifest=false
-        for x64_manifest in "$release_assets_dir"/*-win-x64.yml; do
-          if [[ "$(basename "$x64_manifest")" == builder-debug-* ]]; then
-            continue
-          fi
-
-          arm64_manifest="\${x64_manifest/-x64.yml/-arm64.yml}"
-          output_manifest="\${x64_manifest/-win-x64.yml/.yml}"
-          if [[ ! -f "$arm64_manifest" ]]; then
-            echo "Missing matching arm64 Windows manifest for $x64_manifest" >&2
-            exit 1
-          fi
-
-          found_windows_manifest=true
-          ${JSON.stringify(process.execPath)} ${JSON.stringify(NodePath.resolve(repoRoot, "scripts/merge-update-manifests.ts"))} --platform win \
-            "$arm64_manifest" \
-            "$x64_manifest" \
-            "$output_manifest"
-          rm -f "$arm64_manifest" "$x64_manifest"
-        done
-
-        if [[ "$found_windows_manifest" != true ]]; then
-          echo "No Windows updater manifests found to merge." >&2
-          exit 1
-        fi
-      `,
-    ],
-    {
-      cwd: repoRoot,
-      stdio: "inherit",
-    },
-  );
+  mergeWindowsManifestFixtures(tempRoot);
 
   const mergedWindowsManifest = NodeFS.readFileSync(mergedWindowsManifestPath, "utf8");
   assertContains(

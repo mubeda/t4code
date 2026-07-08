@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, it, assert } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -769,6 +770,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             models: [],
           } satisfies ServerProvider;
           const changes = yield* PubSub.unbounded<ServerProvider>();
+          const liveUpdateSubscribed = yield* Deferred.make<void>();
           const instance = {
             instanceId: cursorInstanceId,
             driverKind: cursorDriver,
@@ -785,7 +787,13 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               }),
               getSnapshot: Effect.succeed(initialProvider),
               refresh: Effect.succeed(refreshedProvider),
-              streamChanges: Stream.fromPubSub(changes),
+              streamChanges: Stream.unwrap(
+                Effect.gen(function* () {
+                  const subscription = yield* PubSub.subscribe(changes);
+                  yield* Deferred.succeed(liveUpdateSubscribed, undefined);
+                  return Stream.fromSubscription(subscription);
+                }),
+              ),
             },
             adapter: {} as ProviderInstance["adapter"],
             textGeneration: {} as ProviderInstance["textGeneration"],
@@ -828,12 +836,31 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             assert.deepStrictEqual((yield* registry.getProviders)[0]?.models, [
               ...initialProvider.models,
             ]);
+            yield* Deferred.await(liveUpdateSubscribed);
             yield* PubSub.publish(changes, refreshedProvider);
+
+            let currentProviders = yield* registry.getProviders;
+            for (
+              let attempt = 0;
+              attempt < 400 && currentProviders[0]?.checkedAt !== refreshedProvider.checkedAt;
+              attempt += 1
+            ) {
+              yield* TestClock.adjust("10 millis");
+              yield* Effect.yieldNow;
+              // @effect-diagnostics-next-line globalTimers:off - Real event-loop tick to flush the async subscription fiber; TestClock cannot advance real FS I/O.
+              yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
+              currentProviders = yield* registry.getProviders;
+            }
+
+            assert.deepStrictEqual(currentProviders[0], {
+              ...refreshedProvider,
+              models: [...initialProvider.models],
+            });
 
             let cachedProvider = yield* readProviderStatusCache(filePath);
             for (
               let attempt = 0;
-              attempt < 200 && cachedProvider?.checkedAt !== refreshedProvider.checkedAt;
+              attempt < 1000 && cachedProvider?.checkedAt !== refreshedProvider.checkedAt;
               attempt += 1
             ) {
               yield* TestClock.adjust("10 millis");
