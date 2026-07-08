@@ -131,7 +131,7 @@ const makeHarness = Effect.fn("TestRemoteAuthorization.makeHarness")(function* (
           ClientCapabilities.ClientPresentation.of({
             metadata: {
               label: "T4Code Test",
-              deviceType: "mobile",
+              deviceType: "desktop",
               os: "test",
             },
             scopes: AuthStandardClientScopes,

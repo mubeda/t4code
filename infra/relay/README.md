@@ -4,8 +4,7 @@
 > T4 Connect is currently in private beta. Join the waitlist in the app under Settings > T4 Connect.
 
 The relay is the hosted control plane for T4 Connect. It helps clients discover and connect to
-remote environments, manages the cloud-side records needed for those connections, and delivers
-optional mobile notifications and Live Activities.
+remote environments and manages the cloud-side records needed for those connections.
 
 The relay is intentionally not in the hot path for normal T4Code traffic. After a client connects,
 regular API and WebSocket traffic goes directly between that client and the selected environment.
@@ -19,9 +18,7 @@ The relay currently owns:
 - Linking T4Code environments to a cloud account.
 - Provisioning and tracking managed environment endpoints.
 - Issuing short-lived credentials used to connect clients to linked environments.
-- Listing linked environments and registered mobile devices for an account.
-- Registering mobile notification preferences and APNs tokens.
-- Receiving published agent activity and delivering notifications or Live Activity updates.
+- Listing linked environments for an account.
 - Persisting relay state and exposing relay-specific traces for diagnostics.
 
 The environment server and relay have separate credentials and trust boundaries. Read
@@ -36,8 +33,6 @@ credential, or authorization behavior.
   boundaries.
 - [`src/environments`](./src/environments) contains environment linking, credentials, endpoint
   provisioning, and connection flows.
-- [`src/agentActivity`](./src/agentActivity) contains mobile device registration, activity state,
-  APNs delivery, and queue processing.
 - [`src/auth`](./src/auth) contains relay token and DPoP proof handling.
 - [`src/persistence/schema.ts`](./src/persistence/schema.ts) defines persisted relay state. Keep
   schema and migration changes together.
@@ -85,9 +80,9 @@ vp run --filter t3code-relay deploy
 The stack provisions the Cloudflare Worker and queues, managed endpoint resources, database
 connectivity, and relay tracing resources. Copy [`infra/relay/.env.example`](./.env.example) to
 `infra/relay/.env` and fill in the deployment-specific values before deploying. Alchemy loads that
-file from the relay directory. Runtime secrets include Clerk and APNs credentials. Production adopts
-the configured API and tunnel DNS zones as retained Cloudflare resources. Personal stages reference
-the production-owned zones.
+file from the relay directory. Runtime secrets include Clerk credentials. Production adopts the
+configured API and tunnel DNS zones as retained Cloudflare resources. Personal stages reference the
+production-owned zones.
 
 The `prod` Alchemy stage owns the retained PlanetScale database and is the shared hosted relay for
 stable and nightly clients. Every other stage references that database and provisions an isolated
@@ -141,15 +136,10 @@ The `production` GitHub environment must define these Actions variables:
 - `CLERK_PUBLISHABLE_KEY`
 - `CLERK_JWT_AUDIENCE`
 - `CLERK_JWT_TEMPLATE`
-- `APNS_ENVIRONMENT`
-- `APNS_TEAM_ID`
-- `APNS_KEY_ID`
-- `APNS_BUNDLE_ID`
 
 The `production` GitHub environment must define these Actions secrets:
 
 - `CLERK_SECRET_KEY`
-- `APNS_PRIVATE_KEY`
 
 The account-scoped repository credentials are consumed by Alchemy while provisioning relay stages; they
 are not bound into the relay Worker. The production deployment uses an Axiom personal access token,
@@ -163,4 +153,4 @@ See:
   setup.
 - [Relay Observability](../../docs/relay-observability.md) for deployment tracing and diagnostics.
 - [T4 Connect Architecture Overview](../../docs/cloud/t3-code-connect-auth-flow.html) for the full link,
-  connect, endpoint, and notification flows.
+  connect, and endpoint flows.

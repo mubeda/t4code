@@ -44,8 +44,13 @@ export default defineConfig({
       define: publicConfigDefine,
       entry: ["src/main.ts"],
       clean: true,
+      checks: {
+        pluginTimings: false,
+        sourcemapBroken: false,
+      },
       deps: {
         alwaysBundle: (id) => id.startsWith("@t3tools/"),
+        onlyBundle: false,
       },
       ...(shouldLaunchElectronAfterPack ? { onSuccess: "node scripts/dev-electron.mjs" } : {}),
     },
@@ -56,11 +61,16 @@ export default defineConfig({
       outExtensions: () => ({ js: ".cjs" }),
       define: publicConfigDefine,
       entry: ["src/preload.ts"],
+      checks: {
+        pluginTimings: false,
+        sourcemapBroken: false,
+      },
       deps: {
         // Sandboxed Electron preloads cannot reliably resolve package imports
         // from inside the packaged ASAR. Bundle Clerk's preload bridge into the
         // preload artifact instead of leaving a runtime require() behind.
         alwaysBundle: (id) => id === "@clerk/electron" || id.startsWith("@clerk/electron/"),
+        onlyBundle: false,
       },
     },
     {
@@ -69,8 +79,13 @@ export default defineConfig({
       sourcemap: true,
       outExtensions: () => ({ js: ".cjs" }),
       entry: ["src/preview-pick-preload.ts"],
+      checks: {
+        pluginTimings: false,
+        sourcemapBroken: false,
+      },
       deps: {
         alwaysBundle: (id) => id === "react-grab" || id.startsWith("react-grab/"),
+        onlyBundle: false,
       },
     },
   ],

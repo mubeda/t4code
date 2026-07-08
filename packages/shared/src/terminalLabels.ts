@@ -1,6 +1,6 @@
 import type { TerminalSummary } from "@t3tools/contracts";
 
-/** Human-readable label for a terminal tab; matches mobile and web sidebars. */
+/** Human-readable label for a terminal tab; matches web and desktop sidebars. */
 export function getTerminalLabel(terminalId: string): string {
   const numericSuffix = /^term(?:inal)?-(\d+)$/i.exec(terminalId)?.[1];
   if (numericSuffix) {

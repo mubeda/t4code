@@ -30,14 +30,6 @@ const environmentKeyPair = NodeCrypto.generateKeyPairSync("ed25519", {
 });
 const config = RelayConfiguration.RelayConfiguration.of({
   relayIssuer: "https://relay.example.test",
-  apns: {
-    environment: "sandbox",
-    teamId: "team-id",
-    keyId: "key-id",
-    privateKey: Redacted.make("private-key"),
-    bundleId: "com.t3tools.t3code.dev",
-  },
-  apnsDeliveryJobSigningSecret: Redacted.make("job-secret"),
   clerkSecretKey: Redacted.make("clerk-secret"),
   clerkPublishableKey: "pk_test_test",
   clerkJwtAudience: "t3-code-relay",
@@ -62,8 +54,6 @@ const makeRequest = Effect.gen(function* () {
   const challenge = yield* relayTokens.issueLinkChallenge({
     userId: "user_123",
     request: {
-      notificationsEnabled: true,
-      liveActivitiesEnabled: true,
       managedTunnelsEnabled: true,
     },
     jti: "challenge-jti",
@@ -93,13 +83,11 @@ const makeRequest = Effect.gen(function* () {
       providerKind: "manual",
     },
     origin: { localHttpHost: "127.0.0.1", localHttpPort: 3773 },
-    scopes: ["agent_activity_notifications", "managed_tunnels"],
+    scopes: ["managed_tunnels"],
   } satisfies RelayEnvironmentLinkProofPayload;
   return {
     request: {
       proof: signTestJwt(payload, RELAY_LINK_PROOF_TYP, environmentKeyPair.privateKey),
-      notificationsEnabled: true,
-      liveActivitiesEnabled: true,
       managedTunnelsEnabled: false,
     } satisfies RelayEnvironmentLinkRequest,
     payload,
@@ -123,7 +111,6 @@ function testLayer(input?: {
         Layer.succeed(EnvironmentLinks.EnvironmentLinks, {
           upsert: input?.upsert ?? (() => Effect.void),
           listUsersForEnvironment: () => Effect.succeed([]),
-          listDeliveryUsersForEnvironment: () => Effect.succeed([]),
           listPublicKeysForEnvironment: () => Effect.succeed([]),
           listForUser: () => Effect.succeed([]),
           getForUser: () => Effect.succeed(null),

@@ -84,7 +84,9 @@ const devProxyTarget = resolveDevProxyTarget(configuredWsUrl);
 export default defineConfig(() => {
   return {
     plugins: [
-      tanstackRouter(),
+      tanstackRouter({
+        routeFileIgnorePattern: "\\.test\\.(ts|tsx)$",
+      }),
       react(),
       babel({
         // We need to be explicit about the parser options after moving to @vitejs/plugin-react v6.0.0
@@ -163,6 +165,14 @@ export default defineConfig(() => {
       outDir: "dist",
       emptyOutDir: true,
       sourcemap: buildSourcemap,
+      chunkSizeWarningLimit: 4096,
+      // Vite-plus currently resolves production bundle options from
+      // rollupOptions internally, even for its Rolldown builder.
+      rollupOptions: {
+        checks: {
+          pluginTimings: false,
+        },
+      },
     },
     test: {
       projects: [defineProject(unitTestProject)],

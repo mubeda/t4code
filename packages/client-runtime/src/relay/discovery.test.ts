@@ -104,14 +104,10 @@ const makeHarness = Effect.fn("RelayDiscoveryTest.makeHarness")(function* () {
       Ref.get(statusRequests).pipe(
         Effect.flatMap((requests) => Deferred.await(requests.get(environmentId)!)),
       ),
-    listDevices: () => Effect.die("unused"),
     createEnvironmentLinkChallenge: () => Effect.die("unused"),
     linkEnvironment: () => Effect.die("unused"),
     unlinkEnvironment: () => Effect.die("unused"),
     connectEnvironment: () => Effect.die("unused"),
-    registerDevice: () => Effect.die("unused"),
-    unregisterDevice: () => Effect.die("unused"),
-    registerLiveActivity: () => Effect.die("unused"),
     resetTokenCache: Effect.void,
   } satisfies ManagedRelay.ManagedRelayClient["Service"]);
   const connectivity = Connectivity.Connectivity.of({
@@ -264,14 +260,10 @@ describe("RelayEnvironmentDiscovery", () => {
             }),
           ),
         getEnvironmentStatus: () => Effect.die("unused"),
-        listDevices: () => Effect.die("unused"),
         createEnvironmentLinkChallenge: () => Effect.die("unused"),
         linkEnvironment: () => Effect.die("unused"),
         unlinkEnvironment: () => Effect.die("unused"),
         connectEnvironment: () => Effect.die("unused"),
-        registerDevice: () => Effect.die("unused"),
-        unregisterDevice: () => Effect.die("unused"),
-        registerLiveActivity: () => Effect.die("unused"),
         resetTokenCache: Effect.void,
       } satisfies ManagedRelay.ManagedRelayClient["Service"]);
       const layer = RelayEnvironmentDiscovery.layer.pipe(

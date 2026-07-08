@@ -906,23 +906,6 @@ function OpenCommandPaletteDialog(props: {
     [openSourceControlSettings, startAddProjectBrowse, startAddProjectClone],
   );
 
-  const startAddProjectSourceSelection = useCallback(
-    (environmentId: EnvironmentId): void => {
-      setAddProjectEnvironmentId(environmentId);
-      setAddProjectCloneFlow(null);
-      pushPaletteView({
-        addonIcon: <FolderPlusIcon className={ADDON_ICON_CLASS} />,
-        groups: buildAddProjectSourceGroups(
-          environmentId,
-          buildAddProjectRemoteSourceReadiness(
-            browseEnvironmentId === environmentId ? sourceControlDiscovery.data : null,
-          ),
-        ),
-      });
-    },
-    [browseEnvironmentId, buildAddProjectSourceGroups, sourceControlDiscovery.data],
-  );
-
   const openAddProjectFlow = useCallback(() => {
     openAddProjectDialog();
   }, [openAddProjectDialog]);

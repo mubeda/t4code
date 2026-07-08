@@ -121,11 +121,11 @@ it.effect("launches an installed editor with platform-safe arguments", () =>
     );
 
     assert.ok(spawned);
-    assert.equal(spawned.command, '^"C:\\Program^ Files\\Microsoft^ VS^ Code\\bin\\code.CMD^"');
-    assert.deepEqual(spawned.args, [
-      '^"--goto^"',
-      '^"C:\\workspace^ with^ spaces\\src\\index.ts:12:4^"',
-    ]);
+    assert.equal(
+      spawned.command,
+      '^"C:\\Program^ Files\\Microsoft^ VS^ Code\\bin\\code.CMD^" ^"--goto^" ^"C:\\workspace^ with^ spaces\\src\\index.ts:12:4^"',
+    );
+    assert.deepEqual(spawned.args, []);
     assert.equal(spawned.options.shell, true);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
