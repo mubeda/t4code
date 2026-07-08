@@ -2,6 +2,7 @@ import { ProviderRegistry, type ProviderRegistryShape } from "../Services/Provid
 import type { ServerProvider } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 
@@ -15,6 +16,10 @@ export const makeProviderRegistryMock = (
     Effect.succeed(makeManualOnlyProviderMaintenanceCapabilities({ provider, packageName: null })),
   setProviderMaintenanceActionState: () => Effect.succeed(providers),
   streamChanges: Stream.empty,
+  subscribeChanges: Effect.flatMap(
+    PubSub.unbounded<ReadonlyArray<ServerProvider>>(),
+    PubSub.subscribe,
+  ),
 });
 
 export const makeProviderRegistryLayer = (providers: ReadonlyArray<ServerProvider> = []) =>

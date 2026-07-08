@@ -30,6 +30,7 @@ import {
   WS_METHODS,
   WsRpcGroup,
   EditorId,
+  type ServerProvider,
   type ServerProviderUsageResult,
 } from "@t3tools/contracts";
 import {
@@ -547,6 +548,10 @@ const buildAppUnderTest = (options?: {
             ),
           setProviderMaintenanceActionState: () => Effect.succeed([]),
           streamChanges: Stream.empty,
+          subscribeChanges: Effect.flatMap(
+            PubSub.unbounded<ReadonlyArray<ServerProvider>>(),
+            PubSub.subscribe,
+          ),
           ...options?.layers?.providerRegistry,
         }),
       ),
