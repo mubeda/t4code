@@ -14,6 +14,8 @@ import type {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
+import type * as PubSub from "effect/PubSub";
+import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 import type { ProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 
@@ -74,6 +76,17 @@ export interface ProviderRegistryShape {
    * change. The array contains the full current state.
    */
   readonly streamChanges: Stream.Stream<ReadonlyArray<ServerProvider>>;
+
+  /**
+   * Acquire a provider-change subscription synchronously. Consumers that must
+   * not miss the next update should acquire this before starting their worker
+   * fiber, then consume it with `Stream.fromSubscription`.
+   */
+  readonly subscribeChanges: Effect.Effect<
+    PubSub.Subscription<ReadonlyArray<ServerProvider>>,
+    never,
+    Scope.Scope
+  >;
 }
 
 export class ProviderRegistry extends Context.Service<ProviderRegistry, ProviderRegistryShape>()(

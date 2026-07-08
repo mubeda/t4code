@@ -832,26 +832,22 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               cacheDir: config.providerStatusCacheDir,
               instanceId: cursorInstanceId,
             });
+            const registryChanges = yield* registry.subscribeChanges;
+            const registryUpdateFiber = yield* Stream.fromSubscription(registryChanges).pipe(
+              Stream.filter((providers) => providers[0]?.checkedAt === refreshedProvider.checkedAt),
+              Stream.take(1),
+              Stream.runDrain,
+              Effect.forkScoped,
+            );
 
             assert.deepStrictEqual((yield* registry.getProviders)[0]?.models, [
               ...initialProvider.models,
             ]);
             yield* Deferred.await(liveUpdateSubscribed);
             yield* PubSub.publish(changes, refreshedProvider);
+            yield* Fiber.join(registryUpdateFiber);
 
-            let currentProviders = yield* registry.getProviders;
-            for (
-              let attempt = 0;
-              attempt < 400 && currentProviders[0]?.checkedAt !== refreshedProvider.checkedAt;
-              attempt += 1
-            ) {
-              yield* TestClock.adjust("10 millis");
-              yield* Effect.yieldNow;
-              // @effect-diagnostics-next-line globalTimers:off - Real event-loop tick to flush the async subscription fiber; TestClock cannot advance real FS I/O.
-              yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
-              currentProviders = yield* registry.getProviders;
-            }
-
+            const currentProviders = yield* registry.getProviders;
             assert.deepStrictEqual(currentProviders[0], {
               ...refreshedProvider,
               models: [...initialProvider.models],
