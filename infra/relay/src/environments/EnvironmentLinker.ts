@@ -100,10 +100,7 @@ function proofAuthorizesRequestedCapabilities(
   if (request.managedTunnelsEnabled && !scopes.has("managed_tunnels")) {
     return false;
   }
-  return !(
-    (request.notificationsEnabled || request.liveActivitiesEnabled) &&
-    !scopes.has("agent_activity_notifications")
-  );
+  return true;
 }
 
 function isSecureManagedEndpoint(endpoint: RelayEnvironmentLinkProofPayload["endpoint"]): boolean {
@@ -172,8 +169,6 @@ const make = Effect.gen(function* () {
       );
       yield* Effect.annotateCurrentSpan({
         "relay.environment_id": candidate.environmentId,
-        "relay.link.notifications_enabled": input.request.notificationsEnabled,
-        "relay.link.live_activities_enabled": input.request.liveActivitiesEnabled,
         "relay.link.managed_tunnels_enabled": input.request.managedTunnelsEnabled,
       });
       if (candidate.exp <= nowSeconds) {
@@ -228,8 +223,6 @@ const make = Effect.gen(function* () {
         token: verified.challenge,
         userId: input.userId,
         request: {
-          notificationsEnabled: input.request.notificationsEnabled,
-          liveActivitiesEnabled: input.request.liveActivitiesEnabled,
           managedTunnelsEnabled: input.request.managedTunnelsEnabled,
         },
         nowEpochSeconds: nowSeconds,

@@ -16,7 +16,6 @@ import {
   WS_METHODS,
 } from "@t3tools/contracts";
 import {
-  type RelayClientDeviceRecord,
   type RelayClientEnvironmentRecord,
   type RelayEnvironmentLinkResponse,
   type RelayProtectedError as RelayProtectedErrorType,
@@ -154,10 +153,6 @@ function relayProtectedErrorMessage(error: RelayProtectedErrorType): string {
       return `Relay could not link the environment (${error.reason}).`;
     case "RelayEnvironmentLinkUnavailableError":
       return `Relay cannot provision the managed endpoint (${error.reason}).`;
-    case "RelayAgentActivityPublishProofExpiredError":
-      return "Relay rejected an expired agent activity publish proof.";
-    case "RelayAgentActivityPublishProofInvalidError":
-      return `Relay rejected the agent activity publish proof (${error.reason}).`;
     case "RelayInternalError":
       return `Relay encountered an internal error (${error.reason}).`;
   }
@@ -296,32 +291,6 @@ export function listManagedCloudEnvironments(input: {
   });
 }
 
-export function listCloudDevices(input: {
-  readonly clerkToken: string;
-}): Effect.Effect<
-  ReadonlyArray<RelayClientDeviceRecord>,
-  CloudEnvironmentLinkError,
-  ManagedRelay.ManagedRelayClient
-> {
-  return Effect.gen(function* () {
-    if (!relayUrl()) {
-      return yield* new CloudEnvironmentLinkError({
-        message: "T3CODE_RELAY_URL is not configured.",
-      });
-    }
-    const relayClient = yield* ManagedRelay.ManagedRelayClient;
-    return yield* relayClient.listDevices({ clerkToken: input.clerkToken }).pipe(
-      Effect.mapError(
-        (cause) =>
-          new CloudEnvironmentLinkError({
-            message: "Could not list cloud devices.",
-            cause,
-          }),
-      ),
-    );
-  });
-}
-
 export function readPrimaryCloudLinkState(input: {
   readonly target: CloudLinkTarget;
 }): Effect.Effect<CloudLinkState | null, CloudEnvironmentLinkError, HttpClient.HttpClient> {
@@ -330,23 +299,6 @@ export function readPrimaryCloudLinkState(input: {
     return yield* client.connect
       .linkState({ headers: {} })
       .pipe(Effect.mapError(environmentApiError("Could not read environment cloud link state.")));
-  }).pipe(Effect.provide(primaryEnvironmentHttpLayer));
-}
-
-export function updatePrimaryCloudPreferences(input: {
-  readonly target: CloudLinkTarget;
-  readonly publishAgentActivity: boolean;
-}): Effect.Effect<CloudLinkState, CloudEnvironmentLinkError, HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const client = yield* makeEnvironmentHttpApiClient(input.target.httpBaseUrl);
-    return yield* client.connect
-      .preferences({
-        headers: {},
-        payload: input,
-      })
-      .pipe(
-        Effect.mapError(environmentApiError("Could not update environment cloud preferences.")),
-      );
   }).pipe(Effect.provide(primaryEnvironmentHttpLayer));
 }
 
@@ -406,8 +358,6 @@ export function linkPrimaryEnvironmentToCloud(input: {
       .createEnvironmentLinkChallenge({
         clerkToken: input.clerkToken,
         payload: {
-          notificationsEnabled: true,
-          liveActivitiesEnabled: true,
           managedTunnelsEnabled: true,
         },
       })
@@ -438,8 +388,6 @@ export function linkPrimaryEnvironmentToCloud(input: {
         clerkToken: input.clerkToken,
         payload: {
           proof,
-          notificationsEnabled: true,
-          liveActivitiesEnabled: true,
           managedTunnelsEnabled: true,
         },
       })

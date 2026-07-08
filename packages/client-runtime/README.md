@@ -1,6 +1,6 @@
 # Client Runtime
 
-Shared client behavior for web and mobile. Public APIs are organized by package
+Shared client behavior for web and desktop. Public APIs are organized by package
 subpath. The package intentionally has no root export.
 
 ## Public subpaths

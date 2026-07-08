@@ -38,6 +38,7 @@ const OPENCODE_EMPTY_CONFIG_CONTENT = "{}";
 
 const OPENCODE_SERVER_READY_PREFIX = "opencode server listening";
 const DEFAULT_OPENCODE_SERVER_TIMEOUT_MS = 5_000;
+const OPENCODE_SERVER_FORCE_KILL_AFTER = "1 second" as const;
 const DEFAULT_HOSTNAME = "127.0.0.1";
 
 const realSleep = (durationMs: number): Effect.Effect<void> =>
@@ -366,6 +367,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         .spawn(
           ChildProcess.make(spawnCommand.command, spawnCommand.args, {
             detached: hostPlatform !== "win32",
+            forceKillAfter: OPENCODE_SERVER_FORCE_KILL_AFTER,
             shell: spawnCommand.shell,
             env: {
               ...input.environment,

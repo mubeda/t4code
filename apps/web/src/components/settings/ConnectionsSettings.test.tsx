@@ -110,7 +110,6 @@ const h = vi.hoisted(() => {
       relayRefresh: Symbol("relayEnvironmentDiscovery.refresh"),
       linkPrimary: Symbol("linkPrimaryEnvironment"),
       unlinkPrimary: Symbol("unlinkPrimaryEnvironment"),
-      updatePreferences: Symbol("updatePrimaryEnvironmentPreferences"),
     },
     commands: {
       connectPairing: vi.fn(),
@@ -121,7 +120,6 @@ const h = vi.hoisted(() => {
       relayRefresh: vi.fn(),
       link: vi.fn(),
       unlink: vi.fn(),
-      updatePreferences: vi.fn(),
     },
     refreshDesktopNetworkAccessState: vi.fn(),
     refreshDesktopWslState: vi.fn(),
@@ -252,7 +250,6 @@ vi.mock("~/cloud/primaryCloudLinkState", () => ({
 vi.mock("~/cloud/linkEnvironmentAtoms", () => ({
   linkPrimaryEnvironment: h.atoms.linkPrimary,
   unlinkPrimaryEnvironment: h.atoms.unlinkPrimary,
-  updatePrimaryEnvironmentPreferences: h.atoms.updatePreferences,
 }));
 
 vi.mock("~/state/auth", () => ({
@@ -319,7 +316,6 @@ vi.mock("../../state/use-atom-command", () => ({
     if (atom === h.atoms.relayRefresh) return h.commands.relayRefresh;
     if (atom === h.atoms.linkPrimary) return h.commands.link;
     if (atom === h.atoms.unlinkPrimary) return h.commands.unlink;
-    if (atom === h.atoms.updatePreferences) return h.commands.updatePreferences;
     throw new Error("Unexpected atom command in test");
   },
 }));
@@ -845,7 +841,7 @@ beforeEach(() => {
   h.primarySessionState = { data: null };
   h.cloudLinkState = {
     target: { environmentId: PRIMARY_ID },
-    data: { linked: true, publishAgentActivity: false },
+    data: { linked: true },
     error: null,
     isPending: false,
     refresh: vi.fn(),
@@ -1736,7 +1732,7 @@ describe("ConnectionsSettings", () => {
     expect(h.commands.connectSsh).not.toHaveBeenCalled();
   });
 
-  it("manages the T4 Connect link and publish-activity preference", async () => {
+  it("manages the T4 Connect link", async () => {
     stubBrowserWindow();
     h.primarySessionState = {
       data: { authenticated: true, scopes: ADMIN_SCOPES, auth: { policy: "remote-reachable" } },
@@ -1745,10 +1741,8 @@ describe("ConnectionsSettings", () => {
 
     const markup = render();
     expect(markup).toContain("This environment is available to your other devices");
-    expect(markup).toContain("Publish agent activity");
 
     const linkSwitch = control("switch", "Enable T4 Connect");
-    const publishSwitch = control("switch", "Publish agent activity to mobile clients");
 
     // Successful link.
     invoke(linkSwitch, "onCheckedChange", true);
@@ -1820,33 +1814,6 @@ describe("ConnectionsSettings", () => {
     expect(h.toastAdd).toHaveBeenCalledWith(
       expect.objectContaining({ title: "Could not update T4 Connect" }),
     );
-
-    // Publish-activity preference: enable, disable, then failure.
-    h.toastAdd.mockClear();
-    invoke(publishSwitch, "onCheckedChange", true);
-    await flush();
-    expect(h.commands.updatePreferences).toHaveBeenCalledWith({
-      target: h.cloudLinkState.target,
-      publishAgentActivity: true,
-    });
-    expect(h.toastAdd).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "Agent activity enabled" }),
-    );
-
-    h.toastAdd.mockClear();
-    invoke(publishSwitch, "onCheckedChange", false);
-    await flush();
-    expect(h.toastAdd).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "Agent activity disabled" }),
-    );
-
-    h.toastAdd.mockClear();
-    h.commands.updatePreferences.mockResolvedValueOnce(failure(new Error("preference failed")));
-    invoke(publishSwitch, "onCheckedChange", true);
-    await flush();
-    expect(h.toastAdd).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "Could not update T4 Connect" }),
-    );
   });
 
   it("reports a missing local environment when toggling T4 Connect too early", async () => {
@@ -1880,11 +1847,10 @@ describe("ConnectionsSettings", () => {
     h.primarySessionState = {
       data: { authenticated: true, scopes: ADMIN_SCOPES, auth: { policy: "local-only" } },
     };
-    h.cloudLinkState.data = { linked: false, publishAgentActivity: false };
+    h.cloudLinkState.data = { linked: false };
 
     const markup = render();
     expect(markup).toContain("Sign in to T4 Connect to manage this environment.");
-    expect(findControls("switch", "Publish agent activity to mobile clients")).toHaveLength(0);
   });
 
   it("lists connectable T4 Connect environments with availability states", async () => {

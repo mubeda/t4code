@@ -141,7 +141,6 @@ const makeBearerBroker = Effect.fn("clientRuntime.connection.broker.makeBearer")
 const makeRelayBroker = Effect.fn("clientRuntime.connection.broker.makeRelay")(function* () {
   const relay = yield* ManagedRelay.ManagedRelayClient;
   const session = yield* ClientCapabilities.CloudSession;
-  const identity = yield* ClientCapabilities.RelayDeviceIdentity;
   const remote = yield* RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization;
 
   return Effect.fnUntraced(
@@ -152,15 +151,11 @@ const makeRelayBroker = Effect.fn("clientRuntime.connection.broker.makeRelay")(f
           const clerkToken = yield* session.clerkToken.pipe(
             Effect.withSpan("relay.connection.cloudSessionToken.resolve"),
           );
-          const deviceId = yield* identity.deviceId.pipe(
-            Effect.withSpan("relay.connection.deviceIdentity.resolve"),
-          );
           const connected = yield* relay
             .connectEnvironment({
               clerkToken,
               scopes: [RelayEnvironmentConnectScope],
               environmentId: target.environmentId,
-              ...(Option.isSome(deviceId) ? { deviceId: deviceId.value } : {}),
             })
             .pipe(Effect.mapError(mapManagedRelayError));
           if (connected.environmentId !== target.environmentId) {

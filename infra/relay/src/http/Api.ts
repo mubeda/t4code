@@ -23,18 +23,14 @@ import { httpHeaderRedactionLayer } from "@t3tools/shared/httpObservability";
 
 import {
   RelayApi,
-  RelayAgentActivityPublishProofExpiredError,
-  RelayAgentActivityPublishProofInvalidError,
   RelayClientAuth,
   RelayClientPrincipal,
   RelayAccessTokenType,
   RelayDpopClientAuth,
   RelayEnvironmentConnectScope,
   RelayEnvironmentStatusScope,
-  RelayMobileRegistrationScope,
   RelayAuthInvalidError,
   type RelayAuthInvalidReason,
-  RelayEnvironmentAuth,
   RelayEnvironmentConnectNotAuthorizedError,
   RelayEnvironmentEndpointTimedOutError,
   RelayEnvironmentEndpointUnavailableError,
@@ -42,29 +38,21 @@ import {
   RelayEnvironmentLinkProofExpiredError,
   RelayEnvironmentLinkProofInvalidError,
   RelayEnvironmentLinkUnavailableError,
-  RelayEnvironmentPrincipal,
   type RelayEnvironmentConnectRequest,
   type RelayDpopAccessTokenScope,
   RelayInternalError,
 } from "@t3tools/contracts/relay";
 import { normalizeRelayIssuer } from "@t3tools/shared/relayJwt";
 
-import * as DeliveryAttempts from "../agentActivity/DeliveryAttempts.ts";
-import * as AgentActivityRows from "../agentActivity/AgentActivityRows.ts";
-import * as Devices from "../agentActivity/Devices.ts";
 import * as DpopProofs from "../auth/DpopProofs.ts";
 import * as RelayTokens from "../auth/RelayTokens.ts";
 import * as EnvironmentCredentials from "../environments/EnvironmentCredentials.ts";
 import * as EnvironmentLinks from "../environments/EnvironmentLinks.ts";
-import * as LiveActivities from "../agentActivity/LiveActivities.ts";
 import * as RelayConfiguration from "../Config.ts";
-import * as AgentActivityPublisher from "../agentActivity/AgentActivityPublisher.ts";
 import * as EnvironmentConnector from "../environments/EnvironmentConnector.ts";
 import * as EnvironmentLinker from "../environments/EnvironmentLinker.ts";
 import * as ManagedEndpointProvider from "../environments/ManagedEndpointProvider.ts";
 import * as ManagedEndpointAllocations from "../environments/ManagedEndpointAllocations.ts";
-import * as EnvironmentPublishSignatures from "../environments/EnvironmentPublishSignatures.ts";
-import * as MobileRegistrations from "../agentActivity/MobileRegistrations.ts";
 import { withSpanAttributes } from "../observability.ts";
 import * as RelayDb from "../db.ts";
 
@@ -228,39 +216,6 @@ export const relayClientAuthLayer = Layer.effect(
   }),
 );
 
-export const relayEnvironmentAuthLayer = Layer.effect(
-  RelayEnvironmentAuth,
-  Effect.gen(function* () {
-    const credentials = yield* EnvironmentCredentials.EnvironmentCredentials;
-    return {
-      environmentBearer: Effect.fn("relay.auth.environment.bearer")(function* (
-        httpEffect,
-        { credential },
-      ) {
-        const token = readHttpAuthorizationCredential(credential);
-        const principal = yield* credentials.authenticate(token).pipe(
-          Effect.catchTags({
-            EnvironmentCredentialAuthenticatePersistenceError: () =>
-              relayInternalErrorResponse("persistence_failed"),
-          }),
-        );
-        if (principal._tag === "None") {
-          return yield* relayAuthInvalidError("not_authorized");
-        }
-        yield* Effect.annotateCurrentSpan({
-          "relay.auth.mode": "environment_credential",
-        });
-        return yield* httpEffect.pipe(
-          withSpanAttributes({
-            "relay.environment_id": principal.value.environmentId,
-          }),
-          Effect.provideService(RelayEnvironmentPrincipal, principal.value),
-        );
-      }),
-    };
-  }),
-);
-
 export const relayDpopClientAuthLayer = Layer.effect(
   RelayDpopClientAuth,
   Effect.gen(function* () {
@@ -314,11 +269,7 @@ export const metadataApi = HttpApiBuilder.group(
   Effect.fnUntraced(function* (handlers) {
     const settings = yield* RelayConfiguration.RelayConfiguration;
     const issuer = normalizeRelayIssuer(settings.relayIssuer);
-    const scopes = [
-      RelayEnvironmentConnectScope,
-      RelayEnvironmentStatusScope,
-      RelayMobileRegistrationScope,
-    ] as const;
+    const scopes = [RelayEnvironmentConnectScope, RelayEnvironmentStatusScope] as const;
     return handlers
       .handle("authorizationServer", () =>
         Effect.succeed({
@@ -360,52 +311,6 @@ export const healthApi = HttpApiBuilder.group(
   }),
 );
 
-export const mobileApi = HttpApiBuilder.group(
-  RelayApi,
-  "mobile",
-  Effect.fnUntraced(function* (handlers) {
-    const registrations = yield* MobileRegistrations.MobileRegistrations;
-    const dpopProofs = yield* DpopProofs.DpopProofReplay;
-    return handlers
-      .handle(
-        "registerDevice",
-        Effect.fn("relay.api.mobile.registerDevice")(function* (args) {
-          const { payload } = args;
-          const { userId, token } = yield* RelayClientPrincipal;
-          const proofKeyThumbprint = yield* requireDpopPrincipalScope("mobile:registration");
-          yield* requireDpopThumbprint(proofKeyThumbprint, {
-            expectedAccessToken: token,
-          }).pipe(Effect.provideService(DpopProofs.DpopProofReplay, dpopProofs));
-          return yield* registrations.registerDevice({ userId, payload });
-        }, mapRelayCommonApiErrors("invalid_dpop")),
-      )
-      .handle(
-        "registerLiveActivity",
-        Effect.fn("relay.api.mobile.registerLiveActivity")(function* (args) {
-          const { payload } = args;
-          const { userId, token } = yield* RelayClientPrincipal;
-          const proofKeyThumbprint = yield* requireDpopPrincipalScope("mobile:registration");
-          yield* requireDpopThumbprint(proofKeyThumbprint, {
-            expectedAccessToken: token,
-          }).pipe(Effect.provideService(DpopProofs.DpopProofReplay, dpopProofs));
-          return yield* registrations.registerLiveActivity({ userId, payload });
-        }, mapRelayCommonApiErrors("invalid_dpop")),
-      )
-      .handle(
-        "unregisterDevice",
-        Effect.fn("relay.api.mobile.unregisterDevice")(function* (args) {
-          const { params } = args;
-          const { userId, token } = yield* RelayClientPrincipal;
-          const proofKeyThumbprint = yield* requireDpopPrincipalScope("mobile:registration");
-          yield* requireDpopThumbprint(proofKeyThumbprint, {
-            expectedAccessToken: token,
-          }).pipe(Effect.provideService(DpopProofs.DpopProofReplay, dpopProofs));
-          return yield* registrations.unregisterDevice({ userId, deviceId: params.deviceId });
-        }, mapRelayCommonApiErrors("invalid_dpop")),
-      );
-  }),
-);
-
 export const clientApi = HttpApiBuilder.group(
   RelayApi,
   "client",
@@ -417,7 +322,6 @@ export const clientApi = HttpApiBuilder.group(
     const links = yield* EnvironmentLinks.EnvironmentLinks;
     const managedEndpointProvider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
     const credentials = yield* EnvironmentCredentials.EnvironmentCredentials;
-    const devices = yield* Devices.Devices;
     return handlers
       .handle(
         "listEnvironments",
@@ -425,13 +329,6 @@ export const clientApi = HttpApiBuilder.group(
           const { userId } = yield* RelayClientPrincipal;
           const environments = yield* links.listForUser({ userId });
           return { environments };
-        }, mapRelayCommonApiErrors("not_authorized")),
-      )
-      .handle(
-        "listDevices",
-        Effect.fn("relay.api.client.listDevices")(function* () {
-          const { userId } = yield* RelayClientPrincipal;
-          return { devices: yield* devices.listForUser({ userId }) };
         }, mapRelayCommonApiErrors("not_authorized")),
       )
       .handle(
@@ -649,7 +546,6 @@ export const dpopClientApi = HttpApiBuilder.group(
               userId,
               environmentId: params.environmentId,
               clientProofKeyThumbprint,
-              ...(payload.deviceId ? { deviceId: payload.deviceId } : {}),
             });
           },
           mapRelayCommonApiErrors("invalid_dpop"),
@@ -724,143 +620,6 @@ export const dpopClientApi = HttpApiBuilder.group(
   }),
 );
 
-export const serverApi = HttpApiBuilder.group(
-  RelayApi,
-  "server",
-  Effect.fnUntraced(function* (handlers) {
-    const publisher = yield* AgentActivityPublisher.AgentActivityPublisher;
-    const publishSignatures = yield* EnvironmentPublishSignatures.EnvironmentPublishSignatures;
-    return handlers.handle(
-      "publishAgentActivity",
-      Effect.fn("relay.api.server.publishAgentActivity")(
-        function* (args) {
-          const { params, payload } = args;
-          const principal = yield* RelayEnvironmentPrincipal;
-          if (principal.environmentId !== params.environmentId) {
-            return yield* new HttpApiError.Unauthorized({});
-          }
-          yield* publishSignatures.verify({
-            environmentId: params.environmentId,
-            environmentPublicKey: principal.environmentPublicKey,
-            threadId: params.threadId,
-            request: payload,
-          });
-          return yield* publisher.publish({
-            environmentId: params.environmentId,
-            environmentPublicKey: principal.environmentPublicKey,
-            threadId: params.threadId,
-            state: payload.state,
-          });
-        },
-        mapErrorTags({
-          EnvironmentPublishPublicKeyMissing: (_error, traceId) =>
-            new RelayAuthInvalidError({
-              code: "auth_invalid",
-              reason: "not_authorized",
-              traceId,
-            }),
-          EnvironmentPublishSignatureExpired: (_error, traceId) =>
-            new RelayAgentActivityPublishProofExpiredError({
-              code: "agent_activity_publish_proof_expired",
-              traceId,
-            }),
-          EnvironmentPublishSignatureInvalid: (_error, traceId) =>
-            new RelayAgentActivityPublishProofInvalidError({
-              code: "agent_activity_publish_proof_invalid",
-              reason: "invalid_signature_or_payload",
-              traceId,
-            }),
-          DpopProofReplayPersistenceError: (_error, traceId) =>
-            new RelayInternalError({
-              code: "internal_error",
-              reason: "persistence_failed",
-              traceId,
-            }),
-          ApnsDeliveryJobQueuePayloadInvalid: (_error, traceId) =>
-            new RelayInternalError({
-              code: "internal_error",
-              reason: "internal_error",
-              traceId,
-            }),
-          ApnsDeliveryJobLiveActivityAggregateMissing: (_error, traceId) =>
-            new RelayInternalError({
-              code: "internal_error",
-              reason: "internal_error",
-              traceId,
-            }),
-          ApnsDeliveryJobLiveActivityNotificationUnexpected: (_error, traceId) =>
-            new RelayInternalError({
-              code: "internal_error",
-              reason: "internal_error",
-              traceId,
-            }),
-          ApnsDeliveryJobPushNotificationMissing: (_error, traceId) =>
-            new RelayInternalError({
-              code: "internal_error",
-              reason: "internal_error",
-              traceId,
-            }),
-          ApnsDeliveryJobPushNotificationAggregateUnexpected: (_error, traceId) =>
-            new RelayInternalError({
-              code: "internal_error",
-              reason: "internal_error",
-              traceId,
-            }),
-          ApnsDeliveryJobCreatedAtInvalid: (_error, traceId) =>
-            new RelayInternalError({
-              code: "internal_error",
-              reason: "internal_error",
-              traceId,
-            }),
-          ApnsDeliveryJobExpiresAtInvalid: (_error, traceId) =>
-            new RelayInternalError({
-              code: "internal_error",
-              reason: "internal_error",
-              traceId,
-            }),
-          ApnsDeliveryJobTimeWindowInvalid: (_error, traceId) =>
-            new RelayInternalError({
-              code: "internal_error",
-              reason: "internal_error",
-              traceId,
-            }),
-          ApnsDeliveryJobTimeWindowTooLong: (_error, traceId) =>
-            new RelayInternalError({
-              code: "internal_error",
-              reason: "internal_error",
-              traceId,
-            }),
-          ApnsDeliveryJobSignatureInvalid: (_error, traceId) =>
-            new RelayInternalError({
-              code: "internal_error",
-              reason: "internal_error",
-              traceId,
-            }),
-          ApnsDeliveryJobExpired: (_error, traceId) =>
-            new RelayInternalError({
-              code: "internal_error",
-              reason: "internal_error",
-              traceId,
-            }),
-          ApnsDeliveryJobClaimInFlight: (_error, traceId) =>
-            new RelayInternalError({
-              code: "internal_error",
-              reason: "internal_error",
-              traceId,
-            }),
-          ApnsDeliveryQueueSendError: (_error, traceId) =>
-            new RelayInternalError({
-              code: "internal_error",
-              reason: "upstream_unavailable",
-              traceId,
-            }),
-        }),
-        mapRelayCommonApiErrors("not_authorized"),
-      ),
-    );
-  }),
-);
-
 class ClerkTokenVerificationFailed extends Schema.TaggedErrorClass<ClerkTokenVerificationFailed>()(
   "ClerkTokenVerificationFailed",
   {
@@ -880,10 +639,6 @@ const currentTraceId = Effect.currentParentSpan.pipe(
 );
 
 const RelayCommonPersistenceError = Schema.Union([
-  Devices.DeviceRegistrationPersistenceError,
-  Devices.DeviceUnregistrationPersistenceError,
-  Devices.DeviceListPersistenceError,
-  LiveActivities.LiveActivityRegistrationPersistenceError,
   EnvironmentLinks.EnvironmentLinkUserListPersistenceError,
   EnvironmentLinks.EnvironmentPublicKeyListPersistenceError,
   EnvironmentLinks.EnvironmentLinkListPersistenceError,
@@ -893,12 +648,6 @@ const RelayCommonPersistenceError = Schema.Union([
   EnvironmentCredentials.EnvironmentCredentialAuthenticatePersistenceError,
   EnvironmentCredentials.EnvironmentCredentialRevokePersistenceError,
   DpopProofs.DpopProofReplayPersistenceError,
-  LiveActivities.LiveActivityTargetListPersistenceError,
-  AgentActivityRows.AgentActivityRowUpsertPersistenceError,
-  AgentActivityRows.AgentActivityRowDeletePersistenceError,
-  AgentActivityRows.AgentActivityRowListPersistenceError,
-  LiveActivities.LiveActivityDeliveryMarkPersistenceError,
-  DeliveryAttempts.DeliveryAttemptRecordPersistenceError,
 ]);
 type RelayCommonPersistenceError = typeof RelayCommonPersistenceError.Type;
 const isRelayCommonPersistenceError = Schema.is(RelayCommonPersistenceError);

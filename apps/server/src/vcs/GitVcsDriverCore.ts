@@ -61,6 +61,8 @@ const STATUS_UPSTREAM_REFRESH_ENV = Object.freeze({
   SSH_ASKPASS: "",
   SSH_ASKPASS_REQUIRE: "never",
 } satisfies NodeJS.ProcessEnv);
+const GIT_SPAWN_EPERM_RETRY_ATTEMPTS = 2;
+const GIT_SPAWN_EPERM_RETRY_DELAY = Duration.millis(25);
 const DEFAULT_BASE_BRANCH_CANDIDATES = ["main", "master"] as const;
 const GIT_LIST_BRANCHES_DEFAULT_LIMIT = 100;
 const NON_REPOSITORY_STATUS_DETAILS = Object.freeze<GitVcsDriver.GitStatusDetails>({
@@ -87,6 +89,22 @@ const NON_REPOSITORY_REMOTE_STATUS_DETAILS = Object.freeze<GitVcsDriver.GitRemot
   behindCount: 0,
   aheadOfDefaultCount: 0,
 });
+
+const errorCode = (cause: unknown): string | undefined => {
+  if (cause === null || typeof cause !== "object" || !("code" in cause)) {
+    return undefined;
+  }
+  const code = (cause as { readonly code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+};
+
+const isRetryableGitSpawnError = (cause: PlatformError.PlatformError): boolean => {
+  const reason = cause.reason;
+  if (!("module" in reason) || reason.module !== "ChildProcess" || reason.method !== "spawn") {
+    return false;
+  }
+  return errorCode(reason.cause) === "EPERM";
+};
 
 type TraceTailState = {
   processedChars: number;
@@ -820,27 +838,35 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
               }),
           ),
         );
-        const child = yield* commandSpawner
-          .spawn(
-            ChildProcess.make("git", commandInput.args, {
-              cwd: commandInput.cwd,
-              env: {
-                ...process.env,
-                ...input.env,
-                ...trace2Monitor.env,
-              },
+        const gitCommand = ChildProcess.make("git", commandInput.args, {
+          cwd: commandInput.cwd,
+          env: {
+            ...process.env,
+            ...input.env,
+            ...trace2Monitor.env,
+          },
+        });
+        const spawnGit = (remainingRetries: number): ReturnType<typeof commandSpawner.spawn> =>
+          commandSpawner.spawn(gitCommand).pipe(
+            Effect.catch((cause) => {
+              if (remainingRetries <= 0 || !isRetryableGitSpawnError(cause)) {
+                return Effect.fail(cause);
+              }
+              return Effect.sleep(GIT_SPAWN_EPERM_RETRY_DELAY).pipe(
+                Effect.flatMap(() => spawnGit(remainingRetries - 1)),
+              );
             }),
-          )
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new GitCommandError({
-                  ...gitCommandContext(commandInput),
-                  detail: "Failed to spawn Git process.",
-                  cause,
-                }),
-            ),
           );
+        const child = yield* spawnGit(GIT_SPAWN_EPERM_RETRY_ATTEMPTS).pipe(
+          Effect.mapError(
+            (cause) =>
+              new GitCommandError({
+                ...gitCommandContext(commandInput),
+                detail: "Failed to spawn Git process.",
+                cause,
+              }),
+          ),
+        );
 
         const [stdout, stderr, exitCode] = yield* Effect.all(
           [

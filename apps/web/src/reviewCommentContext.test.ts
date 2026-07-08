@@ -82,7 +82,7 @@ describe("review comment context parsing", () => {
     );
   });
 
-  it("formats editable file comments with the mobile review-comment contract", () => {
+  it("formats editable file comments with the review-comment contract", () => {
     const comment = buildFileReviewComment({
       id: "comment-1",
       filePath: "src/app.ts",
@@ -112,7 +112,7 @@ describe("review comment context parsing", () => {
     expect(prompt).toContain("```ts\ntwo\nthree\n```");
   });
 
-  it("formats mixed diff-side selections with the mobile review-comment contract", () => {
+  it("formats mixed diff-side selections with the review-comment contract", () => {
     const [fileDiff] = parsePatchFiles(
       [
         "diff --git a/src/app.ts b/src/app.ts",

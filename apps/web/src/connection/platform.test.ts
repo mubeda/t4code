@@ -20,7 +20,6 @@ import {
   EnvironmentOwnedDataCleanup,
   PlatformConnectionSource,
   PrimaryEnvironmentAuth,
-  RelayDeviceIdentity,
   SshEnvironmentGateway,
 } from "@t3tools/client-runtime/platform";
 import {
@@ -499,7 +498,6 @@ describe("connectionPlatformLayer capabilities", () => {
       expect(yield* CloudSession).toBeDefined();
       expect(yield* PrimaryEnvironmentAuth).toBeDefined();
       expect(yield* SshEnvironmentGateway).toBeDefined();
-      expect(yield* RelayDeviceIdentity).toBeDefined();
       expect(yield* PlatformConnectionSource).toBeDefined();
       expect(yield* EnvironmentOwnedDataCleanup).toBeDefined();
       expect(yield* EnvironmentRpcRequestObserver).toBeDefined();
@@ -512,14 +510,6 @@ describe("connectionPlatformLayer capabilities", () => {
       const presentation = yield* ClientPresentation;
       expect(presentation.metadata.label).toBe("T4Code Web");
       expect("os" in presentation.metadata).toBe(false);
-    }).pipe(Effect.provide(connectionPlatformLayer));
-  });
-
-  it.effect("reports the relay device identity as absent", () => {
-    stubBrowser();
-    return Effect.gen(function* () {
-      const identity = yield* RelayDeviceIdentity;
-      expect(Option.isNone(yield* identity.deviceId)).toBe(true);
     }).pipe(Effect.provide(connectionPlatformLayer));
   });
 });

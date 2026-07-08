@@ -20,7 +20,6 @@ describe("RelayDeployError", () => {
   it("reports the incomplete state source, stage, and missing fields", () => {
     const missingFields = missingRelayPublicConfigFields({
       url: "https://relay.example.test",
-      mobileTracingUrl: "https://api.axiom.co/v1/traces",
     });
     const error = new RelayDeployError({
       source: "alchemy_state",
@@ -31,16 +30,10 @@ describe("RelayDeployError", () => {
     expect(error).toMatchObject({
       source: "alchemy_state",
       stage: "production",
-      missingFields: [
-        "mobileTracingDataset",
-        "mobileTracingToken",
-        "clientTracingUrl",
-        "clientTracingDataset",
-        "clientTracingToken",
-      ],
+      missingFields: ["clientTracingUrl", "clientTracingDataset", "clientTracingToken"],
     });
     expect(error.message).toBe(
-      "Relay deploy output from 'alchemy_state' for stage 'production' is missing required public config fields: mobileTracingDataset, mobileTracingToken, clientTracingUrl, clientTracingDataset, clientTracingToken",
+      "Relay deploy output from 'alchemy_state' for stage 'production' is missing required public config fields: clientTracingUrl, clientTracingDataset, clientTracingToken",
     );
   });
 
@@ -109,9 +102,6 @@ describe("reconcileRootEnvRelayUrl", () => {
 describe("reconcileRootEnvPublicConfig", () => {
   const config = {
     relayUrl: "https://relay.example.test",
-    mobileTracingUrl: "https://api.axiom.co/v1/traces",
-    mobileTracingDataset: "t3-code-mobile-traces-dev",
-    mobileTracingToken: "xaat-public-ingest",
     clientTracingUrl: "https://api.axiom.co/v1/traces",
     clientTracingDataset: "t3-code-relay-client-traces-dev",
     clientTracingToken: "xaat-relay-client-ingest",
@@ -121,9 +111,6 @@ describe("reconcileRootEnvPublicConfig", () => {
     expect(reconcileRootEnvPublicConfig("", config)).toBe(
       [
         "T3CODE_RELAY_URL=https://relay.example.test",
-        "T3CODE_MOBILE_OTLP_TRACES_URL=https://api.axiom.co/v1/traces",
-        "T3CODE_MOBILE_OTLP_TRACES_DATASET=t3-code-mobile-traces-dev",
-        "T3CODE_MOBILE_OTLP_TRACES_TOKEN=xaat-public-ingest",
         "T3CODE_RELAY_CLIENT_OTLP_TRACES_URL=https://api.axiom.co/v1/traces",
         "T3CODE_RELAY_CLIENT_OTLP_TRACES_DATASET=t3-code-relay-client-traces-dev",
         "T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN=xaat-relay-client-ingest",
@@ -138,9 +125,6 @@ describe("reconcileRootEnvPublicConfig", () => {
         [
           "T3CODE_CLERK_PUBLISHABLE_KEY=pk_test_example",
           "T3CODE_RELAY_URL=https://old.example.test",
-          "T3CODE_MOBILE_OTLP_TRACES_URL=https://old.example.test/v1/traces",
-          "T3CODE_MOBILE_OTLP_TRACES_DATASET=old-dataset",
-          "T3CODE_MOBILE_OTLP_TRACES_TOKEN=old-token",
           "T3CODE_RELAY_CLIENT_OTLP_TRACES_URL=https://old.example.test/v1/traces",
           "T3CODE_RELAY_CLIENT_OTLP_TRACES_DATASET=old-client-dataset",
           "T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN=old-client-token",
@@ -152,9 +136,6 @@ describe("reconcileRootEnvPublicConfig", () => {
       [
         "T3CODE_CLERK_PUBLISHABLE_KEY=pk_test_example",
         "T3CODE_RELAY_URL=https://relay.example.test",
-        "T3CODE_MOBILE_OTLP_TRACES_URL=https://api.axiom.co/v1/traces",
-        "T3CODE_MOBILE_OTLP_TRACES_DATASET=t3-code-mobile-traces-dev",
-        "T3CODE_MOBILE_OTLP_TRACES_TOKEN=xaat-public-ingest",
         "T3CODE_RELAY_CLIENT_OTLP_TRACES_URL=https://api.axiom.co/v1/traces",
         "T3CODE_RELAY_CLIENT_OTLP_TRACES_DATASET=t3-code-relay-client-traces-dev",
         "T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN=xaat-relay-client-ingest",
@@ -181,9 +162,6 @@ describe("serializeRelayClientTracingEnvironment", () => {
     expect(
       serializeRelayClientTracingEnvironment({
         relayUrl: "https://relay.example.test",
-        mobileTracingUrl: "https://api.axiom.co/v1/traces",
-        mobileTracingDataset: "mobile",
-        mobileTracingToken: "mobile-token",
         clientTracingUrl: "https://api.axiom.co/v1/traces",
         clientTracingDataset: "relay",
         clientTracingToken: "client-token",
@@ -223,18 +201,12 @@ describe("publicConfigFromOutput", () => {
     expect(
       publicConfigFromOutput({
         url: "https://relay.example.test",
-        mobileTracingUrl: "https://api.axiom.co/v1/traces",
-        mobileTracingDataset: "mobile",
-        mobileTracingToken: "mobile-token",
         clientTracingUrl: "https://api.axiom.co/v1/traces",
         clientTracingDataset: "relay",
         clientTracingToken: "client-token",
       }),
     ).toEqual({
       relayUrl: "https://relay.example.test",
-      mobileTracingUrl: "https://api.axiom.co/v1/traces",
-      mobileTracingDataset: "mobile",
-      mobileTracingToken: "mobile-token",
       clientTracingUrl: "https://api.axiom.co/v1/traces",
       clientTracingDataset: "relay",
       clientTracingToken: "client-token",
