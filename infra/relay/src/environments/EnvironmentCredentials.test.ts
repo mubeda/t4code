@@ -57,7 +57,7 @@ describe("EnvironmentCredentials", () => {
 
   it.effect("does not retain credential tokens when lookup persistence fails", () => {
     const cause = new Error("database unavailable");
-    const token = "t3env_sensitive-credential-token";
+    const token = "t4codeenv_sensitive-credential-token";
     const fakeDb = {
       select: () => ({
         from: (table: unknown) => {
@@ -139,7 +139,7 @@ describe("EnvironmentCredentials", () => {
         });
         const [, credentialId, secret] = token.split("_");
 
-        expect(token).toMatch(/^t3env_[0-9a-f]{64}_[0-9a-f]{96}$/);
+        expect(token).toMatch(/^t4codeenv_[0-9a-f]{64}_[0-9a-f]{96}$/);
         expect(credentialId).toHaveLength(64);
         expect(secret).toHaveLength(96);
         expect(insertedValues).toHaveLength(1);

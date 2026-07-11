@@ -3,7 +3,7 @@ import type {
   ServerProcessDiagnosticsResult,
   ServerProcessResourceHistoryResult,
   ServerProviderUsageResult,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import { RefreshCwIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -20,6 +20,7 @@ import { ResourceUsageSegment } from "./ResourceUsageSegment";
 import { buildProviderUsageViewModel } from "./statusBarPresentation";
 
 export const STATUS_BAR_USAGE_REFRESH_INTERVAL_MS = 30_000;
+export const STATUS_BAR_RESOURCE_REFRESH_INTERVAL_MS = 2_000;
 
 type StatusBarUsageRefresh = () => void | Promise<unknown>;
 
@@ -50,15 +51,32 @@ export function createStatusBarRefreshHandler(input: {
     readonly environmentId: EnvironmentId;
     readonly input: { readonly providers: readonly ["claude", "codex"] };
   }) => Promise<unknown>;
-  readonly refreshQuery: () => void;
+  readonly refreshUsageQuery: () => void;
+  readonly refreshProcessDiagnostics: () => void;
+  readonly refreshResourceHistory: () => void;
 }) {
   return async () => {
     if (input.environmentId === null) return;
-    await input.refreshProviderUsage({
+    const providerRefresh = input.refreshProviderUsage({
       environmentId: input.environmentId,
       input: { providers: ["claude", "codex"] },
     });
-    input.refreshQuery();
+    input.refreshUsageQuery();
+    input.refreshProcessDiagnostics();
+    input.refreshResourceHistory();
+    await providerRefresh;
+  };
+}
+
+export function createStatusBarResourceRefreshHandler(input: {
+  readonly environmentId: EnvironmentId | null;
+  readonly refreshProcessDiagnostics: () => void;
+  readonly refreshResourceHistory: () => void;
+}) {
+  return () => {
+    if (input.environmentId === null) return;
+    input.refreshProcessDiagnostics();
+    input.refreshResourceHistory();
   };
 }
 
@@ -124,8 +142,11 @@ export function AppStatusBar() {
   const environmentId = primaryEnvironment?.environmentId ?? null;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const refreshRef = useRef<() => Promise<unknown>>(async () => undefined);
+  const resourceRefreshRef = useRef<() => void>(() => undefined);
   const autoRefreshCleanupRef = useRef<(() => void) | null>(null);
   const autoRefreshEnvironmentRef = useRef<EnvironmentId | null>(null);
+  const resourceAutoRefreshCleanupRef = useRef<(() => void) | null>(null);
+  const resourceAutoRefreshEnvironmentRef = useRef<EnvironmentId | null>(null);
   const [iconOnly, setIconOnly] = useState(false);
   const usage = useEnvironmentQuery(
     environmentId === null ? null : serverEnvironment.providerUsage({ environmentId, input: {} }),
@@ -151,20 +172,43 @@ export function AppStatusBar() {
     createStatusBarRefreshHandler({
       environmentId,
       refreshProviderUsage,
-      refreshQuery: usage.refresh,
+      refreshUsageQuery: usage.refresh,
+      refreshProcessDiagnostics: diagnostics.refresh,
+      refreshResourceHistory: resourceHistory.refresh,
     }),
-    [environmentId, refreshProviderUsage, usage.refresh],
+    [
+      diagnostics.refresh,
+      environmentId,
+      refreshProviderUsage,
+      resourceHistory.refresh,
+      usage.refresh,
+    ],
+  );
+  const resourceRefresh = useCallback(
+    createStatusBarResourceRefreshHandler({
+      environmentId,
+      refreshProcessDiagnostics: diagnostics.refresh,
+      refreshResourceHistory: resourceHistory.refresh,
+    }),
+    [diagnostics.refresh, environmentId, resourceHistory.refresh],
   );
 
   useEffect(() => {
     refreshRef.current = refresh;
   }, [refresh]);
 
+  useEffect(() => {
+    resourceRefreshRef.current = resourceRefresh;
+  }, [resourceRefresh]);
+
   useEffect(
     () => () => {
       autoRefreshCleanupRef.current?.();
       autoRefreshCleanupRef.current = null;
       autoRefreshEnvironmentRef.current = null;
+      resourceAutoRefreshCleanupRef.current?.();
+      resourceAutoRefreshCleanupRef.current = null;
+      resourceAutoRefreshEnvironmentRef.current = null;
     },
     [],
   );
@@ -183,6 +227,22 @@ export function AppStatusBar() {
       refresh: () => refreshRef.current(),
     });
   }, [environmentId, usage.data]);
+
+  useEffect(() => {
+    if (environmentId === null) {
+      resourceAutoRefreshCleanupRef.current?.();
+      resourceAutoRefreshCleanupRef.current = null;
+      resourceAutoRefreshEnvironmentRef.current = null;
+      return;
+    }
+    if (resourceAutoRefreshEnvironmentRef.current === environmentId) return;
+    resourceAutoRefreshCleanupRef.current?.();
+    resourceAutoRefreshEnvironmentRef.current = environmentId;
+    resourceAutoRefreshCleanupRef.current = startStatusBarUsageAutoRefresh({
+      refresh: () => resourceRefreshRef.current(),
+      intervalMs: STATUS_BAR_RESOURCE_REFRESH_INTERVAL_MS,
+    });
+  }, [environmentId]);
 
   useEffect(() => {
     const element = containerRef.current;

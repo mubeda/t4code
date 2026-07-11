@@ -1,5 +1,5 @@
-import type { KeybindingRule } from "@t3tools/contracts";
-import { MAX_WHEN_EXPRESSION_DEPTH } from "@t3tools/contracts";
+import type { KeybindingRule } from "@t4code/contracts";
+import { MAX_WHEN_EXPRESSION_DEPTH } from "@t4code/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import {
   compileResolvedKeybindingRule,

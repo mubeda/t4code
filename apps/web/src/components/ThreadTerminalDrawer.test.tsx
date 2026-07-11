@@ -1,5 +1,5 @@
-import { EnvironmentId, ThreadId, type ResolvedKeybindingsConfig } from "@t3tools/contracts";
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { EnvironmentId, ThreadId, type ResolvedKeybindingsConfig } from "@t4code/contracts";
+import { scopeThreadRef } from "@t4code/client-runtime/environment";
 import { type ComponentProps, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";

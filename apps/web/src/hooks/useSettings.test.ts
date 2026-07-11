@@ -13,8 +13,8 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   EnvironmentId,
-} from "@t3tools/contracts";
-import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
+} from "@t4code/contracts";
+import { DEFAULT_CLIENT_SETTINGS } from "@t4code/contracts/settings";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const h = vi.hoisted(() => ({
@@ -81,7 +81,7 @@ vi.mock("~/state/use-atom-command", () => ({
   useAtomCommand: () => (input: unknown) => h.persistServerSettings(input),
 }));
 
-vi.mock("@t3tools/client-runtime/errors", () => ({
+vi.mock("@t4code/client-runtime/errors", () => ({
   safeErrorLogAttributes: () => ({}),
 }));
 

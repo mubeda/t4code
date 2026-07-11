@@ -1,0 +1,14 @@
+{
+  "code": 0,
+  "stdout": "{\"cliVersion\":\"2026.04.09-f2b0fcd\",\"subscriptionTier\":\"Team\",\"userEmail\":\"cursor@example.com\"}",
+  "stderr": "",
+  "parsed": {
+    "version": "2026.04.09-f2b0fcd",
+    "status": "ready",
+    "auth": {
+      "status": "authenticated",
+      "email": "cursor@example.com",
+      "type": "Team"
+    }
+  }
+}

@@ -1,6 +1,6 @@
 import { DownloadIcon, RotateCwIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 import { useCallback, useState } from "react";
-import { isElectron } from "../../env";
+import { isDesktopHost } from "../../env";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import {
@@ -21,12 +21,12 @@ export function SidebarUpdatePill() {
   const state = useDesktopUpdateState();
   const [dismissed, setDismissed] = useState(false);
 
-  const visible = isElectron && shouldShowDesktopUpdateButton(state) && !dismissed;
+  const visible = isDesktopHost && shouldShowDesktopUpdateButton(state) && !dismissed;
   const tooltip = state ? getDesktopUpdateButtonTooltip(state) : "Update available";
   const disabled = isDesktopUpdateButtonDisabled(state);
   const action = state ? resolveDesktopUpdateButtonAction(state) : "none";
 
-  const showArm64Warning = isElectron && shouldShowArm64IntelBuildWarning(state);
+  const showArm64Warning = isDesktopHost && shouldShowArm64IntelBuildWarning(state);
   const arm64Description =
     state && showArm64Warning ? getArm64IntelBuildWarningDescription(state) : null;
 

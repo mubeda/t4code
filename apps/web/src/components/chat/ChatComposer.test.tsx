@@ -22,11 +22,11 @@ import {
   type ResolvedKeybindingsConfig,
   type ServerProvider,
   ThreadId,
-} from "@t3tools/contracts";
-import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
-import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
-import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
+} from "@t4code/contracts";
+import { DEFAULT_UNIFIED_SETTINGS } from "@t4code/contracts/settings";
+import { scopedThreadKey, scopeThreadRef } from "@t4code/client-runtime/environment";
+import type { EnvironmentConnectionPresentation } from "@t4code/client-runtime/connection";
+import { serializeComposerFileLink } from "@t4code/shared/composerTrigger";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";

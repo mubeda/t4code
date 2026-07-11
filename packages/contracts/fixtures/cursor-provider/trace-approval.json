@@ -1,0 +1,80 @@
+[
+  {
+    "type": "session.started",
+    "threadId": "cursor-thread-1",
+    "payload": {}
+  },
+  {
+    "type": "thread.started",
+    "threadId": "cursor-thread-1",
+    "payload": {}
+  },
+  {
+    "type": "turn.started",
+    "threadId": "cursor-thread-1",
+    "turnId": "turn-3",
+    "payload": {
+      "model": "default"
+    }
+  },
+  {
+    "type": "request.opened",
+    "threadId": "cursor-thread-1",
+    "turnId": "turn-3",
+    "requestId": "approval:1001",
+    "payload": {
+      "requestType": "exec_command_approval",
+      "detail": "cat server/package.json"
+    }
+  },
+  {
+    "type": "request.resolved",
+    "threadId": "cursor-thread-1",
+    "turnId": "turn-3",
+    "requestId": "approval:1001",
+    "payload": {
+      "requestType": "exec_command_approval",
+      "decision": "accept"
+    }
+  },
+  {
+    "type": "item.updated",
+    "threadId": "cursor-thread-1",
+    "turnId": "turn-3",
+    "payload": {
+      "itemType": "command_execution",
+      "itemId": "tool-call-1",
+      "status": "inProgress",
+      "detail": "cat server/package.json"
+    }
+  },
+  {
+    "type": "item.completed",
+    "threadId": "cursor-thread-1",
+    "turnId": "turn-3",
+    "payload": {
+      "itemType": "command_execution",
+      "itemId": "tool-call-1",
+      "status": "completed",
+      "detail": "cat server/package.json"
+    }
+  },
+  {
+    "type": "content.delta",
+    "threadId": "cursor-thread-1",
+    "turnId": "turn-3",
+    "payload": {
+      "streamKind": "assistant_text",
+      "delta": "hello from mock"
+    }
+  },
+  {
+    "type": "turn.completed",
+    "threadId": "cursor-thread-1",
+    "turnId": "turn-3",
+    "payload": {
+      "state": "completed",
+      "stopReason": "end_turn"
+    }
+  }
+]

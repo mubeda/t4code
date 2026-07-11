@@ -13,7 +13,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { ReactElement } from "react";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t4code/contracts";
 
 const h = vi.hoisted(() => {
   const state = {
@@ -103,7 +103,7 @@ const capture = (kind: string, props: Record<string, unknown>) => {
   h.captures.push({ kind, props });
 };
 
-vi.mock("@t3tools/client-runtime/state/runtime", () => ({
+vi.mock("@t4code/client-runtime/state/runtime", () => ({
   squashAtomCommandFailure: (result: { error?: unknown }) =>
     result.error ?? new Error("squashed failure"),
 }));

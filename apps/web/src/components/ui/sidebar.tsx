@@ -322,10 +322,7 @@ function SidebarTrigger({ className, onClick, ...props }: React.ComponentProps<t
 
   return (
     <Button
-      className={cn(
-        "size-[var(--workspace-titlebar-control-size)]! [-webkit-app-region:no-drag]",
-        className,
-      )}
+      className={cn("size-[var(--workspace-titlebar-control-size)]!", className)}
       data-sidebar="trigger"
       data-slot="sidebar-trigger"
       aria-pressed={isOpen}

@@ -11,7 +11,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { ReactElement, ReactNode } from "react";
-import { EnvironmentId, ProjectId, ThreadId, TurnId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId, TurnId } from "@t4code/contracts";
 
 const h = vi.hoisted(() => {
   const state = {
@@ -180,12 +180,12 @@ vi.mock("../diffFileActions", () => ({
   },
 }));
 
-vi.mock("@t3tools/client-runtime/state/runtime", () => ({
+vi.mock("@t4code/client-runtime/state/runtime", () => ({
   isAtomCommandInterrupted: (result: { _interrupted?: boolean }) => result?._interrupted === true,
   squashAtomCommandFailure: (result: unknown) => result,
 }));
 
-vi.mock("@t3tools/client-runtime/errors", () => ({
+vi.mock("@t4code/client-runtime/errors", () => ({
   safeErrorLogAttributes: () => ({ error: "redacted" }),
 }));
 

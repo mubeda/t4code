@@ -15,7 +15,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProviderModel,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 
 const harness = vi.hoisted(() => {
   type Matcher = (initial: unknown) => boolean;
@@ -99,8 +99,8 @@ vi.mock("../../modelSelection", () => ({
   MAX_CUSTOM_MODEL_LENGTH: 256,
 }));
 
-vi.mock("@t3tools/shared/model", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@t3tools/shared/model")>();
+vi.mock("@t4code/shared/model", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@t4code/shared/model")>();
   return {
     ...actual,
     normalizeModelSlug: (value: string | null | undefined) => {

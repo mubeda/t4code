@@ -1,0 +1,68 @@
+[
+  {
+    "type": "session.started",
+    "threadId": "opencode-thread-1",
+    "payload": {}
+  },
+  {
+    "type": "thread.started",
+    "threadId": "opencode-thread-1",
+    "payload": {}
+  },
+  {
+    "type": "turn.started",
+    "threadId": "opencode-thread-1",
+    "turnId": "turn-3",
+    "payload": {}
+  },
+  {
+    "type": "content.delta",
+    "threadId": "opencode-thread-1",
+    "turnId": "turn-3",
+    "payload": {
+      "streamKind": "assistant_text",
+      "delta": "Hello"
+    }
+  },
+  {
+    "type": "user-input.requested",
+    "threadId": "opencode-thread-1",
+    "turnId": "turn-3",
+    "requestId": "question-1",
+    "payload": {
+      "questions": [
+        {
+          "id": "Scope",
+          "header": "Scope",
+          "question": "Scope",
+          "options": [
+            {
+              "label": "Workspace"
+            },
+            {
+              "label": "Session"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "type": "content.delta",
+    "threadId": "opencode-thread-1",
+    "turnId": "turn-3",
+    "payload": {
+      "streamKind": "assistant_text",
+      "delta": " world"
+    }
+  },
+  {
+    "type": "turn.completed",
+    "threadId": "opencode-thread-1",
+    "turnId": "turn-3",
+    "payload": {
+      "state": "completed",
+      "stopReason": "completed"
+    }
+  }
+]

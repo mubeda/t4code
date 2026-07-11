@@ -1,0 +1,13 @@
+{
+  "_tag": "Request",
+  "id": "900719925474099312345",
+  "tag": "server.getConfig",
+  "payload": {},
+  "headers": [
+    ["authorization", "Bearer fixture"],
+    ["x-t4code-fixture", "rpc-wire"]
+  ],
+  "traceId": "0123456789abcdef0123456789abcdef",
+  "spanId": "0123456789abcdef",
+  "sampled": true
+}

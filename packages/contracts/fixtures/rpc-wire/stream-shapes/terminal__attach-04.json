@@ -1,0 +1,12 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "threadId": "q",
+      "terminalId": "~",
+      "type": "error",
+      "message": "&"
+    }
+  ]
+}

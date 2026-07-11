@@ -15,14 +15,14 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId } from "@t4code/contracts";
 import type {
   ServerProcessDiagnosticsEntry,
   ServerProcessDiagnosticsResult,
   ServerProcessResourceHistoryResult,
   ServerProcessResourceHistorySummary,
   ServerTraceDiagnosticsResult,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 
 type AnyProps = Record<string, unknown>;
 
@@ -127,7 +127,7 @@ vi.mock("@effect/atom-react", () => ({
   },
 }));
 
-vi.mock("@t3tools/client-runtime/state/runtime", () => ({
+vi.mock("@t4code/client-runtime/state/runtime", () => ({
   isAtomCommandInterrupted: (result: { _tag?: string; interrupted?: boolean }) =>
     result._tag === "Interrupted" || result.interrupted === true,
   squashAtomCommandFailure: (result: { error?: unknown }) => result.error,

@@ -15,7 +15,7 @@ Object.assign(process.env, repoEnv);
 const port = Number(process.env.PORT ?? 5733);
 const host = process.env.HOST?.trim() || "localhost";
 const configuredWsUrl = process.env.VITE_WS_URL?.trim();
-const configuredRelayUrl = repoEnv.VITE_T3CODE_RELAY_URL?.trim() || "";
+const configuredRelayUrl = repoEnv.VITE_T4CODE_RELAY_URL?.trim() || "";
 const configuredClerkPublishableKey = repoEnv.VITE_CLERK_PUBLISHABLE_KEY?.trim() || "";
 const configuredClerkJwtTemplate = repoEnv.VITE_CLERK_JWT_TEMPLATE?.trim() || "";
 const configuredRelayTracingUrl = repoEnv.VITE_RELAY_OTLP_TRACES_URL?.trim() || "";
@@ -36,14 +36,10 @@ const configuredHostedAppUrl = (() => {
   }
   return undefined;
 })();
-const sourcemapEnv = process.env.T3CODE_WEB_SOURCEMAP?.trim().toLowerCase();
+const sourcemapEnv = process.env.T4CODE_WEB_SOURCEMAP?.trim().toLowerCase();
 
 const buildSourcemap: boolean | "hidden" =
-  sourcemapEnv === "0" || sourcemapEnv === "false"
-    ? false
-    : sourcemapEnv === "hidden"
-      ? "hidden"
-      : true;
+  sourcemapEnv === "hidden" ? "hidden" : sourcemapEnv === "1" || sourcemapEnv === "true";
 
 const unitTestProject = {
   extends: true,
@@ -85,6 +81,7 @@ export default defineConfig(() => {
   return {
     plugins: [
       tanstackRouter({
+        autoCodeSplitting: true,
         routeFileIgnorePattern: "\\.test\\.(ts|tsx)$",
       }),
       react(),
@@ -114,7 +111,7 @@ export default defineConfig(() => {
     define: {
       // In dev mode, tell the web app where the WebSocket server lives
       "import.meta.env.VITE_WS_URL": JSON.stringify(configuredWsUrl ?? ""),
-      "import.meta.env.VITE_T3CODE_RELAY_URL": JSON.stringify(configuredRelayUrl),
+      "import.meta.env.VITE_T4CODE_RELAY_URL": JSON.stringify(configuredRelayUrl),
       "import.meta.env.VITE_CLERK_PUBLISHABLE_KEY": JSON.stringify(configuredClerkPublishableKey),
       "import.meta.env.VITE_CLERK_JWT_TEMPLATE": JSON.stringify(configuredClerkJwtTemplate),
       "import.meta.env.VITE_RELAY_OTLP_TRACES_URL": JSON.stringify(configuredRelayTracingUrl),
@@ -153,8 +150,8 @@ export default defineConfig(() => {
           }
         : {}),
       hmr: {
-        // Explicit config so Vite's HMR WebSocket connects reliably
-        // inside Electron's BrowserWindow. Vite 8 uses console.debug for
+        // Explicit config so Vite's HMR WebSocket connects reliably inside
+        // the Tauri WebView. Vite 8 uses console.debug for
         // connection logs — enable "Verbose" in DevTools to see them.
         protocol: "ws",
         host,
@@ -165,10 +162,10 @@ export default defineConfig(() => {
       outDir: "dist",
       emptyOutDir: true,
       sourcemap: buildSourcemap,
-      chunkSizeWarningLimit: 4096,
-      // Vite-plus currently resolves production bundle options from
-      // rollupOptions internally, even for its Rolldown builder.
-      rollupOptions: {
+      chunkSizeWarningLimit: 1536,
+      // Keep production build logs actionable; Rolldown documents this as a
+      // diagnostic timing warning rather than a correctness check.
+      rolldownOptions: {
         checks: {
           pluginTimings: false,
         },

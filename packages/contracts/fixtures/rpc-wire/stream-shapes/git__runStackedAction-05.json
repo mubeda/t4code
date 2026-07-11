@@ -1,0 +1,41 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "actionId": "N{2?ImT<R_s",
+      "cwd": "MU3<=v9",
+      "action": "commit",
+      "kind": "action_finished",
+      "result": {
+        "action": "commit_push",
+        "branch": {
+          "status": "skipped_not_requested"
+        },
+        "commit": {
+          "status": "created",
+          "commitSha": "m~",
+          "subject": "=1&]+"
+        },
+        "push": {
+          "status": "pushed",
+          "upstreamBranch": "{{d}",
+          "setUpstream": true
+        },
+        "pr": {
+          "status": "created",
+          "baseBranch": "AI",
+          "title": "constructor"
+        },
+        "toast": {
+          "title": "c",
+          "cta": {
+            "kind": "open_pr",
+            "label": "G#o",
+            "url": ",}"
+          }
+        }
+      }
+    }
+  ]
+}

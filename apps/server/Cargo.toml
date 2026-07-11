@@ -1,0 +1,64 @@
+[package]
+name = "t4code-server"
+version = "0.1.1"
+description = "T4Code Rust server runtime"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "t4code_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "t4code"
+path = "src/main.rs"
+
+[dependencies]
+axum.workspace = true
+base64.workspace = true
+clap.workspace = true
+dirs.workspace = true
+ed25519-dalek.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
+hmac.workspace = true
+httpdate.workspace = true
+mime_guess.workspace = true
+open.workspace = true
+percent-encoding.workspace = true
+p256.workspace = true
+portable-pty.workspace = true
+process-wrap.workspace = true
+reqwest.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+sysinfo.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio-tungstenite.workspace = true
+tower.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }
+
+[lints]
+workspace = true

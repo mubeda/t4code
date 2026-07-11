@@ -20,26 +20,26 @@ import {
   ProviderDriverKind,
   RuntimeMode,
   TerminalOpenInput,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import {
   connectionStatusText,
   type EnvironmentConnectionPresentation,
-} from "@t3tools/client-runtime/connection";
+} from "@t4code/client-runtime/connection";
 import {
   parseScopedThreadKey,
   scopedThreadKey,
   scopeProjectRef,
   scopeThreadRef,
-} from "@t3tools/client-runtime/environment";
+} from "@t4code/client-runtime/environment";
 import {
   applyClaudePromptEffortPrefix,
   createModelSelection,
   resolvePromptInjectedEffort,
-} from "@t3tools/shared/model";
-import { CHAT_LIST_ANCHOR_OFFSET } from "@t3tools/shared/chatList";
-import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
-import { truncate } from "@t3tools/shared/String";
-import { nextTerminalId, resolveTerminalSessionLabel } from "@t3tools/shared/terminalLabels";
+} from "@t4code/shared/model";
+import { CHAT_LIST_ANCHOR_OFFSET } from "@t4code/shared/chatList";
+import { projectScriptCwd, projectScriptRuntimeEnv } from "@t4code/shared/projectScripts";
+import { truncate } from "@t4code/shared/String";
+import { nextTerminalId, resolveTerminalSessionLabel } from "@t4code/shared/terminalLabels";
 import { Debouncer } from "@tanstack/react-pacer";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -61,10 +61,10 @@ import {
   settlePromise,
   squashAtomCommandFailure,
   type AtomCommandResult,
-} from "@t3tools/client-runtime/state/runtime";
+} from "@t4code/client-runtime/state/runtime";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { isElectron } from "../env";
+import { isDesktopHost } from "../env";
 import { readLocalApi } from "../localApi";
 import { useDiffPanelStore } from "../diffPanelStore";
 import {
@@ -112,7 +112,7 @@ import {
 import { useTheme } from "../hooks/useTheme";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { isCommandPaletteOpen } from "../commandPaletteContext";
-import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
+import { buildTemporaryWorktreeBranchName } from "@t4code/shared/git";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import {
@@ -1012,8 +1012,6 @@ function ChatViewContent(props: ChatViewProps) {
   const threadId = props.variant === "panel" ? props.panelThreadRef.threadId : props.threadId;
   const routeKind: "server" | "draft" = props.variant === "panel" ? "server" : props.routeKind;
   const onDiffPanelOpen = props.variant === "panel" ? undefined : props.onDiffPanelOpen;
-  const reserveTitleBarControlInset =
-    props.variant === "panel" ? true : (props.reserveTitleBarControlInset ?? true);
   const draftId = props.variant !== "panel" && props.routeKind === "draft" ? props.draftId : null;
   const routeThreadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
@@ -1391,7 +1389,6 @@ function ChatViewContent(props: ChatViewProps) {
   const canMaximizeRightPanel = rightPanelOpen && !shouldUsePlanSidebarSheet;
   const rightPanelMaximized =
     canMaximizeRightPanel && maximizedRightPanelThreadKey === routeThreadKey;
-  const inlineRightPanelOwnsTitleBar = rightPanelOpen && !shouldUsePlanSidebarSheet;
 
   useEffect(() => {
     if (!activeThreadRef) return;
@@ -2586,7 +2583,7 @@ function ChatViewContent(props: ChatViewProps) {
         command: input.keybindingCommand,
       });
 
-      if (isElectron && keybindingRule) {
+      if (isDesktopHost && keybindingRule) {
         return mapAtomCommandResult(
           await upsertKeybinding({
             environmentId,
@@ -4999,14 +4996,7 @@ function ChatViewContent(props: ChatViewProps) {
             data-chat-header
             className={cn(
               "border-b border-border transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none",
-              isElectron
-                ? cn(
-                    "workspace-topbar drag-region relative px-3 sm:px-5",
-                    reserveTitleBarControlInset &&
-                      !inlineRightPanelOwnsTitleBar &&
-                      "wco:pr-[var(--workspace-native-controls-inset)]",
-                  )
-                : "workspace-topbar pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)]",
+              "workspace-topbar pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)]",
               COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
             )}
           >

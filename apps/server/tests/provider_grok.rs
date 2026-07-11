@@ -1,0 +1,359 @@
+use t4code_server::provider::grok;
+
+use std::{path::PathBuf, time::Duration};
+
+use grok::{
+    AcpConnectionConfig, AcpJsonRpcConnection, GrokSessionOptions, GrokSessionRuntime,
+    build_snapshot_from_probe,
+};
+use serde_json::{Value, json};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader, duplex},
+    sync::mpsc,
+    time::timeout,
+};
+
+#[test]
+fn grok_helper_outputs_match_fixtures() {
+    let probe_fixture = fixture("probe-snapshot.json");
+    assert_eq!(
+        serde_json::to_value(build_snapshot_from_probe(
+            probe_fixture["versionStdout"].as_str().expect("version"),
+            probe_fixture["exitCode"].as_i64().expect("exit") as i32,
+            &probe_fixture["modelState"],
+            &probe_fixture["customModels"]
+                .as_array()
+                .expect("custom models")
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+        ))
+        .expect("snapshot json"),
+        probe_fixture["expected"]
+    );
+}
+
+#[tokio::test]
+async fn grok_runtime_matches_user_input_and_cancel_traces() {
+    let (connection, incoming, mut peer) = scripted_peer();
+    let runtime = GrokSessionRuntime::new(
+        GrokSessionOptions {
+            thread_id: "grok-thread-1".to_owned(),
+            cwd: "/tmp/project".to_owned(),
+        },
+        connection.clone(),
+        incoming,
+    );
+
+    peer.expect_request("initialize")
+        .respond(json!({ "protocolVersion": 1 }));
+    peer.expect_request("authenticate")
+        .respond(json!({ "status": "ok" }));
+    peer.expect_request("session/create")
+        .respond(json!({ "sessionId": "grok-session-1" }));
+    peer.expect_request("session/prompt")
+        .emit_request(json!({
+            "jsonrpc": "2.0",
+            "id": 2001,
+            "method": "_x.ai/ask_user_question",
+            "params": {
+                "questions": [
+                    {
+                        "question": "Which scope should Grok use?",
+                        "options": [
+                            { "label": "Workspace", "description": "Use the current workspace" },
+                            { "label": "Session", "description": "Only use this session" }
+                        ]
+                    }
+                ]
+            }
+        }))
+        .emit_notification(json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": { "type": "text", "text": "hello from grok" }
+                }
+            }
+        }))
+        .expect_response_after_result(json!({
+            "jsonrpc": "2.0",
+            "id": 2001,
+            "result": {
+                "outcome": "accepted",
+                "answers": {
+                    "Which scope should Grok use?": ["Workspace"]
+                }
+            }
+        }))
+        .respond(json!({ "stopReason": "end_turn" }));
+    peer.expect_request("session/prompt")
+        .delay_before_emits(100)
+        .emit_notification(json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": { "type": "text", "text": "late after cancel" }
+                }
+            }
+        }))
+        .respond(json!({ "stopReason": "cancelled" }));
+
+    let peer_task = tokio::spawn(peer.run());
+    runtime.start().await.expect("start");
+
+    let send_runtime = runtime.clone();
+    let send_turn =
+        tokio::spawn(async move { send_runtime.send_turn("ask before continuing").await });
+    let first = runtime.next_event().await.expect("session started");
+    assert_eq!(first.event_type, "session.started");
+    let second = runtime.next_event().await.expect("thread started");
+    assert_eq!(second.event_type, "thread.started");
+    send_turn.await.expect("first join").expect("first turn");
+    let requested = runtime.collect_events(4).await;
+    assert_eq!(
+        requested,
+        stable_fixture("trace-user-input-before-response.json")
+    );
+
+    runtime
+        .respond_to_user_input(
+            "user-input:2001",
+            json!({ "Which scope should Grok use?": "Workspace" }),
+        )
+        .await
+        .expect("respond");
+    let resolved = runtime.collect_events(1).await;
+    assert_eq!(
+        resolved,
+        stable_fixture("trace-user-input-after-response.json")
+    );
+
+    let cancel_runtime = runtime.clone();
+    let cancel_turn = tokio::spawn(async move {
+        cancel_runtime
+            .send_turn("cancel before the late update")
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    runtime.interrupt_turn("turn-8").await.expect("interrupt");
+    cancel_turn
+        .await
+        .expect("cancel join")
+        .expect("cancel turn");
+    let cancelled = runtime.collect_events(2).await;
+    assert_eq!(cancelled, stable_fixture("trace-cancel.json"));
+
+    peer_task.await.expect("peer");
+}
+
+fn fixture(name: &str) -> Value {
+    serde_json::from_str(
+        &std::fs::read_to_string(fixture_directory().join(name)).expect("fixture file"),
+    )
+    .expect("valid fixture")
+}
+
+fn stable_fixture(name: &str) -> Vec<grok::GrokRuntimeEventStableView> {
+    serde_json::from_value(fixture(name)).expect("stable fixture")
+}
+
+fn fixture_directory() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../packages/contracts/fixtures/grok-provider")
+}
+
+fn scripted_peer() -> (
+    AcpJsonRpcConnection,
+    mpsc::UnboundedReceiver<grok::IncomingEvent>,
+    ScriptedPeer,
+) {
+    let (runtime_stdout, peer_stdout) = duplex(16 * 1024);
+    let (peer_stdin, runtime_stdin) = duplex(16 * 1024);
+    let (peer_stderr, runtime_stderr) = duplex(16 * 1024);
+    let (connection, incoming) = AcpJsonRpcConnection::spawn(
+        runtime_stdout,
+        runtime_stdin,
+        runtime_stderr,
+        AcpConnectionConfig::default(),
+    );
+    (
+        connection,
+        incoming,
+        ScriptedPeer::new(peer_stdin, peer_stdout, peer_stderr),
+    )
+}
+
+struct ScriptedPeer {
+    stdin_reader: tokio::io::DuplexStream,
+    stdout_writer: tokio::io::DuplexStream,
+    stderr: tokio::io::DuplexStream,
+    steps: Vec<PeerStep>,
+}
+
+impl ScriptedPeer {
+    fn new(
+        stdin_reader: tokio::io::DuplexStream,
+        stdout_writer: tokio::io::DuplexStream,
+        stderr: tokio::io::DuplexStream,
+    ) -> Self {
+        Self {
+            stdin_reader,
+            stdout_writer,
+            stderr,
+            steps: Vec::new(),
+        }
+    }
+
+    fn expect_request(&mut self, method: &str) -> &mut PeerStep {
+        self.steps.push(PeerStep::ExpectRequest {
+            method: method.to_owned(),
+            response: None,
+            emits: Vec::new(),
+            expected_follow_up: None,
+            expected_follow_up_after_response: None,
+            delay_before_emits_ms: None,
+            emits_after_notification: Vec::new(),
+            expected_notification: None,
+        });
+        self.steps.last_mut().expect("step")
+    }
+
+    async fn run(self) {
+        let mut reader = BufReader::new(self.stdin_reader);
+        let mut writer = self.stdout_writer;
+        let _stderr = self.stderr;
+        for step in self.steps {
+            let PeerStep::ExpectRequest {
+                method,
+                response,
+                emits,
+                expected_follow_up,
+                expected_follow_up_after_response,
+                delay_before_emits_ms,
+                emits_after_notification,
+                expected_notification,
+            } = step;
+            let message = read_json_message(&mut reader, &format!("request:{method}")).await;
+            assert_eq!(message["method"], method);
+            if let Some(delay_before_emits_ms) = delay_before_emits_ms {
+                tokio::time::sleep(Duration::from_millis(delay_before_emits_ms)).await;
+            }
+            for emit in emits {
+                write_json(&mut writer, emit).await;
+            }
+            if let Some(expected_response) = expected_follow_up {
+                let follow_up =
+                    read_json_message(&mut reader, &format!("follow-up:{method}")).await;
+                assert_eq!(follow_up, expected_response);
+            }
+            if let Some(expected_notification) = expected_notification {
+                let notification = read_json_message(
+                    &mut reader,
+                    &format!("notification:{expected_notification}"),
+                )
+                .await;
+                assert_eq!(notification["method"], expected_notification);
+            }
+            for emit in emits_after_notification {
+                write_json(&mut writer, emit).await;
+            }
+            if let Some(result) = response {
+                write_json(
+                    &mut writer,
+                    json!({ "jsonrpc": "2.0", "id": message["id"].clone(), "result": result }),
+                )
+                .await;
+            }
+            if let Some(expected_response) = expected_follow_up_after_response {
+                let follow_up =
+                    read_json_message(&mut reader, &format!("post-result:{method}")).await;
+                assert_eq!(follow_up, expected_response);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+enum PeerStep {
+    ExpectRequest {
+        method: String,
+        response: Option<Value>,
+        emits: Vec<Value>,
+        expected_follow_up: Option<Value>,
+        expected_follow_up_after_response: Option<Value>,
+        delay_before_emits_ms: Option<u64>,
+        emits_after_notification: Vec<Value>,
+        expected_notification: Option<String>,
+    },
+}
+
+impl PeerStep {
+    fn respond(&mut self, result: Value) -> &mut Self {
+        let PeerStep::ExpectRequest { response, .. } = self;
+        *response = Some(result);
+        self
+    }
+
+    fn emit_request(&mut self, value: Value) -> &mut Self {
+        let PeerStep::ExpectRequest { emits, .. } = self;
+        emits.push(value);
+        self
+    }
+
+    fn emit_notification(&mut self, value: Value) -> &mut Self {
+        let PeerStep::ExpectRequest { emits, .. } = self;
+        emits.push(value);
+        self
+    }
+
+    fn delay_before_emits(&mut self, milliseconds: u64) -> &mut Self {
+        let PeerStep::ExpectRequest {
+            delay_before_emits_ms,
+            ..
+        } = self;
+        *delay_before_emits_ms = Some(milliseconds);
+        self
+    }
+
+    fn expect_response_after_result(&mut self, value: Value) -> &mut Self {
+        let PeerStep::ExpectRequest {
+            expected_follow_up_after_response,
+            ..
+        } = self;
+        *expected_follow_up_after_response = Some(value);
+        self
+    }
+}
+
+async fn read_json_message<R>(reader: &mut BufReader<R>, context: &str) -> Value
+where
+    R: AsyncRead + Unpin,
+{
+    let line = timeout(Duration::from_secs(5), async {
+        let mut buffer = String::new();
+        reader.read_line(&mut buffer).await.expect("read line");
+        buffer
+    })
+    .await
+    .unwrap_or_else(|_| panic!("message timeout while waiting for {context}"));
+    serde_json::from_str(line.trim_end()).expect("valid json")
+}
+
+async fn write_json<W>(writer: &mut W, value: Value)
+where
+    W: AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+
+    writer
+        .write_all(format!("{value}\n").as_bytes())
+        .await
+        .expect("write json");
+    writer.flush().await.expect("flush");
+}

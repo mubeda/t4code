@@ -10,7 +10,7 @@
  * tests then look up host/handler props (menu items, inputs, the form, the icon
  * grid) and invoke them directly with fake events.
  */
-import type { ProjectScript, ResolvedKeybindingsConfig } from "@t3tools/contracts";
+import type { ProjectScript, ResolvedKeybindingsConfig } from "@t4code/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -80,7 +80,7 @@ vi.mock("react", async (importOriginal) => {
   };
 });
 
-vi.mock("@t3tools/client-runtime/state/runtime", () => ({
+vi.mock("@t4code/client-runtime/state/runtime", () => ({
   isAtomCommandInterrupted: (_result: unknown) => h.interrupted,
   squashAtomCommandFailure: (result: { error?: unknown }) => result.error,
 }));

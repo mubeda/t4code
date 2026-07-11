@@ -1,0 +1,134 @@
+{
+  "options": [
+    {
+      "type": "select",
+      "currentValue": "gpt-5.4-medium-fast",
+      "options": [
+        {
+          "name": "GPT-5.4",
+          "value": "gpt-5.4-medium-fast"
+        }
+      ],
+      "category": "model",
+      "id": "model",
+      "name": "Model"
+    },
+    {
+      "type": "select",
+      "currentValue": "medium",
+      "options": [
+        {
+          "name": "None",
+          "value": "none"
+        },
+        {
+          "name": "Low",
+          "value": "low"
+        },
+        {
+          "name": "Medium",
+          "value": "medium"
+        },
+        {
+          "name": "High",
+          "value": "high"
+        },
+        {
+          "name": "Extra High",
+          "value": "extra-high"
+        }
+      ],
+      "category": "thought_level",
+      "id": "reasoning",
+      "name": "Reasoning"
+    },
+    {
+      "type": "select",
+      "currentValue": "272k",
+      "options": [
+        {
+          "name": "272K",
+          "value": "272k"
+        },
+        {
+          "name": "1M",
+          "value": "1m"
+        }
+      ],
+      "category": "model_config",
+      "id": "context",
+      "name": "Context"
+    },
+    {
+      "type": "select",
+      "currentValue": "false",
+      "options": [
+        {
+          "name": "Off",
+          "value": "false"
+        },
+        {
+          "name": "Fast",
+          "value": "true"
+        }
+      ],
+      "category": "model_config",
+      "id": "fast",
+      "name": "Fast"
+    }
+  ],
+  "expected": {
+    "optionDescriptors": [
+      {
+        "id": "reasoning",
+        "label": "Reasoning",
+        "type": "select",
+        "options": [
+          {
+            "id": "none",
+            "label": "None"
+          },
+          {
+            "id": "low",
+            "label": "Low"
+          },
+          {
+            "id": "medium",
+            "label": "Medium",
+            "isDefault": true
+          },
+          {
+            "id": "high",
+            "label": "High"
+          },
+          {
+            "id": "xhigh",
+            "label": "Extra High"
+          }
+        ]
+      },
+      {
+        "id": "contextWindow",
+        "label": "Context",
+        "type": "select",
+        "options": [
+          {
+            "id": "272k",
+            "label": "272K",
+            "isDefault": true
+          },
+          {
+            "id": "1m",
+            "label": "1M"
+          }
+        ]
+      },
+      {
+        "id": "fastMode",
+        "label": "Fast",
+        "type": "boolean",
+        "currentValue": false
+      }
+    ]
+  }
+}

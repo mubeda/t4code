@@ -8,8 +8,8 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
-} from "@t3tools/contracts";
-import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t3tools/contracts/settings";
+} from "@t4code/contracts";
+import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t4code/contracts/settings";
 
 type AnyProps = Record<string, unknown>;
 
@@ -168,15 +168,15 @@ vi.mock("@tanstack/react-router", () => ({
   ),
 }));
 
-vi.mock("@t3tools/client-runtime/environment", () => ({
+vi.mock("@t4code/client-runtime/environment", () => ({
   scopeThreadRef: (environmentId: unknown, threadId: unknown) => ({ environmentId, threadId }),
 }));
 
-vi.mock("@t3tools/client-runtime/errors", () => ({
+vi.mock("@t4code/client-runtime/errors", () => ({
   safeErrorLogAttributes: (error: unknown) => ({ error: String(error) }),
 }));
 
-vi.mock("@t3tools/client-runtime/state/runtime", () => ({
+vi.mock("@t4code/client-runtime/state/runtime", () => ({
   isAtomCommandInterrupted: (result: unknown) =>
     (result as { interrupted?: boolean }).interrupted === true,
   squashAtomCommandFailure: (result: unknown) =>

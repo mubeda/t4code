@@ -1,5 +1,5 @@
-import type { ContextMenuItem } from "@t3tools/contracts";
-import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
+import type { ContextMenuItem } from "@t4code/contracts";
+import { getTerminalLabel } from "@t4code/shared/terminalLabels";
 import { Bot, MessageSquare, TerminalSquare, X } from "lucide-react";
 import { type MouseEvent as ReactMouseEvent, useCallback, useEffect, useRef } from "react";
 

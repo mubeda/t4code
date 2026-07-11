@@ -14,7 +14,7 @@ import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 export const RelayManagedEndpointProviderKind = Schema.Literals([
   "manual",
   "cloudflare_tunnel",
-  "t3_relay",
+  "t4code_relay",
 ]);
 export type RelayManagedEndpointProviderKind = typeof RelayManagedEndpointProviderKind.Type;
 
@@ -333,7 +333,7 @@ export class RelayClientPrincipal extends Context.Service<
     readonly proofKeyThumbprint?: string;
     readonly dpopScopes?: ReadonlyArray<RelayDpopAccessTokenScope>;
   }
->()("@t3tools/contracts/relay/RelayClientPrincipal") {}
+>()("@t4code/contracts/relay/RelayClientPrincipal") {}
 
 const RelayClientBearerAuthorization = HttpApiSecurity.http({ scheme: "bearer" }).pipe(
   HttpApiSecurity.annotate(
@@ -404,9 +404,9 @@ export const RelayDpopTokenExchangeGrantType =
   "urn:ietf:params:oauth:grant-type:token-exchange" as const;
 export const RelayJwtSubjectTokenType = "urn:ietf:params:oauth:token-type:jwt" as const;
 export const RelayAccessTokenType = "urn:ietf:params:oauth:token-type:access_token" as const;
-export const RelayPublicClientId = Schema.Literal("t3-web");
+export const RelayPublicClientId = Schema.Literal("t4code-web");
 export type RelayPublicClientId = typeof RelayPublicClientId.Type;
-export const RelayWebClientId = "t3-web" as const;
+export const RelayWebClientId = "t4code-web" as const;
 
 export const RelayDpopAccessTokenRequest = Schema.Struct({
   grant_type: Schema.Literal(RelayDpopTokenExchangeGrantType),

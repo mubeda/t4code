@@ -16,7 +16,7 @@ import {
   type DesktopDiscoveredSshHost,
   type DesktopWslState,
   EnvironmentId,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 
 type AnyProps = Record<string, unknown>;
 
@@ -159,7 +159,7 @@ vi.mock("@clerk/react", () => ({
   useAuth: () => h.clerkAuth,
 }));
 
-vi.mock("@t3tools/client-runtime/connection", () => ({
+vi.mock("@t4code/client-runtime/connection", () => ({
   connectionStatusText: (connection: { phase: string }) => `status:${connection.phase}`,
   RelayConnectionRegistration: class RelayConnectionRegistration {
     readonly input: unknown;
@@ -175,14 +175,14 @@ vi.mock("@t3tools/client-runtime/connection", () => ({
   },
 }));
 
-vi.mock("@t3tools/client-runtime/errors", () => ({
+vi.mock("@t4code/client-runtime/errors", () => ({
   findErrorTraceId: (cause: unknown) =>
     cause !== null && typeof cause === "object" && "traceId" in cause
       ? ((cause as { traceId: string }).traceId ?? null)
       : null,
 }));
 
-vi.mock("@t3tools/client-runtime/state/runtime", () => ({
+vi.mock("@t4code/client-runtime/state/runtime", () => ({
   isAtomCommandInterrupted: (result: unknown) =>
     (result as { interrupted?: boolean }).interrupted === true,
   squashAtomCommandFailure: (result: unknown) =>

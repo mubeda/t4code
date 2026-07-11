@@ -1,0 +1,13 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "threadId": "GakT",
+      "terminalId": "~|( %7a@",
+      "type": "exited",
+      "exitCode": null,
+      "exitSignal": null
+    }
+  ]
+}

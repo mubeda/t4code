@@ -14,8 +14,8 @@
  */
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { EnvironmentId, FILL_PREVIEW_VIEWPORT, ThreadId } from "@t3tools/contracts";
-import type { PreviewAutomationRequest } from "@t3tools/contracts";
+import { EnvironmentId, FILL_PREVIEW_VIEWPORT, ThreadId } from "@t4code/contracts";
+import type { PreviewAutomationRequest } from "@t4code/contracts";
 
 const h = vi.hoisted(() => {
   const state = {
@@ -29,8 +29,7 @@ const h = vi.hoisted(() => {
     }>,
     automationConnectionId: null as string | null,
     consumerAtom: { __consumer: true } as unknown,
-    // environment/electron gating
-    isElectron: true,
+    // environment gating
     environments: [] as Array<{ environmentId: unknown }>,
     // preview bridge
     previewBridge: null as unknown,
@@ -107,12 +106,12 @@ vi.mock("@effect/atom-react", async (importOriginal) => {
   };
 });
 
-vi.mock("@t3tools/client-runtime/state/runtime", () => ({
+vi.mock("@t4code/client-runtime/state/runtime", () => ({
   squashAtomCommandFailure: (result: { error?: unknown }) =>
     result.error ?? new Error("squashed failure"),
 }));
 
-vi.mock("@t3tools/shared/previewViewport", () => ({
+vi.mock("@t4code/shared/previewViewport", () => ({
   resolvePreviewViewport: () => h.resizeSetting,
 }));
 
@@ -148,12 +147,6 @@ vi.mock("~/browser/browserRecordingScope", () => ({
 vi.mock("~/browser/browserSurfaceStore", () => ({
   useBrowserSurfaceStore: {
     getState: () => ({ byTabId: h.surfaceByTabId }),
-  },
-}));
-
-vi.mock("~/env", () => ({
-  get isElectron() {
-    return h.isElectron;
   },
 }));
 
@@ -286,7 +279,6 @@ beforeEach(() => {
   h.effects.length = 0;
   h.setRequestHandlerCalls.length = 0;
   h.automationConnectionId = null;
-  h.isElectron = true;
   h.environments = [];
   h.automationStatus = { available: true, loading: false, visible: false, url: null, title: null };
   h.automationEvaluateResult = "complete";
@@ -383,15 +375,6 @@ function seedReadyTab(tabId: string) {
 }
 
 describe("PreviewAutomationHosts wrapper", () => {
-  it("renders nothing when not running under Electron", () => {
-    h.isElectron = false;
-    h.environments = [{ environmentId }];
-    const markup = renderToStaticMarkup(<PreviewAutomationHosts />);
-    expect(markup).toBe("");
-    // Early return happens before any host renders.
-    expect(h.stateCalls).toHaveLength(0);
-  });
-
   it("renders nothing when the preview bridge has no automation surface", () => {
     h.previewBridge = { navigate: () => Promise.resolve() }; // no `.automation`
     h.environments = [{ environmentId }];

@@ -2,6 +2,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { vi } from "vite-plus/test";
 
+let ChatMarkdownComponent: typeof import("./ChatMarkdown").default | null = null;
+
 function matchMedia() {
   return {
     matches: false,
@@ -10,21 +12,23 @@ function matchMedia() {
   };
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   const classList = {
     add: () => {},
     remove: () => {},
     toggle: () => {},
     contains: () => false,
   };
-
-  vi.stubGlobal("localStorage", {
+  const localStorageStub = {
     getItem: () => null,
     setItem: () => {},
     removeItem: () => {},
     clear: () => {},
-  });
+  };
+
+  vi.stubGlobal("localStorage", localStorageStub);
   vi.stubGlobal("window", {
+    localStorage: localStorageStub,
     matchMedia,
     addEventListener: () => {},
     removeEventListener: () => {},
@@ -41,7 +45,9 @@ beforeAll(() => {
       offsetHeight: 0,
     },
   });
-});
+
+  ChatMarkdownComponent = (await import("./ChatMarkdown")).default;
+}, 30_000);
 
 interface RenderOptions {
   cwd?: string | undefined;
@@ -53,7 +59,7 @@ interface RenderOptions {
 }
 
 async function renderMarkdown(text: string, options: RenderOptions = {}) {
-  const { default: ChatMarkdown } = await import("./ChatMarkdown");
+  const ChatMarkdown = ChatMarkdownComponent ?? (await import("./ChatMarkdown")).default;
   return renderToStaticMarkup(<ChatMarkdown text={text} cwd={options.cwd} {...options} />);
 }
 

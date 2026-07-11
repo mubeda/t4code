@@ -1,0 +1,29 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "version": 1,
+      "sequence": 3,
+      "type": "welcome",
+      "payload": {
+        "environment": {
+          "environmentId": "name",
+          "label": "?wsc$F4",
+          "platform": {
+            "os": "darwin",
+            "arch": "x64"
+          },
+          "serverVersion": "v|}(%v",
+          "capabilities": {
+            "repositoryIdentity": false
+          }
+        },
+        "cwd": "9wDT$_A",
+        "projectName": "!m",
+        "bootstrapProjectId": "${",
+        "bootstrapThreadId": "275*PyT"
+      }
+    }
+  ]
+}

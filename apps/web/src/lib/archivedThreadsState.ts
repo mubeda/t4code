@@ -3,8 +3,8 @@ import {
   type ArchivedSnapshotEntry,
   createArchivedThreadSnapshotsAtomFamily,
   makeArchivedThreadsEnvironmentKey,
-} from "@t3tools/client-runtime/state/threads";
-import type { EnvironmentId } from "@t3tools/contracts";
+} from "@t4code/client-runtime/state/threads";
+import type { EnvironmentId } from "@t4code/contracts";
 import { useCallback, useMemo } from "react";
 
 import { orchestrationEnvironment } from "../state/orchestration";

@@ -7,7 +7,7 @@
 
 ## Project Snapshot
 
-T4Code is a minimal web GUI for using coding agents like Codex and Claude.
+T4Code is a web and Tauri desktop GUI for using coding agents like Codex and Claude.
 
 This repository is a VERY EARLY WIP. Proposing sweeping changes that improve long-term maintainability is encouraged.
 
@@ -25,11 +25,21 @@ Long term maintainability is a core priority. If you add new functionality, firs
 
 ## Package Roles
 
-- `apps/server`: Node.js WebSocket server. Wraps Codex app-server (JSON-RPC over stdio), serves the React web app, and manages provider sessions.
+- `apps/desktop`: Tauri 2 desktop host written in Rust. Owns native windows,
+  menus, dialogs, updates, WSL/SSH launch, and the `DesktopBridge`
+  implementation. It starts the Rust server as an in-process runtime.
+- `apps/server`: Rust/Axum/Tokio application server and native `t4code` CLI.
+  Owns HTTP/WebSocket RPC, authentication, persistence, orchestration,
+  providers, terminals, Git, files, diagnostics, relay integration, and process
+  supervision.
 - `apps/web`: React/Vite UI. Owns session UX, conversation/event rendering, and client-side state. Connects to the server via WebSocket.
 - `packages/contracts`: Shared effect/Schema schemas and TypeScript contracts for provider events, WebSocket protocol, and model/session types. Keep this package schema-only — no runtime logic.
-- `packages/shared`: Shared runtime utilities consumed by both server and client applications. Uses explicit subpath exports (e.g. `@t3tools/shared/git`) — no barrel index.
-- `packages/client-runtime`: Shared runtime package for sharing client code across web and desktop clients.
+- `packages/shared`: Shared runtime utilities consumed by both server and client applications. Uses explicit subpath exports (e.g. `@t4code/shared/git`) — no barrel index.
+- `packages/client-runtime`: Shared connection, RPC, cache, and environment runtime used by browser and Tauri clients.
+
+Node.js and TypeScript are development dependencies for the frontend and
+repository tooling only. Do not add a production Node runtime, Electron host,
+TypeScript server, or native helper sidecar.
 
 ## Reference Repos
 
@@ -46,7 +56,7 @@ agents.
 - Prefer examples and patterns from the vendored source code over generated guesses or web search results.
 - Do not edit files under `.repos/` unless explicitly asked.
 - Do not import from `.repos/`; application code must continue importing from normal package dependencies.
-- Manage vendored subtrees with `bun run sync:repos`; use `bun run sync:repos --repo <id>` to sync one
+- Manage vendored subtrees with `vp run sync:repos`; use `vp run sync:repos -- --repo <id>` to sync one
   configured repository.
 - When updating a dependency with a configured vendored subtree, sync that subtree in the same change so
   `.repos/` matches the installed dependency version.

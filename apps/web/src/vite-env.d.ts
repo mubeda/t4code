@@ -1,6 +1,6 @@
 /// <reference types="vite-plus/client" />
 
-import type { DesktopBridge, LocalApi } from "@t3tools/contracts";
+import type { DesktopBridge, LocalApi } from "@t4code/contracts";
 
 interface ImportMetaEnv {
   readonly VITE_HTTP_URL: string;
@@ -20,7 +20,21 @@ interface ImportMeta {
 }
 
 declare global {
+  interface TauriCoreApi {
+    invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
+  }
+
+  interface TauriEventApi {
+    listen<T>(event: string, handler: (event: { payload: T }) => void): Promise<() => void>;
+  }
+
+  interface TauriGlobalApi {
+    core?: TauriCoreApi;
+    event?: TauriEventApi;
+  }
+
   interface Window {
+    __TAURI__?: TauriGlobalApi;
     nativeApi?: LocalApi;
     desktopBridge?: DesktopBridge;
   }

@@ -18,16 +18,16 @@ describe("loadRepoEnv", () => {
   it("does not project cloud configuration for an unconfigured clone", () => {
     const env = loadRepoEnv({ baseEnv: {}, repoRoot: makeTemporaryDirectory() });
 
-    expect(env.T3CODE_CLERK_PUBLISHABLE_KEY).toBeUndefined();
-    expect(env.T3CODE_CLERK_CLI_OAUTH_CLIENT_ID).toBeUndefined();
+    expect(env.T4CODE_CLERK_PUBLISHABLE_KEY).toBeUndefined();
+    expect(env.T4CODE_CLERK_CLI_OAUTH_CLIENT_ID).toBeUndefined();
     expect(env.VITE_CLERK_PUBLISHABLE_KEY).toBeUndefined();
-    expect(env.T3CODE_CLERK_JWT_TEMPLATE).toBeUndefined();
+    expect(env.T4CODE_CLERK_JWT_TEMPLATE).toBeUndefined();
     expect(env.VITE_CLERK_JWT_TEMPLATE).toBeUndefined();
-    expect(env.T3CODE_RELAY_URL).toBeUndefined();
-    expect(env.VITE_T3CODE_RELAY_URL).toBeUndefined();
-    expect(env.T3CODE_RELAY_CLIENT_OTLP_TRACES_URL).toBeUndefined();
-    expect(env.T3CODE_RELAY_CLIENT_OTLP_TRACES_DATASET).toBeUndefined();
-    expect(env.T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN).toBeUndefined();
+    expect(env.T4CODE_RELAY_URL).toBeUndefined();
+    expect(env.VITE_T4CODE_RELAY_URL).toBeUndefined();
+    expect(env.T4CODE_RELAY_CLIENT_OTLP_TRACES_URL).toBeUndefined();
+    expect(env.T4CODE_RELAY_CLIENT_OTLP_TRACES_DATASET).toBeUndefined();
+    expect(env.T4CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN).toBeUndefined();
     expect(env.VITE_RELAY_OTLP_TRACES_URL).toBeUndefined();
     expect(env.VITE_RELAY_OTLP_TRACES_DATASET).toBeUndefined();
     expect(env.VITE_RELAY_OTLP_TRACES_TOKEN).toBeUndefined();
@@ -37,34 +37,34 @@ describe("loadRepoEnv", () => {
     const repoRoot = makeTemporaryDirectory();
     NodeFS.writeFileSync(
       NodePath.join(repoRoot, ".env"),
-      "T3CODE_CLERK_PUBLISHABLE_KEY=pk_root\nT3CODE_CLERK_JWT_TEMPLATE=template_root\nT3CODE_CLERK_CLI_OAUTH_CLIENT_ID=oauth_root\nT3CODE_RELAY_URL=https://root.example.test\n",
+      "T4CODE_CLERK_PUBLISHABLE_KEY=pk_root\nT4CODE_CLERK_JWT_TEMPLATE=template_root\nT4CODE_CLERK_CLI_OAUTH_CLIENT_ID=oauth_root\nT4CODE_RELAY_URL=https://root.example.test\n",
     );
     NodeFS.writeFileSync(
       NodePath.join(repoRoot, ".env.local"),
-      "T3CODE_CLERK_PUBLISHABLE_KEY=pk_local\nT3CODE_CLERK_JWT_TEMPLATE=template_local\nT3CODE_CLERK_CLI_OAUTH_CLIENT_ID=oauth_local\nT3CODE_RELAY_URL=https://local.example.test\n",
+      "T4CODE_CLERK_PUBLISHABLE_KEY=pk_local\nT4CODE_CLERK_JWT_TEMPLATE=template_local\nT4CODE_CLERK_CLI_OAUTH_CLIENT_ID=oauth_local\nT4CODE_RELAY_URL=https://local.example.test\n",
     );
 
-    expect(loadRepoEnv({ baseEnv: {}, repoRoot }).T3CODE_RELAY_URL).toBe(
+    expect(loadRepoEnv({ baseEnv: {}, repoRoot }).T4CODE_RELAY_URL).toBe(
       "https://local.example.test",
     );
     expect(
       loadRepoEnv({
         baseEnv: {
-          T3CODE_CLERK_PUBLISHABLE_KEY: "pk_ci",
-          T3CODE_CLERK_JWT_TEMPLATE: "template_ci",
-          T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: "oauth_ci",
-          T3CODE_RELAY_URL: "https://ci.example.test",
+          T4CODE_CLERK_PUBLISHABLE_KEY: "pk_ci",
+          T4CODE_CLERK_JWT_TEMPLATE: "template_ci",
+          T4CODE_CLERK_CLI_OAUTH_CLIENT_ID: "oauth_ci",
+          T4CODE_RELAY_URL: "https://ci.example.test",
         },
         repoRoot,
       }),
     ).toMatchObject({
-      T3CODE_CLERK_PUBLISHABLE_KEY: "pk_ci",
-      T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: "oauth_ci",
+      T4CODE_CLERK_PUBLISHABLE_KEY: "pk_ci",
+      T4CODE_CLERK_CLI_OAUTH_CLIENT_ID: "oauth_ci",
       VITE_CLERK_PUBLISHABLE_KEY: "pk_ci",
-      T3CODE_CLERK_JWT_TEMPLATE: "template_ci",
+      T4CODE_CLERK_JWT_TEMPLATE: "template_ci",
       VITE_CLERK_JWT_TEMPLATE: "template_ci",
-      T3CODE_RELAY_URL: "https://ci.example.test",
-      VITE_T3CODE_RELAY_URL: "https://ci.example.test",
+      T4CODE_RELAY_URL: "https://ci.example.test",
+      VITE_T4CODE_RELAY_URL: "https://ci.example.test",
     });
   });
 
@@ -73,8 +73,8 @@ describe("loadRepoEnv", () => {
       resolvePublicConfig({
         VITE_CLERK_PUBLISHABLE_KEY: "pk_legacy",
         VITE_CLERK_JWT_TEMPLATE: "template_legacy",
-        T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: "oauth_canonical",
-        VITE_T3CODE_RELAY_URL: "https://legacy.example.test",
+        T4CODE_CLERK_CLI_OAUTH_CLIENT_ID: "oauth_canonical",
+        VITE_T4CODE_RELAY_URL: "https://legacy.example.test",
       }),
     ).toEqual({
       clerkPublishableKey: "pk_legacy",
@@ -91,16 +91,16 @@ describe("loadRepoEnv", () => {
     expect(
       loadRepoEnv({
         baseEnv: {
-          T3CODE_RELAY_CLIENT_OTLP_TRACES_URL: "https://api.axiom.co/v1/traces",
-          T3CODE_RELAY_CLIENT_OTLP_TRACES_DATASET: "relay-client-traces",
-          T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN: "relay-client-token",
+          T4CODE_RELAY_CLIENT_OTLP_TRACES_URL: "https://api.axiom.co/v1/traces",
+          T4CODE_RELAY_CLIENT_OTLP_TRACES_DATASET: "relay-client-traces",
+          T4CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN: "relay-client-token",
         },
         repoRoot: makeTemporaryDirectory(),
       }),
     ).toEqual({
-      T3CODE_RELAY_CLIENT_OTLP_TRACES_URL: "https://api.axiom.co/v1/traces",
-      T3CODE_RELAY_CLIENT_OTLP_TRACES_DATASET: "relay-client-traces",
-      T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN: "relay-client-token",
+      T4CODE_RELAY_CLIENT_OTLP_TRACES_URL: "https://api.axiom.co/v1/traces",
+      T4CODE_RELAY_CLIENT_OTLP_TRACES_DATASET: "relay-client-traces",
+      T4CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN: "relay-client-token",
       VITE_RELAY_OTLP_TRACES_URL: "https://api.axiom.co/v1/traces",
       VITE_RELAY_OTLP_TRACES_DATASET: "relay-client-traces",
       VITE_RELAY_OTLP_TRACES_TOKEN: "relay-client-token",
@@ -109,7 +109,7 @@ describe("loadRepoEnv", () => {
 });
 
 function makeTemporaryDirectory() {
-  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3code-public-config-"));
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t4code-public-config-"));
   temporaryDirectories.push(directory);
   return directory;
 }

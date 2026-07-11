@@ -1,0 +1,14 @@
+{
+  "formatVersion": 1,
+  "applicationId": 0,
+  "autoVacuum": 0,
+  "encoding": "UTF-8",
+  "foreignKeys": 1,
+  "integrityCheck": "ok",
+  "journalMode": "wal",
+  "pageSize": 4096,
+  "recursiveTriggers": 0,
+  "schemaVersion": 83,
+  "synchronous": 2,
+  "userVersion": 0
+}

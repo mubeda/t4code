@@ -1,0 +1,30 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "threadId": "tU",
+      "tabId": "rgumenvalu",
+      "createdAt": "MVp",
+      "type": "navigated",
+      "snapshot": {
+        "threadId": "~",
+        "tabId": "&#O}",
+        "navStatus": {
+          "_tag": "Loading",
+          "url": "~Q#",
+          "title": "|!F$#e"
+        },
+        "canGoBack": false,
+        "canGoForward": true,
+        "viewport": {
+          "_tag": "preset",
+          "width": 1325,
+          "height": 3839,
+          "presetId": "samsung-galaxy-s8-plus"
+        },
+        "updatedAt": "i"
+      }
+    }
+  ]
+}

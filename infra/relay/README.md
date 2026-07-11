@@ -8,8 +8,8 @@ remote environments and manages the cloud-side records needed for those connecti
 
 The relay is intentionally not in the hot path for normal T4Code traffic. After a client connects,
 regular API and WebSocket traffic goes directly between that client and the selected environment.
-See the [T4 Connect architecture overview](../../docs/cloud/t3-code-connect-auth-flow.html) for the larger system
-design.
+See the [T4 Connect setup](../../docs/cloud/t4code-connect-clerk.md) for the larger
+authentication and deployment context.
 
 ## Responsibilities
 
@@ -22,7 +22,7 @@ The relay currently owns:
 - Persisting relay state and exposing relay-specific traces for diagnostics.
 
 The environment server and relay have separate credentials and trust boundaries. Read
-[Environment Authentication Profile](../../docs/environment-auth.md) before changing token,
+[Environment Authentication Profile](../../docs/cloud/environment-auth.md) before changing token,
 credential, or authorization behavior.
 
 ## Code Map
@@ -74,7 +74,7 @@ dependencies represented at their boundary rather than mocking internal behavior
 The relay deploys through Alchemy:
 
 ```sh
-vp run --filter t3code-relay deploy
+vp run --filter t4code-relay deploy
 ```
 
 The stack provisions the Cloudflare Worker and queues, managed endpoint resources, database
@@ -90,8 +90,8 @@ PlanetScale branch and runtime role for local development, so deploy `prod` befo
 developer stages:
 
 ```sh
-vp run --filter t3code-relay deploy -- --stage prod
-vp run --filter t3code-relay deploy -- --env-file .env.local
+vp run --filter t4code-relay deploy -- --stage prod
+vp run --filter t4code-relay deploy -- --env-file .env.local
 ```
 
 Alchemy defaults personal deployments to the `dev_$USER` stage. Relay custom domains apply the same
@@ -149,8 +149,7 @@ and hosted web builds.
 
 See:
 
-- [T4 Connect Clerk Setup](../../docs/cloud/t3-connect-clerk.md) for Clerk keys, JWT templates, and waitlist
+- [T4 Connect Clerk Setup](../../docs/cloud/t4code-connect-clerk.md) for Clerk keys, JWT templates, and waitlist
   setup.
-- [Relay Observability](../../docs/relay-observability.md) for deployment tracing and diagnostics.
-- [T4 Connect Architecture Overview](../../docs/cloud/t3-code-connect-auth-flow.html) for the full link,
-  connect, and endpoint flows.
+- [Relay Observability](../../docs/operations/relay-observability.md) for deployment tracing and diagnostics.
+- [Remote Architecture](../../docs/architecture/remote.md) for environment, access, and endpoint flows.

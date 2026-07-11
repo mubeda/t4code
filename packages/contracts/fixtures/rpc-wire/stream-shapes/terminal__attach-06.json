@@ -1,0 +1,24 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "threadId": "__lookupG",
+      "terminalId": "Q};I4}[r{82X",
+      "type": "restarted",
+      "snapshot": {
+        "threadId": "callerZLocal",
+        "terminalId": "}M3h>M\"'h",
+        "cwd": "|BM3e\"&Li",
+        "worktreePath": "70v",
+        "status": "starting",
+        "pid": 18,
+        "history": "Y#h{*9r",
+        "exitCode": null,
+        "exitSignal": 14,
+        "label": "`}#6~f",
+        "updatedAt": "constructo"
+      }
+    }
+  ]
+}

@@ -1,4 +1,4 @@
 export {
   isTransportConnectionErrorMessage,
   sanitizeThreadErrorMessage,
-} from "@t3tools/client-runtime/errors";
+} from "@t4code/client-runtime/errors";

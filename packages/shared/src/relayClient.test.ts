@@ -1,4 +1,4 @@
-/* oxlint-disable t3code/no-global-process-runtime */
+/* oxlint-disable t4code/no-global-process-runtime */
 import { sha256 } from "@noble/hashes/sha2";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeOS from "node:os";
@@ -77,7 +77,7 @@ describe("RelayClient", () => {
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-cloudflared-test-",
+        prefix: "t4code-cloudflared-test-",
       });
       const overridePath = `${baseDir}/override-cloudflared`;
       yield* fileSystem.writeFileString(overridePath, "override");
@@ -91,7 +91,7 @@ describe("RelayClient", () => {
           Effect.provideService(
             ConfigProvider.ConfigProvider,
             ConfigProvider.fromEnv({
-              env: { PATH: "", T3CODE_CLOUDFLARED_PATH: overridePath },
+              env: { PATH: "", T4CODE_CLOUDFLARED_PATH: overridePath },
             }),
           ),
         ),
@@ -119,7 +119,7 @@ describe("RelayClient", () => {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-cloudflared-test-",
+        prefix: "t4code-cloudflared-test-",
       });
       const bytes = new TextEncoder().encode("test-cloudflared-binary");
       const manager = yield* makeCloudflaredRelayClient({
@@ -183,7 +183,7 @@ describe("RelayClient", () => {
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-cloudflared-test-",
+        prefix: "t4code-cloudflared-test-",
       });
       const manager = yield* makeCloudflaredRelayClient({
         baseDir,
@@ -216,7 +216,7 @@ describe("RelayClient", () => {
     return Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-cloudflared-test-",
+        prefix: "t4code-cloudflared-test-",
       });
       const manager = yield* makeCloudflaredRelayClient({
         baseDir,
@@ -251,7 +251,7 @@ describe("RelayClient", () => {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-cloudflared-test-",
+        prefix: "t4code-cloudflared-test-",
       });
       const binDir = path.join(baseDir, "bin");
       const executablePath = path.join(binDir, cloudflaredFileName);

@@ -1,0 +1,24 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "threadId": "2",
+      "terminalId": "constructor",
+      "type": "restarted",
+      "snapshot": {
+        "threadId": "Bizr$N>33%",
+        "terminalId": "V1wZS!}Ys",
+        "cwd": ":@bRq1cB",
+        "worktreePath": null,
+        "status": "exited",
+        "pid": 10,
+        "history": "sHRq@=",
+        "exitCode": null,
+        "exitSignal": null,
+        "label": "4)(:",
+        "updatedAt": "bind"
+      }
+    }
+  ]
+}

@@ -1,0 +1,229 @@
+{
+  "threadId": "provider-thread-1",
+  "turnId": "turn-1",
+  "startup": {
+    "sessionId": "sdk-session-tool-streams",
+    "runtimeMode": "full-access"
+  },
+  "messages": [
+    {
+      "type": "stream_event",
+      "session_id": "sdk-session-tool-streams",
+      "uuid": "stream-thread-start",
+      "parent_tool_use_id": null,
+      "event": {
+        "type": "message_start",
+        "message": {
+          "id": "msg-thread-1"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "session_id": "sdk-session-tool-streams",
+      "uuid": "stream-thinking",
+      "parent_tool_use_id": null,
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": "Let"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "session_id": "sdk-session-tool-streams",
+      "uuid": "stream-tool-start",
+      "parent_tool_use_id": null,
+      "event": {
+        "type": "content_block_start",
+        "index": 1,
+        "content_block": {
+          "type": "tool_use",
+          "id": "tool-grep-1",
+          "name": "Grep",
+          "input": {}
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "session_id": "sdk-session-tool-streams",
+      "uuid": "stream-tool-input-1",
+      "parent_tool_use_id": null,
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "{\"pattern\":\"foo\",\"path\":\"src\"}"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "session_id": "sdk-session-tool-streams",
+      "uuid": "stream-tool-stop",
+      "parent_tool_use_id": null,
+      "event": {
+        "type": "content_block_stop",
+        "index": 1
+      }
+    },
+    {
+      "type": "user",
+      "session_id": "sdk-session-tool-streams",
+      "uuid": "user-tool-result",
+      "parent_tool_use_id": null,
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "tool-grep-1",
+            "content": "src/example.ts:1:foo"
+          }
+        ]
+      }
+    },
+    {
+      "type": "result",
+      "subtype": "success",
+      "is_error": false,
+      "errors": [],
+      "session_id": "sdk-session-tool-streams",
+      "uuid": "result-tool-streams"
+    }
+  ],
+  "expectedEvents": [
+    {
+      "type": "session.started",
+      "threadId": "provider-thread-1",
+      "payload": {
+        "message": "Claude session started.",
+        "resume": {
+          "sessionId": "sdk-session-tool-streams"
+        }
+      }
+    },
+    {
+      "type": "session.configured",
+      "threadId": "provider-thread-1",
+      "payload": {
+        "permissionMode": "bypassPermissions",
+        "cwd": null
+      }
+    },
+    {
+      "type": "session.state.changed",
+      "threadId": "provider-thread-1",
+      "payload": {
+        "state": "ready"
+      }
+    },
+    {
+      "type": "turn.started",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-1",
+      "payload": {
+        "input": "search the repo"
+      }
+    },
+    {
+      "type": "thread.started",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-1",
+      "payload": {
+        "providerThreadId": "msg-thread-1"
+      }
+    },
+    {
+      "type": "content.delta",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-1",
+      "payload": {
+        "streamKind": "reasoning_text",
+        "delta": "Let"
+      }
+    },
+    {
+      "type": "item.started",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-1",
+      "providerRefs": {
+        "providerItemId": "tool-grep-1"
+      },
+      "payload": {
+        "itemType": "dynamic_tool_call",
+        "title": "Tool call",
+        "data": {
+          "toolName": "Grep",
+          "input": {}
+        }
+      }
+    },
+    {
+      "type": "item.updated",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-1",
+      "providerRefs": {
+        "providerItemId": "tool-grep-1"
+      },
+      "payload": {
+        "data": {
+          "toolName": "Grep",
+          "input": {
+            "pattern": "foo",
+            "path": "src"
+          }
+        }
+      }
+    },
+    {
+      "type": "item.updated",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-1",
+      "providerRefs": {
+        "providerItemId": "tool-grep-1"
+      },
+      "payload": {
+        "data": {
+          "tool_use_id": "tool-grep-1",
+          "content": "src/example.ts:1:foo"
+        }
+      }
+    },
+    {
+      "type": "item.completed",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-1",
+      "providerRefs": {
+        "providerItemId": "tool-grep-1"
+      },
+      "payload": {
+        "data": {
+          "toolName": "Grep",
+          "input": {
+            "pattern": "foo",
+            "path": "src"
+          },
+          "result": {
+            "tool_use_id": "tool-grep-1",
+            "content": "src/example.ts:1:foo"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.completed",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-1",
+      "payload": {
+        "state": "completed",
+        "stopReason": "success"
+      }
+    }
+  ]
+}

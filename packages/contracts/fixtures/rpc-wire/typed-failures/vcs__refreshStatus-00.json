@@ -1,0 +1,19 @@
+{
+  "_tag": "Exit",
+  "requestId": "900719925474099312345",
+  "exit": {
+    "_tag": "Failure",
+    "cause": [
+      {
+        "_tag": "Fail",
+        "error": {
+          "_tag": "GitManagerError",
+          "operation": "B!&\\!",
+          "cwd": ".5",
+          "detail": "h_",
+          "cause": "undefined"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "fixtures": [
+    "control-requests.json",
+    "exit-plan-message.json",
+    "launch-full-access.json",
+    "launch-plan-mode.json",
+    "permission-flow.json",
+    "reconnect-state.json",
+    "stream-interrupt.json",
+    "trace-abort-result.json",
+    "trace-task-tool.json",
+    "trace-todo-plan.json",
+    "trace-tool-streams.json",
+    "user-input-flow.json"
+  ]
+}

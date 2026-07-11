@@ -1,0 +1,18 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "type": "request",
+      "connectionId": "W\"(y s\\",
+      "request": {
+        "requestId": "_",
+        "threadId": "constructor",
+        "tabIdExplicit": true,
+        "operation": "status",
+        "input": {},
+        "timeoutMs": 27
+      }
+    }
+  ]
+}

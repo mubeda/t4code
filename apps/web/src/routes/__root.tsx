@@ -1,6 +1,6 @@
-import { type ServerLifecycleWelcomePayload } from "@t3tools/contracts";
-import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
-import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { type ServerLifecycleWelcomePayload } from "@t4code/contracts";
+import { scopedProjectKey, scopeProjectRef } from "@t4code/client-runtime/environment";
+import { squashAtomCommandFailure } from "@t4code/client-runtime/state/runtime";
 import {
   Outlet,
   createRootRoute,
@@ -246,19 +246,34 @@ function errorMessage(error: unknown): string {
 }
 
 function errorDetails(error: unknown): string {
-  if (error instanceof Error) {
-    return error.stack ?? error.message;
-  }
+  const seen = new Set<unknown>();
 
-  if (typeof error === "string") {
-    return error;
-  }
+  const format = (value: unknown): string => {
+    if (seen.has(value)) {
+      return "[Circular error cause]";
+    }
+    if ((typeof value === "object" && value !== null) || typeof value === "function") {
+      seen.add(value);
+    }
 
-  try {
-    return JSON.stringify(error, null, 2);
-  } catch {
-    return "No additional error details are available.";
-  }
+    if (value instanceof Error) {
+      const ownDetails = value.stack ?? value.message;
+      const cause = value.cause;
+      return cause === undefined ? ownDetails : `${ownDetails}\n\nCaused by:\n${format(cause)}`;
+    }
+
+    if (typeof value === "string") {
+      return value;
+    }
+
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return "No additional error details are available.";
+    }
+  };
+
+  return format(error);
 }
 
 function AuthenticatedTracingBootstrap() {

@@ -1,0 +1,17 @@
+{
+  "threadId": "provider-thread-2",
+  "runtimeMode": "plan",
+  "cwd": null,
+  "claudePath": "claude",
+  "resumeSessionId": null,
+  "newSessionId": null,
+  "expected": {
+    "permissionMode": "plan",
+    "allowDangerouslySkipPermissions": false,
+    "includePartialMessages": true,
+    "additionalDirectories": [],
+    "resume": null,
+    "sessionId": null,
+    "executable": "claude"
+  }
+}
