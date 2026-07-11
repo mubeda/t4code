@@ -1,7 +1,7 @@
-import type { ResolvedKeybindingsConfig, ScopedThreadRef } from "@t3tools/contracts";
-import { scopeProjectRef } from "@t3tools/client-runtime/environment";
-import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
-import { resolveTerminalSessionLabel } from "@t3tools/shared/terminalLabels";
+import type { ResolvedKeybindingsConfig, ScopedThreadRef } from "@t4code/contracts";
+import { scopeProjectRef } from "@t4code/client-runtime/environment";
+import { projectScriptCwd, projectScriptRuntimeEnv } from "@t4code/shared/projectScripts";
+import { resolveTerminalSessionLabel } from "@t4code/shared/terminalLabels";
 import { useMemo } from "react";
 
 import type { TerminalContextSelection } from "~/lib/terminalContext";

@@ -1,0 +1,35 @@
+{
+  "cwd": "/tmp/project",
+  "response": {
+    "data": [
+      {
+        "cwd": "/tmp/project",
+        "errors": [],
+        "skills": [
+          {
+            "name": "preview-status",
+            "path": "/tmp/project/.codex/skills/preview-status",
+            "enabled": true,
+            "description": "Reads the current preview status",
+            "scope": "project",
+            "interface": {
+              "displayName": "Preview Status",
+              "shortDescription": "Show preview status"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "parsed": [
+    {
+      "name": "preview-status",
+      "path": "/tmp/project/.codex/skills/preview-status",
+      "enabled": true,
+      "description": "Reads the current preview status",
+      "scope": "project",
+      "displayName": "Preview Status",
+      "shortDescription": "Show preview status"
+    }
+  ]
+}

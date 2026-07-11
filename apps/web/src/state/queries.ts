@@ -2,15 +2,15 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   type CheckpointDiffTarget,
   type ComposerPathSearchTarget,
-} from "@t3tools/client-runtime/state/threads";
-import { type VcsRefTarget } from "@t3tools/client-runtime/state/vcs";
+} from "@t4code/client-runtime/state/threads";
+import { type VcsRefTarget } from "@t4code/client-runtime/state/vcs";
 import type {
   EnvironmentId,
   OrchestrationThread,
   ThreadId,
   VcsListRefsResult,
   VcsRef,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";

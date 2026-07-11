@@ -3,7 +3,7 @@ import type {
   EnvironmentId,
   ProjectListEntriesResult,
   ProjectReadFileResult,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
@@ -11,7 +11,7 @@ import { useCallback } from "react";
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { projectEnvironment } from "~/state/projects";
-import { executeAtomQuery } from "@t3tools/client-runtime/state/runtime";
+import { executeAtomQuery } from "@t4code/client-runtime/state/runtime";
 
 const EMPTY_PROJECT_FILE_PATH = "";
 function optimisticFileAtom(environmentId: EnvironmentId, cwd: string, relativePath: string) {

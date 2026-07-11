@@ -1,4 +1,4 @@
-import type { VcsStagingArea } from "@t3tools/contracts";
+import type { VcsStagingArea } from "@t4code/contracts";
 import { Fragment, useState, type ReactNode } from "react";
 
 import { DiffStatLabel } from "~/components/chat/DiffStatLabel";

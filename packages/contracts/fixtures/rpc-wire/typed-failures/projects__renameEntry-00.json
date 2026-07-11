@@ -1,0 +1,42 @@
+{
+  "_tag": "Exit",
+  "requestId": "900719925474099312345",
+  "exit": {
+    "_tag": "Failure",
+    "cause": [
+      {
+        "_tag": "Fail",
+        "error": {
+          "_tag": "ProjectRenameEntryError",
+          "cwd": "toString",
+          "resolvedPath": "[Y/M2X",
+          "operation": "write-file",
+          "message": "on",
+          "cause": [
+            [true],
+            {
+              "toString": null,
+              "dtJB8": "'lK\"iltg",
+              "+KG+/": 0,
+              "": -3.5e-323,
+              "bi": "X",
+              "?A: t0Z": ";pro__loo",
+              "?I95+*_ZFt": "\\kOWU9b*fZ"
+            },
+            [
+              "l;u*9Mta&I",
+              null,
+              {},
+              "S",
+              {
+                " D@#Y Io/": false,
+                "Strivalu": false,
+                "y':mnQYht": null
+              }
+            ]
+          ]
+        }
+      }
+    ]
+  }
+}

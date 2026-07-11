@@ -1,0 +1,26 @@
+{
+  "_tag": "Exit",
+  "requestId": "900719925474099312345",
+  "exit": {
+    "_tag": "Failure",
+    "cause": [
+      {
+        "_tag": "Fail",
+        "error": {
+          "_tag": "GitPullRequestMaterializationError",
+          "cwd": "}J",
+          "pullRequestNumber": 2003373184,
+          "headRepository": null,
+          "headBranch": "ref",
+          "localBranch": "va",
+          "cause": {
+            "{": {
+              "E<[i": " >p#q",
+              "@,:": 3e-323
+            }
+          }
+        }
+      }
+    ]
+  }
+}

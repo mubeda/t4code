@@ -163,6 +163,7 @@ export type DesktopRuntimeArch = "arm64" | "x64" | "other";
 export type DesktopTheme = "light" | "dark" | "system";
 export type DesktopUpdateChannel = "latest" | "nightly";
 export type DesktopAppStageLabel = "Alpha" | "Dev" | "Nightly";
+export type DesktopBridgeHost = "tauri";
 
 export const DesktopUpdateStatusSchema = Schema.Literals([
   "disabled",
@@ -178,6 +179,47 @@ export const DesktopRuntimeArchSchema = Schema.Literals(["arm64", "x64", "other"
 export const DesktopThemeSchema = Schema.Literals(["light", "dark", "system"]);
 export const DesktopUpdateChannelSchema = Schema.Literals(["latest", "nightly"]);
 export const DesktopAppStageLabelSchema = Schema.Literals(["Alpha", "Dev", "Nightly"]);
+export const DesktopBridgeHostSchema = Schema.Literal("tauri");
+
+export interface DesktopBridgeFeatureFlags {
+  localBackend: boolean;
+  localBearerToken: boolean;
+  clientSettings: boolean;
+  serverExposure: boolean;
+  wslDiscovery: boolean;
+  sshRemoteHttp: boolean;
+  connectionCatalog: boolean;
+  sshProvisioning: boolean;
+  preview: boolean;
+  updater: boolean;
+  menuEvents: boolean;
+}
+
+export const DesktopBridgeFeatureFlagsSchema = Schema.Struct({
+  localBackend: Schema.Boolean,
+  localBearerToken: Schema.Boolean,
+  clientSettings: Schema.Boolean,
+  serverExposure: Schema.Boolean,
+  wslDiscovery: Schema.Boolean,
+  sshRemoteHttp: Schema.Boolean,
+  connectionCatalog: Schema.Boolean,
+  sshProvisioning: Schema.Boolean,
+  preview: Schema.Boolean,
+  updater: Schema.Boolean,
+  menuEvents: Schema.Boolean,
+});
+
+export interface DesktopBridgeHostMetadata {
+  host: DesktopBridgeHost;
+  bridgeVersion: number;
+  features: DesktopBridgeFeatureFlags;
+}
+
+export const DesktopBridgeHostMetadataSchema = Schema.Struct({
+  host: DesktopBridgeHostSchema,
+  bridgeVersion: Schema.Number,
+  features: DesktopBridgeFeatureFlagsSchema,
+});
 
 export interface DesktopAppBranding {
   baseName: string;
@@ -572,7 +614,7 @@ export const DesktopPreviewPointerEventSchema: Schema.Codec<DesktopPreviewPointe
  * can attach.
  */
 export interface DesktopPreviewWebviewConfig {
-  /** `persist:t3code-preview` (or whatever the desktop chose). */
+  /** `persist:t4code-preview` (or whatever the desktop chose). */
   partition: string;
   /**
    * Canonical `<webview webpreferences="...">` string. Encodes the security
@@ -945,6 +987,7 @@ export const DesktopPreviewAutomationWaitForInputSchema = Schema.Struct({
 });
 
 export interface DesktopBridge {
+  getHostMetadata?: () => Promise<DesktopBridgeHostMetadata>;
   getAppBranding: () => DesktopAppBranding | null;
   // One bootstrap per pool instance currently registered with bootstrap
   // info (omits instances whose backend hasn't produced a config yet).
@@ -1002,7 +1045,8 @@ export interface DesktopBridge {
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
   /**
    * Desktop-only preview surface. Present iff the renderer is hosted by the
-   * Electron desktop build; web builds have `preview === undefined`.
+   * Native preview host when supported; current Tauri and web builds leave
+   * `preview === undefined`.
    */
   preview?: DesktopPreviewBridge;
 }

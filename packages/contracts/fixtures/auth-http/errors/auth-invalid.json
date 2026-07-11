@@ -1,0 +1,6 @@
+{
+  "_tag": "EnvironmentAuthInvalidError",
+  "code": "auth_invalid",
+  "reason": "missing_credential",
+  "traceId": "fixture-trace-auth-invalid"
+}

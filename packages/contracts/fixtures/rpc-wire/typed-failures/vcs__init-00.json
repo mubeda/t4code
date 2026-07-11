@@ -1,0 +1,21 @@
+{
+  "_tag": "Exit",
+  "requestId": "900719925474099312345",
+  "exit": {
+    "_tag": "Failure",
+    "cause": [
+      {
+        "_tag": "Fail",
+        "error": {
+          "_tag": "VcsProcessOutputLimitError",
+          "operation": "X8J",
+          "command": "IdBm",
+          "cwd": "&$",
+          "stream": "stderr",
+          "maxBytes": 1611724942,
+          "observedBytes": 7
+        }
+      }
+    ]
+  }
+}

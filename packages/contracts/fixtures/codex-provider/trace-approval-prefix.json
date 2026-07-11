@@ -1,0 +1,18 @@
+[
+  {
+    "type": "turn.started",
+    "threadId": "fixture-thread",
+    "turnId": "fixture-turn",
+    "payload": {}
+  },
+  {
+    "type": "request.opened",
+    "threadId": "fixture-thread",
+    "turnId": "fixture-turn",
+    "requestId": "approval:1001",
+    "payload": {
+      "requestType": "command_execution_approval",
+      "detail": "Please approve command"
+    }
+  }
+]

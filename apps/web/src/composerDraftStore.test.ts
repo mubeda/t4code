@@ -3,7 +3,7 @@ import {
   scopedThreadKey,
   scopeProjectRef,
   scopeThreadRef,
-} from "@t3tools/client-runtime/environment";
+} from "@t4code/client-runtime/environment";
 import * as Schema from "effect/Schema";
 import {
   defaultInstanceIdForDriver,
@@ -17,9 +17,9 @@ import {
   type ProviderOptionSelection,
   type RuntimeMode,
   type ServerProvider,
-} from "@t3tools/contracts";
-import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
-import { createModelSelection } from "@t3tools/shared/model";
+} from "@t4code/contracts";
+import { DEFAULT_UNIFIED_SETTINGS } from "@t4code/contracts/settings";
+import { createModelSelection } from "@t4code/shared/model";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 

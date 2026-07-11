@@ -1,5 +1,8 @@
 # Plan 01 — Source Control Surface + Core Panel
 
+> Status: archival. This shipped plan preserves its original paths and commands.
+> Use [Current Scripts](../../../reference/scripts.md) for supported commands.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Read [00-overview.md](./00-overview.md) first — its **Global Constraints** and **Shared Interfaces & Naming** apply to every task here.
 
 **Goal:** Add a "Source Control" card to the right-panel "Open a surface" chooser and a persistent `SourceControlPanel` that lists working-tree changes with `+/-` counts, lets the user select a subset ("staging"), edit a commit message, and run Commit / Push / Create-PR via the existing streaming git action — all by composing APIs that already exist. No backend changes.
@@ -67,7 +70,7 @@ it("opens a singleton source control surface", () => {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `pnpm --filter @t3tools/web exec vp test run --project unit apps/web/src/rightPanelStore.test.ts`
+Run: `pnpm --filter @t4code/web exec vp test run --project unit apps/web/src/rightPanelStore.test.ts`
 Expected: FAIL — TypeScript rejects `"sourceControl"` as an argument to `open` (not in `RIGHT_PANEL_KINDS`), or the surface is never added.
 
 - [ ] **Step 3: Add the kind to `RIGHT_PANEL_KINDS`**
@@ -115,7 +118,7 @@ const RIGHT_PANEL_STORAGE_VERSION = 8;
 
 - [ ] **Step 7: Run the test to verify it passes**
 
-Run: `pnpm --filter @t3tools/web exec vp test run --project unit apps/web/src/rightPanelStore.test.ts`
+Run: `pnpm --filter @t4code/web exec vp test run --project unit apps/web/src/rightPanelStore.test.ts`
 Expected: PASS.
 
 - [ ] **Step 8: Commit**
@@ -143,8 +146,8 @@ git commit -m "feat(source-control): register sourceControl right-panel surface 
 Create `apps/web/src/sourceControlPanelStore.test.ts`:
 
 ```ts
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { scopeThreadRef } from "@t4code/client-runtime/environment";
+import { EnvironmentId, ThreadId } from "@t4code/contracts";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
@@ -197,7 +200,7 @@ describe("sourceControlPanelStore", () => {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `pnpm --filter @t3tools/web exec vp test run --project unit apps/web/src/sourceControlPanelStore.test.ts`
+Run: `pnpm --filter @t4code/web exec vp test run --project unit apps/web/src/sourceControlPanelStore.test.ts`
 Expected: FAIL — module `./sourceControlPanelStore` does not exist.
 
 - [ ] **Step 3: Write the store**
@@ -205,8 +208,8 @@ Expected: FAIL — module `./sourceControlPanelStore` does not exist.
 Create `apps/web/src/sourceControlPanelStore.ts`:
 
 ```ts
-import { scopedThreadKey } from "@t3tools/client-runtime/environment";
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import { scopedThreadKey } from "@t4code/client-runtime/environment";
+import type { ScopedThreadRef } from "@t4code/contracts";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
@@ -267,7 +270,7 @@ export const useSourceControlPanelStore = create<SourceControlPanelStoreState>()
         }),
     }),
     {
-      name: "t3code:source-control-panel-state:v1",
+      name: "t4code:source-control-panel-state:v1",
       version: 1,
       storage: createJSONStorage(() =>
         resolveStorage(typeof window !== "undefined" ? window.localStorage : undefined),
@@ -288,7 +291,7 @@ export function selectThreadSourceControlDraft(
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `pnpm --filter @t3tools/web exec vp test run --project unit apps/web/src/sourceControlPanelStore.test.ts`
+Run: `pnpm --filter @t4code/web exec vp test run --project unit apps/web/src/sourceControlPanelStore.test.ts`
 Expected: PASS (4 tests).
 
 - [ ] **Step 5: Commit**
@@ -309,7 +312,7 @@ git commit -m "feat(source-control): add source control panel draft store"
 
 **Interfaces:**
 
-- Consumes: `VcsStatusResult` from `@t3tools/contracts`.
+- Consumes: `VcsStatusResult` from `@t4code/contracts`.
 - Produces: `type WorkingTreeFile = { path: string; insertions: number; deletions: number }`; `splitFilePath(path) → { dir: string | null; name: string }`; `summarizeChangeSelection(files, excludedPaths) → ChangeSelectionSummary`; `resolveCommitFilePaths(summary) → string[] | undefined`; `workingTreeFiles(status) → WorkingTreeFile[]`.
 
 - [ ] **Step 1: Write the failing test**
@@ -386,7 +389,7 @@ describe("resolveCommitFilePaths", () => {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `pnpm --filter @t3tools/web exec vp test run --project unit apps/web/src/components/SourceControlPanel.logic.test.ts`
+Run: `pnpm --filter @t4code/web exec vp test run --project unit apps/web/src/components/SourceControlPanel.logic.test.ts`
 Expected: FAIL — module does not exist.
 
 - [ ] **Step 3: Write the logic module**
@@ -394,7 +397,7 @@ Expected: FAIL — module does not exist.
 Create `apps/web/src/components/SourceControlPanel.logic.ts`:
 
 ```ts
-import type { VcsStatusResult } from "@t3tools/contracts";
+import type { VcsStatusResult } from "@t4code/contracts";
 
 export interface WorkingTreeFile {
   readonly path: string;
@@ -457,7 +460,7 @@ export function workingTreeFiles(status: VcsStatusResult | null | undefined): Wo
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `pnpm --filter @t3tools/web exec vp test run --project unit apps/web/src/components/SourceControlPanel.logic.test.ts`
+Run: `pnpm --filter @t4code/web exec vp test run --project unit apps/web/src/components/SourceControlPanel.logic.test.ts`
 Expected: PASS (7 tests).
 
 - [ ] **Step 5: Commit**
@@ -544,7 +547,7 @@ describe("SourceControlChangesList", () => {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `pnpm --filter @t3tools/web exec vp test run --project unit apps/web/src/components/SourceControlChangesList.test.tsx`
+Run: `pnpm --filter @t4code/web exec vp test run --project unit apps/web/src/components/SourceControlChangesList.test.tsx`
 Expected: FAIL — module does not exist.
 
 - [ ] **Step 3: Write the component**
@@ -620,7 +623,7 @@ export function SourceControlChangesList(props: SourceControlChangesListProps) {
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `pnpm --filter @t3tools/web exec vp test run --project unit apps/web/src/components/SourceControlChangesList.test.tsx`
+Run: `pnpm --filter @t4code/web exec vp test run --project unit apps/web/src/components/SourceControlChangesList.test.tsx`
 Expected: PASS (3 tests).
 
 > If `renderToStaticMarkup` throws on the base-ui `Checkbox` (missing context), that is the only expected failure mode here; the fix is to wrap the `Checkbox` usage so it renders server-side, but base-ui `Checkbox`/`Radio` are already rendered by `GitActionsControl` in this codebase, so it is expected to SSR cleanly. Do not swap to a native input unless the test proves it necessary.
@@ -642,7 +645,7 @@ git commit -m "feat(source-control): add presentational changes list"
 
 **Interfaces:**
 
-- Consumes: `vcsEnvironment.status` (`~/state/vcs`), `useEnvironmentQuery` (`~/state/query`), `useGitStackedAction`/`useVcsPullAction`/`useSourceControlActionRunning` (`~/lib/sourceControlActions`), `getSourceControlPresentation` (`~/sourceControlPresentation`), `buildMenuItems`/`resolveQuickAction`/`requiresDefaultBranchConfirmation`/`resolveDefaultBranchActionDialogCopy` (`./GitActionsControl.logic`), `DiffPanelShell`/`DiffPanelMode` (`./DiffPanelShell`), draft store, `SourceControlPanel.logic`, `SourceControlChangesList`, `useRightPanelStore`, `useDiffPanelStore`, `toastManager`/`stackedThreadToast` (`~/components/ui/toast`), `isAtomCommandInterrupted`/`squashAtomCommandFailure` (`@t3tools/client-runtime/state/runtime`), `randomUUID` (`~/lib/utils`), `openPullRequestLink` (`~/lib/openPullRequestLink`), `readLocalApi` (`~/localApi`).
+- Consumes: `vcsEnvironment.status` (`~/state/vcs`), `useEnvironmentQuery` (`~/state/query`), `useGitStackedAction`/`useVcsPullAction`/`useSourceControlActionRunning` (`~/lib/sourceControlActions`), `getSourceControlPresentation` (`~/sourceControlPresentation`), `buildMenuItems`/`resolveQuickAction`/`requiresDefaultBranchConfirmation`/`resolveDefaultBranchActionDialogCopy` (`./GitActionsControl.logic`), `DiffPanelShell`/`DiffPanelMode` (`./DiffPanelShell`), draft store, `SourceControlPanel.logic`, `SourceControlChangesList`, `useRightPanelStore`, `useDiffPanelStore`, `toastManager`/`stackedThreadToast` (`~/components/ui/toast`), `isAtomCommandInterrupted`/`squashAtomCommandFailure` (`@t4code/client-runtime/state/runtime`), `randomUUID` (`~/lib/utils`), `openPullRequestLink` (`~/lib/openPullRequestLink`), `readLocalApi` (`~/localApi`).
 - Produces: `export default function SourceControlPanel(props: { mode: DiffPanelMode; threadRef: ScopedThreadRef; gitCwd: string | null })`.
 
 - [ ] **Step 1: Write the component**
@@ -652,11 +655,11 @@ git commit -m "feat(source-control): add presentational changes list"
 Create `apps/web/src/components/SourceControlPanel.tsx`:
 
 ```tsx
-import type { GitStackedAction, ScopedThreadRef, VcsStatusResult } from "@t3tools/contracts";
+import type { GitStackedAction, ScopedThreadRef, VcsStatusResult } from "@t4code/contracts";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
+} from "@t4code/client-runtime/state/runtime";
 import { ChevronDownIcon, CloudUploadIcon, GitCommitIcon, RefreshCwIcon } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 
@@ -1070,7 +1073,7 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
 
 - [ ] **Step 2: Typecheck and lint**
 
-Run: `pnpm --filter @t3tools/web exec tsgo --noEmit`
+Run: `pnpm --filter @t4code/web exec tsgo --noEmit`
 Expected: no errors in `SourceControlPanel.tsx`.
 Run: `pnpm lint`
 Expected: no new lint errors.
@@ -1223,7 +1226,7 @@ In the `RightPanelEmptyState` render (lines 482-490) add:
 
 - [ ] **Step 8: Typecheck**
 
-Run: `pnpm --filter @t3tools/web exec tsgo --noEmit`
+Run: `pnpm --filter @t4code/web exec tsgo --noEmit`
 Expected: **Errors are expected and desired here** — `ChatView.tsx` now fails to compile because it renders `<RightPanelTabs>` without the two new required props. Task 7 fixes those call sites. Confirm the only errors are the two missing-prop errors in `ChatView.tsx`, and no errors inside `RightPanelTabs.tsx` itself.
 
 - [ ] **Step 9: Commit**
@@ -1283,12 +1286,12 @@ In the **sheet** `<RightPanelTabs>` (lines 5326-5350), after `onAddDiff={addDiff
 
 - [ ] **Step 5: Typecheck the whole web app**
 
-Run: `pnpm --filter @t3tools/web exec tsgo --noEmit`
+Run: `pnpm --filter @t4code/web exec tsgo --noEmit`
 Expected: PASS (no errors).
 
 - [ ] **Step 6: Run the full web unit suite**
 
-Run: `pnpm --filter @t3tools/web exec vp test run --project unit`
+Run: `pnpm --filter @t4code/web exec vp test run --project unit`
 Expected: PASS (existing suite + the new store/logic/list tests).
 
 - [ ] **Step 7: Manual smoke test**

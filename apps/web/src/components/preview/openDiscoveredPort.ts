@@ -1,8 +1,5 @@
-import type { DiscoveredLocalServer, ScopedThreadRef } from "@t3tools/contracts";
-import {
-  mapAtomCommandResult,
-  type AtomCommandResult,
-} from "@t3tools/client-runtime/state/runtime";
+import type { DiscoveredLocalServer, ScopedThreadRef } from "@t4code/contracts";
+import { mapAtomCommandResult, type AtomCommandResult } from "@t4code/client-runtime/state/runtime";
 
 import { resolveDiscoveredServerUrl } from "~/browser/browserTargetResolver";
 import type { OpenPreviewMutation } from "~/browser/openFileInPreview";

@@ -9,15 +9,15 @@
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
+} from "@t4code/client-runtime/state/runtime";
+import type { EnvironmentId, ProjectId } from "@t4code/contracts";
 import {
   DEFAULT_MODEL,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   ProviderInstanceId,
-} from "@t3tools/contracts";
-import { createModelSelection } from "@t3tools/shared/model";
+} from "@t4code/contracts";
+import { createModelSelection } from "@t4code/shared/model";
 import { useNavigate } from "@tanstack/react-router";
 import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -155,7 +155,7 @@ export function CreateWorktreeDialog({
     if (!environmentId) return [];
     const serverConfig = serverConfigs.get(environmentId);
     // TODO(orca-port): consider reusing `isProviderAvailable` from
-    // @t3tools/contracts/server once its exact export path is confirmed,
+    // @t4code/contracts/server once its exact export path is confirmed,
     // instead of this local enabled+installed filter.
     return (serverConfig?.providers ?? []).filter((p) => p.enabled && p.installed);
   }, [serverConfigs, environmentId]);

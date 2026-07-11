@@ -1,0 +1,46 @@
+[
+  {
+    "type": "turn.started",
+    "threadId": "fixture-thread",
+    "turnId": "fixture-turn",
+    "payload": {}
+  },
+  {
+    "type": "item.started",
+    "threadId": "fixture-thread",
+    "turnId": "fixture-turn",
+    "payload": {
+      "itemType": "command_execution",
+      "title": "Ran command",
+      "detail": "echo integration"
+    }
+  },
+  {
+    "type": "item.completed",
+    "threadId": "fixture-thread",
+    "turnId": "fixture-turn",
+    "payload": {
+      "itemType": "command_execution",
+      "status": "completed",
+      "title": "Ran command",
+      "detail": "echo integration"
+    }
+  },
+  {
+    "type": "content.delta",
+    "threadId": "fixture-thread",
+    "turnId": "fixture-turn",
+    "payload": {
+      "streamKind": "assistant_text",
+      "delta": "Applied the requested edit.\n"
+    }
+  },
+  {
+    "type": "turn.completed",
+    "threadId": "fixture-thread",
+    "turnId": "fixture-turn",
+    "payload": {
+      "state": "completed"
+    }
+  }
+]

@@ -2,7 +2,7 @@ import type {
   ServerProcessDiagnosticsResult,
   ServerProcessResourceHistorySummary,
   ServerProviderUsageSnapshot,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { describe, expect, it } from "vite-plus/test";
@@ -88,10 +88,10 @@ describe("statusBarPresentation", () => {
 
   it("formats top process rows with per-process CPU instead of aggregate CPU", () => {
     const vm = buildResourceTopProcessViewModel({
-      processKey: "123:t3 server",
+      processKey: "123:t4code server",
       pid: 123,
       ppid: 1,
-      command: "t3 server",
+      command: "t4code server",
       depth: 0,
       isServerRoot: true,
       firstSeenAt: updatedAt,
@@ -105,7 +105,7 @@ describe("statusBarPresentation", () => {
       sampleCount: 1,
     } satisfies ServerProcessResourceHistorySummary);
 
-    expect(vm.command).toBe("t3 server");
+    expect(vm.command).toBe("t4code server");
     expect(vm.detailLabel).toBe("1.2% · 123");
   });
 });

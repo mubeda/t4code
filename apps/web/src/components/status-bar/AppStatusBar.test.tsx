@@ -1,5 +1,5 @@
-import type { ServerProcessDiagnosticsResult, ServerProviderUsageResult } from "@t3tools/contracts";
-import { EnvironmentId } from "@t3tools/contracts";
+import type { ServerProcessDiagnosticsResult, ServerProviderUsageResult } from "@t4code/contracts";
+import { EnvironmentId } from "@t4code/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -7,8 +7,10 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   AppStatusBarView,
+  STATUS_BAR_RESOURCE_REFRESH_INTERVAL_MS,
   STATUS_BAR_USAGE_REFRESH_INTERVAL_MS,
   createStatusBarRefreshHandler,
+  createStatusBarResourceRefreshHandler,
   startStatusBarUsageAutoRefresh,
 } from "./AppStatusBar";
 
@@ -91,14 +93,18 @@ describe("AppStatusBarView", () => {
     expect(markup).toContain("11");
   });
 
-  it("builds a refresh handler that refreshes provider usage and the query", async () => {
+  it("refreshes provider usage and every status-bar query", async () => {
     const refreshProviderUsage = vi.fn().mockResolvedValue({ _tag: "Success" });
-    const refreshQuery = vi.fn();
+    const refreshUsageQuery = vi.fn();
+    const refreshProcessDiagnostics = vi.fn();
+    const refreshResourceHistory = vi.fn();
     const environmentId = EnvironmentId.make("environment-test");
     const handler = createStatusBarRefreshHandler({
       environmentId,
       refreshProviderUsage,
-      refreshQuery,
+      refreshUsageQuery,
+      refreshProcessDiagnostics,
+      refreshResourceHistory,
     });
 
     await handler();
@@ -107,7 +113,42 @@ describe("AppStatusBarView", () => {
       environmentId,
       input: { providers: ["claude", "codex"] },
     });
-    expect(refreshQuery).toHaveBeenCalledTimes(1);
+    expect(refreshUsageQuery).toHaveBeenCalledTimes(1);
+    expect(refreshProcessDiagnostics).toHaveBeenCalledTimes(1);
+    expect(refreshResourceHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes resource queries even when provider refresh fails", async () => {
+    const refreshUsageQuery = vi.fn();
+    const refreshProcessDiagnostics = vi.fn();
+    const refreshResourceHistory = vi.fn();
+    const handler = createStatusBarRefreshHandler({
+      environmentId: EnvironmentId.make("environment-test"),
+      refreshProviderUsage: vi.fn().mockRejectedValue(new Error("provider unavailable")),
+      refreshUsageQuery,
+      refreshProcessDiagnostics,
+      refreshResourceHistory,
+    });
+
+    await expect(handler()).rejects.toThrow("provider unavailable");
+    expect(refreshUsageQuery).toHaveBeenCalledTimes(1);
+    expect(refreshProcessDiagnostics).toHaveBeenCalledTimes(1);
+    expect(refreshResourceHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("builds an environment-scoped resource refresh handler", () => {
+    const refreshProcessDiagnostics = vi.fn();
+    const refreshResourceHistory = vi.fn();
+    const handler = createStatusBarResourceRefreshHandler({
+      environmentId: EnvironmentId.make("environment-test"),
+      refreshProcessDiagnostics,
+      refreshResourceHistory,
+    });
+
+    handler();
+
+    expect(refreshProcessDiagnostics).toHaveBeenCalledTimes(1);
+    expect(refreshResourceHistory).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -132,6 +173,25 @@ describe("startStatusBarUsageAutoRefresh", () => {
       cleanup();
       vi.advanceTimersByTime(STATUS_BAR_USAGE_REFRESH_INTERVAL_MS);
       expect(refresh).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("supports the two-second resource refresh cadence", () => {
+    vi.useFakeTimers();
+    try {
+      const refresh = vi.fn();
+      const cleanup = startStatusBarUsageAutoRefresh({
+        refresh,
+        intervalMs: STATUS_BAR_RESOURCE_REFRESH_INTERVAL_MS,
+      });
+
+      expect(refresh).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(STATUS_BAR_RESOURCE_REFRESH_INTERVAL_MS);
+      expect(refresh).toHaveBeenCalledTimes(2);
+
+      cleanup();
     } finally {
       vi.useRealTimers();
     }

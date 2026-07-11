@@ -1,0 +1,185 @@
+{
+  "threadId": "provider-thread-1",
+  "turnId": "turn-2",
+  "startup": {
+    "sessionId": "sdk-session-todo-plan",
+    "runtimeMode": "full-access"
+  },
+  "messages": [
+    {
+      "type": "stream_event",
+      "session_id": "sdk-session-todo-plan",
+      "uuid": "stream-todo-start",
+      "parent_tool_use_id": null,
+      "event": {
+        "type": "content_block_start",
+        "index": 1,
+        "content_block": {
+          "type": "tool_use",
+          "id": "tool-todo-1",
+          "name": "TodoWrite",
+          "input": {}
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "session_id": "sdk-session-todo-plan",
+      "uuid": "stream-todo-input",
+      "parent_tool_use_id": null,
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "{\"todos\":[{\"content\":\"   \",\"status\":\"in_progress\"},{\"content\":\"Ship it\",\"status\":\"completed\"}]}"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "session_id": "sdk-session-todo-plan",
+      "uuid": "stream-todo-stop",
+      "parent_tool_use_id": null,
+      "event": {
+        "type": "content_block_stop",
+        "index": 1
+      }
+    },
+    {
+      "type": "result",
+      "subtype": "success",
+      "is_error": false,
+      "errors": [],
+      "session_id": "sdk-session-todo-plan",
+      "uuid": "result-todo-plan"
+    }
+  ],
+  "expectedEvents": [
+    {
+      "type": "session.started",
+      "threadId": "provider-thread-1",
+      "payload": {
+        "message": "Claude session started.",
+        "resume": {
+          "sessionId": "sdk-session-todo-plan"
+        }
+      }
+    },
+    {
+      "type": "session.configured",
+      "threadId": "provider-thread-1",
+      "payload": {
+        "permissionMode": "bypassPermissions",
+        "cwd": null
+      }
+    },
+    {
+      "type": "session.state.changed",
+      "threadId": "provider-thread-1",
+      "payload": {
+        "state": "ready"
+      }
+    },
+    {
+      "type": "turn.started",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-2",
+      "payload": {
+        "input": "make a plan"
+      }
+    },
+    {
+      "type": "item.started",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-2",
+      "providerRefs": {
+        "providerItemId": "tool-todo-1"
+      },
+      "payload": {
+        "itemType": "plan",
+        "title": "Plan",
+        "data": {
+          "toolName": "TodoWrite",
+          "input": {}
+        }
+      }
+    },
+    {
+      "type": "item.updated",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-2",
+      "providerRefs": {
+        "providerItemId": "tool-todo-1"
+      },
+      "payload": {
+        "data": {
+          "toolName": "TodoWrite",
+          "input": {
+            "todos": [
+              {
+                "content": "   ",
+                "status": "in_progress"
+              },
+              {
+                "content": "Ship it",
+                "status": "completed"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.plan.updated",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-2",
+      "payload": {
+        "plan": [
+          {
+            "step": "Task",
+            "status": "inProgress"
+          },
+          {
+            "step": "Ship it",
+            "status": "completed"
+          }
+        ]
+      }
+    },
+    {
+      "type": "item.completed",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-2",
+      "providerRefs": {
+        "providerItemId": "tool-todo-1"
+      },
+      "payload": {
+        "data": {
+          "toolName": "TodoWrite",
+          "input": {
+            "todos": [
+              {
+                "content": "   ",
+                "status": "in_progress"
+              },
+              {
+                "content": "Ship it",
+                "status": "completed"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.completed",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-2",
+      "payload": {
+        "state": "completed",
+        "stopReason": "success"
+      }
+    }
+  ]
+}

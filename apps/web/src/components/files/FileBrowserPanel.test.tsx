@@ -1,5 +1,5 @@
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import type { EditorId, ProjectEntry } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t4code/contracts";
+import type { EditorId, ProjectEntry } from "@t4code/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -133,7 +133,7 @@ vi.mock("@pierre/trees/react", () => ({
   },
 }));
 
-vi.mock("@t3tools/client-runtime/state/runtime", () => ({
+vi.mock("@t4code/client-runtime/state/runtime", () => ({
   // Mutation commands surface interruption as a `Failure` carrying an interrupt
   // marker; the preview flow uses a dedicated `Interrupted` tag. Support both.
   isAtomCommandInterrupted: (result: { _tag: string; interrupted?: boolean }) =>
@@ -159,7 +159,7 @@ vi.mock("~/lib/utils", () => ({
   newProjectId: () => testState.newProjectId,
 }));
 
-vi.mock("~/pierre-icons", () => ({ T3_PIERRE_ICONS: {} }));
+vi.mock("~/pierre-icons", () => ({ T4CODE_PIERRE_ICONS: {} }));
 
 vi.mock("~/previewStateStore", () => ({
   isPreviewSupportedInRuntime: () => testState.isPreviewSupported,

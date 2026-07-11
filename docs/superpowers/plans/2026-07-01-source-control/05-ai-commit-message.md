@@ -1,5 +1,8 @@
 # Plan 05 — AI Commit Message (✨ sparkle)
 
+> Status: archival. This shipped plan preserves its original paths and commands.
+> Use [Current Scripts](../../../reference/scripts.md) for supported commands.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax. Read [00-overview.md](./00-overview.md) first. **Depends on Plan 01** (the panel + draft store). Nicer after Plan 03 (generates from the staged set), but works after Plan 01 alone.
 
 **Goal:** Add the ✨ sparkle button from the Orca screenshot: it generates a commit message from the current changes and writes it into the **editable** message box (the user can review/edit before committing), with a client-side cancel.
@@ -76,7 +79,7 @@ and add `WsVcsGenerateCommitMessageRpc` to `WsRpcGroup`.
 
 - [ ] **Step 3: Typecheck + commit**
 
-Run: `pnpm --filter @t3tools/contracts exec tsc --noEmit` → PASS.
+Run: `pnpm --filter @t4code/contracts exec tsc --noEmit` → PASS.
 
 ```bash
 git add packages/contracts/src/git.ts packages/contracts/src/rpc.ts
@@ -117,7 +120,7 @@ it.effect("generateCommitMessage returns a formatted message for staged changes"
 
 > Match the exact stub the existing `GitManager.test.ts` uses for `textGeneration.generateCommitMessage`; if the harness returns a different fixed subject, assert on that. If the test file has no `textGeneration` stub yet, add one mirroring the real `TextGenerationService` shape (a single `generateCommitMessage` returning `{ subject, body }`).
 
-Run: `pnpm --filter @t3tools/server exec vp test run apps/server/src/git/GitManager.test.ts` → FAIL (`manager.generateCommitMessage` missing).
+Run: `pnpm --filter @t4code/server exec vp test run apps/server/src/git/GitManager.test.ts` → FAIL (`manager.generateCommitMessage` missing).
 
 - [ ] **Step 2: Add the read-only diff context builder** (`GitVcsDriverCore.ts`)
 
@@ -199,7 +202,7 @@ const generateCommitMessage: GitManager["Service"]["generateCommitMessage"] = Ef
 });
 ```
 
-(`limitContext`, `sanitizeCommitMessage`, `formatCommitMessage` are the same private helpers `resolveCommitAndBranchSuggestion` uses at lines 1170-1181, in scope here.) Declare the method on the `GitManager` `Service` interface (near line 69) and add it to the returned service object (near line 1862). Import `VcsGenerateCommitMessageInput`, `VcsGenerateCommitMessageResult` from `@t3tools/contracts`:
+(`limitContext`, `sanitizeCommitMessage`, `formatCommitMessage` are the same private helpers `resolveCommitAndBranchSuggestion` uses at lines 1170-1181, in scope here.) Declare the method on the `GitManager` `Service` interface (near line 69) and add it to the returned service object (near line 1862). Import `VcsGenerateCommitMessageInput`, `VcsGenerateCommitMessageResult` from `@t4code/contracts`:
 
 ```ts
     readonly generateCommitMessage: (
@@ -211,8 +214,8 @@ const generateCommitMessage: GitManager["Service"]["generateCommitMessage"] = Ef
 
 - [ ] **Step 5: Run test + typecheck + commit**
 
-Run: `pnpm --filter @t3tools/server exec vp test run apps/server/src/git/GitManager.test.ts` → PASS.
-Run: `pnpm --filter @t3tools/server exec tsc --noEmit` → PASS.
+Run: `pnpm --filter @t4code/server exec vp test run apps/server/src/git/GitManager.test.ts` → PASS.
+Run: `pnpm --filter @t4code/server exec tsc --noEmit` → PASS.
 
 ```bash
 git add apps/server/src/vcs/GitVcsDriver.ts apps/server/src/vcs/GitVcsDriverCore.ts apps/server/src/git/GitManager.ts apps/server/src/git/GitManager.test.ts apps/server/src/git/GitWorkflowService.ts
@@ -244,8 +247,8 @@ Dispatch (near the `gitRunStackedAction` handler, line 1483):
 
 - [ ] **Step 2: Typecheck + server test + commit**
 
-Run: `pnpm --filter @t3tools/server exec tsc --noEmit` → PASS.
-Run: `pnpm --filter @t3tools/server exec vp test run apps/server/src/server.test.ts` → PASS.
+Run: `pnpm --filter @t4code/server exec tsc --noEmit` → PASS.
+Run: `pnpm --filter @t4code/server exec vp test run apps/server/src/server.test.ts` → PASS.
 
 ```bash
 git add apps/server/src/ws.ts
@@ -333,7 +336,7 @@ export function useVcsGenerateCommitMessageAction(scope: SourceControlActionScop
 
 - [ ] **Step 4: Re-export** (`apps/web/src/lib/sourceControlActions.ts`): add `useVcsGenerateCommitMessageAction`.
 
-Run: `pnpm --filter @t3tools/web exec vp test run --project unit apps/web/src/state/sourceControlActions.generate.test.ts` → PASS.
+Run: `pnpm --filter @t4code/web exec vp test run --project unit apps/web/src/state/sourceControlActions.generate.test.ts` → PASS.
 
 - [ ] **Step 5: Sparkle button + cancel in the panel** (`SourceControlPanel.tsx`)
 
@@ -410,8 +413,8 @@ const cancelGenerate = useCallback(() => {
 
 - [ ] **Step 6: Typecheck + web tests + manual + commit**
 
-Run: `pnpm --filter @t3tools/web exec tsgo --noEmit` → PASS.
-Run: `pnpm --filter @t3tools/web exec vp test run --project unit` → PASS.
+Run: `pnpm --filter @t4code/web exec tsgo --noEmit` → PASS.
+Run: `pnpm --filter @t4code/web exec vp test run --project unit` → PASS.
 Manual: `pnpm dev:web`, open the panel in a dirty repo, click ✨ → a spinner/stop icon shows while generating, then the message box fills with a generated message you can edit; clicking stop mid-flight leaves the box untouched.
 
 ```bash

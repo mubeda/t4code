@@ -6,14 +6,14 @@ import {
   ConnectionTransientError,
   CredentialStore,
   ProfileStore,
-} from "@t3tools/client-runtime/connection";
+} from "@t4code/client-runtime/connection";
 import {
   ConnectionCatalogDocument,
   ConnectionRegistrationStore,
   ConnectionTargetStore,
   EnvironmentCacheStore,
-} from "@t3tools/client-runtime/platform";
-import { TokenStore } from "@t3tools/client-runtime/authorization";
+} from "@t4code/client-runtime/platform";
+import { TokenStore } from "@t4code/client-runtime/authorization";
 import {
   EnvironmentId,
   type OrchestrationShellSnapshot,
@@ -21,7 +21,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -277,7 +277,7 @@ const remoteToken = new TokenStore.RemoteDpopAccessToken({
   endpoint: {
     httpBaseUrl: "https://relay.example/",
     wsBaseUrl: "wss://relay.example/",
-    providerKind: "t3_relay",
+    providerKind: "t4code_relay",
   },
   accessToken: "remote-access-token",
   expiresAtEpochMs: 1_000,

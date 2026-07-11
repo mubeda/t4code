@@ -1,0 +1,29 @@
+{
+  "methods": [
+    "terminal.open",
+    "terminal.attach",
+    "terminal.write",
+    "terminal.resize",
+    "terminal.clear",
+    "terminal.restart",
+    "terminal.close"
+  ],
+  "streams": ["subscribeTerminalEvents", "subscribeTerminalMetadata"],
+  "attachSnapshot": {
+    "type": "snapshot",
+    "snapshot": {
+      "threadId": "thread-1",
+      "terminalId": "term-1",
+      "cwd": "C:/repo",
+      "worktreePath": null,
+      "status": "running",
+      "pid": 4242,
+      "history": "",
+      "exitCode": null,
+      "exitSignal": null,
+      "label": "Terminal 1",
+      "updatedAt": "2026-07-10T00:00:00Z",
+      "sequence": 1
+    }
+  }
+}

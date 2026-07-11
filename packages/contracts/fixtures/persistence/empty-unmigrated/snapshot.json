@@ -1,0 +1,13 @@
+{
+  "formatVersion": 1,
+  "valueEncoding": {
+    "integerOutsideJsonSafeRange": {
+      "$integer": "base-10 string"
+    },
+    "blob": {
+      "$base64": "RFC 4648 base64 string"
+    },
+    "jsonText": "preserved as the exact SQLite TEXT value"
+  },
+  "tables": {}
+}

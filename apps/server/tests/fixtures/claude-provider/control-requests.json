@@ -1,0 +1,22 @@
+{
+  "interrupt": {
+    "sequence": 17,
+    "request": {
+      "subtype": "interrupt"
+    }
+  },
+  "setPermissionMode": {
+    "sequence": 18,
+    "request": {
+      "subtype": "set_permission_mode",
+      "mode": "acceptEdits"
+    }
+  },
+  "cancelToolCall": {
+    "sequence": 19,
+    "request": {
+      "subtype": "cancel_request",
+      "request_id": "approval:1001"
+    }
+  }
+}

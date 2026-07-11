@@ -1,0 +1,15 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "version": 1,
+      "revision": 1,
+      "type": "snapshot",
+      "payload": {
+        "pairingLinks": [],
+        "clientSessions": []
+      }
+    }
+  ]
+}

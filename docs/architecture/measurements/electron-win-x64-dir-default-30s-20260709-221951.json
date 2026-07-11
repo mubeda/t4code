@@ -1,0 +1,56 @@
+{
+  "label": "electron-win-x64-dir-default-30s-20260709-221951",
+  "rootPid": 7164,
+  "sampledAt": "2026-07-10T01:20:29.820Z",
+  "startupMs": 6816.8365,
+  "windowReadyMs": 6784.6401,
+  "readyUrl": "http://127.0.0.1:18882/.well-known/t4code/environment",
+  "windowTitle": "T4Code",
+  "idleMs": 30000,
+  "processIds": [7164, 18400, 37792, 58228, 43512],
+  "processCount": 5,
+  "totalPrivateBytes": 605261824,
+  "totalWorkingSetBytes": 787935232,
+  "topProcesses": [
+    {
+      "pid": 7164,
+      "processName": "T4Code (Alpha)",
+      "command": "\"X:\\t4code\\release\\desktop-electron-win-x64-dir-20260709-220855\\win-unpacked\\T4Code (Alpha).exe\"",
+      "privateBytes": 205189120,
+      "workingSetBytes": 241270784,
+      "mainWindowTitle": "T4Code (Alpha)"
+    },
+    {
+      "pid": 58228,
+      "processName": "T4Code (Alpha)",
+      "command": "\"X:\\t4code\\release\\desktop-electron-win-x64-dir-20260709-220855\\win-unpacked\\T4Code (Alpha).exe\" X:\\t4code\\release\\desktop-electron-win-x64-dir-20260709-220855\\win-unpacked\\resources\\app.asar\\apps\\server\\dist\\bin.mjs --bootstrap-fd 3",
+      "privateBytes": 188715008,
+      "workingSetBytes": 198565888,
+      "mainWindowTitle": ""
+    },
+    {
+      "pid": 18400,
+      "processName": "T4Code (Alpha)",
+      "command": "\"X:\\t4code\\release\\desktop-electron-win-x64-dir-20260709-220855\\win-unpacked\\T4Code (Alpha).exe\" --type=gpu-process --user-data-dir=\"C:\\Users\\mauro\\AppData\\Roaming\\t4code\" --gpu-preferences=SAAAAAAAAADgAAAEAAAAAAAAAAAAAGAAAQAAAAAAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAAAAAAAQAAAAAAAAABAAAAAAAAAACAAAAAAAAAAIAAAAAAAAAA== --field-trial-handle=1832,i,9861173742970897487,1861358011951002271,262144 --enable-features=EnableTransparentHwndEnlargement,PdfUseShowSaveFilePicker --disable-features=DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,NetworkServiceSandbox,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=1836,i,3627821847183121071,8305177727248959728,4 --trace-process-track-uuid=3190708988185955192 --mojo-platform-channel-handle=1828 /prefetch:2",
+      "privateBytes": 115757056,
+      "workingSetBytes": 137216000,
+      "mainWindowTitle": ""
+    },
+    {
+      "pid": 43512,
+      "processName": "T4Code (Alpha)",
+      "command": "\"X:\\t4code\\release\\desktop-electron-win-x64-dir-20260709-220855\\win-unpacked\\T4Code (Alpha).exe\" --type=renderer --user-data-dir=\"C:\\Users\\mauro\\AppData\\Roaming\\t4code\" --standard-schemes=t4code --secure-schemes=t4code --cors-schemes=t4code --fetch-schemes=t4code --streaming-schemes=t4code --app-user-model-id=com.t4code.app --app-path=\"X:\\t4code\\release\\desktop-electron-win-x64-dir-20260709-220855\\win-unpacked\\resources\\app.asar\" --enable-sandbox --video-capture-use-gpu-memory-buffer --lang=en-GB --device-scale-factor=1 --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=4 --time-ticks-at-unix-epoch=-1783355178114803 --launch-time-ticks=291218309138 --field-trial-handle=1832,i,9861173742970897487,1861358011951002271,262144 --enable-features=EnableTransparentHwndEnlargement,PdfUseShowSaveFilePicker --disable-features=DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,NetworkServiceSandbox,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=1836,i,3627821847183121071,8305177727248959728,4 --trace-process-track-uuid=3190708990060038890 --mojo-platform-channel-handle=3268 /prefetch:1",
+      "privateBytes": 79888384,
+      "workingSetBytes": 152416256,
+      "mainWindowTitle": ""
+    },
+    {
+      "pid": 37792,
+      "processName": "T4Code (Alpha)",
+      "command": "\"X:\\t4code\\release\\desktop-electron-win-x64-dir-20260709-220855\\win-unpacked\\T4Code (Alpha).exe\" --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-GB --service-sandbox-type=none --user-data-dir=\"C:\\Users\\mauro\\AppData\\Roaming\\t4code\" --standard-schemes=t4code --secure-schemes=t4code --cors-schemes=t4code --fetch-schemes=t4code --streaming-schemes=t4code --field-trial-handle=1832,i,9861173742970897487,1861358011951002271,262144 --enable-features=EnableTransparentHwndEnlargement,PdfUseShowSaveFilePicker --disable-features=DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,NetworkServiceSandbox,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=1836,i,3627821847183121071,8305177727248959728,4 --trace-process-track-uuid=3190708989122997041 --mojo-platform-channel-handle=2004 /prefetch:11",
+      "privateBytes": 15712256,
+      "workingSetBytes": 58466304,
+      "mainWindowTitle": ""
+    }
+  ]
+}

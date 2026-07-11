@@ -1,0 +1,26 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "version": 1,
+      "sequence": 2147483645,
+      "type": "ready",
+      "payload": {
+        "at": "",
+        "environment": {
+          "environmentId": "rmobsvOSK[e",
+          "label": "z#",
+          "platform": {
+            "os": "darwin",
+            "arch": "x64"
+          },
+          "serverVersion": "valueOf",
+          "capabilities": {
+            "repositoryIdentity": true
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,88 @@
+{
+  "label": "tauri-win-x64-release-default-30s-20260709-214307",
+  "rootPid": 4764,
+  "sampledAt": "2026-07-10T00:43:43.421Z",
+  "startupMs": 5080.1465,
+  "windowReadyMs": 1029.0939,
+  "readyUrl": "http://127.0.0.1:18881/.well-known/t4code/environment",
+  "windowTitle": "T4Code",
+  "idleMs": 30000,
+  "processIds": [4764, 50460, 57088, 17964, 43336, 59788, 60436, 40556, 48092],
+  "processCount": 9,
+  "totalPrivateBytes": 394678272,
+  "totalWorkingSetBytes": 609296384,
+  "topProcesses": [
+    {
+      "pid": 60436,
+      "processName": "node",
+      "command": "\"\\\\?\\X:\\t4code\\apps\\desktop-tauri\\src-tauri\\target\\release\\resources\\node\\node.exe\" X:\\t4code\\apps\\desktop-tauri\\src-tauri\\target\\release\\_up_\\_up_\\server\\dist\\bin.mjs serve --mode desktop --port 18881 --host 127.0.0.1 --base-dir .tmp/tauri-runtime-measure/home-default-20260709-214307 --no-browser --bootstrap-fd 0",
+      "privateBytes": 147173376,
+      "workingSetBytes": 146497536,
+      "mainWindowTitle": ""
+    },
+    {
+      "pid": 17964,
+      "processName": "msedgewebview2",
+      "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\150.0.4078.48\\msedgewebview2.exe\" --type=gpu-process --noerrdialogs --user-data-dir=\"C:\\Users\\mauro\\AppData\\Local\\com.t4code.app.tauri\\EBWebView\" --webview-exe-name=t4code-desktop.exe --webview-exe-version=0.1.1 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --gpu-preferences=UAAAAAAAAADgAAAEAAAAAAAAAAAAAGAAOAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAABgAAAAAAAAAGAAAAAAAAAAIAAAAAAAAAAgAAAAAAAAACAAAAAAAAAA= --startup-read-main-dll --metrics-shmem-handle=1860,i,10871789776224663705,323319195373419867,262144 --field-trial-handle=1932,i,7195953256902823303,7854313594085107853,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1944,i,1675598642528118377,9401055165515701931,4 --trace-process-track-uuid=3190708988185955192 --mojo-platform-channel-handle=1928 /prefetch:2 /pfhostedapp:9127e6b2be204baf341d15dc0471d31d26e68bb0",
+      "privateBytes": 100036608,
+      "workingSetBytes": 88502272,
+      "mainWindowTitle": ""
+    },
+    {
+      "pid": 48092,
+      "processName": "msedgewebview2",
+      "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\150.0.4078.48\\msedgewebview2.exe\" --type=renderer --noerrdialogs --user-data-dir=\"C:\\Users\\mauro\\AppData\\Local\\com.t4code.app.tauri\\EBWebView\" --webview-exe-name=t4code-desktop.exe --webview-exe-version=0.1.1 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --video-capture-use-gpu-memory-buffer --lang=en-GB --device-scale-factor=1 --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=6 --js-flags=\"--expose-gc --ms-user-locale=en_US\" --time-ticks-at-unix-epoch=-1783355178114802 --launch-time-ticks=289014432111 --skip-read-main-dll --metrics-shmem-handle=5908,i,13556156590369575911,1953403152044397339,2097152 --field-trial-handle=1932,i,7195953256902823303,7854313594085107853,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1944,i,1675598642528118377,9401055165515701931,4 --trace-process-track-uuid=3190708991934122588 --mojo-platform-channel-handle=5916 /pfhostedapp:9127e6b2be204baf341d15dc0471d31d26e68bb0 /prefetch:1",
+      "privateBytes": 67780608,
+      "workingSetBytes": 114102272,
+      "mainWindowTitle": ""
+    },
+    {
+      "pid": 50460,
+      "processName": "msedgewebview2",
+      "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\150.0.4078.48\\msedgewebview2.exe\" --embedded-browser-webview=1 --webview-exe-name=t4code-desktop.exe --webview-exe-version=0.1.1 --user-data-dir=\"C:\\Users\\mauro\\AppData\\Local\\com.t4code.app.tauri\\EBWebView\" --noerrdialogs --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --lang=en-GB --mojo-named-platform-channel-pipe=4764.56588.15412942269094751687 /pfhostedapp:9127e6b2be204baf341d15dc0471d31d26e68bb0",
+      "privateBytes": 42250240,
+      "workingSetBytes": 132857856,
+      "mainWindowTitle": ""
+    },
+    {
+      "pid": 43336,
+      "processName": "msedgewebview2",
+      "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\150.0.4078.48\\msedgewebview2.exe\" --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-GB --service-sandbox-type=none --noerrdialogs --user-data-dir=\"C:\\Users\\mauro\\AppData\\Local\\com.t4code.app.tauri\\EBWebView\" --webview-exe-name=t4code-desktop.exe --webview-exe-version=0.1.1 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2148,i,14927004204232962348,1847748562110123041,524288 --field-trial-handle=1932,i,7195953256902823303,7854313594085107853,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1944,i,1675598642528118377,9401055165515701931,4 --trace-process-track-uuid=3190708989122997041 --mojo-platform-channel-handle=2152 /prefetch:11 /pfhostedapp:9127e6b2be204baf341d15dc0471d31d26e68bb0",
+      "privateBytes": 14917632,
+      "workingSetBytes": 42397696,
+      "mainWindowTitle": ""
+    },
+    {
+      "pid": 59788,
+      "processName": "msedgewebview2",
+      "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\150.0.4078.48\\msedgewebview2.exe\" --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-GB --service-sandbox-type=service --noerrdialogs --user-data-dir=\"C:\\Users\\mauro\\AppData\\Local\\com.t4code.app.tauri\\EBWebView\" --webview-exe-name=t4code-desktop.exe --webview-exe-version=0.1.1 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2504,i,6934565455486807642,16005159430564375138,524288 --field-trial-handle=1932,i,7195953256902823303,7854313594085107853,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1944,i,1675598642528118377,9401055165515701931,4 --trace-process-track-uuid=3190708990060038890 --mojo-platform-channel-handle=2408 /prefetch:13 /pfhostedapp:9127e6b2be204baf341d15dc0471d31d26e68bb0",
+      "privateBytes": 9547776,
+      "workingSetBytes": 20631552,
+      "mainWindowTitle": ""
+    },
+    {
+      "pid": 4764,
+      "processName": "t4code-desktop",
+      "command": "X:\\t4code\\apps\\desktop-tauri\\src-tauri\\target\\release\\t4code-desktop.exe",
+      "privateBytes": 7827456,
+      "workingSetBytes": 34033664,
+      "mainWindowTitle": "T4Code (Tauri Alpha)"
+    },
+    {
+      "pid": 57088,
+      "processName": "msedgewebview2",
+      "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\150.0.4078.48\\msedgewebview2.exe\" --type=crashpad-handler --user-data-dir=C:\\Users\\mauro\\AppData\\Local\\com.t4code.app.tauri\\EBWebView /prefetch:4 /pfhostedapp:9127e6b2be204baf341d15dc0471d31d26e68bb0 --monitor-self-annotation=ptype=crashpad-handler --database=C:\\Users\\mauro\\AppData\\Local\\com.t4code.app.tauri\\EBWebView\\Crashpad --annotation=IsOfficialBuild=1 --annotation=channel= --annotation=chromium-version=150.0.7871.47 \"--annotation=exe=C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\150.0.4078.48\\msedgewebview2.exe\" --annotation=plat=Win64 \"--annotation=prod=Edge WebView2\" --annotation=ver=150.0.4078.48 --initial-client-data=0x174,0x178,0x17c,0x150,0x184,0x7ff9189adcf0,0x7ff9189adcfc,0x7ff9189add08",
+      "privateBytes": 3457024,
+      "workingSetBytes": 19394560,
+      "mainWindowTitle": ""
+    },
+    {
+      "pid": 40556,
+      "processName": "conhost",
+      "command": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4",
+      "privateBytes": 1687552,
+      "workingSetBytes": 10878976,
+      "mainWindowTitle": ""
+    }
+  ]
+}

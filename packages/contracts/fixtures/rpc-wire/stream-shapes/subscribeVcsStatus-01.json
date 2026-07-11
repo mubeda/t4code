@@ -1,0 +1,29 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "_tag": "localUpdated",
+      "local": {
+        "isRepo": true,
+        "hasPrimaryRemote": false,
+        "isDefaultRef": true,
+        "refName": "4*",
+        "hasWorkingTreeChanges": false,
+        "workingTree": {
+          "files": [
+            {
+              "path": "lb$i\"$6PB",
+              "insertions": 20,
+              "deletions": 1775097976,
+              "status": "modified",
+              "area": "staged"
+            }
+          ],
+          "insertions": 5,
+          "deletions": 10
+        }
+      }
+    }
+  ]
+}

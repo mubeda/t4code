@@ -43,7 +43,7 @@ describe("isPreviewViewportReady", () => {
     ).toBe(true);
   });
 
-  it("allows one pixel of Electron rounding tolerance in every mode", () => {
+  it("allows one pixel of native webview rounding tolerance in every mode", () => {
     expect(
       isPreviewViewportReady({
         setting: { _tag: "fill" },

@@ -1,5 +1,9 @@
 # T4Code Status Bar Design
 
+> Status: historical design record. The shipped UI remains relevant, but the
+> server paths and TypeScript backend details below describe the pre-Rust
+> architecture. Do not use them as current implementation instructions.
+
 Date: 2026-07-07
 
 ## Context

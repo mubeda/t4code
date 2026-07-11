@@ -1,0 +1,6 @@
+{
+  "id": "fixture-pairing-link",
+  "credential": "23456789ABCD",
+  "label": "Fixture pairing link",
+  "expiresAt": "2026-01-01T00:05:00.000Z"
+}

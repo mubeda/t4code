@@ -1,0 +1,17 @@
+[
+  {
+    "type": "turn.started",
+    "threadId": "grok-thread-1",
+    "turnId": "turn-8",
+    "payload": {}
+  },
+  {
+    "type": "turn.completed",
+    "threadId": "grok-thread-1",
+    "turnId": "turn-8",
+    "payload": {
+      "state": "cancelled",
+      "stopReason": "cancelled"
+    }
+  }
+]

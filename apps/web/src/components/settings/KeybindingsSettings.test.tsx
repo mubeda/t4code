@@ -4,7 +4,7 @@ import type {
   KeybindingWhenNode,
   ResolvedKeybindingRule,
   ResolvedKeybindingsConfig,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -209,7 +209,7 @@ vi.mock("../../editorPreferences", () => ({
   useOpenInPreferredEditor: () => testState.openInPreferredEditor,
 }));
 
-vi.mock("@t3tools/client-runtime/state/runtime", () => ({
+vi.mock("@t4code/client-runtime/state/runtime", () => ({
   isAtomCommandInterrupted: (result: { _tag: string }) => result._tag === "Interrupted",
   squashAtomCommandFailure: (result: { error?: unknown }) => result.error,
 }));
@@ -472,7 +472,7 @@ beforeEach(() => {
   testState.toastAdd.mockReset();
   testState.primaryEnvironment = { environmentId: "environment-primary" };
   setKeybindings([defaultSidebarToggle, customTerminalSplit, projectScript]);
-  testState.atomValues.set(testState.atoms.configPath, "/home/user/.t3code/keybindings.json");
+  testState.atomValues.set(testState.atoms.configPath, "/home/user/.t4code/keybindings.json");
   testState.atomValues.set(testState.atoms.editors, []);
   vi.stubGlobal("navigator", { platform: "Win32" });
 });
@@ -496,7 +496,7 @@ describe("KeybindingsSettingsPanel rendering", () => {
     // The when column shows the expression, or "Always" when empty.
     expect(markup).toContain("terminalFocus");
     expect(markup).toContain("Always");
-    // Not running in Electron, so the browser warning renders.
+    // Not running in a desktop host, so the browser warning renders.
     expect(markup).toContain("Use the desktop app for better keybinding support.");
     expect(markup).toContain("3 bindings");
     expect(markup).toContain('aria-label="Search keybindings"');
@@ -980,7 +980,7 @@ describe("opening the keybindings file", () => {
     (open.onClick as () => void)();
     await flushPromises();
     expect(testState.openInPreferredEditor).toHaveBeenCalledWith(
-      "/home/user/.t3code/keybindings.json",
+      "/home/user/.t4code/keybindings.json",
     );
     expect(testState.toastAdd).not.toHaveBeenCalled();
   });

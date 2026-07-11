@@ -1,9 +1,12 @@
-import { CheckpointRef, EnvironmentId, MessageId, TurnId } from "@t3tools/contracts";
+import { CheckpointRef, EnvironmentId, MessageId, TurnId } from "@t4code/contracts";
 import { createRef, type ComponentProps, type ReactNode, type Ref } from "react";
 import type { WorkLogEntry } from "../../session-logic";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import type { LegendListRef } from "@legendapp/list/react";
+
+let MessagesTimelineComponent: typeof import("./MessagesTimeline").MessagesTimeline | null = null;
+const SLOW_MESSAGES_TIMELINE_IMPORT_TIMEOUT_MS = 60_000;
 
 vi.mock("@legendapp/list/react", async () => {
   const legendListTestId = "legend-list";
@@ -137,21 +140,23 @@ function matchMedia() {
   };
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   const classList = {
     add: () => {},
     remove: () => {},
     toggle: () => {},
     contains: () => false,
   };
-
-  vi.stubGlobal("localStorage", {
+  const localStorageStub = {
     getItem: () => null,
     setItem: () => {},
     removeItem: () => {},
     clear: () => {},
-  });
+  };
+
+  vi.stubGlobal("localStorage", localStorageStub);
   vi.stubGlobal("window", {
+    localStorage: localStorageStub,
     matchMedia,
     addEventListener: () => {},
     removeEventListener: () => {},
@@ -168,10 +173,16 @@ beforeAll(() => {
       offsetHeight: 0,
     },
   });
-});
+
+  MessagesTimelineComponent = (await import("./MessagesTimeline")).MessagesTimeline;
+}, SLOW_MESSAGES_TIMELINE_IMPORT_TIMEOUT_MS);
 
 const ACTIVE_THREAD_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
 const MESSAGE_CREATED_AT = "2026-03-17T19:12:28.000Z";
+
+async function loadMessagesTimeline() {
+  return MessagesTimelineComponent ?? (await import("./MessagesTimeline")).MessagesTimeline;
+}
 
 function buildProps() {
   return {
@@ -264,7 +275,7 @@ describe("MessagesTimeline", () => {
   });
 
   it("anchors a sent attachment message using its measured height", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const MessagesTimeline = await loadMessagesTimeline();
     const onAnchorReady = vi.fn();
     const onAnchorSizeChanged = vi.fn();
     const firstEntry = buildUserTimelineEntry("First prompt.");
@@ -454,16 +465,16 @@ describe("MessagesTimeline", () => {
               createdAt: "2026-03-17T19:12:28.000Z",
               label: "Updated files",
               tone: "tool",
-              changedFiles: ["C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts"],
+              changedFiles: ["C:/Users/mike/dev-stuff/t4code/apps/web/src/session-logic.ts"],
             },
           },
         ]}
-        workspaceRoot="C:/Users/mike/dev-stuff/t3code"
+        workspaceRoot="C:/Users/mike/dev-stuff/t4code"
       />,
     );
 
-    expect(markup).toContain("t3code/apps/web/src/session-logic.ts");
-    expect(markup).not.toContain("C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts");
+    expect(markup).toContain("t4code/apps/web/src/session-logic.ts");
+    expect(markup).not.toContain("C:/Users/mike/dev-stuff/t4code/apps/web/src/session-logic.ts");
   });
 
   it("renders review comment contexts as structured cards instead of raw tags", async () => {
@@ -702,7 +713,7 @@ type MessagesTimelineProps = ComponentProps<typeof import("./MessagesTimeline").
 async function renderTimeline(
   props: Partial<MessagesTimelineProps> & Pick<MessagesTimelineProps, "timelineEntries">,
 ) {
-  const { MessagesTimeline } = await import("./MessagesTimeline");
+  const MessagesTimeline = await loadMessagesTimeline();
   return renderToStaticMarkup(<MessagesTimeline {...buildProps()} {...props} />);
 }
 

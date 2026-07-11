@@ -1,0 +1,165 @@
+use std::collections::{HashMap, HashSet};
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessRow {
+    pub pid: u32,
+    pub ppid: u32,
+    pub pgid: Option<i32>,
+    pub status: String,
+    pub cpu_percent: f32,
+    pub cpu_core_percent: Option<f32>,
+    pub rss_bytes: u64,
+    pub elapsed: String,
+    pub command: String,
+}
+
+impl ProcessRow {
+    #[doc(hidden)]
+    pub fn fixture(pid: u32, ppid: u32, command: impl Into<String>) -> Self {
+        Self {
+            pid,
+            ppid,
+            pgid: None,
+            status: "Run".to_string(),
+            cpu_percent: 0.0,
+            cpu_core_percent: Some(0.0),
+            rss_bytes: 0,
+            elapsed: "00:00:00".to_string(),
+            command: command.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DescendantEntry {
+    pub pid: u32,
+    pub ppid: u32,
+    pub pgid: Option<i32>,
+    pub status: String,
+    pub cpu_percent: f32,
+    pub rss_bytes: u64,
+    pub elapsed: String,
+    pub command: String,
+    pub depth: usize,
+    pub child_pids: Vec<u32>,
+}
+
+pub fn build_descendant_entries(rows: &[ProcessRow], root_pid: u32) -> Vec<DescendantEntry> {
+    let mut children = HashMap::<u32, Vec<&ProcessRow>>::new();
+    for row in rows {
+        children.entry(row.ppid).or_default().push(row);
+    }
+    for values in children.values_mut() {
+        values.sort_by_key(|row| row.pid);
+    }
+
+    let mut descendants = Vec::new();
+    let mut stack = children
+        .get(&root_pid)
+        .into_iter()
+        .flatten()
+        .rev()
+        .map(|row| (*row, 0usize))
+        .collect::<Vec<_>>();
+    let mut visited = HashSet::from([root_pid]);
+    while let Some((row, depth)) = stack.pop() {
+        if !visited.insert(row.pid) {
+            continue;
+        }
+        let child_pids = children
+            .get(&row.pid)
+            .map(|values| values.iter().map(|child| child.pid).collect())
+            .unwrap_or_default();
+        descendants.push(DescendantEntry {
+            pid: row.pid,
+            ppid: row.ppid,
+            pgid: row.pgid,
+            status: row.status.clone(),
+            cpu_percent: row.cpu_percent,
+            rss_bytes: row.rss_bytes,
+            elapsed: row.elapsed.clone(),
+            command: row.command.clone(),
+            depth,
+            child_pids,
+        });
+        if let Some(values) = children.get(&row.pid) {
+            stack.extend(values.iter().rev().map(|child| (*child, depth + 1)));
+        }
+    }
+    descendants
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessDiagnosticsResult {
+    pub server_pid: u32,
+    pub read_at_ms: i128,
+    pub process_count: usize,
+    pub total_rss_bytes: u64,
+    pub total_cpu_percent: f64,
+    pub processes: Vec<DescendantEntry>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProcessSample {
+    pub sampled_at_ms: i128,
+    pub process_key: String,
+    pub pid: u32,
+    pub ppid: u32,
+    pub command: String,
+    pub cpu_percent: f64,
+    pub cpu_core_percent: f64,
+    pub rss_bytes: u64,
+    pub depth: usize,
+    pub is_server_root: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessResourceBucket {
+    pub started_at_ms: i128,
+    pub ended_at_ms: i128,
+    pub avg_cpu_percent: f64,
+    pub max_cpu_percent: f64,
+    pub max_rss_bytes: u64,
+    pub max_process_count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessResourceSummary {
+    pub process_key: String,
+    pub pid: u32,
+    pub ppid: u32,
+    pub command: String,
+    pub depth: usize,
+    pub is_server_root: bool,
+    pub first_seen_at_ms: i128,
+    pub last_seen_at_ms: i128,
+    pub current_cpu_percent: f64,
+    pub avg_cpu_percent: f64,
+    pub max_cpu_percent: f64,
+    pub cpu_seconds_approx: f64,
+    pub current_rss_bytes: u64,
+    pub max_rss_bytes: u64,
+    pub sample_count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessResourceHistory {
+    pub read_at_ms: i128,
+    pub window_ms: u64,
+    pub bucket_ms: u64,
+    pub sample_interval_ms: u64,
+    pub retained_sample_count: usize,
+    pub total_cpu_seconds_approx: f64,
+    pub buckets: Vec<ProcessResourceBucket>,
+    pub top_processes: Vec<ProcessResourceSummary>,
+    pub error: Option<String>,
+}

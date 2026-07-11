@@ -1,0 +1,43 @@
+{
+  "versionStdout": "grok-cli 0.0.99\n",
+  "exitCode": 0,
+  "modelState": {
+    "availableModels": [
+      {
+        "modelId": "grok-build",
+        "name": "Grok Build"
+      },
+      {
+        "modelId": "grok-mock-alt",
+        "name": "Grok Mock Alt"
+      }
+    ]
+  },
+  "customModels": [],
+  "expected": {
+    "installed": true,
+    "status": "ready",
+    "version": "0.0.99",
+    "auth": {
+      "status": "unknown"
+    },
+    "models": [
+      {
+        "slug": "grok-build",
+        "name": "Grok Build",
+        "isCustom": false,
+        "capabilities": {
+          "optionDescriptors": []
+        }
+      },
+      {
+        "slug": "grok-mock-alt",
+        "name": "Grok Mock Alt",
+        "isCustom": false,
+        "capabilities": {
+          "optionDescriptors": []
+        }
+      }
+    ]
+  }
+}

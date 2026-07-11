@@ -1,0 +1,124 @@
+{
+  "threadId": "provider-thread-1",
+  "turnId": "turn-6",
+  "startup": {
+    "sessionId": "sdk-session-user-input-1",
+    "runtimeMode": "approval-required"
+  },
+  "message": {
+    "type": "stream_event",
+    "session_id": "sdk-session-user-input-1",
+    "uuid": "stream-user-input-thread",
+    "parent_tool_use_id": null,
+    "event": {
+      "type": "message_start",
+      "message": {
+        "id": "msg-user-input-thread"
+      }
+    }
+  },
+  "request": {
+    "toolName": "AskUserQuestion",
+    "input": {
+      "questions": [
+        {
+          "question": "Which framework?",
+          "header": "Framework",
+          "options": [
+            {
+              "label": "React",
+              "description": "React.js"
+            },
+            {
+              "label": "Vue",
+              "description": "Vue.js"
+            }
+          ],
+          "multiSelect": false
+        }
+      ]
+    },
+    "toolUseId": "tool-ask-1"
+  },
+  "resolution": {
+    "requestId": "approval:2001",
+    "answers": {
+      "Which framework?": "React"
+    }
+  },
+  "expectedEvents": [
+    {
+      "type": "thread.started",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-6",
+      "payload": {
+        "providerThreadId": "msg-user-input-thread"
+      }
+    },
+    {
+      "type": "user-input.requested",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-6",
+      "requestId": "approval:2001",
+      "providerRefs": {
+        "providerItemId": "tool-ask-1"
+      },
+      "payload": {
+        "questions": [
+          {
+            "id": "Which framework?",
+            "header": "Framework",
+            "question": "Which framework?",
+            "options": [
+              {
+                "label": "React",
+                "description": "React.js"
+              },
+              {
+                "label": "Vue",
+                "description": "Vue.js"
+              }
+            ],
+            "multiSelect": false
+          }
+        ]
+      }
+    },
+    {
+      "type": "user-input.resolved",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-6",
+      "requestId": "approval:2001",
+      "providerRefs": {
+        "providerItemId": "tool-ask-1"
+      },
+      "payload": {
+        "answers": {
+          "Which framework?": "React"
+        }
+      }
+    }
+  ],
+  "expectedUpdatedInput": {
+    "questions": [
+      {
+        "question": "Which framework?",
+        "header": "Framework",
+        "options": [
+          {
+            "label": "React",
+            "description": "React.js"
+          },
+          {
+            "label": "Vue",
+            "description": "Vue.js"
+          }
+        ],
+        "multiSelect": false
+      }
+    ],
+    "answers": {
+      "Which framework?": "React"
+    }
+  }
+}

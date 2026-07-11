@@ -21,12 +21,12 @@ import {
   type ServerProvider,
   ThreadId,
   TurnId,
-} from "@t3tools/contracts";
-import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
-import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
+} from "@t4code/contracts";
+import { DEFAULT_SERVER_SETTINGS } from "@t4code/contracts";
+import { DEFAULT_CLIENT_SETTINGS } from "@t4code/contracts/settings";
 import { AsyncResult } from "effect/unstable/reactivity";
 import * as Cause from "effect/Cause";
-import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { scopeProjectRef, scopeThreadRef } from "@t4code/client-runtime/environment";
 
 const h = vi.hoisted(() => {
   return {

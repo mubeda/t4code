@@ -1,0 +1,45 @@
+[
+  {
+    "type": "turn.started",
+    "threadId": "fixture-thread",
+    "turnId": "fixture-turn",
+    "payload": {}
+  },
+  {
+    "type": "request.opened",
+    "threadId": "fixture-thread",
+    "turnId": "fixture-turn",
+    "requestId": "approval:1001",
+    "payload": {
+      "requestType": "command_execution_approval",
+      "detail": "Please approve command"
+    }
+  },
+  {
+    "type": "request.resolved",
+    "threadId": "fixture-thread",
+    "turnId": "fixture-turn",
+    "requestId": "approval:1001",
+    "payload": {
+      "requestType": "command_execution_approval",
+      "decision": "accept"
+    }
+  },
+  {
+    "type": "content.delta",
+    "threadId": "fixture-thread",
+    "turnId": "fixture-turn",
+    "payload": {
+      "streamKind": "assistant_text",
+      "delta": "Approval received and command executed.\n"
+    }
+  },
+  {
+    "type": "turn.completed",
+    "threadId": "fixture-thread",
+    "turnId": "fixture-turn",
+    "payload": {
+      "state": "completed"
+    }
+  }
+]

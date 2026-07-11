@@ -1,0 +1,23 @@
+{
+  "_tag": "Exit",
+  "requestId": "900719925474099312345",
+  "exit": {
+    "_tag": "Failure",
+    "cause": [
+      {
+        "_tag": "Fail",
+        "error": {
+          "_tag": "GitCommandError",
+          "operation": ">x7n{nw#$<",
+          "command": "t2",
+          "cwd": "~t>Um7h!",
+          "argumentCount": -3.6433760072445244e-44,
+          "stdoutLength": 1.0397692845451036e23,
+          "stderrLength": 2.9883959054401052e-30,
+          "detail": "CHp2d~m{",
+          "cause": -1.7976931348623145e308
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "_tag": "EnvironmentOperationForbiddenError",
+  "code": "operation_forbidden",
+  "reason": "current_session_revoke_not_allowed",
+  "traceId": "fixture-trace-operation-forbidden"
+}

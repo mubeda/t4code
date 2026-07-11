@@ -3,11 +3,11 @@ import type {
   ScopedThreadRef,
   VcsStagingArea,
   VcsStatusResult,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
+} from "@t4code/client-runtime/state/runtime";
 import { useAtomValue } from "@effect/atom-react";
 import {
   ChevronDownIcon,

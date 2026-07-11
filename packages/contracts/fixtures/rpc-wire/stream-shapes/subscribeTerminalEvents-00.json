@@ -1,0 +1,24 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "threadId": "GMzY'.vb",
+      "terminalId": "e",
+      "type": "started",
+      "snapshot": {
+        "threadId": "name",
+        "terminalId": "apply",
+        "cwd": "*./@\"4G",
+        "worktreePath": null,
+        "status": "running",
+        "pid": null,
+        "history": "<.R/4CUj\"",
+        "exitCode": null,
+        "exitSignal": null,
+        "label": "Cca",
+        "updatedAt": ">]B]pXMCES"
+      }
+    }
+  ]
+}

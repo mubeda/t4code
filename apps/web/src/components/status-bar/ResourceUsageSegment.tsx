@@ -1,7 +1,7 @@
 import type {
   ServerProcessDiagnosticsResult,
   ServerProcessResourceHistoryResult,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import { CpuIcon, MemoryStickIcon, TerminalIcon } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";

@@ -1,4 +1,4 @@
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId } from "@t4code/contracts";
 import { FolderIcon } from "lucide-react";
 import { useState } from "react";
 import { useAssetUrl } from "../assets/assetUrls";

@@ -1,4 +1,4 @@
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId } from "@t4code/contracts";
 import { useEffect, useRef, useState } from "react";
 
 import { useEnvironmentQuery } from "../state/query";

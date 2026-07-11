@@ -5,7 +5,7 @@ import {
   ProviderInstanceId,
   type ModelCapabilities,
   type ProviderOptionDescriptor,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 
 import {
   applyClaudePromptEffortPrefix,

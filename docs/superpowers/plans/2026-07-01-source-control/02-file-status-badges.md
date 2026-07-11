@@ -1,5 +1,8 @@
 # Plan 02 — Per-file Status Badges (U / M / A / D / R / C)
 
+> Status: archival. This shipped plan preserves its original paths and commands.
+> Use [Current Scripts](../../../reference/scripts.md) for supported commands.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax. Read [00-overview.md](./00-overview.md) first. **Depends on Plan 01** (the panel + `SourceControlChangesList.renderBadge` slot + `WorkingTreeFile` type must already exist).
 
 **Goal:** Surface each changed file's git status as a colored single-letter badge (`M`/`A`/`D`/`R`/`C`/`U`) on its row, matching the Orca screenshot's `U` badge. The server already runs `git status --porcelain=2` and parses each line for its path — this plan keeps the XY status code that is currently discarded and threads it to the client.
@@ -83,7 +86,7 @@ In `VcsStatusLocalShape.workingTree` (lines 208-215), add `status` to each file 
 
 - [ ] **Step 3: Verify the contract compiles and is exported**
 
-Run: `pnpm --filter @t3tools/contracts exec tsc --noEmit`
+Run: `pnpm --filter @t4code/contracts exec tsc --noEmit`
 Expected: PASS. Confirm `packages/contracts/src/index.ts` re-exports `./git` (it already exports `VcsStatusResult`, so `VcsWorkingTreeFileStatus` is exported automatically via `export * from "./git.ts"`). If the index uses named re-exports instead of `export *`, add `VcsWorkingTreeFileStatus` to the `./git` export list.
 
 - [ ] **Step 4: Commit**
@@ -104,7 +107,7 @@ git commit -m "feat(contracts): add optional per-file working-tree status"
 
 **Interfaces:**
 
-- Consumes: `VcsWorkingTreeFileStatus` from `@t3tools/contracts`.
+- Consumes: `VcsWorkingTreeFileStatus` from `@t4code/contracts`.
 - Produces: `parsePorcelainFileStatus`, `statusCharToWorkingTreeStatus` (exported); `workingTree.files[].status` populated in `readStatusDetailsLocal`.
 
 - [ ] **Step 1: Write the failing unit + integration tests**
@@ -183,12 +186,12 @@ it.effect("reports per-file working-tree status letters", () =>
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `pnpm --filter @t3tools/server exec vp test run apps/server/src/vcs/GitVcsDriverCore.test.ts`
+Run: `pnpm --filter @t4code/server exec vp test run apps/server/src/vcs/GitVcsDriverCore.test.ts`
 Expected: FAIL — `parsePorcelainFileStatus` is not exported; and `file.status` is `undefined` in the integration test.
 
 - [ ] **Step 3: Add the porcelain status helpers**
 
-`apps/server/src/vcs/GitVcsDriverCore.ts` — after `parsePorcelainPath` (ends line 162), add. (Import the type: add `VcsWorkingTreeFileStatus` to the existing `@t3tools/contracts` type import at the top of the file — if the file has no such import yet, add `import type { VcsWorkingTreeFileStatus } from "@t3tools/contracts";`.)
+`apps/server/src/vcs/GitVcsDriverCore.ts` — after `parsePorcelainPath` (ends line 162), add. (Import the type: add `VcsWorkingTreeFileStatus` to the existing `@t4code/contracts` type import at the top of the file — if the file has no such import yet, add `import type { VcsWorkingTreeFileStatus } from "@t4code/contracts";`.)
 
 ```ts
 export function statusCharToWorkingTreeStatus(char: string): VcsWorkingTreeFileStatus {
@@ -291,12 +294,12 @@ for (const filePath of changedFilesWithoutNumstat) {
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
-Run: `pnpm --filter @t3tools/server exec vp test run apps/server/src/vcs/GitVcsDriverCore.test.ts`
+Run: `pnpm --filter @t4code/server exec vp test run apps/server/src/vcs/GitVcsDriverCore.test.ts`
 Expected: PASS.
 
 - [ ] **Step 7: Typecheck the server**
 
-Run: `pnpm --filter @t3tools/server exec tsc --noEmit`
+Run: `pnpm --filter @t4code/server exec tsc --noEmit`
 Expected: PASS (the optional field means no other server code breaks).
 
 - [ ] **Step 8: Commit**
@@ -319,7 +322,7 @@ git commit -m "feat(server): derive per-file working-tree status from porcelain"
 
 **Interfaces:**
 
-- Consumes: `VcsWorkingTreeFileStatus` (`@t3tools/contracts`).
+- Consumes: `VcsWorkingTreeFileStatus` (`@t4code/contracts`).
 - Produces: `WORKING_TREE_STATUS_BADGE`, `workingTreeStatusBadge(status)`.
 
 - [ ] **Step 1: Write the failing test**
@@ -349,7 +352,7 @@ describe("workingTreeStatusBadge", () => {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `pnpm --filter @t3tools/web exec vp test run --project unit apps/web/src/sourceControlStatus.test.ts`
+Run: `pnpm --filter @t4code/web exec vp test run --project unit apps/web/src/sourceControlStatus.test.ts`
 Expected: FAIL — module does not exist.
 
 - [ ] **Step 3: Write the badge map**
@@ -357,7 +360,7 @@ Expected: FAIL — module does not exist.
 Create `apps/web/src/sourceControlStatus.ts`:
 
 ```ts
-import type { VcsWorkingTreeFileStatus } from "@t3tools/contracts";
+import type { VcsWorkingTreeFileStatus } from "@t4code/contracts";
 
 interface WorkingTreeStatusBadge {
   readonly letter: string;
@@ -385,7 +388,7 @@ export function workingTreeStatusBadge(
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `pnpm --filter @t3tools/web exec vp test run --project unit apps/web/src/sourceControlStatus.test.ts`
+Run: `pnpm --filter @t4code/web exec vp test run --project unit apps/web/src/sourceControlStatus.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Thread `status` through `WorkingTreeFile`**
@@ -393,7 +396,7 @@ Expected: PASS.
 `apps/web/src/components/SourceControlPanel.logic.ts` — extend the `WorkingTreeFile` interface and the `workingTreeFiles` mapper:
 
 ```ts
-import type { VcsStatusResult, VcsWorkingTreeFileStatus } from "@t3tools/contracts";
+import type { VcsStatusResult, VcsWorkingTreeFileStatus } from "@t4code/contracts";
 
 export interface WorkingTreeFile {
   readonly path: string;
@@ -453,9 +456,9 @@ Then pass `renderBadge` to the `SourceControlChangesList` (the `<SourceControlCh
 
 - [ ] **Step 7: Typecheck + run web tests**
 
-Run: `pnpm --filter @t3tools/web exec tsgo --noEmit`
+Run: `pnpm --filter @t4code/web exec tsgo --noEmit`
 Expected: PASS.
-Run: `pnpm --filter @t3tools/web exec vp test run --project unit apps/web/src/sourceControlStatus.test.ts apps/web/src/components/SourceControlChangesList.test.tsx`
+Run: `pnpm --filter @t4code/web exec vp test run --project unit apps/web/src/sourceControlStatus.test.ts apps/web/src/components/SourceControlChangesList.test.tsx`
 Expected: PASS (the `renderBadge` slot test from Plan 01 already covers badge injection).
 
 - [ ] **Step 8: Manual verification**

@@ -1,0 +1,20 @@
+{
+  "_tag": "Exit",
+  "requestId": "900719925474099312345",
+  "exit": {
+    "_tag": "Failure",
+    "cause": [
+      {
+        "_tag": "Fail",
+        "error": {
+          "_tag": "SourceControlProviderError",
+          "provider": "unknown",
+          "operation": "zj",
+          "cwd": "D~9~#4;6}",
+          "detail": "f",
+          "cause": [true, "Dc~l", null, null]
+        }
+      }
+    ]
+  }
+}

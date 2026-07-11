@@ -1,10 +1,10 @@
 # Connection Runtime
 
-The connection runtime is shared by web and mobile. It owns connectivity,
+The connection runtime is shared by browser and Tauri desktop clients. It owns connectivity,
 authentication, retries, transport lifetime, cached environment data, and
 environment-scoped operations.
 
-Web and mobile mount this runtime once at the application root. There is no
+Browser and desktop modes mount this runtime once at the application root. There is no
 legacy connection owner or supported mixed mode.
 
 ## Ownership
@@ -71,14 +71,14 @@ Finite requests, durable subscriptions, and commands are separate APIs:
   data during a fast reconnect.
 - Domain atom factories route effects through the environment registry and
   resolve the current scoped service at execution time.
-- Web and mobile own their Atom runtimes, React hooks, and feature composition.
+- Browser and desktop modes own their Atom runtimes, React hooks, and feature composition.
 
 The Promise bridge exists only at the React/Atom boundary. Runtime and business
 logic remain Effect-native.
 
 ## Platform Layers
 
-Web and mobile provide:
+Browser and Tauri platform layers provide:
 
 - network status and network-change streams;
 - application lifecycle wakeups;
@@ -112,7 +112,7 @@ package intentionally has no root export.
 
 The application root mounts the shared connection application layer, creates
 its own Atom runtime, and selects the domain atom factories required by that
-platform. Web and mobile may expose different hooks and features without
+platform. Browser and desktop modes may expose different hooks and features without
 changing connection ownership.
 
 Application code must not construct `WsTransport`, RPC clients, retry loops, or

@@ -14,7 +14,6 @@ export default defineConfig({
       "**/.repos/**",
       "**/node_modules/**",
       "**/dist/**",
-      "**/dist-electron/**",
       "**/.{idea,git,cache,output,temp}/**",
     ],
     hookTimeout: 60_000,
@@ -27,7 +26,6 @@ export default defineConfig({
       ".plans",
       ".alchemy",
       "dist",
-      "dist-electron",
       "node_modules",
       "pnpm-lock.yaml",
       "*.tsbuildinfo",
@@ -51,14 +49,13 @@ export default defineConfig({
       ".repos",
       ".repos/**",
       "dist",
-      "dist-electron",
       "node_modules",
       "pnpm-lock.yaml",
       "*.tsbuildinfo",
       "**/routeTree.gen.ts",
     ],
     plugins: ["eslint", "oxc", "react", "unicorn", "typescript"],
-    jsPlugins: ["./oxlint-plugin-t3code/index.ts"],
+    jsPlugins: ["./oxlint-plugin-t4code/index.ts"],
     categories: {
       correctness: "warn",
       suspicious: "warn",
@@ -95,17 +92,17 @@ export default defineConfig({
         {
           paths: [
             {
-              name: "@t3tools/client-runtime",
+              name: "@t4code/client-runtime",
               message:
-                "Import from an explicit @t3tools/client-runtime/* subpath. The package has no root export.",
+                "Import from an explicit @t4code/client-runtime/* subpath. The package has no root export.",
             },
           ],
         },
       ],
-      "t3code/no-global-process-runtime": "error",
-      "t3code/no-inline-schema-compile": "warn",
-      "t3code/no-manual-effect-runtime-in-tests": "error",
-      "t3code/namespace-node-imports": "error",
+      "t4code/no-global-process-runtime": "error",
+      "t4code/no-inline-schema-compile": "warn",
+      "t4code/no-manual-effect-runtime-in-tests": "error",
+      "t4code/namespace-node-imports": "error",
     },
     options: {
       // Revisit once Oxlint's tsgolint path can integrate with @effect/tsgo diagnostics.

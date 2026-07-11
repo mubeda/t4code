@@ -39,7 +39,8 @@ All 7 sections are implemented. CI passes (format, lint, typecheck, test, browse
 ## Key Changes
 ### 1. Strengthen the generic boundaries, not the Codex boundary — DONE
 - `ProviderRuntimeEvent` remains the canonical provider event contract; `ProviderService` remains the only cross-provider facade.
-- Raw Codex payloads and event ordering stay isolated in `CodexAdapter.ts` and `codexAppServerManager.ts`.
+- Raw Codex payloads and event ordering stay isolated in
+  `apps/server/src/provider/Layers/CodexAdapter.ts` and its session runtime.
 - `ProviderKind` was not expanded. The runtime stays provider-neutral by contract.
 
 ### 2. Replace loose websocket envelopes with channel-indexed typed pushes — DONE
@@ -97,9 +98,9 @@ All 7 sections are implemented. CI passes (format, lint, typecheck, test, browse
 - Web:
   - transport tests for invalid JSON, invalid envelope, invalid payload, reconnect queue flushing, cached semantic state
 - Validation gate:
-  - `bun run lint`
-  - `bun run typecheck`
-  - `mise exec -- bun run test`
+  - `vp check`
+  - `vp run typecheck`
+  - `vp test`
   - repeated full-suite run after cutover to confirm flake removal
 
 ## Assumptions and Defaults

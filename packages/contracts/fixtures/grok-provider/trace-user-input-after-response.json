@@ -1,0 +1,13 @@
+[
+  {
+    "type": "user-input.resolved",
+    "threadId": "grok-thread-1",
+    "turnId": "turn-3",
+    "requestId": "user-input:2001",
+    "payload": {
+      "answers": {
+        "Which scope should Grok use?": "Workspace"
+      }
+    }
+  }
+]

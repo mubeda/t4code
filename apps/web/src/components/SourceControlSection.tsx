@@ -1,4 +1,4 @@
-import type { VcsStagingArea } from "@t3tools/contracts";
+import type { VcsStagingArea } from "@t4code/contracts";
 import { ChevronDownIcon, MinusIcon, PlusIcon, Trash2Icon, Undo2Icon } from "lucide-react";
 import { useState } from "react";
 

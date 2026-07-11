@@ -3,7 +3,19 @@
 T4Code is a web and desktop GUI for coding agents (currently Codex, Claude, Cursor,
 Grok, and OpenCode, more coming soon).
 
-This project is a public GitHub fork of [T3 Code](https://github.com/pingdotgg/t3code).
+This project is a public GitHub fork of [T4Code](https://github.com/mubeda/t4code).
+
+## Technology
+
+- Desktop: Tauri 2 with a Rust host and the operating system WebView.
+- Frontend: React 19, Vite, TypeScript, TanStack Router, Zustand, and Effect.
+- Application server: Rust with Axum and Tokio, embedded in the desktop process
+  and available as the native `t4code` headless server.
+- Transport: typed WebSocket/RPC contracts shared by browser and desktop clients.
+
+The React frontend is shared unchanged between browser and desktop modes. Tauri-specific behavior is
+kept behind `window.desktopBridge`. Production builds contain no Electron,
+Node.js runtime, or TypeScript server.
 
 ## Installation
 
@@ -24,6 +36,8 @@ Download the latest desktop build for your platform from
 - Windows: `.exe` installer (x64)
 - Linux: `.AppImage` (x64)
 
+Desktop releases are built by the Tauri 2 pipeline in `apps/desktop`.
+
 > [!NOTE]
 > Release builds are currently unsigned. On macOS, right-click the app and
 > choose "Open" on first launch (or run
@@ -35,6 +49,9 @@ Download the latest desktop build for your platform from
 See [Getting started](./docs/getting-started/quick-start.md), or jump to the
 [contributor setup](#if-you-really-want-to-contribute-still-read-this-first)
 below to install the toolchain and run the app locally.
+
+Source development uses Node.js only for frontend and repository tooling. It is
+not shipped as part of the application runtime.
 
 ## Current UI
 

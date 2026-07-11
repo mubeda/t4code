@@ -13,15 +13,15 @@ import { renderToStaticMarkup } from "react-dom/server";
 import * as React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
-import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
-import { createModelSelection } from "@t3tools/shared/model";
-import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t4code/contracts";
+import { DEFAULT_CLIENT_SETTINGS } from "@t4code/contracts/settings";
+import { createModelSelection } from "@t4code/shared/model";
+import { scopedThreadKey, scopeThreadRef } from "@t4code/client-runtime/environment";
 import { derivePhysicalProjectKey } from "../logicalProject";
 import type {
   EnvironmentProject,
   EnvironmentThreadShell,
-} from "@t3tools/client-runtime/state/shell";
+} from "@t4code/client-runtime/state/shell";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Hoisted harness state shared with every vi.mock factory.
@@ -57,7 +57,7 @@ const h = vi.hoisted(() => {
     pathname: "/",
     routeParams: {},
     localApi: null,
-    isElectron: true,
+    isDesktopHost: true,
     copyShouldFail: false,
     openDiscoveredPortResult: { _tag: "Success", value: undefined },
     commandResults: {},
@@ -268,8 +268,8 @@ vi.mock("@dnd-kit/utilities", () => ({
 }));
 
 vi.mock("../env", () => ({
-  get isElectron() {
-    return h.state.isElectron as boolean;
+  get isDesktopHost() {
+    return h.state.isDesktopHost as boolean;
   },
 }));
 
@@ -876,7 +876,7 @@ beforeEach(() => {
   h.state.pathname = "/";
   h.state.routeParams = {};
   h.state.localApi = null;
-  h.state.isElectron = true;
+  h.state.isDesktopHost = true;
   h.state.copyShouldFail = false;
   h.state.openDiscoveredPortResult = { _tag: "Success", value: undefined };
   h.state.commandResults = {};
