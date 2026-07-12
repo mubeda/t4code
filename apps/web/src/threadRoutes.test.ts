@@ -6,6 +6,7 @@ import { DraftId } from "./composerDraftStore";
 import {
   buildDraftThreadRouteParams,
   buildThreadRouteParams,
+  missingRouteThreadRedirectDelay,
   resolveThreadRouteRef,
   resolveThreadRouteTarget,
   shouldRedirectMissingRouteThread,
@@ -68,6 +69,23 @@ describe("threadRoutes", () => {
 });
 
 describe("shouldRedirectMissingRouteThread", () => {
+  it("delays a live missing-thread redirect so newly created threads can materialize", () => {
+    expect(
+      missingRouteThreadRedirectDelay({
+        shellStatus: "live",
+        routeThreadExists: false,
+        environmentHasServerThreads: true,
+      }),
+    ).toBe(1_000);
+    expect(
+      missingRouteThreadRedirectDelay({
+        shellStatus: "live",
+        routeThreadExists: true,
+        environmentHasServerThreads: true,
+      }),
+    ).toBeNull();
+  });
+
   it("redirects when a live snapshot lacks the thread but has other server threads", () => {
     expect(
       shouldRedirectMissingRouteThread({

@@ -199,6 +199,7 @@ struct Inner {
     backend: Arc<dyn PtyBackend>,
     options: TerminalManagerOptions,
     inspector: Arc<dyn TerminalSubprocessInspector>,
+    lifecycle: Mutex<()>,
     sessions: RwLock<HashMap<SessionKey, SharedSession>>,
     events: broadcast::Sender<TerminalEvent>,
     metadata: broadcast::Sender<TerminalMetadataEvent>,
@@ -232,6 +233,7 @@ impl TerminalManager {
                 backend,
                 options,
                 inspector,
+                lifecycle: Mutex::new(()),
                 sessions: RwLock::new(HashMap::new()),
                 events,
                 metadata,
@@ -244,6 +246,7 @@ impl TerminalManager {
         &self,
         input: TerminalOpenInput,
     ) -> Result<TerminalSessionSnapshot, TerminalError> {
+        let _lifecycle = self.inner.lifecycle.lock().await;
         self.start(input, false).await
     }
 
@@ -251,7 +254,9 @@ impl TerminalManager {
         &self,
         input: TerminalRestartInput,
     ) -> Result<TerminalSessionSnapshot, TerminalError> {
-        self.close(&input.thread_id, Some(&input.terminal_id)).await;
+        let _lifecycle = self.inner.lifecycle.lock().await;
+        self.close_sessions(&input.thread_id, Some(&input.terminal_id))
+            .await;
         self.start(input, true).await
     }
 
@@ -418,6 +423,17 @@ impl TerminalManager {
                         let Some(PtyExit { exit_code, signal }) = exit.borrow().clone() else {
                             continue;
                         };
+                        let _lifecycle = exit_inner.lifecycle.lock().await;
+                        let registered = {
+                            let sessions = exit_inner.sessions.read().await;
+                            let session = exit_session.lock().await;
+                            sessions
+                                .get(&(session.thread_id.clone(), session.terminal_id.clone()))
+                                .is_some_and(|current| Arc::ptr_eq(current, &exit_session))
+                        };
+                        if !registered {
+                            return;
+                        }
                         let (event, summary) = {
                             let mut session = exit_session.lock().await;
                             session.status = TerminalStatus::Exited;
@@ -515,7 +531,11 @@ impl TerminalManager {
     ) -> Result<TerminalAttachment, TerminalError> {
         let events = self.inner.events.subscribe();
         let key = (input.thread_id.clone(), input.terminal_id.clone());
-        let mut session = match self.inner.sessions.read().await.get(&key).cloned() {
+        let existing = {
+            let sessions = self.inner.sessions.read().await;
+            sessions.get(&key).cloned()
+        };
+        let mut session = match existing {
             Some(session) => session,
             None => {
                 let cwd = input.cwd.clone().ok_or_else(|| TerminalError::NotFound {
@@ -659,6 +679,11 @@ impl TerminalManager {
     }
 
     pub async fn close(&self, thread_id: &str, terminal_id: Option<&str>) {
+        let _lifecycle = self.inner.lifecycle.lock().await;
+        self.close_sessions(thread_id, terminal_id).await;
+    }
+
+    async fn close_sessions(&self, thread_id: &str, terminal_id: Option<&str>) {
         let keys = {
             let sessions = self.inner.sessions.read().await;
             sessions

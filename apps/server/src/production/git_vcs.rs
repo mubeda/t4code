@@ -1,8 +1,13 @@
-use std::{ffi::OsString, path::PathBuf, process::Stdio, sync::Arc, time::Duration};
+use std::{ffi::OsString, path::PathBuf, sync::Arc, time::Duration};
+
+#[cfg(not(windows))]
+use std::process::Stdio;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::{process::Command, sync::mpsc};
+#[cfg(not(windows))]
+use tokio::process::Command;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -642,9 +647,59 @@ impl GitVcsRpcServices {
             editor if JETBRAINS_EDITORS.contains(&editor) => (editor, vec![display_path(&input.cwd)]),
             editor => return Err(json!({ "_tag": "ExternalLauncherUnknownEditorError", "editor": editor })),
         };
-        Command::new(command).args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(false).spawn()
-            .map(|_| Value::Null)
-            .map_err(|error| json!({ "_tag": "ExternalLauncherEditorSpawnError", "editor": input.editor, "target": display_path(input.cwd), "command": command, "args": args, "cause": error.to_string() }))
+        let target = display_path(&input.cwd);
+        let strategy = editor_launch_strategy(command, args.clone(), target.clone());
+        let result = match strategy {
+            #[cfg(windows)]
+            EditorLaunchStrategy::ShellAssociation {
+                application,
+                target,
+            } => open::with_detached(target, application),
+            #[cfg(not(windows))]
+            EditorLaunchStrategy::Process { command, args } => Command::new(command)
+                .args(args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .kill_on_drop(false)
+                .spawn()
+                .map(|_| ()),
+        };
+        result.map(|()| Value::Null).map_err(|error| json!({
+            "_tag": "ExternalLauncherEditorSpawnError", "editor": input.editor,
+            "target": target, "command": command, "args": args, "cause": error.to_string()
+        }))
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum EditorLaunchStrategy {
+    #[cfg(windows)]
+    ShellAssociation { application: String, target: String },
+    #[cfg(not(windows))]
+    Process { command: String, args: Vec<String> },
+}
+
+fn editor_launch_strategy(
+    command: &str,
+    args: Vec<String>,
+    target: String,
+) -> EditorLaunchStrategy {
+    #[cfg(windows)]
+    {
+        let _ = args;
+        EditorLaunchStrategy::ShellAssociation {
+            application: command.to_owned(),
+            target,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = target;
+        EditorLaunchStrategy::Process {
+            command: command.to_owned(),
+            args,
+        }
     }
 }
 
@@ -996,4 +1051,26 @@ fn summarize_commit_context(context: &str, paths: Option<&[String]>) -> String {
             || "Update working tree".into(),
             |path| format!("Update {path}"),
         )
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::{EditorLaunchStrategy, editor_launch_strategy};
+
+    #[test]
+    fn windows_editor_launch_uses_the_shell_resolved_application() {
+        let strategy = editor_launch_strategy(
+            "cursor",
+            vec!["--goto".to_owned(), "C:\\repo\\keybindings.json".to_owned()],
+            "C:\\repo\\keybindings.json".to_owned(),
+        );
+
+        assert_eq!(
+            strategy,
+            EditorLaunchStrategy::ShellAssociation {
+                application: "cursor".to_owned(),
+                target: "C:\\repo\\keybindings.json".to_owned(),
+            }
+        );
+    }
 }

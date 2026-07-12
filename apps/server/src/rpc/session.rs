@@ -105,16 +105,15 @@ impl RpcRegistry {
                 let diagnostic_name = diagnostic_name.clone();
                 Box::pin(async move {
                     let result = future.await;
-                    if let (Some(trace_diagnostics), Err(error)) = (&trace_diagnostics, &result) {
-                        if let Err(write_error) =
+                    if let (Some(trace_diagnostics), Err(error)) = (&trace_diagnostics, &result)
+                        && let Err(write_error) =
                             trace_diagnostics.record_failure(&diagnostic_name, error)
-                        {
-                            tracing::warn!(
-                                method = diagnostic_name,
-                                error = %write_error,
-                                "failed to persist RPC diagnostics"
-                            );
-                        }
+                    {
+                        tracing::warn!(
+                            method = diagnostic_name,
+                            error = %write_error,
+                            "failed to persist RPC diagnostics"
+                        );
                     }
                     result
                 })

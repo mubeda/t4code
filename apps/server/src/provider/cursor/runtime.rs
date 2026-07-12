@@ -9,6 +9,7 @@ use tokio::{
     sync::{Mutex, mpsc},
     task::JoinHandle,
 };
+use uuid::Uuid;
 
 use super::acp::{AcpJsonRpcConnection, AcpProtocolError, IncomingEvent, JsonRpcErrorShape};
 
@@ -156,7 +157,10 @@ impl CursorSessionRuntime {
                 .await?
         } else {
             connection
-                .request("session/create", json!({ "cwd": self.inner.options.cwd }))
+                .request(
+                    "session/new",
+                    json!({ "cwd": self.inner.options.cwd, "mcpServers": [] }),
+                )
                 .await?
         };
         let session_id = response
@@ -171,10 +175,7 @@ impl CursorSessionRuntime {
 
     pub async fn send_turn(&self, input: &str) -> Result<String, CursorRuntimeError> {
         let session_id = self.provider_session_id().await?;
-        let turn_id = format!("turn-{}", {
-            let counter = self.inner.event_counter.lock().await;
-            *counter + 1
-        });
+        let turn_id = format!("turn-{}", Uuid::new_v4());
         *self.inner.active_turn_id.lock().await = Some(turn_id.clone());
         *self.inner.ignore_turn_output.lock().await = None;
         self.emit(
@@ -185,30 +186,58 @@ impl CursorSessionRuntime {
         )
         .await;
         let connection = self.inner.connection.lock().await.clone();
-        let response = connection
-            .request(
-                "session/prompt",
-                json!({
-                    "sessionId": session_id,
-                    "prompt": [{ "type": "text", "text": input }],
-                }),
-            )
-            .await?;
-        let stop_reason = response
-            .get("stopReason")
-            .and_then(Value::as_str)
-            .unwrap_or("end_turn");
-        *self.inner.active_turn_id.lock().await = None;
-        self.emit(
-            "turn.completed",
-            Some(turn_id.clone()),
-            None,
-            json!({
-                "state": if stop_reason == "cancelled" { "cancelled" } else { "completed" },
-                "stopReason": stop_reason,
-            }),
-        )
-        .await;
+        let runtime = self.clone();
+        let background_turn_id = turn_id.clone();
+        let prompt = input.to_owned();
+        tokio::spawn(async move {
+            let result = connection
+                .request(
+                    "session/prompt",
+                    json!({
+                        "sessionId": session_id,
+                        "prompt": [{ "type": "text", "text": prompt }],
+                    }),
+                )
+                .await;
+            if runtime.inner.active_turn_id.lock().await.as_deref()
+                == Some(background_turn_id.as_str())
+            {
+                *runtime.inner.active_turn_id.lock().await = None;
+            }
+            match result {
+                Ok(response) => {
+                    let stop_reason = response
+                        .get("stopReason")
+                        .and_then(Value::as_str)
+                        .unwrap_or("end_turn");
+                    runtime
+                        .emit(
+                            "turn.completed",
+                            Some(background_turn_id),
+                            None,
+                            json!({
+                                "state": if stop_reason == "cancelled" { "cancelled" } else { "completed" },
+                                "stopReason": stop_reason,
+                            }),
+                        )
+                        .await;
+                }
+                Err(error) => {
+                    runtime
+                        .emit(
+                            "turn.completed",
+                            Some(background_turn_id),
+                            None,
+                            json!({
+                                "state": "failed",
+                                "stopReason": "error",
+                                "error": { "message": error.to_string() },
+                            }),
+                        )
+                        .await;
+                }
+            }
+        });
         Ok(turn_id)
     }
 

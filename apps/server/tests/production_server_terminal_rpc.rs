@@ -79,10 +79,52 @@ async fn registrar_serves_concrete_server_and_terminal_metadata_rpcs() {
         ServerMessage::Chunk { values, .. }
             if values == vec![json!({ "type": "snapshot", "terminals": [] })]
     ));
+    send_ack(&mut socket, "3").await;
+
+    let terminal_payload = json!({
+        "threadId": "thread-1",
+        "terminalId": "term-1",
+        "cwd": temp.path().to_string_lossy(),
+        "cols": 120,
+        "rows": 30,
+        "env": {}
+    });
+    send_request(&mut socket, "4", "terminal.open", terminal_payload.clone()).await;
+    let first = next_message(&mut socket).await;
+    let second = next_message(&mut socket).await;
+    assert_terminal_open_and_metadata_upsert([first, second]);
+
+    send_request(&mut socket, "5", "terminal.open", terminal_payload).await;
+    assert!(matches!(
+        next_message(&mut socket).await,
+        ServerMessage::Exit {
+            exit: RpcExit::Success { .. },
+            ..
+        }
+    ));
 
     socket.close(None).await.expect("socket closes");
     handle.shutdown();
     handle.join().await.expect("server joins");
+}
+
+fn assert_terminal_open_and_metadata_upsert(messages: [ServerMessage; 2]) {
+    assert!(messages.iter().any(|message| matches!(
+        message,
+        ServerMessage::Exit {
+            exit: RpcExit::Success { .. },
+            ..
+        }
+    )));
+    assert!(messages.iter().any(|message| matches!(
+        message,
+        ServerMessage::Chunk { values, .. }
+            if values.iter().any(|value|
+                value["type"] == "upsert"
+                    && value["terminal"]["terminalId"] == "term-1"
+                    && value["terminal"]["status"] == "running"
+            )
+    )));
 }
 
 #[test]
@@ -173,6 +215,19 @@ async fn send_request(
         .send(Message::Text(message.to_string().into()))
         .await
         .expect("request sends");
+}
+
+async fn send_ack(
+    socket: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    request_id: &str,
+) {
+    let message = json!({ "_tag": "Ack", "requestId": request_id });
+    socket
+        .send(Message::Text(message.to_string().into()))
+        .await
+        .expect("acknowledgement sends");
 }
 
 async fn next_message(

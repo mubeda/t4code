@@ -261,6 +261,105 @@ async fn worktree_lifecycle_is_reflected_in_ref_listing() {
     assert!(!worktree_path.exists());
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn worktree_creation_accepts_windows_extended_length_repository_paths() {
+    let repo = init_repo();
+    commit_file(repo.path(), "README.md", "hello\n", "initial");
+    let extended_cwd = fs::canonicalize(repo.path()).expect("canonical repository path");
+    assert!(
+        extended_cwd.to_string_lossy().starts_with(r"\\?\"),
+        "Windows canonicalization must exercise the extended path form"
+    );
+    let repository = GitRepository::default();
+
+    let created = repository
+        .create_worktree(
+            CreateWorktreeInput {
+                cwd: extended_cwd,
+                ref_name: "main".into(),
+                new_ref_name: Some("feature/extended-path".into()),
+                base_ref_name: Some("main".into()),
+                path: None,
+            },
+            &cancellation(),
+        )
+        .await
+        .expect("extended repository paths create worktrees");
+    assert!(!created.worktree.path.starts_with("//?/"));
+    let worktree_path = Path::new(&created.worktree.path);
+    assert!(worktree_path.is_dir());
+
+    repository
+        .remove_worktree(repo.path(), worktree_path, true, &cancellation())
+        .await
+        .expect("remove extended-path worktree");
+    git(repo.path(), &["branch", "-D", "feature/extended-path"]);
+}
+
+#[tokio::test]
+async fn failed_worktree_creation_removes_only_the_branch_created_by_the_attempt() {
+    let repo = init_repo();
+    commit_file(repo.path(), "README.md", "hello\n", "initial");
+    let blocked_parent = repo.path().join("not-a-directory");
+    fs::write(&blocked_parent, "blocked\n").expect("blocking path fixture");
+    let repository = GitRepository::default();
+
+    repository
+        .create_worktree(
+            CreateWorktreeInput {
+                cwd: repo.path().to_path_buf(),
+                ref_name: "main".into(),
+                new_ref_name: Some("feature/rollback-created-branch".into()),
+                base_ref_name: Some("main".into()),
+                path: Some(blocked_parent.join("worktree")),
+            },
+            &cancellation(),
+        )
+        .await
+        .expect_err("invalid worktree path fails");
+
+    assert!(
+        git(
+            repo.path(),
+            &["branch", "--list", "feature/rollback-created-branch"]
+        )
+        .is_empty(),
+        "a failed worktree attempt must not leak its newly created branch"
+    );
+}
+
+#[tokio::test]
+async fn failed_worktree_creation_preserves_a_preexisting_branch() {
+    let repo = init_repo();
+    commit_file(repo.path(), "README.md", "hello\n", "initial");
+    git(repo.path(), &["branch", "feature/preexisting-branch"]);
+    let blocked_parent = repo.path().join("not-a-directory");
+    fs::write(&blocked_parent, "blocked\n").expect("blocking path fixture");
+
+    GitRepository::default()
+        .create_worktree(
+            CreateWorktreeInput {
+                cwd: repo.path().to_path_buf(),
+                ref_name: "main".into(),
+                new_ref_name: Some("feature/preexisting-branch".into()),
+                base_ref_name: Some("main".into()),
+                path: Some(blocked_parent.join("worktree")),
+            },
+            &cancellation(),
+        )
+        .await
+        .expect_err("duplicate branch cannot create a worktree");
+
+    assert_eq!(
+        git(
+            repo.path(),
+            &["branch", "--list", "feature/preexisting-branch"]
+        ),
+        "feature/preexisting-branch"
+    );
+}
+
 #[tokio::test]
 async fn branch_commit_context_and_history_workflow_uses_real_git_state() {
     let repo = init_repo();
@@ -452,6 +551,44 @@ async fn status_subscription_starts_with_snapshot_deduplicates_and_stops_last_po
     assert_eq!(broadcaster.active_poller_count(), 1);
     drop(second);
     assert_eq!(broadcaster.active_poller_count(), 0);
+}
+
+#[tokio::test]
+async fn status_subscription_poller_observes_external_working_tree_changes() {
+    let repo = init_repo();
+    commit_file(repo.path(), "tracked.txt", "base\n", "initial");
+    let broadcaster = StatusBroadcaster::new(
+        Arc::new(GitRepository::default()),
+        Duration::from_millis(50),
+        4,
+    );
+    let mut subscription = broadcaster
+        .subscribe(repo.path().to_path_buf(), cancellation())
+        .await
+        .expect("status subscription");
+    let snapshot = subscription.recv().await;
+    observe_initial_remote(snapshot, &mut subscription).await;
+
+    fs::write(repo.path().join("tracked.txt"), "changed externally\n")
+        .expect("external working tree edit");
+
+    let local = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(VcsStatusStreamEvent::LocalUpdated { local }) = subscription.recv().await {
+                break local;
+            }
+        }
+    })
+    .await
+    .expect("poller should observe an external working tree edit");
+    assert!(local.has_working_tree_changes);
+    assert!(
+        local
+            .working_tree
+            .files
+            .iter()
+            .any(|file| file.path == "tracked.txt")
+    );
 }
 
 #[tokio::test]

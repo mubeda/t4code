@@ -953,17 +953,12 @@ describe("editable file surface", () => {
     return renderPanel(props);
   }
 
-  it("propagates editor changes to the query cache, save coordinator, and review comments", () => {
+  it("queues editor changes without feeding them back through the query cache", () => {
     renderEditable();
     const editor = testState.editors[0]!;
 
     editor.options.onChange({ contents: "updated" }, undefined);
-    expect(testState.setProjectFileQueryData).toHaveBeenCalledWith(
-      environmentId,
-      "/workspace/demo",
-      "src/app.ts",
-      "updated",
-    );
+    expect(testState.setProjectFileQueryData).not.toHaveBeenCalled();
     const coordinator = testState.coordinators[testState.coordinators.length - 1]!;
     expect(coordinator.change).toHaveBeenCalledWith("updated");
     expect(testState.addReviewComment).not.toHaveBeenCalled();
@@ -1006,6 +1001,12 @@ describe("editable file surface", () => {
     });
 
     coordinator.options.onConfirmed("persisted");
+    expect(testState.setProjectFileQueryData).toHaveBeenCalledWith(
+      environmentId,
+      "/workspace/demo",
+      "src/app.ts",
+      "persisted",
+    );
     expect(testState.confirmProjectFileQueryData).toHaveBeenCalledWith(
       environmentId,
       "/workspace/demo",

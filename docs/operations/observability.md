@@ -18,8 +18,14 @@ production Node.js logger or TypeScript server observability layer.
 ## Logs
 
 Rust diagnostics are emitted with `tracing::debug!`, `tracing::warn!`, and
-`tracing::error!` at operational boundaries. In headless mode, run the native
-server from a terminal or service manager that captures stdout and stderr:
+`tracing::error!` at operational boundaries. Every server mode initializes the
+same native subscriber and appends to `userdata/logs/server.log` (or
+`dev/logs/server.log` for a source development environment) while retaining
+human-readable stderr output. `T4CODE_LOG` controls the filter and falls back to
+the standard `RUST_LOG` behavior, then `info`.
+
+In headless mode, run the native server from a terminal or service manager to
+retain an additional stderr stream:
 
 ```bash
 t4code serve
@@ -31,9 +37,9 @@ From a source checkout:
 cargo run -p t4code-server -- serve
 ```
 
-Desktop diagnostics should be collected from the Tauri process and the
-platform's application logs. The old `server-child.log` belonged to the removed
-Node sidecar and is not part of the final architecture.
+Desktop diagnostics come from the shared in-process Rust runtime and the same
+`server.log`; no child server process is involved. The old `server-child.log`
+belonged to the removed Node sidecar and is not part of the final architecture.
 
 ## Trace Diagnostics
 
@@ -51,6 +57,12 @@ RPC error details are bounded before they reach this store. Authorization
 headers, common token/password assignments, and URL credentials are redacted.
 Git failures retain bounded stderr so errors such as malformed `.gitmodules`
 entries remain actionable both in the original notification and after restart.
+
+Provider and terminal lifecycle summaries are written as bounded NDJSON under
+`userdata/logs/provider/events.log` and `userdata/logs/terminals/`. These logs
+rotate at 4 MiB with three backups. They contain identifiers, event types,
+status, and byte counts only: terminal output, prompts, provider payloads, tool
+arguments, environment values, and credentials are never persisted.
 
 The former Effect logger, `Logger.tracerLogger`, TypeScript `TraceRecord`, and
 Node OTLP exporter paths were removed with the TypeScript server. Environment

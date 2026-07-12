@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -7,8 +10,9 @@ use tokio::{
     sync::{Mutex, mpsc},
     task::JoinHandle,
 };
+use uuid::Uuid;
 
-use super::model::merge_assistant_text;
+use super::model::{merge_assistant_text, parse_model_slug};
 
 const PROVIDER: &str = "opencode";
 const FIXED_EVENT_TIME: &str = "2026-07-10T00:00:00.000Z";
@@ -84,8 +88,11 @@ struct RuntimeInner {
     base_url: String,
     thread_id: String,
     directory: String,
+    model: Option<(String, String)>,
     session_id: Mutex<Option<String>>,
     active_turn_id: Mutex<Option<String>>,
+    active_user_message_id: Mutex<Option<String>>,
+    assistant_message_ids: Mutex<HashSet<String>>,
     assistant_text: Mutex<HashMap<String, String>>,
     events_tx: mpsc::UnboundedSender<OpenCodeRuntimeEvent>,
     events_rx: Mutex<mpsc::UnboundedReceiver<OpenCodeRuntimeEvent>>,
@@ -101,7 +108,7 @@ struct PendingQuestion {
 }
 
 impl OpenCodeSessionRuntime {
-    pub fn new(base_url: &str, thread_id: &str, directory: &str) -> Self {
+    pub fn new(base_url: &str, thread_id: &str, directory: &str, model: Option<&str>) -> Self {
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         Self {
             inner: Arc::new(RuntimeInner {
@@ -109,8 +116,11 @@ impl OpenCodeSessionRuntime {
                 base_url: base_url.trim_end_matches('/').to_owned(),
                 thread_id: thread_id.to_owned(),
                 directory: directory.to_owned(),
+                model: model.and_then(parse_model_slug),
                 session_id: Mutex::new(None),
                 active_turn_id: Mutex::new(None),
+                active_user_message_id: Mutex::new(None),
+                assistant_message_ids: Mutex::new(HashSet::new()),
                 assistant_text: Mutex::new(HashMap::new()),
                 events_tx,
                 events_rx: Mutex::new(events_rx),
@@ -135,11 +145,11 @@ impl OpenCodeSessionRuntime {
             .await
             .map_err(|error| OpenCodeRuntimeError::Http(error.to_string()))?;
         let session_id = value
-            .get("data")
-            .and_then(|data| data.get("id"))
+            .get("id")
+            .or_else(|| value.get("data").and_then(|data| data.get("id")))
             .and_then(Value::as_str)
             .ok_or_else(|| {
-                OpenCodeRuntimeError::InvalidResponse("session.create missing data.id".to_owned())
+                OpenCodeRuntimeError::InvalidResponse("session.create missing id".to_owned())
             })?
             .to_owned();
         *self.inner.session_id.lock().await = Some(session_id.clone());
@@ -177,31 +187,38 @@ impl OpenCodeSessionRuntime {
 
     pub async fn send_turn(&self, text: &str) -> Result<String, OpenCodeRuntimeError> {
         let session_id = self.session_id().await?;
-        let turn_id = format!("turn-{}", {
-            let counter = self.inner.event_counter.lock().await;
-            *counter + 1
-        });
+        let turn_id = format!("turn-{}", Uuid::new_v4());
+        *self.inner.active_user_message_id.lock().await = None;
+        self.inner.assistant_message_ids.lock().await.clear();
+        self.inner.assistant_text.lock().await.clear();
         *self.inner.active_turn_id.lock().await = Some(turn_id.clone());
         self.emit("turn.started", Some(turn_id.clone()), None, json!({}))
             .await;
-        self.inner
+        let mut body = json!({
+            "sessionID": session_id,
+            "parts": [{ "type": "text", "text": text }],
+        });
+        if let Some((provider_id, model_id)) = self.inner.model.as_ref() {
+            body["model"] = json!({
+                "providerID": provider_id,
+                "modelID": model_id,
+            });
+        }
+        let response = self
+            .inner
             .client
             .post(self.request_url(&format!("/session/{session_id}/prompt_async"))?)
-            .json(&json!({
-                "sessionID": session_id,
-                "parts": [{ "type": "text", "text": text }],
-            }))
+            .json(&body)
             .send()
             .await
             .map_err(|error| OpenCodeRuntimeError::Http(error.to_string()))?;
-        *self.inner.active_turn_id.lock().await = None;
-        self.emit(
-            "turn.completed",
-            Some(turn_id.clone()),
-            None,
-            json!({ "state": "completed", "stopReason": "completed" }),
-        )
-        .await;
+        if !response.status().is_success() {
+            *self.inner.active_turn_id.lock().await = None;
+            return Err(OpenCodeRuntimeError::Http(format!(
+                "prompt_async returned HTTP {}",
+                response.status()
+            )));
+        }
         Ok(turn_id)
     }
 
@@ -423,7 +440,21 @@ impl OpenCodeSessionRuntime {
             .and_then(Value::as_str)
             .unwrap_or_default();
         let properties = event.get("properties").cloned().unwrap_or(Value::Null);
-        let payload_session_id = properties.get("sessionID").and_then(Value::as_str);
+        let payload_session_id = properties
+            .get("sessionID")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                properties
+                    .get("info")
+                    .and_then(|info| info.get("sessionID"))
+                    .and_then(Value::as_str)
+            })
+            .or_else(|| {
+                properties
+                    .get("part")
+                    .and_then(|part| part.get("sessionID"))
+                    .and_then(Value::as_str)
+            });
         if let Some(payload_session_id) = payload_session_id
             && payload_session_id != session_id
         {
@@ -431,16 +462,55 @@ impl OpenCodeSessionRuntime {
         }
         let turn_id = self.inner.active_turn_id.lock().await.clone();
         match event_type {
+            "message.updated" => {
+                let Some(info) = properties.get("info") else {
+                    return;
+                };
+                match info.get("role").and_then(Value::as_str) {
+                    Some("user") if turn_id.is_some() => {
+                        if let Some(message_id) = info.get("id").and_then(Value::as_str) {
+                            *self.inner.active_user_message_id.lock().await =
+                                Some(message_id.to_owned());
+                        }
+                    }
+                    Some("assistant") => {
+                        if let Some(message_id) = info.get("id").and_then(Value::as_str) {
+                            self.inner
+                                .assistant_message_ids
+                                .lock()
+                                .await
+                                .insert(message_id.to_owned());
+                        }
+                    }
+                    _ => {}
+                }
+            }
             "message.part.updated" => {
-                let message_id = properties
+                let nested_part = properties.get("part");
+                let part = nested_part.unwrap_or(&properties);
+                if part
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kind != "text")
+                {
+                    return;
+                }
+                let message_id = part
                     .get("messageID")
                     .and_then(Value::as_str)
-                    .or_else(|| properties.get("messageId").and_then(Value::as_str))
+                    .or_else(|| part.get("messageId").and_then(Value::as_str))
                     .unwrap_or("assistant");
-                let next_text = properties
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
+                if nested_part.is_some()
+                    && !self
+                        .inner
+                        .assistant_message_ids
+                        .lock()
+                        .await
+                        .contains(message_id)
+                {
+                    return;
+                }
+                let next_text = part.get("text").and_then(Value::as_str).unwrap_or_default();
                 let mut assistant_text = self.inner.assistant_text.lock().await;
                 let previous = assistant_text.get(message_id).cloned();
                 let (latest, delta) = merge_assistant_text(previous.as_deref(), next_text);
@@ -455,6 +525,61 @@ impl OpenCodeSessionRuntime {
                     )
                     .await;
                 }
+            }
+            "session.status"
+                if properties
+                    .get("status")
+                    .and_then(|status| status.get("type"))
+                    .and_then(Value::as_str)
+                    == Some("idle") =>
+            {
+                if let Some(completed_turn_id) = self.inner.active_turn_id.lock().await.take() {
+                    self.emit(
+                        "turn.completed",
+                        Some(completed_turn_id),
+                        None,
+                        json!({ "state": "completed", "stopReason": "completed" }),
+                    )
+                    .await;
+                    self.inner.assistant_message_ids.lock().await.clear();
+                    self.inner.assistant_text.lock().await.clear();
+                    *self.inner.active_user_message_id.lock().await = None;
+                }
+            }
+            "session.error" => {
+                let Some(failed_turn_id) = self.inner.active_turn_id.lock().await.take() else {
+                    return;
+                };
+                let message = properties
+                    .pointer("/error/data/message")
+                    .and_then(Value::as_str)
+                    .or_else(|| properties.pointer("/error/message").and_then(Value::as_str))
+                    .or_else(|| properties.get("error").and_then(Value::as_str))
+                    .unwrap_or("OpenCode session failed.")
+                    .to_owned();
+                let has_assistant_message =
+                    !self.inner.assistant_message_ids.lock().await.is_empty();
+                let failed_user_message = self.inner.active_user_message_id.lock().await.take();
+                if !has_assistant_message
+                    && let Some(message_id) = failed_user_message
+                    && let Ok(url) =
+                        self.request_url(&format!("/session/{session_id}/message/{message_id}"))
+                {
+                    let _ = self.inner.client.delete(url).send().await;
+                }
+                self.emit(
+                    "turn.completed",
+                    Some(failed_turn_id),
+                    None,
+                    json!({
+                        "state": "failed",
+                        "stopReason": "error",
+                        "error": { "message": message },
+                    }),
+                )
+                .await;
+                self.inner.assistant_message_ids.lock().await.clear();
+                self.inner.assistant_text.lock().await.clear();
             }
             "question.asked" => {
                 let request_id = properties

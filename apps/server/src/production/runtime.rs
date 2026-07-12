@@ -13,7 +13,7 @@ use crate::{
     mcp::preview_automation::PreviewAutomationBroker,
     observability::BrowserTraceCollector,
     orchestration::{EngineOptions, OrchestrationCommand, OrchestrationEngine, load_snapshot},
-    persistence::{Database, Repositories},
+    persistence::{Database, Repositories, StatePaths},
     preview::PreviewManager,
     production::{
         control::NativeServerControl,
@@ -21,12 +21,15 @@ use crate::{
         http_routes::{
             AssetHttpResponse, HttpRouteError, JsonOperation, JsonRouteResponse, RouteContext,
         },
+        operational_logs::{OperationalLogOptions, OperationalLogs},
         orchestration_effects::{
             BoxEffectFuture, EffectsOptions, OrchestrationEffectCallbacks, OrchestrationEffects,
+            SetupScriptLaunch, process_compatible_path,
         },
         orchestration_rpc::register_orchestration_rpc_with_provider,
         provider_runtime::{
             NativeProviderDriverFactory, ProviderRuntimeSupervisor, SupervisorOptions,
+            reconcile_abandoned_provider_sessions,
         },
         relay::relay_client_service,
         server_terminal::{ServerTerminalServices, register_server_terminal_rpc},
@@ -49,6 +52,7 @@ pub struct ProductionRuntime {
     asset_access: AssetAccess,
     terminal_services: ServerTerminalServices,
     provider_runtime: Arc<ProviderRuntimeSupervisor>,
+    operational_logs: OperationalLogs,
     orchestration_effects: OrchestrationEffects,
     trace_collector: BrowserTraceCollector,
     trace_diagnostics: TraceDiagnosticsStore,
@@ -71,10 +75,22 @@ impl ProductionRuntime {
         .await
         .map_err(|error| error.to_string())?;
         let repositories = orchestration.repositories();
-        let provider_runtime = Arc::new(ProviderRuntimeSupervisor::start(
+        reconcile_abandoned_provider_sessions(&orchestration)
+            .await
+            .map_err(|error| error.to_string())?;
+        let terminal_manager = TerminalManager::default();
+        let state_paths = StatePaths::from_config(config);
+        let operational_logs = OperationalLogs::start(
+            &state_paths,
+            &terminal_manager,
+            OperationalLogOptions::default(),
+        )
+        .await?;
+        let provider_runtime = Arc::new(ProviderRuntimeSupervisor::start_with_operational_log(
             orchestration.clone(),
             Arc::new(NativeProviderDriverFactory),
             SupervisorOptions::default(),
+            operational_logs.provider(),
         ));
         let asset_access = AssetAccess::new(asset_secret, config.state_dir().join("attachments"));
         let workspace = WorkspaceRpc::with_dependencies(
@@ -113,7 +129,7 @@ impl ProductionRuntime {
             .await,
         );
         let terminal_services = ServerTerminalServices::new(
-            TerminalManager::default(),
+            terminal_manager,
             process_sampler,
             process_monitor,
             provider_usage,
@@ -153,6 +169,7 @@ impl ProductionRuntime {
             asset_access,
             terminal_services,
             provider_runtime,
+            operational_logs,
             orchestration_effects,
             trace_collector,
             trace_diagnostics,
@@ -257,6 +274,9 @@ impl ProductionRuntime {
         self.orchestration_effects.shutdown().await;
         let _ = self.provider_runtime.shutdown().await;
         self.terminal_services.shutdown().await;
+        if let Err(error) = self.operational_logs.shutdown().await {
+            tracing::warn!(%error, "failed to shut down operational logs cleanly");
+        }
         self.orchestration.shutdown().await;
     }
 }
@@ -284,14 +304,14 @@ impl OrchestrationEffectCallbacks for RuntimeEffectCallbacks {
                 return Ok(None);
             };
             if let Some(path) = thread.worktree_path {
-                return Ok(Some(PathBuf::from(path)));
+                return Ok(Some(process_compatible_path(PathBuf::from(path))));
             }
             Ok(self
                 .repositories
                 .get_project(thread.project_id)
                 .await
                 .map_err(|error| error.to_string())?
-                .map(|project| PathBuf::from(project.workspace_root)))
+                .map(|project| process_compatible_path(PathBuf::from(project.workspace_root))))
         })
     }
 
@@ -344,6 +364,10 @@ impl OrchestrationEffectCallbacks for RuntimeEffectCallbacks {
             Ok(())
         })
     }
+
+    fn launch_setup_script<'a>(&'a self, input: SetupScriptLaunch) -> BoxEffectFuture<'a, ()> {
+        Box::pin(async move { self.terminals.launch_setup_script(input).await })
+    }
 }
 
 #[derive(Clone)]
@@ -366,14 +390,14 @@ impl AssetContextResolver for ProjectionAssetContext {
                 return Ok(None);
             };
             if let Some(worktree) = thread.worktree_path {
-                return Ok(Some(PathBuf::from(worktree)));
+                return Ok(Some(process_compatible_path(PathBuf::from(worktree))));
             }
             Ok(self
                 .repositories
                 .get_project(thread.project_id)
                 .await
                 .map_err(|error| error.to_string())?
-                .map(|project| PathBuf::from(project.workspace_root)))
+                .map(|project| process_compatible_path(PathBuf::from(project.workspace_root))))
         })
     }
 }

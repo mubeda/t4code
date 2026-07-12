@@ -61,10 +61,15 @@ export function createStatusBarRefreshHandler(input: {
       environmentId: input.environmentId,
       input: { providers: ["claude", "codex"] },
     });
-    input.refreshUsageQuery();
     input.refreshProcessDiagnostics();
     input.refreshResourceHistory();
-    await providerRefresh;
+    try {
+      await providerRefresh;
+    } finally {
+      // Read only after the native fetch commits its snapshots. Reading before
+      // this await leaves provider usage one refresh cycle behind.
+      input.refreshUsageQuery();
+    }
   };
 }
 

@@ -9,7 +9,7 @@ use std::{
 
 use orchestration_effects::{
     BoxEffectFuture, EffectsOptions, OrchestrationEffectCallbacks, OrchestrationEffects,
-    normalize_project_workspace_root,
+    SetupScriptLaunch, normalize_project_workspace_root,
 };
 use serde_json::json;
 use t4code_server::{
@@ -27,6 +27,9 @@ struct CallbackState {
     stopped: Mutex<Vec<String>>,
     terminals: Mutex<Vec<String>>,
     refreshed: Mutex<Vec<PathBuf>>,
+    refresh_error: Mutex<Option<String>>,
+    setup_scripts: Mutex<Vec<SetupScriptLaunch>>,
+    setup_error: Mutex<Option<String>>,
 }
 
 impl OrchestrationEffectCallbacks for CallbackState {
@@ -64,6 +67,19 @@ impl OrchestrationEffectCallbacks for CallbackState {
     fn refresh_workspace<'a>(&'a self, cwd: &'a Path) -> BoxEffectFuture<'a, ()> {
         Box::pin(async move {
             self.refreshed.lock().unwrap().push(cwd.to_path_buf());
+            if let Some(error) = self.refresh_error.lock().unwrap().clone() {
+                return Err(error);
+            }
+            Ok(())
+        })
+    }
+
+    fn launch_setup_script<'a>(&'a self, input: SetupScriptLaunch) -> BoxEffectFuture<'a, ()> {
+        Box::pin(async move {
+            self.setup_scripts.lock().unwrap().push(input);
+            if let Some(error) = self.setup_error.lock().unwrap().clone() {
+                return Err(error);
+            }
             Ok(())
         })
     }
@@ -184,6 +200,11 @@ async fn normalizes_and_optionally_creates_project_workspace_roots() {
         .unwrap();
     assert!(normalized.is_absolute());
     assert!(normalized.is_dir());
+    #[cfg(windows)]
+    assert!(
+        !normalized.to_string_lossy().starts_with(r"\\?\"),
+        "persisted workspace paths must be accepted by Git and terminal processes"
+    );
 
     let file = parent.path().join("not-a-directory");
     std::fs::write(&file, "x").unwrap();
@@ -191,6 +212,286 @@ async fn normalizes_and_optionally_creates_project_workspace_roots() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("not a directory"));
+}
+
+#[tokio::test]
+async fn bootstrap_creates_worktree_updates_thread_runs_setup_then_dispatches_turn() {
+    let repository = initialize_repository();
+    let engine = engine(repository.path()).await;
+    dispatch(
+        &engine,
+        json!({
+            "type":"project.meta.update", "commandId":"scripts", "projectId":"p1",
+            "scripts":[{
+                "id":"setup", "name":"Install dependencies", "command":"vp install",
+                "runOnWorktreeCreate":true
+            }]
+        }),
+    )
+    .await;
+    let callbacks = Arc::new(CallbackState::default());
+    let effects =
+        OrchestrationEffects::start(engine.clone(), callbacks.clone(), EffectsOptions::default())
+            .await
+            .unwrap();
+
+    dispatch(
+        &engine,
+        json!({
+            "type":"thread.turn.start", "commandId":"bootstrap", "threadId":"worktree-thread",
+            "message":{"messageId":"message","role":"user","text":"change it","attachments":[]},
+            "bootstrap":{
+                "createThread":{
+                    "projectId":"p1", "title":"Worktree thread",
+                    "modelSelection":{"instanceId":"codex","model":"gpt-5"},
+                    "runtimeMode":"full-access", "interactionMode":"default",
+                    "branch":null, "worktreePath":null, "createdAt":NOW
+                },
+                "prepareWorktree":{
+                    "projectCwd":repository.path(), "baseBranch":"HEAD",
+                    "branch":"t4code/bootstrap-test"
+                },
+                "runSetupScript":true
+            },
+            "createdAt":NOW
+        }),
+    )
+    .await;
+
+    let thread = engine
+        .repositories()
+        .get_thread("worktree-thread".to_owned())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(thread.branch.as_deref(), Some("t4code/bootstrap-test"));
+    let worktree_path = PathBuf::from(thread.worktree_path.expect("worktree path"));
+    assert!(worktree_path.is_dir());
+
+    {
+        let setup_scripts = callbacks.setup_scripts.lock().unwrap();
+        assert_eq!(setup_scripts.len(), 1);
+        assert_eq!(setup_scripts[0].thread_id, "worktree-thread");
+        assert_eq!(setup_scripts[0].script_id, "setup");
+        assert_eq!(setup_scripts[0].command, "vp install");
+        assert_eq!(setup_scripts[0].cwd, worktree_path);
+    }
+
+    let events = engine.read_events(0).await.unwrap();
+    let thread_events: Vec<_> = events
+        .iter()
+        .filter(|event| event.event.aggregate_id == "worktree-thread")
+        .map(|event| event.event.event_type.as_str())
+        .collect();
+    assert_eq!(
+        thread_events,
+        vec![
+            "thread.created",
+            "thread.meta-updated",
+            "thread.activity-appended",
+            "thread.activity-appended",
+            "thread.message-sent",
+            "thread.turn-start-requested"
+        ]
+    );
+
+    git(
+        repository.path(),
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            worktree_path.to_string_lossy().as_ref(),
+        ],
+    );
+    effects.shutdown().await;
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn bootstrap_setup_launch_failure_rolls_back_worktree_branch_and_thread() {
+    let repository = initialize_repository();
+    let engine = engine(repository.path()).await;
+    dispatch(
+        &engine,
+        json!({
+            "type":"project.meta.update", "commandId":"scripts", "projectId":"p1",
+            "scripts":[{
+                "id":"setup", "name":"Install dependencies", "command":"vp install",
+                "runOnWorktreeCreate":true
+            }]
+        }),
+    )
+    .await;
+    let callbacks = Arc::new(CallbackState::default());
+    *callbacks.setup_error.lock().unwrap() = Some("terminal start failed".to_owned());
+    let effects = OrchestrationEffects::start(engine.clone(), callbacks, EffectsOptions::default())
+        .await
+        .unwrap();
+
+    let command: OrchestrationCommand = serde_json::from_value(json!({
+        "type":"thread.turn.start", "commandId":"bootstrap", "threadId":"setup-failure",
+        "message":{"messageId":"message","role":"user","text":"change it","attachments":[]},
+        "bootstrap":{
+            "createThread":{
+                "projectId":"p1", "title":"Setup failure",
+                "modelSelection":{"instanceId":"codex","model":"gpt-5"},
+                "runtimeMode":"full-access", "interactionMode":"default",
+                "branch":null, "worktreePath":null, "createdAt":NOW
+            },
+            "prepareWorktree":{
+                "projectCwd":repository.path(), "baseBranch":"HEAD",
+                "branch":"t4code/setup-failure-test"
+            },
+            "runSetupScript":true
+        },
+        "createdAt":NOW
+    }))
+    .unwrap();
+    let error = engine
+        .dispatch(command)
+        .await
+        .expect_err("setup launch failure aborts bootstrap");
+    assert!(error.to_string().contains("setup script launch"));
+    assert!(error.to_string().contains("terminal start failed"));
+
+    let events = engine.read_events(0).await.unwrap();
+    assert!(!events.iter().any(|event| {
+        event.event.aggregate_id == "setup-failure"
+            && event.event.event_type == "thread.turn-start-requested"
+    }));
+    let failure = events
+        .iter()
+        .find(|event| {
+            event.event.aggregate_id == "setup-failure"
+                && event.event.payload["activity"]["kind"] == "setup-script.failed"
+        })
+        .expect("setup failure activity");
+    assert_eq!(
+        failure.event.payload["activity"]["payload"]["detail"],
+        "terminal start failed"
+    );
+
+    let thread = engine
+        .repositories()
+        .get_thread("setup-failure".to_owned())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(thread.deleted_at.is_some());
+    let worktrees = git(repository.path(), &["worktree", "list", "--porcelain"]);
+    assert!(!worktrees.contains("t4code/setup-failure-test"));
+    assert!(!git_succeeds(
+        repository.path(),
+        &[
+            "show-ref",
+            "--verify",
+            "refs/heads/t4code/setup-failure-test"
+        ]
+    ));
+    effects.shutdown().await;
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn bootstrap_workspace_refresh_failure_removes_the_just_created_worktree() {
+    let repository = initialize_repository();
+    let engine = engine(repository.path()).await;
+    let callbacks = Arc::new(CallbackState::default());
+    *callbacks.refresh_error.lock().unwrap() = Some("index refresh failed".to_owned());
+    let effects = OrchestrationEffects::start(engine.clone(), callbacks, EffectsOptions::default())
+        .await
+        .unwrap();
+    let command: OrchestrationCommand = serde_json::from_value(json!({
+        "type":"thread.turn.start", "commandId":"bootstrap", "threadId":"refresh-failure",
+        "message":{"messageId":"message","role":"user","text":"change it","attachments":[]},
+        "bootstrap":{
+            "createThread":{
+                "projectId":"p1", "title":"Refresh failure",
+                "modelSelection":{"instanceId":"codex","model":"gpt-5"},
+                "runtimeMode":"full-access", "interactionMode":"default",
+                "branch":null, "worktreePath":null, "createdAt":NOW
+            },
+            "prepareWorktree":{
+                "projectCwd":repository.path(), "baseBranch":"HEAD",
+                "branch":"t4code/refresh-failure-test"
+            }
+        },
+        "createdAt":NOW
+    }))
+    .unwrap();
+
+    let error = engine
+        .dispatch(command)
+        .await
+        .expect_err("refresh failure aborts bootstrap");
+    assert!(error.to_string().contains("index refresh failed"));
+    let worktrees = git(repository.path(), &["worktree", "list", "--porcelain"]);
+    assert!(!worktrees.contains("t4code/refresh-failure-test"));
+    assert!(!git_succeeds(
+        repository.path(),
+        &[
+            "show-ref",
+            "--verify",
+            "refs/heads/t4code/refresh-failure-test"
+        ]
+    ));
+    let thread = engine
+        .repositories()
+        .get_thread("refresh-failure".to_owned())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(thread.deleted_at.is_some());
+
+    effects.shutdown().await;
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn bootstrap_git_failures_include_bounded_actionable_stderr() {
+    let repository = initialize_repository();
+    let engine = engine(repository.path()).await;
+    let effects = OrchestrationEffects::start(
+        engine.clone(),
+        Arc::new(CallbackState::default()),
+        EffectsOptions::default(),
+    )
+    .await
+    .unwrap();
+    let command: OrchestrationCommand = serde_json::from_value(json!({
+        "type":"thread.turn.start", "commandId":"bootstrap", "threadId":"fetch-failure",
+        "message":{"messageId":"message","role":"user","text":"change it","attachments":[]},
+        "bootstrap":{
+            "createThread":{
+                "projectId":"p1", "title":"Fetch failure",
+                "modelSelection":{"instanceId":"codex","model":"gpt-5"},
+                "runtimeMode":"full-access", "interactionMode":"default",
+                "branch":null, "worktreePath":null, "createdAt":NOW
+            },
+            "prepareWorktree":{
+                "projectCwd":repository.path(), "baseBranch":"main",
+                "branch":"t4code/fetch-failure-test", "startFromOrigin":true
+            }
+        },
+        "createdAt":NOW
+    }))
+    .unwrap();
+
+    let error = engine
+        .dispatch(command)
+        .await
+        .expect_err("missing origin aborts bootstrap");
+    let message = error.to_string();
+    assert!(
+        message.contains("bootstrap.git.fetch exited with code"),
+        "{message}"
+    );
+    assert!(message.contains("fatal:"), "{message}");
+    assert!(message.to_ascii_lowercase().contains("origin"), "{message}");
+
+    effects.shutdown().await;
+    engine.shutdown().await;
 }
 
 #[tokio::test]

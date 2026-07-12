@@ -351,29 +351,33 @@ function ProcessNameCell({
 function ProcessSignalActions({
   process,
   isSignaling,
+  supportsInterrupt,
   onSignal,
 }: {
   process: ServerProcessDiagnosticsEntry;
   isSignaling: boolean;
+  supportsInterrupt: boolean;
   onSignal: (pid: number, signal: ServerProcessSignal) => void;
 }) {
   return (
     <div className="flex items-center justify-end gap-1.5">
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <button
-              type="button"
-              disabled={isSignaling}
-              className="text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50"
-              onClick={() => onSignal(process.pid, "SIGINT")}
-            >
-              INT
-            </button>
-          }
-        />
-        <TooltipPopup side="top">Send SIGINT</TooltipPopup>
-      </Tooltip>
+      {supportsInterrupt ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                disabled={isSignaling}
+                className="text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50"
+                onClick={() => onSignal(process.pid, "SIGINT")}
+              >
+                INT
+              </button>
+            }
+          />
+          <TooltipPopup side="top">Send SIGINT</TooltipPopup>
+        </Tooltip>
+      ) : null}
       <Tooltip>
         <TooltipTrigger
           render={
@@ -396,11 +400,13 @@ function ProcessSignalActions({
 function ProcessDiagnosticsTable({
   processes,
   signalingPid,
+  supportsInterrupt,
   onSignal,
   emptyLabel,
 }: {
   processes: ReadonlyArray<ServerProcessDiagnosticsEntry>;
   signalingPid: number | null;
+  supportsInterrupt: boolean;
   onSignal: (pid: number, signal: ServerProcessSignal) => void;
   emptyLabel?: string;
 }) {
@@ -510,6 +516,7 @@ function ProcessDiagnosticsTable({
                 <ProcessSignalActions
                   process={process}
                   isSignaling={signalingPid === process.pid}
+                  supportsInterrupt={supportsInterrupt}
                   onSignal={onSignal}
                 />
               </td>
@@ -809,6 +816,7 @@ export function DiagnosticsSettingsPanel() {
   const availableEditors = useAtomValue(primaryServerAvailableEditorsAtom);
   const primaryEnvironment = usePrimaryEnvironment();
   const environmentId = primaryEnvironment?.environmentId ?? null;
+  const supportsInterrupt = primaryEnvironment?.serverConfig?.environment.platform.os !== "windows";
   const signalServerProcess = useAtomCommand(serverEnvironment.signalProcess, {
     reportFailure: false,
   });
@@ -1007,6 +1015,7 @@ export function DiagnosticsSettingsPanel() {
         <ProcessDiagnosticsTable
           processes={processData?.processes ?? []}
           signalingPid={signalingPid}
+          supportsInterrupt={supportsInterrupt}
           onSignal={signalProcess}
           emptyLabel={
             isProcessInitialLoading

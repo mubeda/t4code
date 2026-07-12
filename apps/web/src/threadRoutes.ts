@@ -63,6 +63,12 @@ export function shouldRedirectMissingRouteThread(input: MissingRouteThreadRedire
   );
 }
 
+export function missingRouteThreadRedirectDelay(
+  input: MissingRouteThreadRedirectInput,
+): number | null {
+  return shouldRedirectMissingRouteThread(input) ? 1_000 : null;
+}
+
 export function resolveThreadRouteTarget(
   params: Partial<Record<"environmentId" | "threadId" | "draftId", string | undefined>>,
 ): ThreadRouteTarget | null {

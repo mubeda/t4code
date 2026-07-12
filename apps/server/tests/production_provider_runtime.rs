@@ -10,14 +10,19 @@ use std::{
 use provider_runtime::{
     BoxRuntimeFuture, NativeProviderDriverFactory, ProviderDriver, ProviderDriverFactory,
     ProviderEvent, ProviderLaunchRequest, ProviderRuntimeError, ProviderRuntimeSupervisor,
-    StartedSession, SupervisorOptions, route_orchestration_command,
+    StartedSession, SupervisorOptions, reconcile_abandoned_provider_sessions,
+    route_orchestration_command,
 };
 use serde_json::{Value, json};
 use t4code_server::{
-    orchestration::engine::{
-        EngineOptions, OrchestrationCommand, OrchestrationEngine, ThreadMessageInput,
+    orchestration::{
+        engine::{
+            EngineOptions, OrchestrationCommand, OrchestrationEngine, SessionInput,
+            ThreadMessageInput,
+        },
+        load_snapshot,
     },
-    persistence::{Database, run_migrations},
+    persistence::{Database, ProviderSessionRuntime, run_migrations},
 };
 use tempfile::TempDir;
 use tokio::sync::mpsc;
@@ -270,6 +275,74 @@ async fn routes_orchestration_commands_and_persists_resume_state() {
 }
 
 #[tokio::test]
+async fn restart_reconciles_abandoned_running_provider_sessions() {
+    let engine = engine().await;
+    engine
+        .dispatch(OrchestrationCommand::ThreadSessionSet {
+            command_id: "running-session".to_owned(),
+            thread_id: "t1".to_owned(),
+            session: SessionInput {
+                thread_id: "t1".to_owned(),
+                status: "running".to_owned(),
+                provider_name: Some("codex".to_owned()),
+                provider_instance_id: Some("codex".to_owned()),
+                runtime_mode: "full-access".to_owned(),
+                active_turn_id: Some("provider-turn-1".to_owned()),
+                last_error: None,
+                updated_at: NOW.to_owned(),
+            },
+            created_at: NOW.to_owned(),
+        })
+        .await
+        .unwrap();
+    engine
+        .repositories()
+        .upsert_provider_session_runtime(ProviderSessionRuntime {
+            thread_id: "t1".to_owned(),
+            provider_name: "codex".to_owned(),
+            provider_instance_id: Some("codex".to_owned()),
+            adapter_key: "codex-app-server".to_owned(),
+            runtime_mode: "full-access".to_owned(),
+            status: "running".to_owned(),
+            last_seen_at: NOW.to_owned(),
+            resume_cursor: Some(json!({"threadId":"provider-thread-1"})),
+            runtime_payload: None,
+        })
+        .await
+        .unwrap();
+
+    reconcile_abandoned_provider_sessions(&engine)
+        .await
+        .unwrap();
+
+    let snapshot = load_snapshot(&engine.repositories()).await.unwrap();
+    let session = snapshot
+        .sessions
+        .iter()
+        .find(|session| session.thread_id == "t1")
+        .unwrap();
+    assert_eq!(session.status, "error");
+    assert_eq!(session.active_turn_id, None);
+    assert!(
+        session
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("Start a new turn"))
+    );
+    let runtime = engine
+        .repositories()
+        .get_provider_session_runtime("t1".to_owned())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(runtime.status, "error");
+    assert_eq!(
+        runtime.resume_cursor,
+        Some(json!({"threadId":"provider-thread-1"}))
+    );
+}
+
+#[tokio::test]
 async fn first_turn_autostarts_the_projected_native_provider() {
     let engine = engine().await;
     let state = Arc::new(StdMutex::new(DriverState::default()));
@@ -317,6 +390,140 @@ async fn first_turn_autostarts_the_projected_native_provider() {
 }
 
 #[tokio::test]
+async fn missing_runtime_accepts_durable_thread_settings_for_the_next_turn() {
+    let engine = engine().await;
+    let state = Arc::new(StdMutex::new(DriverState::default()));
+    let factory = Arc::new(FakeFactory {
+        state: state.clone(),
+        events: StdMutex::new(VecDeque::new()),
+    });
+    let supervisor =
+        ProviderRuntimeSupervisor::start(engine.clone(), factory, SupervisorOptions::default());
+    let settings = TempDir::new().unwrap();
+    let commands = [
+        json!({"type":"thread.runtime-mode.set","commandId":"runtime-mode","threadId":"t1","runtimeMode":"approval-required","createdAt":NOW}),
+        json!({"type":"thread.interaction-mode.set","commandId":"interaction-mode","threadId":"t1","interactionMode":"plan","createdAt":NOW}),
+        json!({"type":"thread.meta.update","commandId":"model","threadId":"t1","modelSelection":{"instanceId":"codex","model":"gpt-5.1"}}),
+    ];
+
+    for value in commands {
+        let command: OrchestrationCommand = serde_json::from_value(value).unwrap();
+        engine.dispatch(command.clone()).await.unwrap();
+        route_orchestration_command(
+            &supervisor,
+            &engine,
+            &settings.path().to_path_buf(),
+            command,
+        )
+        .await
+        .expect("durable settings remain valid without a live provider runtime");
+    }
+
+    assert_eq!(state.lock().unwrap().starts, 0);
+    supervisor.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn missing_runtime_rejects_ephemeral_commands_as_stale_session_actions() {
+    let engine = engine().await;
+    let state = Arc::new(StdMutex::new(DriverState::default()));
+    let factory = Arc::new(FakeFactory {
+        state,
+        events: StdMutex::new(VecDeque::new()),
+    });
+    let supervisor =
+        ProviderRuntimeSupervisor::start(engine.clone(), factory, SupervisorOptions::default());
+    let settings = TempDir::new().unwrap();
+    let commands = [
+        json!({"type":"thread.turn.interrupt","commandId":"interrupt","threadId":"t1","turnId":"turn-1","createdAt":NOW}),
+        json!({"type":"thread.approval.respond","commandId":"approve","threadId":"t1","requestId":"r1","decision":"accept","createdAt":NOW}),
+        json!({"type":"thread.user-input.respond","commandId":"answer","threadId":"t1","requestId":"r2","answers":{"q":"a"},"createdAt":NOW}),
+        json!({"type":"thread.session.stop","commandId":"stop","threadId":"t1","createdAt":NOW}),
+    ];
+
+    for value in commands {
+        let command: OrchestrationCommand = serde_json::from_value(value).unwrap();
+        let action = command.command_type().to_owned();
+        let error = route_orchestration_command(
+            &supervisor,
+            &engine,
+            &settings.path().to_path_buf(),
+            command,
+        )
+        .await
+        .expect_err("missing runtime command must fail");
+        let message = error.to_string();
+
+        assert!(matches!(
+            error,
+            ProviderRuntimeError::StaleSession {
+                thread_id,
+                action: failed_action,
+            } if thread_id == "t1" && failed_action == action
+        ));
+        assert!(message.contains("start a new turn"), "{message}");
+    }
+
+    supervisor.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn persisted_session_without_live_runtime_rejects_commands_until_next_turn_start() {
+    let engine = engine().await;
+    let state = Arc::new(StdMutex::new(DriverState::default()));
+    let (_events_tx, events_rx) = mpsc::channel(8);
+    let first_factory = Arc::new(FakeFactory {
+        state: state.clone(),
+        events: StdMutex::new(VecDeque::from([events_rx])),
+    });
+    let first_supervisor = ProviderRuntimeSupervisor::start(
+        engine.clone(),
+        first_factory,
+        SupervisorOptions::default(),
+    );
+    first_supervisor.launch(launch()).await.unwrap();
+
+    let replacement_factory = Arc::new(FakeFactory {
+        state: state.clone(),
+        events: StdMutex::new(VecDeque::new()),
+    });
+    let replacement_supervisor = ProviderRuntimeSupervisor::start(
+        engine.clone(),
+        replacement_factory,
+        SupervisorOptions::default(),
+    );
+    let settings = TempDir::new().unwrap();
+    let command: OrchestrationCommand = serde_json::from_value(json!({
+        "type":"thread.approval.respond",
+        "commandId":"stale-approval",
+        "threadId":"t1",
+        "requestId":"r1",
+        "decision":"accept",
+        "createdAt":NOW
+    }))
+    .unwrap();
+
+    let error = route_orchestration_command(
+        &replacement_supervisor,
+        &engine,
+        &settings.path().to_path_buf(),
+        command,
+    )
+    .await
+    .expect_err("lost live runtime must not acknowledge the command");
+
+    assert!(matches!(
+        error,
+        ProviderRuntimeError::StaleSession { thread_id, action }
+            if thread_id == "t1" && action == "thread.approval.respond"
+    ));
+    assert_eq!(state.lock().unwrap().starts, 1);
+
+    replacement_supervisor.shutdown().await.unwrap();
+    first_supervisor.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn normalizes_provider_approval_events_into_orchestration_projection() {
     let engine = engine().await;
     let state = Arc::new(StdMutex::new(DriverState::default()));
@@ -354,6 +561,175 @@ async fn normalizes_provider_approval_events_into_orchestration_projection() {
     })
     .await
     .unwrap();
+    supervisor.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn projects_content_and_completion_into_a_settled_assistant_turn() {
+    let engine = engine().await;
+    let state = Arc::new(StdMutex::new(DriverState::default()));
+    let (events_tx, events_rx) = mpsc::channel(8);
+    let factory = Arc::new(FakeFactory {
+        state,
+        events: StdMutex::new(VecDeque::from([events_rx])),
+    });
+    let supervisor =
+        ProviderRuntimeSupervisor::start(engine.clone(), factory, SupervisorOptions::default());
+    supervisor.launch(launch()).await.unwrap();
+    let start = OrchestrationCommand::ThreadTurnStart {
+        command_id: "turn".to_owned(),
+        thread_id: "t1".to_owned(),
+        message: ThreadMessageInput {
+            message_id: "m1".to_owned(),
+            role: "user".to_owned(),
+            text: "hello".to_owned(),
+            attachments: vec![],
+        },
+        model_selection: None,
+        title_seed: None,
+        runtime_mode: "full-access".to_owned(),
+        interaction_mode: "default".to_owned(),
+        bootstrap: None,
+        source_proposed_plan: None,
+        created_at: NOW.to_owned(),
+    };
+    engine.dispatch(start.clone()).await.unwrap();
+    supervisor.handle_orchestration(start).await.unwrap();
+
+    for event in [
+        ProviderEvent {
+            event_type: "content.delta".to_owned(),
+            thread_id: "t1".to_owned(),
+            turn_id: Some("provider-turn-1".to_owned()),
+            request_id: None,
+            payload: json!({"streamKind":"assistant_text","delta":"CODEX_OK"}),
+        },
+        ProviderEvent {
+            event_type: "turn.completed".to_owned(),
+            thread_id: "t1".to_owned(),
+            turn_id: Some("provider-turn-1".to_owned()),
+            request_id: None,
+            payload: json!({"state":"completed"}),
+        },
+    ] {
+        events_tx.send(event).await.unwrap();
+    }
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let snapshot = load_snapshot(&engine.repositories()).await.unwrap();
+            let assistant = snapshot
+                .messages
+                .iter()
+                .find(|message| message.thread_id == "t1" && message.role == "assistant");
+            let session = snapshot
+                .sessions
+                .iter()
+                .find(|session| session.thread_id == "t1");
+            let turn = snapshot.turns.iter().find(|turn| {
+                turn.thread_id == "t1" && turn.turn_id.as_deref() == Some("provider-turn-1")
+            });
+            let runtime = engine
+                .repositories()
+                .get_provider_session_runtime("t1".to_owned())
+                .await
+                .unwrap();
+            if assistant.is_some_and(|message| message.text == "CODEX_OK" && !message.is_streaming)
+                && session.is_some_and(|session| {
+                    session.status == "ready" && session.active_turn_id.is_none()
+                })
+                && turn.is_some_and(|turn| turn.state == "completed")
+                && runtime.is_some_and(|runtime| runtime.status == "ready")
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("provider completion must settle the projected turn");
+    supervisor.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_provider_completion_clears_running_state_and_preserves_the_error() {
+    let engine = engine().await;
+    let state = Arc::new(StdMutex::new(DriverState::default()));
+    let (events_tx, events_rx) = mpsc::channel(4);
+    let factory = Arc::new(FakeFactory {
+        state,
+        events: StdMutex::new(VecDeque::from([events_rx])),
+    });
+    let supervisor =
+        ProviderRuntimeSupervisor::start(engine.clone(), factory, SupervisorOptions::default());
+    supervisor.launch(launch()).await.unwrap();
+    let start = OrchestrationCommand::ThreadTurnStart {
+        command_id: "failed-turn".to_owned(),
+        thread_id: "t1".to_owned(),
+        message: ThreadMessageInput {
+            message_id: "m-failed".to_owned(),
+            role: "user".to_owned(),
+            text: "fail".to_owned(),
+            attachments: vec![],
+        },
+        model_selection: None,
+        title_seed: None,
+        runtime_mode: "full-access".to_owned(),
+        interaction_mode: "default".to_owned(),
+        bootstrap: None,
+        source_proposed_plan: None,
+        created_at: NOW.to_owned(),
+    };
+    engine.dispatch(start.clone()).await.unwrap();
+    supervisor.handle_orchestration(start).await.unwrap();
+    events_tx
+        .send(ProviderEvent {
+            event_type: "turn.completed".to_owned(),
+            thread_id: "t1".to_owned(),
+            turn_id: Some("provider-turn-1".to_owned()),
+            request_id: None,
+            payload: json!({"state":"failed","error":{"message":"model unavailable"}}),
+        })
+        .await
+        .unwrap();
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let snapshot = load_snapshot(&engine.repositories()).await.unwrap();
+            let session = snapshot
+                .sessions
+                .iter()
+                .find(|session| session.thread_id == "t1");
+            let failure = snapshot
+                .activities
+                .iter()
+                .find(|activity| activity.thread_id == "t1" && activity.kind == "provider.error");
+            let assistant = snapshot
+                .messages
+                .iter()
+                .find(|message| message.thread_id == "t1" && message.role == "assistant");
+            let runtime = engine
+                .repositories()
+                .get_provider_session_runtime("t1".to_owned())
+                .await
+                .unwrap();
+            if session.is_some_and(|session| {
+                session.status == "error"
+                    && session.active_turn_id.is_none()
+                    && session.last_error.as_deref() == Some("model unavailable")
+            }) && failure.is_some_and(|activity| {
+                activity.tone == "error"
+                    && activity.payload["error"]["message"] == "model unavailable"
+            }) && assistant.is_none()
+                && runtime.is_some_and(|runtime| runtime.status == "error")
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("failed provider completion must be terminal and actionable");
     supervisor.shutdown().await.unwrap();
 }
 

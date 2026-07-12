@@ -1,13 +1,13 @@
 use std::{
     collections::BTreeMap,
-    fmt,
+    env, fmt,
     io::{Read, Write},
-    path::PathBuf,
-    sync::{Arc, Mutex},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, mpsc},
     thread,
 };
 
-use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tokio::sync::{broadcast, watch};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -44,6 +44,9 @@ pub struct PortablePtyBackend;
 
 impl PtyBackend for PortablePtyBackend {
     fn spawn(&self, input: &PtySpawnInput) -> Result<Arc<dyn PtyProcess>, String> {
+        if !executable_is_discoverable(&input.shell, &input.env) {
+            return Err(format!("shell executable was not found: {}", input.shell));
+        }
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: input.rows,
@@ -55,7 +58,6 @@ impl PtyBackend for PortablePtyBackend {
         let mut command = CommandBuilder::new(&input.shell);
         command.args(&input.args);
         command.cwd(&input.cwd);
-        command.env_clear();
         for (key, value) in &input.env {
             command.env(key, value);
         }
@@ -84,11 +86,20 @@ impl PtyBackend for PortablePtyBackend {
         let killer = child.clone_killer();
         let (output, _) = broadcast::channel(256);
         let (exit, _) = watch::channel(None);
+        let (resize, resize_requests) = mpsc::sync_channel(1);
 
         let output_sender = output.clone();
         thread::Builder::new()
             .name(format!("t4code-pty-output-{pid}"))
             .spawn(move || read_output(&mut reader, &output_sender))
+            .map_err(|error| error.to_string())?;
+        thread::Builder::new()
+            .name(format!("t4code-pty-resize-{pid}"))
+            .spawn(move || {
+                while let Ok(size) = resize_requests.recv() {
+                    let _ = pair.master.resize(size);
+                }
+            })
             .map_err(|error| error.to_string())?;
         let exit_sender = exit.clone();
         thread::Builder::new()
@@ -110,7 +121,7 @@ impl PtyBackend for PortablePtyBackend {
 
         Ok(Arc::new(PortablePtyProcess {
             pid,
-            master: Mutex::new(pair.master),
+            resize,
             writer: Mutex::new(writer),
             #[cfg(not(windows))]
             killer: Mutex::new(killer),
@@ -122,6 +133,24 @@ impl PtyBackend for PortablePtyBackend {
             job,
         }))
     }
+}
+
+fn executable_is_discoverable(command: &str, overrides: &BTreeMap<String, String>) -> bool {
+    let command_path = Path::new(command);
+    if command_path.is_absolute() || command_path.components().count() > 1 {
+        return command_path.is_file();
+    }
+
+    let path = overrides
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+        .map(|(_, value)| value.clone())
+        .or_else(|| env::var("PATH").ok());
+    let Some(path) = path else {
+        return false;
+    };
+
+    env::split_paths(&path).any(|directory| directory.join(command_path).is_file())
 }
 
 fn read_output(reader: &mut dyn Read, sender: &broadcast::Sender<String>) {
@@ -139,7 +168,7 @@ fn read_output(reader: &mut dyn Read, sender: &broadcast::Sender<String>) {
 
 struct PortablePtyProcess {
     pid: u32,
-    master: Mutex<Box<dyn MasterPty + Send>>,
+    resize: mpsc::SyncSender<PtySize>,
     writer: Mutex<Box<dyn Write + Send>>,
     #[cfg(not(windows))]
     killer: Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
@@ -174,16 +203,17 @@ impl PtyProcess for PortablePtyProcess {
     }
 
     fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
-        self.master
-            .lock()
-            .map_err(|error| error.to_string())?
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|error| error.to_string())
+        match self.resize.try_send(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        }) {
+            Ok(()) | Err(mpsc::TrySendError::Full(_)) => Ok(()),
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                Err("PTY resize worker is not available".to_string())
+            }
+        }
     }
 
     fn kill(&self) -> Result<(), String> {

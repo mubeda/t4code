@@ -4,9 +4,32 @@ use serde_json::{Value, json};
 use t4code_server::provider::codex::{
     BuildTurnStartInput, CodexRuntimeMode, CodexSessionOptions, CodexSessionRuntime,
     ConnectionConfig, IncomingEvent, JsonRpcConnection, RuntimeEventStableView,
-    build_initialize_params, build_turn_start_params, parse_model_list_response,
-    parse_skills_list_response, probe_provider,
+    build_initialize_params, build_turn_start_params, is_recoverable_thread_resume_error,
+    parse_model_list_response, parse_skills_list_response, probe_provider,
 };
+
+#[test]
+fn missing_codex_rollout_is_a_recoverable_resume_failure() {
+    assert!(is_recoverable_thread_resume_error(
+        "no rollout found for thread id 019f5662-6e5e-70d1-9074-06a0ba8761d0"
+    ));
+}
+
+#[test]
+fn automatic_codex_model_resolves_to_the_supported_default() {
+    let payload = build_turn_start_params(&BuildTurnStartInput {
+        thread_id: "provider-thread-1".to_owned(),
+        runtime_mode: CodexRuntimeMode::FullAccess,
+        prompt: Some("hello".to_owned()),
+        attachments: vec![],
+        model: Some("auto".to_owned()),
+        service_tier: None,
+        effort: None,
+        interaction_mode: Some("default".to_owned()),
+    });
+    assert_eq!(payload["model"], "gpt-5.4");
+    assert_eq!(payload["collaborationMode"]["settings"]["model"], "gpt-5.4");
+}
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader, duplex},
     sync::mpsc,

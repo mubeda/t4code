@@ -9,10 +9,17 @@ use std::{
 };
 
 use crate::{
-    orchestration::engine::{
-        ActivityInput, OrchestrationCommand, OrchestrationEngine, ProposedPlanInput, SessionInput,
+    orchestration::{
+        engine::{
+            ActivityInput, OrchestrationCommand, OrchestrationEngine, ProposedPlanInput,
+            SessionInput,
+        },
+        load_snapshot,
     },
     persistence::{ProviderSessionRuntime, Repositories},
+    production::{
+        operational_logs::ProviderOperationalLog, orchestration_effects::process_compatible_path,
+    },
     provider::{
         claude::{
             ClaudeControlRequest, ClaudeProviderRuntime, Decision, RuntimeMode as ClaudeRuntimeMode,
@@ -144,6 +151,10 @@ pub enum ProviderRuntimeError {
     ResponseDropped,
     #[error("thread {thread_id} has no active provider runtime")]
     SessionNotFound { thread_id: String },
+    #[error(
+        "cannot perform {action} for thread {thread_id}: the provider session is stale or was lost after restart; start a new turn to relaunch the provider runtime"
+    )]
+    StaleSession { thread_id: String, action: String },
     #[error("thread {thread_id} already has an active provider runtime")]
     SessionAlreadyExists { thread_id: String },
     #[error("provider {provider} is not supported")]
@@ -172,11 +183,11 @@ pub struct ProviderRuntimeSupervisor {
 
 enum SupervisorMessage {
     Launch {
-        request: ProviderLaunchRequest,
+        request: Box<ProviderLaunchRequest>,
         response: oneshot::Sender<Result<(), ProviderRuntimeError>>,
     },
     Handle {
-        command: OrchestrationCommand,
+        command: Box<OrchestrationCommand>,
         response: oneshot::Sender<Result<(), ProviderRuntimeError>>,
     },
     Shutdown {
@@ -200,11 +211,30 @@ impl ProviderRuntimeSupervisor {
         factory: Arc<dyn ProviderDriverFactory>,
         options: SupervisorOptions,
     ) -> Self {
+        Self::start_inner(engine, factory, options, None)
+    }
+
+    #[must_use]
+    pub(crate) fn start_with_operational_log(
+        engine: OrchestrationEngine,
+        factory: Arc<dyn ProviderDriverFactory>,
+        options: SupervisorOptions,
+        operational_log: ProviderOperationalLog,
+    ) -> Self {
+        Self::start_inner(engine, factory, options, Some(operational_log))
+    }
+
+    fn start_inner(
+        engine: OrchestrationEngine,
+        factory: Arc<dyn ProviderDriverFactory>,
+        options: SupervisorOptions,
+        operational_log: Option<ProviderOperationalLog>,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel(options.queue_capacity.max(1));
         let stopped = CancellationToken::new();
         let worker_stopped = stopped.clone();
         let worker = tokio::spawn(async move {
-            run_supervisor(engine, factory, receiver, worker_stopped).await;
+            run_supervisor(engine, factory, receiver, worker_stopped, operational_log).await;
         });
         Self {
             sender,
@@ -214,16 +244,22 @@ impl ProviderRuntimeSupervisor {
     }
 
     pub async fn launch(&self, request: ProviderLaunchRequest) -> Result<(), ProviderRuntimeError> {
-        self.request(|response| SupervisorMessage::Launch { request, response })
-            .await
+        self.request(|response| SupervisorMessage::Launch {
+            request: Box::new(request),
+            response,
+        })
+        .await
     }
 
     pub async fn handle_orchestration(
         &self,
         command: OrchestrationCommand,
     ) -> Result<(), ProviderRuntimeError> {
-        self.request(|response| SupervisorMessage::Handle { command, response })
-            .await
+        self.request(|response| SupervisorMessage::Handle {
+            command: Box::new(command),
+            response,
+        })
+        .await
     }
 
     pub async fn shutdown(&self) -> Result<(), ProviderRuntimeError> {
@@ -297,6 +333,7 @@ pub async fn route_orchestration_command(
         return Ok(());
     }
 
+    let action = command.command_type().to_owned();
     match supervisor.handle_orchestration(command.clone()).await {
         Ok(()) => Ok(()),
         Err(ProviderRuntimeError::SessionNotFound { .. })
@@ -306,9 +343,67 @@ pub async fn route_orchestration_command(
             supervisor.launch(request).await?;
             supervisor.handle_orchestration(command).await
         }
-        Err(ProviderRuntimeError::SessionNotFound { .. }) => Ok(()),
+        Err(ProviderRuntimeError::SessionNotFound { .. })
+            if matches!(
+                command,
+                OrchestrationCommand::ThreadRuntimeModeSet { .. }
+                    | OrchestrationCommand::ThreadInteractionModeSet { .. }
+                    | OrchestrationCommand::ThreadMetaUpdate {
+                        model_selection: Some(_),
+                        ..
+                    }
+            ) =>
+        {
+            Ok(())
+        }
+        Err(ProviderRuntimeError::SessionNotFound { thread_id }) => {
+            Err(ProviderRuntimeError::StaleSession { thread_id, action })
+        }
         Err(error) => Err(error),
     }
+}
+
+pub async fn reconcile_abandoned_provider_sessions(
+    engine: &OrchestrationEngine,
+) -> Result<(), ProviderRuntimeError> {
+    const RESTART_ERROR: &str =
+        "Provider session ended when T4Code stopped. Start a new turn to reconnect.";
+    let repositories = engine.repositories();
+    let runtimes = repositories
+        .list_provider_session_runtimes()
+        .await
+        .map_err(|error| ProviderRuntimeError::Persistence(error.to_string()))?;
+    for mut runtime in runtimes
+        .into_iter()
+        .filter(|runtime| matches!(runtime.status.as_str(), "connecting" | "running"))
+    {
+        runtime.status = "error".to_owned();
+        runtime.last_seen_at = now();
+        repositories
+            .upsert_provider_session_runtime(runtime.clone())
+            .await
+            .map_err(|error| ProviderRuntimeError::Persistence(error.to_string()))?;
+        let created_at = now();
+        engine
+            .dispatch(OrchestrationCommand::ThreadSessionSet {
+                command_id: format!("provider-restart-reconcile:{}", Uuid::new_v4()),
+                thread_id: runtime.thread_id.clone(),
+                session: SessionInput {
+                    thread_id: runtime.thread_id,
+                    status: "error".to_owned(),
+                    provider_name: Some(runtime.provider_name),
+                    provider_instance_id: runtime.provider_instance_id,
+                    runtime_mode: runtime.runtime_mode,
+                    active_turn_id: None,
+                    last_error: Some(RESTART_ERROR.to_owned()),
+                    updated_at: created_at.clone(),
+                },
+                created_at,
+            })
+            .await
+            .map_err(|error| ProviderRuntimeError::Orchestration(error.to_string()))?;
+    }
+    Ok(())
 }
 
 async fn launch_request_for_command(
@@ -374,7 +469,7 @@ async fn launch_request_for_command(
             });
         }
     };
-    let binary = provider_binary_settings(&settings.providers, provider);
+    let binary = provider_binary_settings(&settings.providers, provider, instance);
     if !binary.enabled || binary.binary_path.trim().is_empty() {
         return Err(ProviderRuntimeError::UnsupportedProvider {
             provider: provider.to_owned(),
@@ -399,32 +494,56 @@ async fn launch_request_for_command(
         provider: provider.to_owned(),
         provider_instance_id: Some(instance_id),
         binary_path: binary.binary_path.clone(),
-        cwd: thread
-            .worktree_path
-            .map_or_else(|| PathBuf::from(project.workspace_root), PathBuf::from),
+        cwd: process_compatible_path(
+            thread
+                .worktree_path
+                .map_or_else(|| PathBuf::from(project.workspace_root), PathBuf::from),
+        ),
         runtime_mode: runtime_mode.clone(),
         interaction_mode: interaction_mode.clone(),
-        model: selection
-            .get("model")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        model: model_from_selection(selection),
         resume_cursor: persisted.and_then(|runtime| runtime.resume_cursor),
         environment,
         endpoint: (!binary.server_url.trim().is_empty()).then(|| binary.server_url.clone()),
     })
 }
 
-fn provider_binary_settings<'a>(
-    providers: &'a crate::server_settings::ProvidersState,
+fn provider_binary_settings(
+    providers: &crate::server_settings::ProvidersState,
     provider: &str,
-) -> &'a ProviderBinarySettingsState {
-    match provider {
-        "claudeAgent" => &providers.claude_agent,
-        "cursor" => &providers.cursor,
-        "grok" => &providers.grok,
-        "opencode" => &providers.opencode,
-        _ => &providers.codex,
+    instance: Option<&crate::server_settings::ProviderInstanceState>,
+) -> ProviderBinarySettingsState {
+    let mut settings = match provider {
+        "claudeAgent" => providers.claude_agent.clone(),
+        "cursor" => providers.cursor.clone(),
+        "grok" => providers.grok.clone(),
+        "opencode" => providers.opencode.clone(),
+        _ => providers.codex.clone(),
+    };
+    if let Some(instance) = instance {
+        settings.enabled = instance.enabled;
+        let config_string = |name: &str| {
+            instance
+                .config
+                .get(name)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        };
+        if let Some(binary_path) = config_string("binaryPath") {
+            settings.binary_path = binary_path;
+        }
+        if let Some(server_url) =
+            config_string("serverUrl").or_else(|| config_string("apiEndpoint"))
+        {
+            settings.server_url = server_url;
+        }
+        if let Some(server_password) = config_string("serverPassword") {
+            settings.server_password = server_password;
+        }
     }
+    settings
 }
 
 async fn run_supervisor(
@@ -432,16 +551,31 @@ async fn run_supervisor(
     factory: Arc<dyn ProviderDriverFactory>,
     mut receiver: mpsc::Receiver<SupervisorMessage>,
     stopped: CancellationToken,
+    operational_log: Option<ProviderOperationalLog>,
 ) {
     let mut sessions = HashMap::<String, SessionEntry>::new();
     while let Some(message) = receiver.recv().await {
         match message {
             SupervisorMessage::Launch { request, response } => {
-                let result = launch_session(&engine, &factory, &mut sessions, request).await;
+                let result = launch_session(
+                    &engine,
+                    &factory,
+                    &mut sessions,
+                    *request,
+                    operational_log.as_ref(),
+                )
+                .await;
                 let _ = response.send(result);
             }
             SupervisorMessage::Handle { command, response } => {
-                let result = handle_command(&engine, &factory, &mut sessions, command).await;
+                let result = handle_command(
+                    &engine,
+                    &factory,
+                    &mut sessions,
+                    *command,
+                    operational_log.as_ref(),
+                )
+                .await;
                 let _ = response.send(result);
             }
             SupervisorMessage::Shutdown { response } => {
@@ -461,6 +595,7 @@ async fn launch_session(
     factory: &Arc<dyn ProviderDriverFactory>,
     sessions: &mut HashMap<String, SessionEntry>,
     request: ProviderLaunchRequest,
+    operational_log: Option<&ProviderOperationalLog>,
 ) -> Result<(), ProviderRuntimeError> {
     if sessions.contains_key(&request.thread_id) {
         return Err(ProviderRuntimeError::SessionAlreadyExists {
@@ -502,7 +637,15 @@ async fn launch_session(
     dispatch_session_state(engine, &request, "ready", None, None).await?;
 
     let cancellation = CancellationToken::new();
-    let event_task = spawn_event_pump(engine.clone(), driver.clone(), cancellation.clone());
+    let event_task = spawn_event_pump(
+        engine.clone(),
+        driver.clone(),
+        request.clone(),
+        started.resume_cursor.clone(),
+        started.runtime_payload.clone(),
+        cancellation.clone(),
+        operational_log.cloned(),
+    );
     sessions.insert(
         request.thread_id.clone(),
         SessionEntry {
@@ -522,6 +665,7 @@ async fn handle_command(
     factory: &Arc<dyn ProviderDriverFactory>,
     sessions: &mut HashMap<String, SessionEntry>,
     command: OrchestrationCommand,
+    operational_log: Option<&ProviderOperationalLog>,
 ) -> Result<(), ProviderRuntimeError> {
     let thread_id = command_thread_id(&command)
         .map(str::to_owned)
@@ -585,7 +729,15 @@ async fn handle_command(
                 Err(ProviderRuntimeError::UnsupportedCapability { .. }) => {
                     let mut launch = entry.launch.clone();
                     launch.runtime_mode = runtime_mode;
-                    restart_session(engine, factory, sessions, &thread_id, launch).await
+                    restart_session(
+                        engine,
+                        factory,
+                        sessions,
+                        &thread_id,
+                        launch,
+                        operational_log,
+                    )
+                    .await
                 }
                 Err(error) => Err(error),
             }
@@ -609,8 +761,15 @@ async fn handle_command(
                     Err(ProviderRuntimeError::UnsupportedCapability { .. }) => {
                         let mut launch = entry.launch.clone();
                         launch.model = Some(model);
-                        return restart_session(engine, factory, sessions, &thread_id, launch)
-                            .await;
+                        return restart_session(
+                            engine,
+                            factory,
+                            sessions,
+                            &thread_id,
+                            launch,
+                            operational_log,
+                        )
+                        .await;
                     }
                     Err(error) => return Err(error),
                 }
@@ -630,6 +789,7 @@ async fn restart_session(
     sessions: &mut HashMap<String, SessionEntry>,
     thread_id: &str,
     mut launch: ProviderLaunchRequest,
+    operational_log: Option<&ProviderOperationalLog>,
 ) -> Result<(), ProviderRuntimeError> {
     if let Some(entry) = sessions.remove(thread_id) {
         launch.resume_cursor = entry.resume_cursor.clone();
@@ -642,7 +802,7 @@ async fn restart_session(
         .delete_provider_session_runtime(thread_id.to_owned())
         .await
         .map_err(|error| ProviderRuntimeError::Persistence(error.to_string()))?;
-    launch_session(engine, factory, sessions, launch).await
+    launch_session(engine, factory, sessions, launch, operational_log).await
 }
 
 fn command_thread_id(command: &OrchestrationCommand) -> Option<&str> {
@@ -676,14 +836,18 @@ fn model_from_selection(selection: &Value) -> Option<String> {
         .get("model")
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|model| !model.is_empty())
+        .filter(|model| !model.is_empty() && !model.eq_ignore_ascii_case("auto"))
         .map(str::to_owned)
 }
 
 fn spawn_event_pump(
     engine: OrchestrationEngine,
     driver: Arc<dyn ProviderDriver>,
+    launch: ProviderLaunchRequest,
+    resume_cursor: Option<Value>,
+    runtime_payload: Option<Value>,
     cancellation: CancellationToken,
+    operational_log: Option<ProviderOperationalLog>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
@@ -691,7 +855,16 @@ fn spawn_event_pump(
                 () = cancellation.cancelled() => return,
                 event = driver.next_event() => {
                     let Some(event) = event else { return; };
-                    if let Err(error) = project_provider_event(&engine, event).await {
+                    if let Some(log) = &operational_log {
+                        let _ = log.record(&event);
+                    }
+                    if let Err(error) = project_provider_event(
+                        &engine,
+                        &launch,
+                        resume_cursor.clone(),
+                        runtime_payload.clone(),
+                        event,
+                    ).await {
                         tracing::warn!(%error, "failed to project provider runtime event");
                     }
                 }
@@ -702,32 +875,73 @@ fn spawn_event_pump(
 
 async fn project_provider_event(
     engine: &OrchestrationEngine,
+    launch: &ProviderLaunchRequest,
+    resume_cursor: Option<Value>,
+    runtime_payload: Option<Value>,
     event: ProviderEvent,
 ) -> Result<(), ProviderRuntimeError> {
     let created_at = now();
     let command_id = format!("provider:{}", Uuid::new_v4());
-    let command = match event.event_type.as_str() {
-        "message.assistant.delta" | "assistant.message.delta" | "item.agent_message.delta" => {
-            OrchestrationCommand::ThreadMessageAssistantDelta {
-                command_id,
-                thread_id: event.thread_id,
-                message_id: event
-                    .payload
-                    .get("messageId")
-                    .and_then(Value::as_str)
-                    .unwrap_or("assistant")
-                    .to_owned(),
-                delta: event
-                    .payload
-                    .get("delta")
-                    .or_else(|| event.payload.get("text"))
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                turn_id: event.turn_id,
-                created_at,
-            }
+    let assistant_message_id = assistant_message_id(&event);
+    if event.event_type == "turn.completed" {
+        let state = event
+            .payload
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("completed");
+        let failed = state == "failed";
+        let last_error = failed.then(|| provider_completion_error(&event.payload));
+        let status = if failed { "error" } else { "ready" };
+        persist_runtime(
+            &engine.repositories(),
+            launch,
+            status,
+            resume_cursor,
+            runtime_payload,
+        )
+        .await?;
+        dispatch_session_state(engine, launch, status, None, last_error).await?;
+        let has_assistant_content = if failed {
+            load_snapshot(&engine.repositories())
+                .await
+                .map_err(|error| ProviderRuntimeError::Persistence(error.to_string()))?
+                .messages
+                .iter()
+                .any(|message| message.message_id == assistant_message_id)
+        } else {
+            true
+        };
+        if has_assistant_content {
+            engine
+                .dispatch(OrchestrationCommand::ThreadMessageAssistantComplete {
+                    command_id: format!("{command_id}:assistant-complete"),
+                    thread_id: event.thread_id.clone(),
+                    message_id: assistant_message_id.clone(),
+                    turn_id: event.turn_id.clone(),
+                    created_at: created_at.clone(),
+                })
+                .await
+                .map_err(|error| ProviderRuntimeError::Orchestration(error.to_string()))?;
         }
+    }
+    let command = match event.event_type.as_str() {
+        "content.delta"
+        | "message.assistant.delta"
+        | "assistant.message.delta"
+        | "item.agent_message.delta" => OrchestrationCommand::ThreadMessageAssistantDelta {
+            command_id,
+            thread_id: event.thread_id,
+            message_id: assistant_message_id.clone(),
+            delta: event
+                .payload
+                .get("delta")
+                .or_else(|| event.payload.get("text"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            turn_id: event.turn_id,
+            created_at,
+        },
         "message.assistant.completed" | "assistant.message.completed" => {
             OrchestrationCommand::ThreadMessageAssistantComplete {
                 command_id,
@@ -765,7 +979,13 @@ async fn project_provider_event(
             }
         }
         _ => {
-            let (tone, kind) = event_activity_shape(&event.event_type);
+            let (tone, kind) = if event.event_type == "turn.completed"
+                && event.payload.get("state").and_then(Value::as_str) == Some("failed")
+            {
+                ("error", "provider.error")
+            } else {
+                event_activity_shape(&event.event_type)
+            };
             let mut payload = event.payload;
             if let Some(request_id) = event.request_id {
                 if let Some(object) = payload.as_object_mut() {
@@ -798,6 +1018,35 @@ async fn project_provider_event(
         .map_err(|error| ProviderRuntimeError::Orchestration(error.to_string()))
 }
 
+fn assistant_message_id(event: &ProviderEvent) -> String {
+    event
+        .payload
+        .get("messageId")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            event
+                .turn_id
+                .as_ref()
+                .map(|turn_id| format!("assistant:{turn_id}"))
+        })
+        .unwrap_or_else(|| format!("assistant:{}", event.thread_id))
+}
+
+fn provider_completion_error(payload: &Value) -> String {
+    payload
+        .get("error")
+        .and_then(|error| {
+            error
+                .get("message")
+                .and_then(Value::as_str)
+                .or_else(|| error.as_str())
+        })
+        .or_else(|| payload.get("message").and_then(Value::as_str))
+        .unwrap_or("Provider turn failed.")
+        .to_owned()
+}
+
 fn event_activity_shape(event_type: &str) -> (&'static str, &'static str) {
     match event_type {
         "request.opened" => ("approval", "approval.requested"),
@@ -805,8 +1054,8 @@ fn event_activity_shape(event_type: &str) -> (&'static str, &'static str) {
         "user-input.requested" => ("approval", "user-input.requested"),
         "user-input.resolved" => ("approval", "user-input.resolved"),
         event if event.contains("error") || event.contains("failed") => ("error", "provider.error"),
-        event if event.starts_with("turn.") => ("status", "provider.turn"),
-        event if event.starts_with("session.") => ("status", "provider.session"),
+        event if event.starts_with("turn.") => ("info", "provider.turn"),
+        event if event.starts_with("session.") => ("info", "provider.session"),
         _ => ("tool", "provider.event"),
     }
 }
@@ -895,7 +1144,9 @@ async fn stop_session(
     thread_id: &str,
 ) -> Result<(), ProviderRuntimeError> {
     let Some(entry) = sessions.remove(thread_id) else {
-        return Ok(());
+        return Err(ProviderRuntimeError::SessionNotFound {
+            thread_id: thread_id.to_owned(),
+        });
     };
     entry.event_cancellation.cancel();
     let result = entry.driver.shutdown().await;
@@ -1018,7 +1269,7 @@ pub(crate) fn resolve_provider_executable(input: &str) -> Option<PathBuf> {
         return None;
     }
     let extensions: &[&str] = if cfg!(windows) {
-        &["exe", "com", "ps1", "cmd", "bat"]
+        WINDOWS_PROVIDER_EXECUTABLE_EXTENSIONS
     } else {
         &[""]
     };
@@ -1036,6 +1287,9 @@ pub(crate) fn resolve_provider_executable(input: &str) -> Option<PathBuf> {
             })
         })
 }
+
+#[cfg(windows)]
+const WINDOWS_PROVIDER_EXECUTABLE_EXTENSIONS: &[&str] = &["exe", "com", "cmd", "bat", "ps1"];
 
 pub(crate) fn provider_launch_program(executable: &Path) -> (PathBuf, Vec<String>) {
     let extension = executable
@@ -1536,6 +1790,7 @@ impl OpenCodeDriver {
                     endpoint,
                     &request.thread_id,
                     &request.cwd.to_string_lossy(),
+                    request.model.as_deref(),
                 ),
                 child: None,
                 resume_session_id: request.resume_cursor.as_ref().and_then(resume_string),
@@ -1562,6 +1817,7 @@ impl OpenCodeDriver {
                 &endpoint,
                 &request.thread_id,
                 &request.cwd.to_string_lossy(),
+                request.model.as_deref(),
             ),
             child: Some(child),
             resume_session_id: request.resume_cursor.as_ref().and_then(resume_string),
@@ -1997,5 +2253,68 @@ async fn wait_for_endpoint(
             });
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::server_settings::{ProviderInstanceState, ProvidersState};
+    use serde_json::json;
+
+    #[test]
+    fn automatic_model_selection_uses_the_provider_default() {
+        assert_eq!(super::model_from_selection(&json!({"model":"auto"})), None);
+        assert_eq!(
+            super::model_from_selection(&json!({"model":"gpt-5.4"})),
+            Some("gpt-5.4".to_owned())
+        );
+    }
+
+    #[test]
+    fn session_and_turn_events_use_a_contract_activity_tone() {
+        assert_eq!(
+            super::event_activity_shape("session.ready"),
+            ("info", "provider.session")
+        );
+        assert_eq!(
+            super::event_activity_shape("turn.completed"),
+            ("info", "provider.turn")
+        );
+    }
+
+    #[test]
+    fn explicit_instance_overrides_legacy_binary_settings() {
+        let providers = ProvidersState::default();
+        assert!(!providers.cursor.enabled);
+        let instance = ProviderInstanceState {
+            driver: "cursor".to_owned(),
+            enabled: true,
+            display_name: None,
+            environment: Vec::new(),
+            config: json!({
+                "binaryPath": "cursor-agent",
+                "apiEndpoint": "http://127.0.0.1:3210",
+            }),
+        };
+
+        let resolved = super::provider_binary_settings(&providers, "cursor", Some(&instance));
+        assert!(resolved.enabled);
+        assert_eq!(resolved.binary_path, "cursor-agent");
+        assert_eq!(resolved.server_url, "http://127.0.0.1:3210");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_executable_resolution_prefers_cmd_over_powershell_shims() {
+        let cmd_index = super::WINDOWS_PROVIDER_EXECUTABLE_EXTENSIONS
+            .iter()
+            .position(|extension| *extension == "cmd")
+            .expect("cmd extension");
+        let powershell_index = super::WINDOWS_PROVIDER_EXECUTABLE_EXTENSIONS
+            .iter()
+            .position(|extension| *extension == "ps1")
+            .expect("PowerShell extension");
+
+        assert!(cmd_index < powershell_index);
     }
 }

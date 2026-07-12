@@ -47,7 +47,10 @@ const h = vi.hoisted(() => {
     // ── seams ──
     observability: null as { logsDirectoryPath?: string | null } | null,
     availableEditors: [] as ReadonlyArray<unknown>,
-    primaryEnvironment: null as { environmentId: EnvironmentId } | null,
+    primaryEnvironment: null as {
+      environmentId: EnvironmentId;
+      serverConfig?: { environment: { platform: { os: string } } };
+    } | null,
     preferredEditor: "vscode" as string | null,
     isCopied: false,
     copies: [] as Array<{ value: string }>,
@@ -700,6 +703,18 @@ describe("DiagnosticsSettingsPanel process signals", () => {
     expect(h.signalCalls[0]).toMatchObject({ input: { signal: "SIGINT" } });
     expect(h.processQuery.refresh).toHaveBeenCalled();
     expect(h.toasts).toHaveLength(0);
+  });
+
+  it("does not offer SIGINT for Windows environments", () => {
+    h.primaryEnvironment = {
+      environmentId: EnvironmentId.make("environment-1"),
+      serverConfig: { environment: { platform: { os: "windows" } } },
+    };
+    seedAll();
+    render();
+
+    expect(h.triggers.some(({ props }) => props.children === "INT")).toBe(false);
+    expect(h.triggers.some(({ props }) => props.children === "KILL")).toBe(true);
   });
 
   it("surfaces an info toast when the process already exited (stale descendant)", async () => {

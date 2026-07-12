@@ -114,8 +114,9 @@ async fn grok_runtime_matches_user_input_and_cancel_traces() {
     assert_eq!(first.event_type, "session.started");
     let second = runtime.next_event().await.expect("thread started");
     assert_eq!(second.event_type, "thread.started");
-    send_turn.await.expect("first join").expect("first turn");
-    let requested = runtime.collect_events(4).await;
+    let first_turn_id = send_turn.await.expect("first join").expect("first turn");
+    let mut requested = runtime.collect_events(4).await;
+    normalize_turn_ids(&mut requested, &first_turn_id, "turn-3");
     assert_eq!(
         requested,
         stable_fixture("trace-user-input-before-response.json")
@@ -128,25 +129,35 @@ async fn grok_runtime_matches_user_input_and_cancel_traces() {
         )
         .await
         .expect("respond");
-    let resolved = runtime.collect_events(1).await;
+    let mut resolved = runtime.collect_events(1).await;
+    normalize_turn_ids(&mut resolved, &first_turn_id, "turn-3");
     assert_eq!(
         resolved,
         stable_fixture("trace-user-input-after-response.json")
     );
 
     let cancel_runtime = runtime.clone();
-    let cancel_turn = tokio::spawn(async move {
+    let mut cancel_turn = tokio::spawn(async move {
         cancel_runtime
             .send_turn("cancel before the late update")
             .await
     });
-    tokio::time::sleep(Duration::from_millis(10)).await;
-    runtime.interrupt_turn("turn-8").await.expect("interrupt");
-    cancel_turn
+    let cancel_started = runtime.next_event().await.expect("cancel started");
+    let cancel_turn_id = cancel_started.turn_id.clone().expect("cancel turn id");
+    let returned_cancel_turn_id = timeout(Duration::from_millis(30), &mut cancel_turn)
         .await
+        .expect("send_turn should return before the delayed provider response")
         .expect("cancel join")
         .expect("cancel turn");
-    let cancelled = runtime.collect_events(2).await;
+    assert_eq!(returned_cancel_turn_id, cancel_turn_id);
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    runtime
+        .interrupt_turn(&cancel_turn_id)
+        .await
+        .expect("interrupt");
+    let mut cancelled = vec![cancel_started.stable_view()];
+    cancelled.extend(runtime.collect_events(1).await);
+    normalize_turn_ids(&mut cancelled, &cancel_turn_id, "turn-8");
     assert_eq!(cancelled, stable_fixture("trace-cancel.json"));
 
     peer_task.await.expect("peer");
@@ -161,6 +172,18 @@ fn fixture(name: &str) -> Value {
 
 fn stable_fixture(name: &str) -> Vec<grok::GrokRuntimeEventStableView> {
     serde_json::from_value(fixture(name)).expect("stable fixture")
+}
+
+fn normalize_turn_ids(
+    events: &mut [grok::GrokRuntimeEventStableView],
+    actual_turn_id: &str,
+    stable_turn_id: &str,
+) {
+    for event in events {
+        if event.turn_id.as_deref() == Some(actual_turn_id) {
+            event.turn_id = Some(stable_turn_id.to_owned());
+        }
+    }
 }
 
 fn fixture_directory() -> PathBuf {

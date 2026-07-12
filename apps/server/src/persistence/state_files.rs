@@ -76,6 +76,15 @@ impl StatePaths {
                 }
             })?;
         }
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.server_log)
+            .await
+            .map_err(|source| StateFileError::Persist {
+                path: self.server_log.clone(),
+                source,
+            })?;
         Ok(())
     }
 }
@@ -337,6 +346,20 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn ensuring_state_directories_creates_the_server_log_file() {
+        let temp = TempDir::new().expect("temporary state directory");
+        let paths = StatePaths::from_config(&ServerConfig::new(temp.path()));
+
+        paths
+            .ensure_directories()
+            .await
+            .expect("state directories are created");
+
+        assert!(paths.logs_dir.is_dir());
+        assert!(paths.server_log.is_file());
     }
 
     #[tokio::test]

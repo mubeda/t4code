@@ -138,6 +138,92 @@ async fn vcs_status_stream_is_bounded_and_cancellable() {
     handle.join().await.expect("server joins");
 }
 
+#[tokio::test]
+async fn stacked_commit_stream_finishes_with_a_decodable_success_event() {
+    let temp = TempDir::new().expect("temporary server directory");
+    let repository = TempDir::new().expect("temporary repository");
+    for args in [
+        vec!["init", "--quiet"],
+        vec!["config", "user.name", "T4Code Test"],
+        vec!["config", "user.email", "t4code@example.invalid"],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(repository.path())
+                .status()
+                .expect("git starts")
+                .success()
+        );
+    }
+    std::fs::write(repository.path().join("committed.txt"), "committed\n")
+        .expect("write commit fixture");
+    assert!(
+        std::process::Command::new("git")
+            .args(["add", "committed.txt"])
+            .current_dir(repository.path())
+            .status()
+            .expect("git add starts")
+            .success()
+    );
+
+    let mut registry = RpcRegistry::empty();
+    register_git_vcs_rpc(&mut registry, GitVcsRpcServices::default());
+    let handle = ServerRuntime::start_with_registry(test_config(&temp), registry)
+        .await
+        .expect("server starts");
+    let (mut socket, _) = connect_async(format!("ws://{}/ws", handle.local_addr()))
+        .await
+        .expect("WebSocket connects");
+    let cwd = repository.path().to_string_lossy();
+    request(
+        &mut socket,
+        "8",
+        "git.runStackedAction",
+        json!({
+            "actionId": "wire-action-1",
+            "cwd": cwd,
+            "action": "commit",
+            "commitMessage": "test: commit over stream",
+            "commitStagedIndexAsIs": true,
+        }),
+    )
+    .await;
+
+    let started = next_server_message(&mut socket).await;
+    assert!(matches!(
+        started,
+        ServerMessage::Chunk { request_id, values }
+            if request_id.as_str() == "8"
+                && values.len() == 1
+                && values[0]["kind"] == "action_started"
+                && values[0]["actionId"] == "wire-action-1"
+                && values[0]["cwd"] == cwd.as_ref()
+    ));
+    send_json(&mut socket, json!({ "_tag": "Ack", "requestId": "8" })).await;
+    let finished = next_server_message(&mut socket).await;
+    assert!(matches!(
+        finished,
+        ServerMessage::Chunk { request_id, values }
+            if request_id.as_str() == "8"
+                && values.len() == 1
+                && values[0]["kind"] == "action_finished"
+                && values[0]["result"]["action"] == "commit"
+                && values[0]["result"]["commit"]["status"] == "created"
+                && values[0]["result"]["toast"]["cta"]["kind"] == "none"
+    ));
+    send_json(&mut socket, json!({ "_tag": "Ack", "requestId": "8" })).await;
+    assert!(matches!(
+        next_server_message(&mut socket).await,
+        ServerMessage::Exit { request_id, exit: RpcExit::Success { value: None } }
+            if request_id.as_str() == "8"
+    ));
+
+    socket.close(None).await.expect("close WebSocket");
+    handle.shutdown();
+    handle.join().await.expect("server joins");
+}
+
 fn test_config(temp: &TempDir) -> ServerConfig {
     ServerConfig::new(temp.path())
         .with_bind("127.0.0.1", 0)

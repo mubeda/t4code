@@ -67,3 +67,4 @@ node_modules/
 *coverage-summary.json
 output/
 /.plans
+docs/superpowers/

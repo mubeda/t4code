@@ -670,12 +670,25 @@ impl CodexSessionRuntime {
                     .and_then(|turn| turn.get("status"))
                     .and_then(Value::as_str)
                     .unwrap_or("completed");
+                let error = params
+                    .get("turn")
+                    .and_then(|turn| turn.get("error"))
+                    .cloned();
                 let mut session = self.inner.session.lock().await;
                 session.status = if state == "failed" { "error" } else { "ready" }.to_owned();
                 session.active_turn_id = None;
                 drop(session);
-                self.emit("turn.completed", turn_id, None, json!({ "state": state }))
-                    .await;
+                let mut payload = json!({ "state": state });
+                if let Some(error) = error {
+                    payload["error"] = error;
+                }
+                self.emit(
+                    "turn.completed",
+                    turn_id,
+                    None,
+                    payload,
+                )
+                .await;
             }
             "item/agentMessage/delta" => {
                 let turn_id = params
