@@ -1,3 +1,5 @@
+use std::{path::PathBuf, sync::Arc};
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
@@ -50,12 +52,7 @@ fn register_orchestration_rpc_inner(
             if let Some((provider, settings_root)) = provider {
                 route_orchestration_command(&provider, &dispatch, &settings_root, command)
                     .await
-                    .map_err(|error| {
-                        json!({
-                            "_tag": "ProviderRuntimeCommandError",
-                            "message": error.to_string(),
-                        })
-                    })?;
+                    .map_err(provider_command_error)?;
             }
             Ok(json!({ "sequence": result.sequence }))
         }
@@ -292,6 +289,7 @@ async fn thread_snapshot(engine: &OrchestrationEngine, thread_id: &str) -> RpcRe
         .unwrap_or(0);
     let mut detail = thread_shell(thread, &snapshot);
     let object = detail.as_object_mut().expect("thread shell is an object");
+    object.insert("deletedAt".to_owned(), json!(thread.deleted_at));
     object.insert(
         "messages".to_owned(),
         Value::Array(
@@ -306,7 +304,7 @@ async fn thread_snapshot(engine: &OrchestrationEngine, thread_id: &str) -> RpcRe
                         "role": row.role,
                         "text": row.text,
                         "attachments": row.attachments.clone().unwrap_or_else(|| json!([])),
-                        "isStreaming": row.is_streaming,
+                        "streaming": row.is_streaming,
                         "createdAt": row.created_at,
                         "updatedAt": row.updated_at,
                     })
@@ -325,7 +323,7 @@ async fn thread_snapshot(engine: &OrchestrationEngine, thread_id: &str) -> RpcRe
                     json!({
                         "id": row.activity_id,
                         "turnId": row.turn_id,
-                        "tone": row.tone,
+                        "tone": thread_activity_tone(&row.tone),
                         "kind": row.kind,
                         "summary": row.summary,
                         "payload": row.payload,
@@ -379,6 +377,13 @@ async fn thread_snapshot(engine: &OrchestrationEngine, thread_id: &str) -> RpcRe
         ),
     );
     Ok(json!({ "snapshotSequence": sequence, "thread": detail }))
+}
+
+fn thread_activity_tone(tone: &str) -> &str {
+    match tone {
+        "info" | "tool" | "approval" | "error" => tone,
+        _ => "info",
+    }
 }
 
 fn thread_shell(thread: &ProjectionThread, snapshot: &crate::orchestration::Snapshot) -> Value {
@@ -467,6 +472,10 @@ fn orchestration_error(tag: &str, error: impl std::fmt::Display) -> Value {
     json!({ "_tag": tag, "message": error.to_string() })
 }
 
+fn provider_command_error(error: impl std::fmt::Display) -> Value {
+    orchestration_error("OrchestrationDispatchCommandError", error)
+}
+
 fn now_iso() -> String {
     OffsetDateTime::now_utc()
         .format(&Rfc3339)
@@ -499,4 +508,184 @@ struct FullDiffInput {
     thread_id: String,
     to_turn_count: i64,
 }
-use std::{path::PathBuf, sync::Arc};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        orchestration::engine::EngineOptions,
+        persistence::{Database, run_migrations},
+    };
+
+    const CREATED_AT: &str = "2026-07-11T00:00:00.000Z";
+
+    async fn migrated_engine() -> OrchestrationEngine {
+        let database = Database::open_in_memory().await.expect("database");
+        database
+            .call(|connection| {
+                run_migrations(connection, None)?;
+                Ok(())
+            })
+            .await
+            .expect("migrations");
+        OrchestrationEngine::start(database, EngineOptions::default())
+            .await
+            .expect("engine starts")
+    }
+
+    fn decode_command(value: Value) -> OrchestrationCommand {
+        serde_json::from_value(value).expect("command decodes")
+    }
+
+    fn assert_empty_thread_contract(thread: &Value, expected_kind: &str) {
+        let object = thread.as_object().expect("thread object");
+        assert!(object.contains_key("deletedAt"));
+        assert!(object.contains_key("latestTurn"));
+        assert!(object.contains_key("session"));
+        assert_eq!(thread["deletedAt"], Value::Null);
+        assert_eq!(thread["latestTurn"], Value::Null);
+        assert_eq!(thread["session"], Value::Null);
+        assert_eq!(thread["kind"], expected_kind);
+        for field in ["messages", "activities", "proposedPlans", "checkpoints"] {
+            assert_eq!(thread[field], json!([]), "{field} is empty");
+        }
+    }
+
+    #[test]
+    fn provider_failures_use_the_declared_dispatch_error_contract() {
+        assert_eq!(
+            provider_command_error("provider failed"),
+            json!({
+                "_tag": "OrchestrationDispatchCommandError",
+                "message": "provider failed",
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_default_and_workspace_snapshots_match_the_thread_contract() {
+        let engine = migrated_engine().await;
+        engine
+            .dispatch(decode_command(json!({
+                "type": "project.create",
+                "commandId": "create-project",
+                "projectId": "project-1",
+                "title": "Project",
+                "workspaceRoot": "C:/repo",
+                "defaultModelSelection": null,
+                "createdAt": CREATED_AT,
+            })))
+            .await
+            .expect("project created");
+
+        let projection = load_snapshot(&engine.repositories())
+            .await
+            .expect("snapshot");
+        let default_id = projection
+            .threads
+            .iter()
+            .find(|thread| thread.kind == "default")
+            .expect("default thread")
+            .thread_id
+            .clone();
+        let default_snapshot = thread_snapshot(&engine, &default_id)
+            .await
+            .expect("default snapshot");
+        assert_empty_thread_contract(&default_snapshot["thread"], "default");
+
+        engine
+            .dispatch(decode_command(json!({
+                "type": "thread.create",
+                "commandId": "create-workspace",
+                "threadId": "workspace-1",
+                "projectId": "project-1",
+                "title": "Workspace",
+                "kind": "workspace",
+                "modelSelection": {"instanceId": "codex", "model": "gpt-5"},
+                "runtimeMode": "full-access",
+                "interactionMode": "default",
+                "branch": "feature",
+                "worktreePath": "C:/repo-worktrees/feature",
+                "createdAt": CREATED_AT,
+            })))
+            .await
+            .expect("workspace thread created");
+        let workspace_snapshot = thread_snapshot(&engine, "workspace-1")
+            .await
+            .expect("workspace snapshot");
+        assert_empty_thread_contract(&workspace_snapshot["thread"], "workspace");
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn populated_thread_snapshot_uses_the_message_wire_contract() {
+        let engine = migrated_engine().await;
+        engine
+            .dispatch(decode_command(json!({
+                "type": "project.create",
+                "commandId": "create-project",
+                "projectId": "project-1",
+                "title": "Project",
+                "workspaceRoot": "C:/repo",
+                "defaultModelSelection": null,
+                "createdAt": CREATED_AT,
+            })))
+            .await
+            .expect("project created");
+        let projection = load_snapshot(&engine.repositories())
+            .await
+            .expect("snapshot");
+        let default_id = projection
+            .threads
+            .iter()
+            .find(|thread| thread.kind == "default")
+            .expect("default thread")
+            .thread_id
+            .clone();
+        engine
+            .dispatch(decode_command(json!({
+                "type": "thread.turn.start",
+                "commandId": "start-turn",
+                "threadId": default_id,
+                "message": {
+                    "messageId": "message-1",
+                    "role": "user",
+                    "text": "hello",
+                    "attachments": []
+                },
+                "modelSelection": {"instanceId": "codex", "model": "gpt-5"},
+                "runtimeMode": "full-access",
+                "interactionMode": "default",
+                "createdAt": CREATED_AT,
+            })))
+            .await
+            .expect("turn started");
+        engine
+            .dispatch(decode_command(json!({
+                "type": "thread.activity.append",
+                "commandId": "legacy-activity",
+                "threadId": default_id,
+                "activity": {
+                    "id": "activity-1",
+                    "tone": "status",
+                    "kind": "provider.session",
+                    "summary": "session.ready",
+                    "payload": {},
+                    "turnId": null,
+                    "createdAt": CREATED_AT
+                },
+                "createdAt": CREATED_AT,
+            })))
+            .await
+            .expect("legacy activity stored");
+
+        let snapshot = thread_snapshot(&engine, &default_id)
+            .await
+            .expect("thread snapshot");
+        let message = &snapshot["thread"]["messages"][0];
+        assert_eq!(message["streaming"], json!(false));
+        assert!(message.get("isStreaming").is_none());
+        assert_eq!(snapshot["thread"]["activities"][0]["tone"], json!("info"));
+        engine.shutdown().await;
+    }
+}

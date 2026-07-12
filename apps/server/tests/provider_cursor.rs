@@ -107,7 +107,7 @@ async fn cursor_runtime_matches_approval_and_cancel_traces() {
         .respond(json!({ "protocolVersion": 1 }));
     peer.expect_request("authenticate")
         .respond(json!({ "status": "ok" }));
-    peer.expect_request("session/create")
+    peer.expect_request("session/new")
         .respond(json!({ "sessionId": "cursor-session-1" }));
     peer.expect_request("session/prompt")
         .emit_request(json!({
@@ -191,35 +191,40 @@ async fn cursor_runtime_matches_approval_and_cancel_traces() {
     runtime.start().await.expect("start");
 
     let approval_runtime = runtime.clone();
-    let approval_task =
+    let mut approval_task =
         tokio::spawn(async move { approval_runtime.send_turn("run a tool call").await });
     let mut approval_events = runtime.collect_events(4).await;
+    let approval_turn = timeout(Duration::from_millis(100), &mut approval_task)
+        .await
+        .expect("send_turn should return while approval is pending")
+        .expect("approval join")
+        .expect("approval turn");
     runtime
         .respond_to_request("approval:1001", "accept")
         .await
         .expect("approval response");
-    let approval_turn = approval_task
-        .await
-        .expect("approval join")
-        .expect("approval turn");
     approval_events.extend(runtime.collect_events(5).await);
-    assert_eq!(approval_turn, "turn-3");
+    normalize_turn_ids(&mut approval_events, &approval_turn, "turn-3");
     assert_eq!(approval_events, stable_fixture("trace-approval.json"));
 
     let cancel_runtime = runtime.clone();
-    let cancel_task =
+    let mut cancel_task =
         tokio::spawn(async move { cancel_runtime.send_turn("cancel this turn").await });
     let cancel_started = runtime.next_event().await.expect("cancel started");
     assert_eq!(cancel_started.event_type, "turn.started");
+    let cancel_turn_id = cancel_started.turn_id.clone().expect("cancel turn id");
     let request_opened = runtime.next_event().await.expect("request opened");
     assert_eq!(request_opened.event_type, "request.opened");
-    runtime.interrupt_turn().await.expect("interrupt");
-    cancel_task
+    let returned_cancel_turn_id = timeout(Duration::from_millis(100), &mut cancel_task)
         .await
+        .expect("send_turn should return while permission is pending")
         .expect("cancel join")
         .expect("cancel turn");
+    assert_eq!(returned_cancel_turn_id, cancel_turn_id);
+    runtime.interrupt_turn().await.expect("interrupt");
     let mut cancel_events = vec![cancel_started.stable_view(), request_opened.stable_view()];
     cancel_events.extend(runtime.collect_events(2).await);
+    normalize_turn_ids(&mut cancel_events, &cancel_turn_id, "turn-10");
     assert_eq!(cancel_events, stable_fixture("trace-cancel.json"));
 
     peer_task.await.expect("peer");
@@ -234,6 +239,18 @@ fn fixture(name: &str) -> Value {
 
 fn stable_fixture(name: &str) -> Vec<cursor::CursorRuntimeEventStableView> {
     serde_json::from_value(fixture(name)).expect("stable fixture")
+}
+
+fn normalize_turn_ids(
+    events: &mut [cursor::CursorRuntimeEventStableView],
+    actual_turn_id: &str,
+    stable_turn_id: &str,
+) {
+    for event in events {
+        if event.turn_id.as_deref() == Some(actual_turn_id) {
+            event.turn_id = Some(stable_turn_id.to_owned());
+        }
+    }
 }
 
 fn fixture_directory() -> PathBuf {

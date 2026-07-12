@@ -93,6 +93,36 @@ pub fn build_descendant_entries(rows: &[ProcessRow], root_pid: u32) -> Vec<Desce
     descendants
 }
 
+pub fn build_process_tree_entries(rows: &[ProcessRow], root_pid: u32) -> Vec<DescendantEntry> {
+    let Some(root) = rows.iter().find(|row| row.pid == root_pid) else {
+        return Vec::new();
+    };
+    let mut descendants = build_descendant_entries(rows, root_pid);
+    for entry in &mut descendants {
+        entry.depth += 1;
+    }
+    let child_pids = descendants
+        .iter()
+        .filter(|entry| entry.depth == 1)
+        .map(|entry| entry.pid)
+        .collect();
+    let mut tree = Vec::with_capacity(descendants.len() + 1);
+    tree.push(DescendantEntry {
+        pid: root.pid,
+        ppid: root.ppid,
+        pgid: root.pgid,
+        status: root.status.clone(),
+        cpu_percent: root.cpu_percent,
+        rss_bytes: root.rss_bytes,
+        elapsed: root.elapsed.clone(),
+        command: root.command.clone(),
+        depth: 0,
+        child_pids,
+    });
+    tree.extend(descendants);
+    tree
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessDiagnosticsResult {
@@ -162,4 +192,30 @@ pub struct ProcessResourceHistory {
     pub buckets: Vec<ProcessResourceBucket>,
     pub top_processes: Vec<ProcessResourceSummary>,
     pub error: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_tree_includes_the_native_root_and_offsets_descendant_depths() {
+        let mut root = ProcessRow::fixture(10, 1, "t4code.exe");
+        root.rss_bytes = 100;
+        let mut child = ProcessRow::fixture(11, 10, "codex.exe");
+        child.rss_bytes = 50;
+        let grandchild = ProcessRow::fixture(12, 11, "git.exe");
+
+        let tree = build_process_tree_entries(&[root, child, grandchild], 10);
+
+        assert_eq!(
+            tree.iter().map(|entry| entry.pid).collect::<Vec<_>>(),
+            [10, 11, 12]
+        );
+        assert_eq!(
+            tree.iter().map(|entry| entry.depth).collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        assert_eq!(tree[0].child_pids, [11]);
+    }
 }

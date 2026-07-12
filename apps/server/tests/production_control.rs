@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use serde_json::{Value, json};
 use t4code_server::{
@@ -6,6 +6,7 @@ use t4code_server::{
     production::{control::NativeServerControl, server_terminal::ProductionServerControl},
 };
 use tempfile::TempDir;
+use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
@@ -25,6 +26,55 @@ async fn fixture() -> (TempDir, NativeServerControl) {
     config.environment_label = "Test Environment".into();
     let control = NativeServerControl::new(config, auth_descriptor()).await;
     (directory, control)
+}
+
+async fn fixture_with_state_file(
+    relative_path: &str,
+    contents: &[u8],
+) -> (TempDir, NativeServerControl) {
+    let directory = tempfile::tempdir().expect("temporary state directory");
+    let path = directory.path().join("userdata").join(relative_path);
+    tokio::fs::create_dir_all(path.parent().expect("state file parent"))
+        .await
+        .expect("create state directory");
+    tokio::fs::write(path, contents)
+        .await
+        .expect("write state fixture");
+    let mut config = ServerConfig::new(directory.path());
+    config.environment_id = "test-environment".into();
+    config.environment_label = "Test Environment".into();
+    let control = NativeServerControl::new(config, auth_descriptor()).await;
+    (directory, control)
+}
+
+async fn write_provider_fixture(directory: &TempDir) -> PathBuf {
+    #[cfg(windows)]
+    let (name, contents) = (
+        "provider.cmd",
+        "@echo off\r\nif \"%1\"==\"about\" (echo {\"cliVersion\":\"9.8.7\",\"userEmail\":\"dev@example.com\",\"subscriptionTier\":\"pro\"}& exit /b 0)\r\necho provider 1.0.0\r\n",
+    );
+    #[cfg(not(windows))]
+    let (name, contents) = (
+        "provider",
+        "#!/bin/sh\nif [ \"$1\" = \"about\" ]; then\n  echo '{\"cliVersion\":\"9.8.7\",\"userEmail\":\"dev@example.com\",\"subscriptionTier\":\"pro\"}'\nelse\n  echo 'provider 1.0.0'\nfi\n",
+    );
+    let path = directory.path().join(name);
+    tokio::fs::write(&path, contents)
+        .await
+        .expect("write provider fixture");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut permissions = tokio::fs::metadata(&path)
+            .await
+            .expect("provider fixture metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        tokio::fs::set_permissions(&path, permissions)
+            .await
+            .expect("make provider fixture executable");
+    }
+    path
 }
 
 async fn call(control: &NativeServerControl, method: &'static str, payload: Value) -> Value {
@@ -80,7 +130,10 @@ async fn config_and_settings_match_the_typescript_contract_without_faking_provid
     for provider in config["providers"].as_array().expect("provider snapshots") {
         if provider["status"] == "ready" {
             assert_eq!(provider["installed"], true);
-            assert_eq!(provider["auth"]["status"], "unknown");
+            assert!(matches!(
+                provider["auth"]["status"].as_str(),
+                Some("authenticated" | "unauthenticated" | "unknown")
+            ));
         }
         if provider["installed"] == false {
             assert!(matches!(
@@ -216,6 +269,91 @@ async fn keybinding_upsert_replace_and_remove_are_resolved_persisted_and_streame
 }
 
 #[tokio::test]
+async fn malformed_keybinding_config_is_reported_instead_of_silently_replaced() {
+    let (_directory, control) = fixture_with_state_file("keybindings.json", b"{not-json").await;
+
+    let config = call(&control, "server.getConfig", json!({})).await;
+    assert_eq!(config["keybindings"], json!([]));
+    assert_eq!(config["issues"][0]["kind"], "keybindings.malformed-config");
+    assert!(
+        config["issues"][0]["message"]
+            .as_str()
+            .is_some_and(|message| !message.is_empty())
+    );
+}
+
+#[tokio::test]
+async fn invalid_keybinding_entries_are_reported_by_original_index_while_valid_entries_survive() {
+    let rules = json!([
+        { "key": "ctrl+k", "command": "terminal.toggle" },
+        { "key": "ctrl+shift", "command": "terminal.toggle" },
+        "not-an-object"
+    ]);
+    let (_directory, control) = fixture_with_state_file(
+        "keybindings.json",
+        &serde_json::to_vec(&rules).expect("serialize keybindings fixture"),
+    )
+    .await;
+
+    let config = call(&control, "server.getConfig", json!({})).await;
+    assert_eq!(config["keybindings"].as_array().unwrap().len(), 1);
+    assert_eq!(config["keybindings"][0]["command"], "terminal.toggle");
+    assert_eq!(config["issues"].as_array().unwrap().len(), 2);
+    assert_eq!(config["issues"][0]["kind"], "keybindings.invalid-entry");
+    assert_eq!(config["issues"][0]["index"], 1);
+    assert_eq!(config["issues"][1]["index"], 2);
+}
+
+#[tokio::test]
+async fn provider_inventory_uses_provider_specific_status_and_configured_models() {
+    let directory = tempfile::tempdir().expect("temporary state directory");
+    let executable = write_provider_fixture(&directory).await;
+    let settings = json!({
+        "providers": {
+            "cursor": {
+                "enabled": true,
+                "binaryPath": executable,
+                "customModels": []
+            }
+        },
+        "providerInstances": {
+            "cursor-work": {
+                "driver": "cursor",
+                "enabled": true,
+                "config": { "customModels": ["cursor/custom-test"] }
+            }
+        }
+    });
+    let settings_path = directory.path().join("userdata/settings.json");
+    tokio::fs::create_dir_all(settings_path.parent().unwrap())
+        .await
+        .expect("create settings directory");
+    tokio::fs::write(
+        settings_path,
+        serde_json::to_vec(&settings).expect("serialize settings fixture"),
+    )
+    .await
+    .expect("write settings fixture");
+    let control =
+        NativeServerControl::new(ServerConfig::new(directory.path()), auth_descriptor()).await;
+
+    let config = call(&control, "server.getConfig", json!({})).await;
+    let provider = &config["providers"][0];
+    assert_eq!(provider["instanceId"], "cursor-work");
+    assert_eq!(provider["status"], "ready");
+    assert_eq!(provider["version"], "9.8.7");
+    assert_eq!(provider["auth"]["status"], "authenticated");
+    assert_eq!(provider["auth"]["email"], "dev@example.com");
+    assert!(
+        provider["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|model| { model["slug"] == "cursor/custom-test" && model["isCustom"] == true })
+    );
+}
+
+#[tokio::test]
 async fn trace_and_auxiliary_streams_use_exact_contract_shapes() {
     let (_directory, control) = fixture().await;
     let diagnostics = call(&control, "server.getTraceDiagnostics", json!({})).await;
@@ -257,13 +395,49 @@ async fn trace_and_auxiliary_streams_use_exact_contract_shapes() {
     assert_eq!(next_event(&mut lifecycle).await["type"], "ready");
     lifecycle_cancel.cancel();
 
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind local listener");
+    let port = listener.local_addr().expect("listener address").port();
     let discovery_cancel = CancellationToken::new();
     let mut discovery =
         control.subscribe("subscribeDiscoveredLocalServers", discovery_cancel.clone());
     let discovered = next_event(&mut discovery).await;
-    assert_eq!(discovered["servers"], json!([]));
     assert!(discovered["scannedAt"].is_string());
+    assert!(
+        discovered["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|server| {
+                server["host"] == "127.0.0.1"
+                    && server["port"] == port
+                    && server["url"] == format!("http://127.0.0.1:{port}/")
+            })
+    );
+
+    drop(listener);
+    let rescanned = timeout(Duration::from_secs(5), async {
+        loop {
+            let snapshot = next_event(&mut discovery).await;
+            if snapshot["servers"]
+                .as_array()
+                .is_some_and(|servers| servers.iter().all(|server| server["port"] != port))
+            {
+                break snapshot;
+            }
+        }
+    })
+    .await
+    .expect("periodic discovery removes closed listener");
+    assert!(rescanned["scannedAt"].is_string());
     discovery_cancel.cancel();
+    assert!(
+        timeout(Duration::from_secs(2), discovery.recv())
+            .await
+            .expect("discovery cancellation timeout")
+            .is_none()
+    );
 }
 
 #[tokio::test]

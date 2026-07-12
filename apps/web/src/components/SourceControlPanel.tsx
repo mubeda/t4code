@@ -114,6 +114,21 @@ const RUNNING_ACTIONS = [
 // their single flat section renders no checkbox and never invokes onToggle.
 const LEGACY_NOOP_TOGGLE = () => {};
 
+function sourceControlErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message;
+  if (typeof error === "string" && error.trim()) return error;
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof error.message === "string" &&
+    error.message.trim()
+  ) {
+    return error.message;
+  }
+  return "An error occurred.";
+}
+
 function isDefaultBranchConfirmable(
   action: GitStackedAction,
 ): action is DefaultBranchConfirmableAction {
@@ -303,7 +318,7 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
           stackedThreadToast({
             type: "error",
             title: "Action failed",
-            description: error instanceof Error ? error.message : "An error occurred.",
+            description: sourceControlErrorMessage(error),
             data: threadToastData,
           }),
         );
@@ -355,7 +370,7 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
         stackedThreadToast({
           type: "error",
           title: "Pull failed",
-          description: error instanceof Error ? error.message : "An error occurred.",
+          description: sourceControlErrorMessage(error),
           data: threadToastData,
         }),
       );
@@ -378,7 +393,7 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
         stackedThreadToast({
           type: "error",
           title,
-          description: error instanceof Error ? error.message : "An error occurred.",
+          description: sourceControlErrorMessage(error),
           data: threadToastData,
         }),
       );
@@ -474,7 +489,7 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
           stackedThreadToast({
             type: "error",
             title: "Could not update .gitignore",
-            description: error instanceof Error ? error.message : "An error occurred.",
+            description: sourceControlErrorMessage(error),
             data: threadToastData,
           }),
         );
@@ -535,7 +550,7 @@ export default function SourceControlPanel({ mode, threadRef, gitCwd }: SourceCo
         stackedThreadToast({
           type: "error",
           title: "Could not generate a commit message",
-          description: error instanceof Error ? error.message : "An error occurred.",
+          description: sourceControlErrorMessage(error),
           data: threadToastData,
         }),
       );

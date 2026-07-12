@@ -93,6 +93,7 @@ async fn stores_sensitive_environment_values_outside_settings_json_and_roundtrip
                 "codex_personal".to_owned(),
                 ProviderInstanceInput {
                     driver: "codex".to_owned(),
+                    enabled: true,
                     display_name: None,
                     environment: vec![
                         ProviderEnvironmentVariableInput {
@@ -108,6 +109,7 @@ async fn stores_sensitive_environment_values_outside_settings_json_and_roundtrip
                             value_redacted: false,
                         },
                     ],
+                    config: serde_json::Value::Null,
                 },
             )])),
             ..ServerSettingsPatch::default()
@@ -135,6 +137,7 @@ async fn stores_sensitive_environment_values_outside_settings_json_and_roundtrip
                 "codex_personal".to_owned(),
                 ProviderInstanceInput {
                     driver: "codex".to_owned(),
+                    enabled: true,
                     display_name: Some("Codex Personal".to_owned()),
                     environment: vec![
                         ProviderEnvironmentVariableInput {
@@ -150,6 +153,7 @@ async fn stores_sensitive_environment_values_outside_settings_json_and_roundtrip
                             value_redacted: false,
                         },
                     ],
+                    config: serde_json::Value::Null,
                 },
             )])),
             ..ServerSettingsPatch::default()
@@ -169,6 +173,39 @@ async fn stores_sensitive_environment_values_outside_settings_json_and_roundtrip
 }
 
 #[tokio::test]
+async fn preserves_provider_instance_enabled_state_and_driver_config() {
+    let temp = TempDir::new().expect("temp");
+    let store = ProviderSettingsStore::new(temp.path());
+    tokio::fs::write(
+        temp.path().join("settings.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "providerInstances": {
+                "cursor": {
+                    "driver": "cursor",
+                    "enabled": true,
+                    "config": {
+                        "binaryPath": "cursor-agent",
+                        "apiEndpoint": "http://127.0.0.1:3210"
+                    }
+                }
+            }
+        }))
+        .expect("encode settings"),
+    )
+    .await
+    .expect("write settings");
+
+    let loaded = store.get().await.expect("load settings");
+    let cursor = loaded
+        .provider_instances
+        .get("cursor")
+        .expect("cursor instance");
+    assert!(cursor.enabled);
+    assert_eq!(cursor.config["binaryPath"], "cursor-agent");
+    assert_eq!(cursor.config["apiEndpoint"], "http://127.0.0.1:3210");
+}
+
+#[tokio::test]
 async fn missing_redacted_secret_returns_the_expected_read_error() {
     let temp = TempDir::new().expect("temp");
     let settings = ProviderSettingsState {
@@ -176,6 +213,7 @@ async fn missing_redacted_secret_returns_the_expected_read_error() {
             "codex_personal".to_owned(),
             server_settings::ProviderInstanceState {
                 driver: "codex".to_owned(),
+                enabled: true,
                 display_name: None,
                 environment: vec![server_settings::ProviderEnvironmentVariableState {
                     name: "OPENROUTER_API_KEY".to_owned(),
@@ -183,6 +221,7 @@ async fn missing_redacted_secret_returns_the_expected_read_error() {
                     sensitive: true,
                     value_redacted: true,
                 }],
+                config: serde_json::Value::Null,
             },
         )]),
         ..ProviderSettingsState::default()

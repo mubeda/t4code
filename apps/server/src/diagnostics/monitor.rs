@@ -253,6 +253,7 @@ fn summarize_processes(
     samples: &[ProcessSample],
     interval_seconds: f64,
 ) -> Vec<ProcessResourceSummary> {
+    let latest_sampled_at_ms = samples.iter().map(|sample| sample.sampled_at_ms).max();
     let mut groups = HashMap::<String, Vec<&ProcessSample>>::new();
     for sample in samples {
         groups
@@ -266,6 +267,9 @@ fn summarize_processes(
             samples.sort_by_key(|sample| sample.sampled_at_ms);
             let first = *samples.first()?;
             let latest = *samples.last()?;
+            if Some(latest.sampled_at_ms) != latest_sampled_at_ms {
+                return None;
+            }
             let cpu_total = samples.iter().map(|sample| sample.cpu_percent).sum::<f64>();
             Some(ProcessResourceSummary {
                 process_key,
@@ -346,4 +350,41 @@ fn build_buckets(
         started_at_ms = ended_at_ms;
     }
     buckets
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(pid: u32, sampled_at_ms: i128, command: &str) -> ProcessSample {
+        ProcessSample {
+            sampled_at_ms,
+            process_key: format!("{pid}:{command}"),
+            pid,
+            ppid: 1,
+            command: command.to_owned(),
+            cpu_percent: 1.0,
+            cpu_core_percent: 1.0,
+            rss_bytes: 100,
+            depth: 0,
+            is_server_root: pid == 10,
+        }
+    }
+
+    #[test]
+    fn top_processes_exclude_processes_missing_from_the_latest_sample() {
+        let summaries = summarize_processes(
+            &[
+                sample(10, 1_000, "t4code.exe"),
+                sample(11, 1_000, "git.exe"),
+                sample(10, 2_000, "t4code.exe"),
+            ],
+            2.0,
+        );
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].pid, 10);
+        assert!(summaries[0].is_server_root);
+        assert_eq!(summaries[0].sample_count, 2);
+    }
 }

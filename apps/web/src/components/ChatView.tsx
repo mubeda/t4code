@@ -4270,25 +4270,42 @@ function ChatViewContent(props: ChatViewProps) {
       setRespondingRequestIds((existing) =>
         existing.includes(requestId) ? existing : [...existing, requestId],
       );
-      const result = await respondToThreadApproval({
-        environmentId,
-        input: {
-          threadId: activeThreadId,
-          requestId,
-          decision,
-        },
-      });
+      const result =
+        decision === "cancel" && activeThread
+          ? await interruptThreadTurn({
+              environmentId,
+              input: buildThreadTurnInterruptInput(activeThread),
+            })
+          : await respondToThreadApproval({
+              environmentId,
+              input: {
+                threadId: activeThreadId,
+                requestId,
+                decision,
+              },
+            });
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
         const error = squashAtomCommandFailure(result);
         setThreadError(
           activeThreadId,
-          error instanceof Error ? error.message : "Failed to submit approval decision.",
+          error instanceof Error
+            ? error.message
+            : decision === "cancel"
+              ? "Failed to cancel the current turn."
+              : "Failed to submit approval decision.",
         );
       }
       setRespondingRequestIds((existing) => existing.filter((id) => id !== requestId));
       return result;
     },
-    [activeThreadId, environmentId, respondToThreadApproval, setThreadError],
+    [
+      activeThread,
+      activeThreadId,
+      environmentId,
+      interruptThreadTurn,
+      respondToThreadApproval,
+      setThreadError,
+    ],
   );
 
   const onRespondToUserInput = useCallback(

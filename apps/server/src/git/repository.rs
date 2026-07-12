@@ -672,19 +672,40 @@ impl GitRepository {
                 .join(repo)
                 .join(target_ref.replace('/', "-"))
         });
-        let path_string = path.to_string_lossy().into_owned();
+        let path_string = display_path(&path);
+        let new_ref_existed = match input.new_ref_name.as_deref() {
+            Some(new_ref) => {
+                self.local_branch_exists(&input.cwd, new_ref, cancellation)
+                    .await?
+            }
+            None => false,
+        };
         let mut args = strings(&["worktree", "add"]);
         if let Some(new_ref) = input.new_ref_name.as_deref() {
             args.extend(["-b".into(), new_ref.into()]);
         }
         args.extend([path_string.clone(), input.ref_name]);
-        self.run(
-            "GitVcsDriver.createWorktree",
-            &input.cwd,
-            &args,
-            cancellation,
-        )
-        .await?;
+        if let Err(mut error) = self
+            .run(
+                "GitVcsDriver.createWorktree",
+                &input.cwd,
+                &args,
+                cancellation,
+            )
+            .await
+        {
+            if let Some(new_ref) = input.new_ref_name.as_deref()
+                && !new_ref_existed
+                && let Err(rollback_error) = self.rollback_created_branch(&input.cwd, new_ref).await
+            {
+                error.detail = format!(
+                    "{}\nWorktree branch rollback also failed: {}",
+                    error.detail, rollback_error.detail
+                )
+                .into();
+            }
+            return Err(error);
+        }
         let canonical_path = tokio::fs::canonicalize(&path).await.unwrap_or(path);
         let path_string = display_path(&canonical_path);
         if let (Some(new_ref), Some(base_ref)) = (
@@ -711,6 +732,58 @@ impl GitRepository {
         })
     }
 
+    async fn local_branch_exists(
+        &self,
+        cwd: &Path,
+        branch: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<bool, GitCommandError> {
+        let output = self
+            .execute(
+                "GitVcsDriver.createWorktree.branchExists",
+                cwd,
+                &[
+                    "show-ref".into(),
+                    "--verify".into(),
+                    "--quiet".into(),
+                    format!("refs/heads/{branch}"),
+                ],
+                true,
+                cancellation,
+            )
+            .await?;
+        match output.exit_code {
+            0 => Ok(true),
+            1 => Ok(false),
+            _ => Err(command_output_error(
+                "GitVcsDriver.createWorktree.branchExists",
+                cwd,
+                4,
+                &output,
+                &actionable_git_failure(&output.stderr, &output.stdout),
+            )),
+        }
+    }
+
+    async fn rollback_created_branch(
+        &self,
+        cwd: &Path,
+        branch: &str,
+    ) -> Result<(), GitCommandError> {
+        let cancellation = CancellationToken::new();
+        if !self.local_branch_exists(cwd, branch, &cancellation).await? {
+            return Ok(());
+        }
+        self.run(
+            "GitVcsDriver.createWorktree.rollbackBranch",
+            cwd,
+            &["branch".into(), "-D".into(), "--".into(), branch.into()],
+            &cancellation,
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn remove_worktree(
         &self,
         cwd: &Path,
@@ -722,7 +795,7 @@ impl GitRepository {
         if force {
             args.push("--force".into());
         }
-        args.push(path.to_string_lossy().into_owned());
+        args.push(display_path(path));
         self.run("GitVcsDriver.removeWorktree", cwd, &args, cancellation)
             .await?;
         Ok(())
@@ -1276,7 +1349,7 @@ fn git_error(
         tag: "GitCommandError",
         operation: operation.into(),
         command: "git".into(),
-        cwd: cwd.to_string_lossy().into_owned().into(),
+        cwd: display_path(cwd).into(),
         diagnostics: Some(Box::new(GitCommandDiagnostics {
             argument_count: Some(argument_count),
             exit_code,
@@ -1304,7 +1377,7 @@ fn simple_error(operation: &str, cwd: &Path, detail: &str) -> GitCommandError {
         tag: "GitCommandError",
         operation: operation.into(),
         command: "git".into(),
-        cwd: cwd.to_string_lossy().into_owned().into(),
+        cwd: display_path(cwd).into(),
         diagnostics: None,
         detail: detail.into(),
     }
@@ -1321,7 +1394,7 @@ fn command_output_error(
         tag: "GitCommandError",
         operation: operation.into(),
         command: "git".into(),
-        cwd: cwd.to_string_lossy().into_owned().into(),
+        cwd: display_path(cwd).into(),
         diagnostics: Some(Box::new(GitCommandDiagnostics {
             argument_count: Some(argument_count),
             exit_code: Some(output.exit_code),
@@ -1333,9 +1406,9 @@ fn command_output_error(
 }
 
 fn display_path(path: &Path) -> String {
-    let normalized = path.to_string_lossy().replace('\\', "/");
-    normalized
-        .strip_prefix("//?/")
-        .unwrap_or(&normalized)
-        .to_owned()
+    let raw = path.to_string_lossy();
+    if let Some(unc_path) = raw.strip_prefix(r"\\?\UNC\") {
+        return format!("//{}", unc_path.replace('\\', "/"));
+    }
+    raw.strip_prefix(r"\\?\").unwrap_or(&raw).replace('\\', "/")
 }

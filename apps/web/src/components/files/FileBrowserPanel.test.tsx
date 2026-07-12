@@ -512,6 +512,24 @@ describe("context menu model", () => {
     setEntries([entry("src", "directory"), entry("src/app.ts", "file")]);
   });
 
+  it("positions row menus from a viewport rect instead of the shadow-DOM element", () => {
+    renderPanel();
+    const rect = { x: 120, y: 48, width: 240, height: 24 } as DOMRect;
+    const anchorElement = { getBoundingClientRect: vi.fn(() => rect) };
+    const fileTree = ui.last("FileTree")!;
+    const element = (
+      fileTree["renderContextMenu"] as (
+        item: { path: string; kind: string },
+        context: { anchorElement: typeof anchorElement; close: () => void },
+      ) => React.ReactElement
+    )({ path: "src/app.ts", kind: "file" }, { anchorElement, close: vi.fn() });
+    const anchor = (element.props as { anchor: { getBoundingClientRect: () => DOMRect } }).anchor;
+
+    expect(anchor).not.toBe(anchorElement);
+    expect(anchor.getBoundingClientRect()).toBe(rect);
+    expect(anchorElement.getBoundingClientRect).toHaveBeenCalledTimes(1);
+  });
+
   it("builds a file menu with preview + external editor for the primary env", () => {
     testState.isPreviewSupported = true;
     testState.isBrowserPreviewFile = vi.fn(() => true);

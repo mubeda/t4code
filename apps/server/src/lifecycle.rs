@@ -7,8 +7,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     auth::{AuthService, SecretStore},
     config::ServerConfig,
-    http,
-    persistence::{Database, Repositories, run_migrations},
+    http, logging,
+    persistence::{Database, Repositories, StatePaths, run_migrations},
     production::http_routes::{HttpRouteError, HttpRoutesState},
     production::runtime::ProductionRuntime,
     production::{
@@ -48,6 +48,10 @@ pub struct StartupAccess {
 pub enum ServerError {
     #[error("failed to create the server base directory")]
     CreateBaseDirectory(#[source] std::io::Error),
+    #[error("failed to initialize native server state files: {0}")]
+    StateFiles(String),
+    #[error("failed to initialize native server logging: {0}")]
+    Logging(String),
     #[error("failed to bind the server listener")]
     Bind(#[source] std::io::Error),
     #[error("failed to initialize environment authentication: {0}")]
@@ -83,6 +87,13 @@ impl ServerRuntime {
         tokio::fs::create_dir_all(&config.base_dir)
             .await
             .map_err(ServerError::CreateBaseDirectory)?;
+        let state_paths = StatePaths::from_config(&config);
+        state_paths
+            .ensure_directories()
+            .await
+            .map_err(|error| ServerError::StateFiles(error.to_string()))?;
+        logging::initialize(&state_paths.server_log)
+            .map_err(|error| ServerError::Logging(error.to_string()))?;
         let database = Database::open(config.database_path())
             .await
             .map_err(|error| ServerError::PersistenceInitialize(error.to_string()))?;

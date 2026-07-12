@@ -152,6 +152,7 @@ In Default mode, strongly prefer making reasonable assumptions and executing the
 
 const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS: &[&str] = &[
     "not found",
+    "no rollout found",
     "missing thread",
     "no such thread",
     "unknown thread",
@@ -280,11 +281,7 @@ pub fn build_turn_start_params(input: &BuildTurnStartInput) -> Value {
         "input": turn_input,
     });
 
-    if let Some(model) = input
-        .model
-        .as_ref()
-        .map(|value| normalize_model_slug(value, None))
-    {
+    if let Some(model) = input.model.as_ref().map(|value| resolve_turn_model(value)) {
         payload["model"] = json!(model);
     }
     if let Some(service_tier) = input.service_tier.as_ref() {
@@ -297,7 +294,7 @@ pub fn build_turn_start_params(input: &BuildTurnStartInput) -> Value {
         let model = input
             .model
             .as_ref()
-            .map(|value| normalize_model_slug(value, None))
+            .map(|value| resolve_turn_model(value))
             .unwrap_or_else(|| DEFAULT_MODEL.to_owned());
         payload["collaborationMode"] = json!({
             "mode": mode,
@@ -633,6 +630,14 @@ fn normalize_model_slug(model: &str, preferred_id: Option<&str>) -> String {
         return preferred_id.to_owned();
     }
     normalized
+}
+
+fn resolve_turn_model(model: &str) -> String {
+    if model.trim().eq_ignore_ascii_case("auto") {
+        DEFAULT_MODEL.to_owned()
+    } else {
+        normalize_model_slug(model, None)
+    }
 }
 
 fn to_display_name(display_name: &str) -> String {

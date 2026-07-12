@@ -9,6 +9,7 @@ pub mod diagnostics;
 pub mod git;
 mod http;
 mod lifecycle;
+pub mod logging;
 pub mod mcp;
 pub mod observability;
 pub mod orchestration;

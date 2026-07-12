@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     ffi::OsString,
     future::Future,
     path::{Path, PathBuf},
@@ -8,6 +9,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
@@ -19,8 +21,15 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
-    git::{OutputPolicy, ProcessError, ProcessRequest, ProcessRunner},
-    orchestration::engine::{ActivityInput, OrchestrationCommand, OrchestrationEngine},
+    git::{
+        CreateWorktreeInput, GitRepository, OutputPolicy, ProcessError, ProcessRequest,
+        ProcessRunner,
+    },
+    orchestration::engine::{
+        ActivityInput, BootstrapSetupInput, BootstrapSetupResult, BootstrapWorktree,
+        BoxBootstrapFuture, OrchestrationCommand, OrchestrationEngine, ThreadTurnBootstrapEffects,
+        ThreadTurnStartBootstrapPrepareWorktree,
+    },
     persistence::{OrchestrationEvent, PersistenceError},
 };
 
@@ -28,6 +37,18 @@ const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const GIT_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 
 pub type BoxEffectFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SetupScriptLaunch {
+    pub thread_id: String,
+    pub terminal_id: String,
+    pub script_id: String,
+    pub script_name: String,
+    pub command: String,
+    pub cwd: PathBuf,
+    pub worktree_path: PathBuf,
+    pub env: BTreeMap<String, String>,
+}
 
 pub trait OrchestrationEffectCallbacks: Send + Sync {
     fn workspace_for_thread<'a>(
@@ -42,6 +63,15 @@ pub trait OrchestrationEffectCallbacks: Send + Sync {
     fn close_terminals<'a>(&'a self, thread_id: &'a str) -> BoxEffectFuture<'a, ()>;
 
     fn refresh_workspace<'a>(&'a self, cwd: &'a Path) -> BoxEffectFuture<'a, ()>;
+
+    fn launch_setup_script<'a>(&'a self, _input: SetupScriptLaunch) -> BoxEffectFuture<'a, ()> {
+        Box::pin(async {
+            Err(
+                "the production terminal callback is unavailable for setup script launch"
+                    .to_owned(),
+            )
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -113,6 +143,22 @@ pub async fn normalize_project_workspace_root(
             path: workspace_root.to_path_buf(),
             source,
         })
+        .map(process_compatible_path)
+}
+
+#[must_use]
+pub fn process_compatible_path(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let raw = path.to_string_lossy();
+        if let Some(unc_path) = raw.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{unc_path}"));
+        }
+        if let Some(regular_path) = raw.strip_prefix(r"\\?\") {
+            return PathBuf::from(regular_path);
+        }
+    }
+    path
 }
 
 pub async fn normalize_project_create_command(
@@ -134,6 +180,228 @@ pub async fn normalize_project_create_command(
     Ok(())
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectSetupScript {
+    id: String,
+    name: String,
+    command: String,
+    run_on_worktree_create: bool,
+}
+
+struct ProductionBootstrapEffects {
+    repositories: crate::persistence::Repositories,
+    callbacks: Arc<dyn OrchestrationEffectCallbacks>,
+    cancellation: CancellationToken,
+}
+
+impl ThreadTurnBootstrapEffects for ProductionBootstrapEffects {
+    fn prepare_worktree<'a>(
+        &'a self,
+        input: ThreadTurnStartBootstrapPrepareWorktree,
+    ) -> BoxBootstrapFuture<'a, BootstrapWorktree> {
+        Box::pin(async move {
+            let cwd = PathBuf::from(&input.project_cwd);
+            let remove_branch = input.branch.is_some();
+            let ref_name = if input.start_from_origin == Some(true) {
+                fetch_origin_base(&cwd, &input.base_branch, &self.cancellation).await?
+            } else {
+                input.base_branch.clone()
+            };
+            let result = GitRepository::default()
+                .create_worktree(
+                    CreateWorktreeInput {
+                        cwd,
+                        ref_name,
+                        new_ref_name: input.branch,
+                        base_ref_name: None,
+                        path: None,
+                    },
+                    &self.cancellation,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            let path = PathBuf::from(&result.worktree.path);
+            let worktree = BootstrapWorktree {
+                repository_root: input.project_cwd,
+                branch: result.worktree.ref_name,
+                path: result.worktree.path,
+                remove_branch,
+            };
+            if let Err(error) = self.callbacks.refresh_workspace(&path).await {
+                let cleanup = remove_bootstrap_worktree(&worktree, &self.cancellation).await;
+                return Err(match cleanup {
+                    Ok(()) => format!("worktree was created but workspace refresh failed: {error}"),
+                    Err(cleanup_error) => format!(
+                        "worktree was created but workspace refresh failed: {error}; cleanup failed: {cleanup_error}"
+                    ),
+                });
+            }
+            Ok(worktree)
+        })
+    }
+
+    fn run_setup_script<'a>(
+        &'a self,
+        input: BootstrapSetupInput,
+    ) -> BoxBootstrapFuture<'a, BootstrapSetupResult> {
+        Box::pin(async move {
+            let project = if let Some(project_id) = input.project_id {
+                self.repositories
+                    .get_project(project_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+            } else if let Some(project_cwd) = input.project_cwd {
+                self.repositories
+                    .list_projects()
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .find(|project| project.workspace_root == project_cwd)
+            } else {
+                None
+            }
+            .ok_or_else(|| "project was not found for setup script execution".to_owned())?;
+            let scripts: Vec<ProjectSetupScript> = serde_json::from_value(project.scripts)
+                .map_err(|error| format!("project setup scripts are invalid: {error}"))?;
+            let Some(script) = scripts
+                .into_iter()
+                .find(|script| script.run_on_worktree_create)
+            else {
+                return Ok(BootstrapSetupResult::NoScript);
+            };
+            let terminal_id = format!("setup-{}", script.id);
+            let worktree_path = PathBuf::from(&input.worktree_path);
+            let env = BTreeMap::from([
+                ("T4CODE_PROJECT_ROOT".to_owned(), project.workspace_root),
+                (
+                    "T4CODE_WORKTREE_PATH".to_owned(),
+                    input.worktree_path.clone(),
+                ),
+            ]);
+            self.callbacks
+                .launch_setup_script(SetupScriptLaunch {
+                    thread_id: input.thread_id,
+                    terminal_id: terminal_id.clone(),
+                    script_id: script.id.clone(),
+                    script_name: script.name.clone(),
+                    command: script.command,
+                    cwd: worktree_path.clone(),
+                    worktree_path,
+                    env,
+                })
+                .await?;
+            Ok(BootstrapSetupResult::Started {
+                script_id: script.id,
+                script_name: script.name,
+                terminal_id,
+            })
+        })
+    }
+
+    fn cleanup_thread_resources<'a>(&'a self, thread_id: &'a str) -> BoxBootstrapFuture<'a, ()> {
+        Box::pin(async move {
+            let provider_error = self.callbacks.stop_provider(thread_id).await.err();
+            let terminal_error = self.callbacks.close_terminals(thread_id).await.err();
+            match (provider_error, terminal_error) {
+                (None, None) => Ok(()),
+                (Some(provider), None) => Err(format!("provider cleanup failed: {provider}")),
+                (None, Some(terminals)) => Err(format!("terminal cleanup failed: {terminals}")),
+                (Some(provider), Some(terminals)) => Err(format!(
+                    "provider cleanup failed: {provider}; terminal cleanup failed: {terminals}"
+                )),
+            }
+        })
+    }
+
+    fn remove_worktree<'a>(&'a self, worktree: BootstrapWorktree) -> BoxBootstrapFuture<'a, ()> {
+        Box::pin(async move { remove_bootstrap_worktree(&worktree, &self.cancellation).await })
+    }
+}
+
+async fn remove_bootstrap_worktree(
+    worktree: &BootstrapWorktree,
+    cancellation: &CancellationToken,
+) -> Result<(), String> {
+    let repository_root = PathBuf::from(&worktree.repository_root);
+    GitRepository::default()
+        .remove_worktree(
+            &repository_root,
+            Path::new(&worktree.path),
+            true,
+            cancellation,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    if worktree.remove_branch {
+        run_bootstrap_git(
+            &repository_root,
+            ["branch", "-D", worktree.branch.as_str()],
+            cancellation,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn fetch_origin_base(
+    cwd: &Path,
+    base_branch: &str,
+    cancellation: &CancellationToken,
+) -> Result<String, String> {
+    run_bootstrap_git(cwd, ["fetch", "origin"], cancellation).await?;
+    let branch = base_branch.strip_prefix("origin/").unwrap_or(base_branch);
+    let remote_ref = format!("refs/remotes/origin/{branch}");
+    let output =
+        run_bootstrap_git(cwd, ["rev-parse", "--verify", &remote_ref], cancellation).await?;
+    let commit = output.trim();
+    if commit.is_empty() {
+        return Err(format!(
+            "origin branch '{base_branch}' resolved to an empty commit"
+        ));
+    }
+    Ok(commit.to_owned())
+}
+
+async fn run_bootstrap_git<const N: usize>(
+    cwd: &Path,
+    args: [&str; N],
+    cancellation: &CancellationToken,
+) -> Result<String, String> {
+    ProcessRunner
+        .run(
+            ProcessRequest {
+                operation: format!("bootstrap.git.{}", args[0]),
+                command: PathBuf::from("git"),
+                args: args.into_iter().map(OsString::from).collect(),
+                cwd: cwd.to_path_buf(),
+                env: Vec::new(),
+                stdin: None,
+                timeout: GIT_TIMEOUT,
+                max_output_bytes: GIT_OUTPUT_LIMIT,
+                output_policy: OutputPolicy::Error,
+                append_truncation_marker: false,
+                allow_non_zero_exit: false,
+            },
+            cancellation,
+        )
+        .await
+        .map(|output| output.stdout)
+        .map_err(bootstrap_process_error)
+}
+
+fn bootstrap_process_error(error: ProcessError) -> String {
+    let detail = match &error {
+        ProcessError::NonZeroExit { stderr, stdout, .. } => [stderr.as_ref(), stdout.as_ref()]
+            .into_iter()
+            .map(str::trim)
+            .find(|value| !value.is_empty()),
+        _ => None,
+    };
+    let summary = detail.map_or_else(|| error.to_string(), |detail| format!("{error}: {detail}"));
+    crate::diagnostics::redact_sensitive_text(&summary)
+}
+
 pub struct OrchestrationEffects {
     cancellation: CancellationToken,
     producer: tokio::sync::Mutex<Option<JoinHandle<()>>>,
@@ -149,6 +417,12 @@ impl OrchestrationEffects {
         let subscription = engine.subscribe_events();
         let cancellation = CancellationToken::new();
         let (sender, receiver) = mpsc::channel(options.queue_capacity.max(1));
+
+        engine.set_bootstrap_effects(Arc::new(ProductionBootstrapEffects {
+            repositories: engine.repositories(),
+            callbacks: callbacks.clone(),
+            cancellation: cancellation.clone(),
+        }));
 
         let worker = tokio::spawn(run_worker(
             engine.clone(),
@@ -306,12 +580,12 @@ async fn resolve_workspace(
         return Ok(None);
     };
     if let Some(worktree_path) = thread.worktree_path {
-        return Ok(Some(worktree_path.into()));
+        return Ok(Some(process_compatible_path(worktree_path.into())));
     }
     Ok(repositories
         .get_project(thread.project_id)
         .await?
-        .map(|project| PathBuf::from(project.workspace_root)))
+        .map(|project| process_compatible_path(PathBuf::from(project.workspace_root))))
 }
 
 async fn ensure_baseline(

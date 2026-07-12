@@ -1,5 +1,7 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    future::Future,
+    pin::Pin,
     sync::{Arc, Mutex as StdMutex},
 };
 
@@ -7,6 +9,7 @@ use rusqlite::{OptionalExtension, Row, Transaction, params};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Value, json};
 use thiserror::Error;
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::{
     sync::{broadcast, mpsc, oneshot},
     task::JoinHandle,
@@ -34,6 +37,16 @@ const PROJECTOR_NAMES: [&str; 9] = [
     "projection.pending-approvals",
     "projection.threads",
 ];
+
+fn server_command_id(scope: &str) -> String {
+    format!("server:{scope}:{}", Uuid::new_v4())
+}
+
+fn now_iso() -> String {
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
+}
 
 #[derive(Clone, Debug, Default)]
 pub enum OptionalNullable<T> {
@@ -136,6 +149,85 @@ pub struct ActivityInput {
     pub sequence: Option<i64>,
     #[serde(rename = "createdAt")]
     pub created_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadTurnStartBootstrapCreateThread {
+    pub project_id: String,
+    pub title: String,
+    pub model_selection: Value,
+    pub runtime_mode: String,
+    pub interaction_mode: String,
+    pub branch: Option<String>,
+    pub worktree_path: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadTurnStartBootstrapPrepareWorktree {
+    pub project_cwd: String,
+    pub base_branch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_from_origin: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadTurnStartBootstrap {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_thread: Option<ThreadTurnStartBootstrapCreateThread>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepare_worktree: Option<ThreadTurnStartBootstrapPrepareWorktree>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_setup_script: Option<bool>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BootstrapWorktree {
+    pub repository_root: String,
+    pub branch: String,
+    pub path: String,
+    pub remove_branch: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BootstrapSetupInput {
+    pub thread_id: String,
+    pub project_id: Option<String>,
+    pub project_cwd: Option<String>,
+    pub worktree_path: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BootstrapSetupResult {
+    NoScript,
+    Started {
+        script_id: String,
+        script_name: String,
+        terminal_id: String,
+    },
+}
+
+pub type BoxBootstrapFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
+
+pub trait ThreadTurnBootstrapEffects: Send + Sync {
+    fn prepare_worktree<'a>(
+        &'a self,
+        input: ThreadTurnStartBootstrapPrepareWorktree,
+    ) -> BoxBootstrapFuture<'a, BootstrapWorktree>;
+
+    fn run_setup_script<'a>(
+        &'a self,
+        input: BootstrapSetupInput,
+    ) -> BoxBootstrapFuture<'a, BootstrapSetupResult>;
+
+    fn cleanup_thread_resources<'a>(&'a self, thread_id: &'a str) -> BoxBootstrapFuture<'a, ()>;
+
+    fn remove_worktree<'a>(&'a self, worktree: BootstrapWorktree) -> BoxBootstrapFuture<'a, ()>;
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -306,7 +398,7 @@ pub enum OrchestrationCommand {
         #[serde(rename = "interactionMode", default = "default_interaction_mode")]
         interaction_mode: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        bootstrap: Option<Value>,
+        bootstrap: Option<Box<ThreadTurnStartBootstrap>>,
         #[serde(
             rename = "sourceProposedPlan",
             default,
@@ -545,6 +637,8 @@ pub enum OrchestrationError {
         projector: String,
         event_type: String,
     },
+    #[error("thread turn bootstrap failed during {stage}: {detail}")]
+    Bootstrap { stage: &'static str, detail: String },
 }
 
 #[derive(Clone, Debug)]
@@ -574,13 +668,14 @@ struct CommandEnvelope {
     response: oneshot::Sender<Result<DispatchResult, OrchestrationError>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct OrchestrationEngine {
     repositories: Repositories,
     sender: mpsc::Sender<CommandEnvelope>,
     events: broadcast::Sender<OrchestrationEvent>,
     shutdown: CancellationToken,
     worker: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>>,
+    bootstrap_effects: Arc<StdMutex<Option<Arc<dyn ThreadTurnBootstrapEffects>>>>,
 }
 
 impl OrchestrationEngine {
@@ -609,10 +704,27 @@ impl OrchestrationEngine {
             events,
             shutdown,
             worker: Arc::new(tokio::sync::Mutex::new(Some(worker))),
+            bootstrap_effects: Arc::new(StdMutex::new(None)),
         })
     }
 
     pub async fn dispatch(
+        &self,
+        command: OrchestrationCommand,
+    ) -> Result<DispatchResult, OrchestrationError> {
+        if matches!(
+            command,
+            OrchestrationCommand::ThreadTurnStart {
+                bootstrap: Some(_),
+                ..
+            }
+        ) {
+            return self.dispatch_bootstrap_turn(command).await;
+        }
+        self.dispatch_plain(command).await
+    }
+
+    async fn dispatch_plain(
         &self,
         command: OrchestrationCommand,
     ) -> Result<DispatchResult, OrchestrationError> {
@@ -630,6 +742,258 @@ impl OrchestrationEngine {
         response_rx
             .await
             .map_err(|_| OrchestrationError::ResponseDropped)?
+    }
+
+    async fn dispatch_bootstrap_turn(
+        &self,
+        command: OrchestrationCommand,
+    ) -> Result<DispatchResult, OrchestrationError> {
+        let OrchestrationCommand::ThreadTurnStart {
+            command_id,
+            thread_id,
+            message,
+            model_selection,
+            title_seed,
+            runtime_mode,
+            interaction_mode,
+            bootstrap: Some(bootstrap),
+            source_proposed_plan,
+            created_at,
+        } = command
+        else {
+            return self.dispatch_plain(command).await;
+        };
+
+        let ThreadTurnStartBootstrap {
+            create_thread,
+            prepare_worktree,
+            run_setup_script,
+        } = *bootstrap;
+
+        let mut created_thread = false;
+        let target_project_id = create_thread
+            .as_ref()
+            .map(|create| create.project_id.clone());
+        let target_project_cwd = prepare_worktree
+            .as_ref()
+            .map(|prepare| prepare.project_cwd.clone());
+        let mut target_worktree_path = create_thread
+            .as_ref()
+            .and_then(|create| create.worktree_path.clone());
+        let mut prepared_worktree = None;
+        let mut setup_started = false;
+        if let Some(create) = create_thread {
+            self.dispatch_plain(OrchestrationCommand::ThreadCreate {
+                command_id: server_command_id("bootstrap-thread-create"),
+                thread_id: thread_id.clone(),
+                project_id: create.project_id,
+                title: create.title,
+                kind: None,
+                model_selection: create.model_selection,
+                runtime_mode: create.runtime_mode,
+                interaction_mode: create.interaction_mode,
+                branch: create.branch,
+                worktree_path: create.worktree_path,
+                created_at: create.created_at,
+            })
+            .await?;
+            created_thread = true;
+        }
+
+        let result = async {
+            if let Some(prepare) = prepare_worktree {
+                let effects =
+                    self.bootstrap_effects()
+                        .ok_or_else(|| OrchestrationError::Bootstrap {
+                            stage: "worktree preparation",
+                            detail: "production bootstrap effects are not registered".to_owned(),
+                        })?;
+                let worktree = effects.prepare_worktree(prepare).await.map_err(|detail| {
+                    OrchestrationError::Bootstrap {
+                        stage: "worktree preparation",
+                        detail,
+                    }
+                })?;
+                target_worktree_path = Some(worktree.path.clone());
+                prepared_worktree = Some(worktree.clone());
+                self.dispatch_plain(OrchestrationCommand::ThreadMetaUpdate {
+                    command_id: server_command_id("bootstrap-thread-meta-update"),
+                    thread_id: thread_id.clone(),
+                    title: None,
+                    model_selection: None,
+                    branch: OptionalNullable::Present(Some(worktree.branch.clone())),
+                    worktree_path: OptionalNullable::Present(Some(worktree.path.clone())),
+                })
+                .await?;
+            }
+
+            if run_setup_script == Some(true)
+                && let Some(worktree_path) = target_worktree_path
+            {
+                setup_started = self
+                    .run_bootstrap_setup(
+                        &thread_id,
+                        target_project_id,
+                        target_project_cwd,
+                        worktree_path,
+                    )
+                    .await?;
+            }
+
+            self.dispatch_plain(OrchestrationCommand::ThreadTurnStart {
+                command_id,
+                thread_id: thread_id.clone(),
+                message,
+                model_selection,
+                title_seed,
+                runtime_mode,
+                interaction_mode,
+                bootstrap: None,
+                source_proposed_plan,
+                created_at,
+            })
+            .await
+        }
+        .await;
+        if let Err(mut error) = result {
+            if setup_started
+                && let Some(effects) = self.bootstrap_effects()
+                && let Err(cleanup_error) = effects.cleanup_thread_resources(&thread_id).await
+            {
+                error = OrchestrationError::Bootstrap {
+                    stage: "rollback",
+                    detail: format!("{error}; thread resource cleanup failed: {cleanup_error}"),
+                };
+            }
+            if let Some(worktree) = prepared_worktree
+                && let Some(effects) = self.bootstrap_effects()
+                && let Err(cleanup_error) = effects.remove_worktree(worktree).await
+            {
+                error = OrchestrationError::Bootstrap {
+                    stage: "rollback",
+                    detail: format!("{error}; worktree cleanup failed: {cleanup_error}"),
+                };
+            }
+            if created_thread {
+                let _ = self
+                    .dispatch_plain(OrchestrationCommand::ThreadDelete {
+                        command_id: server_command_id("bootstrap-thread-delete"),
+                        thread_id,
+                    })
+                    .await;
+            }
+            return Err(error);
+        }
+        result
+    }
+
+    fn bootstrap_effects(&self) -> Option<Arc<dyn ThreadTurnBootstrapEffects>> {
+        self.bootstrap_effects
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn set_bootstrap_effects(&self, effects: Arc<dyn ThreadTurnBootstrapEffects>) {
+        *self
+            .bootstrap_effects
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(effects);
+    }
+
+    async fn run_bootstrap_setup(
+        &self,
+        thread_id: &str,
+        project_id: Option<String>,
+        project_cwd: Option<String>,
+        worktree_path: String,
+    ) -> Result<bool, OrchestrationError> {
+        let requested_at = now_iso();
+        let result = match self.bootstrap_effects() {
+            Some(effects) => {
+                effects
+                    .run_setup_script(BootstrapSetupInput {
+                        thread_id: thread_id.to_owned(),
+                        project_id,
+                        project_cwd,
+                        worktree_path: worktree_path.clone(),
+                    })
+                    .await
+            }
+            None => Err("production bootstrap effects are not registered".to_owned()),
+        };
+        match result {
+            Ok(BootstrapSetupResult::NoScript) => Ok(false),
+            Ok(BootstrapSetupResult::Started {
+                script_id,
+                script_name,
+                terminal_id,
+            }) => {
+                let payload = json!({"scriptId":script_id,"scriptName":script_name,"terminalId":terminal_id,"worktreePath":worktree_path});
+                for (kind, summary, created_at) in [
+                    (
+                        "setup-script.requested",
+                        "Starting setup script",
+                        requested_at,
+                    ),
+                    ("setup-script.started", "Setup script started", now_iso()),
+                ] {
+                    self.append_bootstrap_activity(
+                        thread_id,
+                        "info",
+                        kind,
+                        summary,
+                        payload.clone(),
+                        created_at,
+                    )
+                    .await;
+                }
+                Ok(true)
+            }
+            Err(detail) => {
+                self.append_bootstrap_activity(
+                    thread_id,
+                    "error",
+                    "setup-script.failed",
+                    "Setup script failed to start",
+                    json!({"detail":detail,"worktreePath":worktree_path}),
+                    requested_at,
+                )
+                .await;
+                Err(OrchestrationError::Bootstrap {
+                    stage: "setup script launch",
+                    detail,
+                })
+            }
+        }
+    }
+
+    async fn append_bootstrap_activity(
+        &self,
+        thread_id: &str,
+        tone: &str,
+        kind: &str,
+        summary: &str,
+        payload: Value,
+        created_at: String,
+    ) {
+        let _ = self
+            .dispatch_plain(OrchestrationCommand::ThreadActivityAppend {
+                command_id: server_command_id(kind),
+                thread_id: thread_id.to_owned(),
+                activity: ActivityInput {
+                    id: Uuid::new_v4().to_string(),
+                    tone: tone.to_owned(),
+                    kind: kind.to_owned(),
+                    summary: summary.to_owned(),
+                    payload,
+                    turn_id: None,
+                    sequence: None,
+                    created_at: created_at.clone(),
+                },
+                created_at,
+            })
+            .await;
     }
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<OrchestrationEvent> {
@@ -895,6 +1259,18 @@ async fn plan_command(
             created_at,
         } => {
             require_project(model, command, project_id)?;
+            if kind.as_deref() == Some("default")
+                && model.threads.values().any(|thread| {
+                    thread.project_id == project_id.as_str()
+                        && thread.kind == "default"
+                        && thread.deleted_at.is_none()
+                })
+            {
+                return invariant(
+                    command,
+                    format!("Project '{project_id}' already has a canonical default thread."),
+                );
+            }
             if model.threads.contains_key(thread_id) {
                 return invariant(
                     command,
@@ -939,6 +1315,12 @@ async fn plan_command(
             thread_id,
         } => {
             let thread = require_thread(model, command, thread_id)?;
+            if thread.kind == "default" {
+                return invariant(
+                    command,
+                    format!("Default thread '{thread_id}' cannot be archived directly."),
+                );
+            }
             if thread.archived_at.is_some() {
                 return invariant(
                     command,

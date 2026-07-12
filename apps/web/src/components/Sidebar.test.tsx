@@ -1968,21 +1968,39 @@ describe("primary row", () => {
 });
 
 describe("new thread entry points", () => {
-  it("opens the create-worktree dialog for a single-member project", () => {
+  it("creates a main-branch chat for a single-member project", () => {
     baseScenario();
     render(<Sidebar />);
     const newThread = mustFindProps(byTestId("new-thread-button"), "new thread button");
     invoke(newThread, "onClick", mouseEvent());
-    // Dialog open state lives in Sidebar useState — the body still ran.
+    expect(h.spies.newThreadHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ environmentId: ENV_MAIN, projectId: projectA.id }),
+      { branch: null, worktreePath: null, envMode: "local" },
+    );
   });
 
-  it("closes the mobile sheet before opening the dialog", () => {
+  it("closes the mobile sheet before creating a main-branch chat", () => {
     baseScenario();
     h.state.sidebarCtx = { isMobile: true, setOpenMobile: h.spies.setOpenMobile };
     render(<Sidebar />);
     const newThread = mustFindProps(byTestId("new-thread-button"), "new thread button");
     invoke(newThread, "onClick", mouseEvent());
     expect(h.spies.setOpenMobile).toHaveBeenCalledWith(false);
+  });
+
+  it("exposes separate main-chat and worktree actions in the projects toolbar", () => {
+    baseScenario();
+    render(<Sidebar />);
+
+    const newMainChat = mustFindProps(byTestId("sidebar-new-main-chat-trigger"), "new main chat");
+    invoke(newMainChat, "onClick", mouseEvent());
+    expect(h.spies.newThreadHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ environmentId: ENV_MAIN, projectId: projectA.id }),
+      { branch: null, worktreePath: null, envMode: "local" },
+    );
+
+    const newWorktree = mustFindProps(byTestId("sidebar-new-worktree-trigger"), "new worktree");
+    invoke(newWorktree, "onClick", mouseEvent());
   });
 });
 
@@ -2034,7 +2052,7 @@ describe("grouped and remote projects", () => {
     expect(markup).toContain("Remote Box");
   });
 
-  it("uses a member picker when creating a thread in a grouped project", async () => {
+  it("uses a member picker when creating a main-branch chat in a grouped project", async () => {
     groupedScenario();
     render(<Sidebar />);
     fakeLocalApi();
@@ -2045,6 +2063,10 @@ describe("grouped and remote projects", () => {
     invoke(newThread, "onClick", mouseEvent());
     await flush();
     expect(h.spies.contextMenuShow).toHaveBeenCalled();
+    expect(h.spies.newThreadHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ environmentId: ENV_REMOTE }),
+      { branch: null, worktreePath: null, envMode: "local" },
+    );
   });
 
   it("toasts when the environment picker fails", async () => {

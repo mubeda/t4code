@@ -91,6 +91,9 @@ describe("AppStatusBarView", () => {
     expect(markup).toContain("17% wk");
     expect(markup).toContain("702.2 MB");
     expect(markup).toContain("11");
+    expect(markup).toContain(
+      'aria-label="T4Code native process resources, 702.2 MB, 11 terminals"',
+    );
   });
 
   it("refreshes provider usage and every status-bar query", async () => {
@@ -116,6 +119,34 @@ describe("AppStatusBarView", () => {
     expect(refreshUsageQuery).toHaveBeenCalledTimes(1);
     expect(refreshProcessDiagnostics).toHaveBeenCalledTimes(1);
     expect(refreshResourceHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads provider usage after the native refresh finishes", async () => {
+    let finishProviderRefresh: () => void = () => {
+      throw new Error("Provider refresh resolver was not initialized.");
+    };
+    const refreshProviderUsage = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishProviderRefresh = resolve;
+        }),
+    );
+    const refreshUsageQuery = vi.fn();
+    const handler = createStatusBarRefreshHandler({
+      environmentId: EnvironmentId.make("environment-test"),
+      refreshProviderUsage,
+      refreshUsageQuery,
+      refreshProcessDiagnostics: vi.fn(),
+      refreshResourceHistory: vi.fn(),
+    });
+
+    const pending = handler();
+    expect(refreshProviderUsage).toHaveBeenCalledTimes(1);
+    expect(refreshUsageQuery).not.toHaveBeenCalled();
+
+    finishProviderRefresh();
+    await pending;
+    expect(refreshUsageQuery).toHaveBeenCalledTimes(1);
   });
 
   it("refreshes resource queries even when provider refresh fails", async () => {

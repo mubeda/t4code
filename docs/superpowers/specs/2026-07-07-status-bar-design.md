@@ -29,7 +29,11 @@ Implement a T4Code-focused first version of the Orca-style status bar:
 
 - Bottom status bar mounted in the authenticated app shell.
 - Claude and Codex usage/rate-limit segments with Orca-like compact bars, refresh state, error/unavailable states, and detail popovers.
-- Resource Manager segment with total child-process memory, total child-process CPU, terminal session count, top process list, history chart, and kill actions using existing diagnostics endpoints.
+- Resource Manager segment with current native T4Code process-tree memory and CPU,
+  terminal session count, top process list, history chart, and kill actions using
+  existing diagnostics endpoints. The final in-process Rust architecture
+  includes the Tauri/server root and supervised descendants; browser/WebView
+  processes outside that tree remain excluded.
 - Responsive compact/icon-only behavior by available width.
 - Unit tests for pure formatting/presentation logic, resource aggregation, provider usage mapping, and shell integration.
 - Full verification after implementation: `vp test`, fix failures caused by the work, then `vp check` and `vp run typecheck`.

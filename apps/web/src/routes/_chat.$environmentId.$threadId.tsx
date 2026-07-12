@@ -4,8 +4,8 @@ import { useEffect } from "react";
 import ChatView from "../components/ChatView";
 import { threadHasStarted } from "../components/ChatView.logic";
 import { finalizePromotedDraftThreadByRef, useComposerDraftStore } from "../composerDraftStore";
-import { resolveThreadRouteRef, shouldRedirectMissingRouteThread } from "../threadRoutes";
-import { SidebarInset } from "~/components/ui/sidebar";
+import { missingRouteThreadRedirectDelay, resolveThreadRouteRef } from "../threadRoutes";
+import { ChatRouteInset } from "./-ChatRouteInset";
 import { useEnvironmentThreadRefs, useThreadDetail, useThreadShell } from "../state/entities";
 import { useEnvironmentQuery } from "../state/query";
 import { environmentShell } from "../state/shell";
@@ -39,15 +39,18 @@ function ChatThreadRouteView() {
       return;
     }
 
-    if (
-      shouldRedirectMissingRouteThread({
-        shellStatus,
-        routeThreadExists,
-        environmentHasServerThreads,
-      })
-    ) {
-      void navigate({ to: "/", replace: true });
+    const delay = missingRouteThreadRedirectDelay({
+      shellStatus,
+      routeThreadExists,
+      environmentHasServerThreads,
+    });
+    if (delay === null) {
+      return;
     }
+    const timeoutId = window.setTimeout(() => {
+      void navigate({ to: "/", replace: true });
+    }, delay);
+    return () => window.clearTimeout(timeoutId);
   }, [environmentHasServerThreads, navigate, routeThreadExists, shellStatus, threadRef]);
 
   useEffect(() => {
@@ -62,13 +65,13 @@ function ChatThreadRouteView() {
   }
 
   return (
-    <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-dvh">
+    <ChatRouteInset>
       <ChatView
         environmentId={threadRef.environmentId}
         threadId={threadRef.threadId}
         routeKind="server"
       />
-    </SidebarInset>
+    </ChatRouteInset>
   );
 }
 

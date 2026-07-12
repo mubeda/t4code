@@ -10,8 +10,9 @@ use crate::{
     cloud::{RelayClientInstallEvent, RelayClientService, RelayClientStatus},
     diagnostics::{
         DiagnosticsMonitor, NativeProcessSampler, ProcessResourceHistory, ProcessSampler,
-        ProcessSignal, SamplingLease, build_descendant_entries,
+        ProcessSignal, SamplingLease, build_process_tree_entries,
     },
+    production::orchestration_effects::SetupScriptLaunch,
     provider_usage::{
         ProviderUsageProvider, ProviderUsageResult, ProviderUsageService, ProviderUsageSnapshot,
         ProviderUsageStatus, ProviderUsageWindow,
@@ -81,6 +82,37 @@ impl ServerTerminalServices {
     pub async fn close_thread_terminals(&self, thread_id: &str) {
         self.terminal.close(thread_id, None).await;
     }
+
+    pub async fn launch_setup_script(&self, input: SetupScriptLaunch) -> Result<(), String> {
+        let mut terminal_input = TerminalOpenInput::new(
+            input.thread_id.clone(),
+            input.terminal_id.clone(),
+            input.cwd,
+            120,
+            30,
+        );
+        terminal_input.worktree_path = Some(input.worktree_path);
+        terminal_input.env = input.env;
+        self.terminal
+            .open(terminal_input)
+            .await
+            .map_err(|error| error.to_string())?;
+        if let Err(error) = self
+            .terminal
+            .write(
+                &input.thread_id,
+                &input.terminal_id,
+                &format!("{}\r", input.command),
+            )
+            .await
+        {
+            self.terminal
+                .close(&input.thread_id, Some(&input.terminal_id))
+                .await;
+            return Err(error.to_string());
+        }
+        Ok(())
+    }
 }
 
 pub fn register_server_terminal_rpc(registry: &mut RpcRegistry, services: ServerTerminalServices) {
@@ -130,7 +162,7 @@ fn register_diagnostics_rpcs(registry: &mut RpcRegistry, services: &ServerTermin
                 match sampler.sample().await {
                     Ok(rows) => {
                         let server_pid = std::process::id();
-                        let processes = build_descendant_entries(&rows, server_pid);
+                        let processes = build_process_tree_entries(&rows, server_pid);
                         let total_rss_bytes =
                             processes.iter().map(|row| row.rss_bytes).sum::<u64>();
                         let total_cpu_percent = processes

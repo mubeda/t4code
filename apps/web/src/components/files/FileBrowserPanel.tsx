@@ -533,7 +533,9 @@ export default function FileBrowserPanel({
               <FileTreeContextMenu
                 model={menuModel}
                 actions={rowActions(relativePath, entryKind)}
-                anchor={context.anchorElement}
+                anchor={{
+                  getBoundingClientRect: () => context.anchorElement.getBoundingClientRect(),
+                }}
                 onClose={() => context.close()}
               />
             );

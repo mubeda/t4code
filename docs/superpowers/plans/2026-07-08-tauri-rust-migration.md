@@ -1,5 +1,13 @@
-# Full Tauri 2 And Rust Migration Implementation Plan
+# Tauri 2 And Rust Migration Record And Hardening Plan
 
+> **Status (2026-07-11):** The architecture migration is complete. The original
+> task file lists below are retained as an implementation record, with paths
+> normalized to the canonical `apps/server` Rust crate. Tasks 12-14 and 16
+> record landed migration and production-hardening work. Task 15 records a
+> separate React/WebView performance backlog; it does not represent a Node or
+> Electron migration gap. No task instructs workers to recreate a parallel
+> server crate.
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > `superpowers:subagent-driven-development` (recommended) or
 > `superpowers:executing-plans` to implement this plan task-by-task. Steps use
@@ -114,13 +122,13 @@ release-validation work; they do not require another architecture migration.
 
 **Files:**
 
-- Create: `apps/server-rust/Cargo.toml`
-- Create: `apps/server-rust/package.json`
-- Create: `apps/server-rust/src/lib.rs`
-- Create: `apps/server-rust/src/main.rs`
-- Create: `apps/server-rust/src/config.rs`
-- Create: `apps/server-rust/src/http.rs`
-- Create: `apps/server-rust/src/lifecycle.rs`
+- Create: `apps/server/Cargo.toml`
+- Create: `apps/server/package.json`
+- Create: `apps/server/src/lib.rs`
+- Create: `apps/server/src/main.rs`
+- Create: `apps/server/src/config.rs`
+- Create: `apps/server/src/http.rs`
+- Create: `apps/server/src/lifecycle.rs`
 - Modify: `Cargo.toml`
 - Modify: `pnpm-workspace.yaml`
 
@@ -154,10 +162,10 @@ release-validation work; they do not require another architecture migration.
 
 **Files:**
 
-- Create: `apps/server-rust/src/rpc/mod.rs`
-- Create: `apps/server-rust/src/rpc/message.rs`
-- Create: `apps/server-rust/src/rpc/session.rs`
-- Create: `apps/server-rust/tests/rpc_wire.rs`
+- Create: `apps/server/src/rpc/mod.rs`
+- Create: `apps/server/src/rpc/message.rs`
+- Create: `apps/server/src/rpc/session.rs`
+- Create: `apps/server/tests/rpc_wire.rs`
 - Create: `packages/contracts/scripts/export-rust-rpc-fixtures.ts`
 - Create: `packages/contracts/fixtures/rpc-wire/*.json`
 - Modify: `packages/contracts/package.json`
@@ -189,9 +197,9 @@ release-validation work; they do not require another architecture migration.
 
 **Files:**
 
-- Create: `apps/server-rust/src/auth/*`
-- Create: `apps/server-rust/src/environment/*`
-- Create: `apps/server-rust/tests/auth_http.rs`
+- Create: `apps/server/src/auth/*`
+- Create: `apps/server/src/environment/*`
+- Create: `apps/server/tests/auth_http.rs`
 - Reference: `apps/server/src/auth/*`
 - Reference: `packages/contracts/src/auth.ts`
 - Reference: `packages/contracts/src/environmentHttp.ts`
@@ -220,8 +228,8 @@ release-validation work; they do not require another architecture migration.
 
 **Files:**
 
-- Create: `apps/server-rust/src/persistence/*`
-- Create: `apps/server-rust/tests/persistence_compat.rs`
+- Create: `apps/server/src/persistence/*`
+- Create: `apps/server/tests/persistence_compat.rs`
 - Reference: `apps/server/src/persistence/*`
 
 **Interfaces:**
@@ -252,11 +260,11 @@ release-validation work; they do not require another architecture migration.
 
 **Files:**
 
-- Create: `apps/server-rust/src/project/*`
-- Create: `apps/server-rust/src/workspace/*`
-- Create: `apps/server-rust/src/assets/*`
-- Create: `apps/server-rust/src/review/*`
-- Create: `apps/server-rust/tests/workspace_rpc.rs`
+- Create: `apps/server/src/project/*`
+- Create: `apps/server/src/workspace/*`
+- Create: `apps/server/src/assets/*`
+- Create: `apps/server/src/review/*`
+- Create: `apps/server/tests/workspace_rpc.rs`
 - Reference: matching directories under `apps/server/src`
 
 **Interfaces:**
@@ -275,10 +283,10 @@ release-validation work; they do not require another architecture migration.
 
 **Files:**
 
-- Create: `apps/server-rust/src/git/*`
-- Create: `apps/server-rust/src/vcs/*`
-- Create: `apps/server-rust/src/source_control/*`
-- Create: `apps/server-rust/tests/git_rpc.rs`
+- Create: `apps/server/src/git/*`
+- Create: `apps/server/src/vcs/*`
+- Create: `apps/server/src/source_control/*`
+- Create: `apps/server/tests/git_rpc.rs`
 - Reference: `apps/server/src/git/*`, `apps/server/src/vcs/*`, and
   `apps/server/src/sourceControl/*`
 
@@ -300,10 +308,10 @@ release-validation work; they do not require another architecture migration.
 
 **Files:**
 
-- Create: `apps/server-rust/src/process/*`
-- Create: `apps/server-rust/src/terminal/*`
-- Create: `apps/server-rust/src/diagnostics/*`
-- Create: `apps/server-rust/tests/terminal_rpc.rs`
+- Create: `apps/server/src/process/*`
+- Create: `apps/server/src/terminal/*`
+- Create: `apps/server/src/diagnostics/*`
+- Create: `apps/server/tests/terminal_rpc.rs`
 - Reference: `apps/server/src/processRunner.ts`
 - Reference: `apps/server/src/terminal/*`
 - Reference: `apps/server/src/diagnostics/*`
@@ -326,9 +334,9 @@ release-validation work; they do not require another architecture migration.
 
 **Files:**
 
-- Create: `apps/server-rust/src/orchestration/*`
-- Create: `apps/server-rust/src/checkpointing/*`
-- Create: `apps/server-rust/tests/orchestration.rs`
+- Create: `apps/server/src/orchestration/*`
+- Create: `apps/server/src/checkpointing/*`
+- Create: `apps/server/tests/orchestration.rs`
 - Reference: matching directories under `apps/server/src`
 
 **Interfaces:**
@@ -356,8 +364,8 @@ release-validation work; they do not require another architecture migration.
 
 **Files:**
 
-- Create: `apps/server-rust/src/provider/codex/*`
-- Create: `apps/server-rust/tests/provider_codex.rs`
+- Create: `apps/server/src/provider/codex/*`
+- Create: `apps/server/tests/provider_codex.rs`
 - Reference: `apps/server/src/provider/Layers/Codex*`
 - Reference: `.repos/codex`
 - Delete after parity: `packages/effect-codex-app-server`
@@ -377,8 +385,8 @@ release-validation work; they do not require another architecture migration.
 
 **Files:**
 
-- Create: `apps/server-rust/src/provider/claude/*`
-- Create: `apps/server-rust/tests/provider_claude.rs`
+- Create: `apps/server/src/provider/claude/*`
+- Create: `apps/server/tests/provider_claude.rs`
 - Reference: `apps/server/src/provider/Layers/Claude*`
 - Reference: `apps/server/src/provider/Drivers/ClaudeDriver.ts`
 
@@ -393,50 +401,59 @@ release-validation work; they do not require another architecture migration.
       tools, cancellation, and teardown in Rust.
 - [ ] Compare canonical event traces and provider state snapshots.
 
-### Task 12: Port Cursor, Grok, And OpenCode Provider Runtimes
+### Task 12: Harden Cursor, Grok, And OpenCode Provider Inventory
 
 **Files:**
 
-- Create: `apps/server-rust/src/provider/cursor/*`
-- Create: `apps/server-rust/src/provider/grok/*`
-- Create: `apps/server-rust/src/provider/opencode/*`
-- Create: `apps/server-rust/tests/provider_cursor.rs`
-- Create: `apps/server-rust/tests/provider_grok.rs`
-- Create: `apps/server-rust/tests/provider_opencode.rs`
-- Reference: matching drivers, layers, and adapters under `apps/server/src/provider`
-- Delete after parity: `packages/effect-acp`
+- Existing: `apps/server/src/provider/cursor/*`
+- Existing: `apps/server/src/provider/grok/*`
+- Existing: `apps/server/src/provider/opencode/*`
+- Existing: `apps/server/tests/provider_cursor.rs`
+- Existing: `apps/server/tests/provider_grok.rs`
+- Existing: `apps/server/tests/provider_opencode.rs`
+- Modify: `apps/server/src/production/control.rs`
+- Modify: `apps/server/tests/production_control.rs`
 
 **Interfaces:**
 
-- Preserves discovery, health, model lists, sessions, stream normalization,
-  maintenance, upgrades, reconnect, and errors for all three providers.
+- Provider runtimes, session streaming, normalization, and errors are native
+  Rust. The remaining work is to expose provider-specific authentication,
+  model, command, and skill inventory through the control-plane snapshot.
 
-- [ ] Export current provider-native and canonical fixture corpora.
-- [ ] Implement direct CLI, ACP, HTTP, or WebSocket protocols in Rust as each
-      provider currently requires.
-- [ ] Run fixture parity plus opt-in installed-provider smoke tests.
+- [x] Implement direct native provider protocols and canonical event mapping.
+- [x] Cover native provider runtimes with fixture and unit tests.
+- [x] Replace generic executable-only control-plane probes with the strongest
+      provider-specific metadata available without starting durable sessions.
+- [ ] Run opt-in smoke tests for each installed provider CLI.
 
-### Task 13: Port Remaining Server Domains And Register All RPCs
+### Task 13: Harden Remaining Native Control-Plane Domains
 
 **Files:**
 
-- Create or complete Rust modules for `cloud`, `mcp`, `preview`,
-  `provider_usage`, `telemetry`, `observability`, `text_generation`, and
-  `server_settings` under `apps/server-rust/src`
-- Create: `apps/server-rust/tests/rpc_completeness.rs`
+- Existing: Rust modules for `cloud`, `mcp`, `preview`, `provider_usage`,
+  `telemetry`, `observability`, `text_generation`, and `server_settings` under
+  `apps/server/src`
+- Existing: `apps/server/tests/rpc_completeness.rs`
+- Modify: `apps/server/src/production/control.rs`
+- Modify: `apps/server/src/production/provider_runtime.rs`
 
 **Interfaces:**
 
-- Produces a Rust handler for every method in the exported `WS_METHODS`
-  manifest and every HTTP endpoint in the TypeScript server.
+- Every exported RPC and HTTP route is Rust-owned. Remaining semantic gaps are
+  local-listener discovery, persisted keybinding validation issues, actionable
+  stale-provider-session failures, and durable native log sinks.
 
-- [ ] Port each remaining domain's existing fixtures and failure tests.
-- [ ] Make `rpc_completeness` fail while any method is absent, duplicated, or
-      still delegated to Node.
-- [ ] Verify stream cleanup and authorization scopes for every handler.
-- [ ] Run the complete Rust server test suite with no ignored parity tests.
+- [x] Register every exported method and reject missing or duplicate handlers.
+- [x] Decode browser OTLP envelopes into persistent restart diagnostics.
+- [x] Preserve actionable, redacted Git subprocess failures in Diagnostics.
+- [x] Execute worktree bootstrap and project setup scripts before first turns.
+- [x] Discover live local preview servers instead of returning a fixed empty list.
+- [x] Surface malformed and invalid persisted keybinding entries.
+- [x] Reject non-start provider commands when their native session is stale.
+- [x] Initialize native tracing and persist bounded server, provider, and terminal
+      lifecycle logs without retaining terminal output or provider payloads.
 
-### Task 14: Run The Rust Server In-Process Inside Tauri
+### Task 14: In-Process Rust Server Inside Tauri (Landed)
 
 **Files:**
 
@@ -452,20 +469,20 @@ release-validation work; they do not require another architecture migration.
   library. The frontend remains on the Tauri asset origin and receives backend
   readiness through a typed bridge event.
 
-- [ ] Write failing Rust lifecycle tests proving one runtime starts, restarts,
+- [x] Write Rust lifecycle tests proving one runtime starts, restarts,
       and stops without child processes.
-- [ ] Write a failing frontend test proving backend-ready refresh does not
+- [x] Write a frontend test proving backend-ready refresh does not
       navigate or recreate the React root.
-- [ ] Replace Node supervision with managed Rust server state and explicit
+- [x] Replace Node supervision with managed Rust server state and explicit
       shutdown joins.
-- [ ] Remove production `window.navigate` and invalidate cached bootstrap/auth
+- [x] Remove production `window.navigate` and invalidate cached bootstrap/auth
       state on restart.
-- [ ] Build the headless Rust server for the supported WSL Linux targets and
+- [x] Build the headless Rust server for the supported WSL Linux targets and
       launch that binary inside WSL instead of resolving or invoking WSL Node.
-- [ ] Replace SSH remote launch scripts with Rust-binary discovery,
+- [x] Replace SSH remote launch scripts with Rust-binary discovery,
       installation/version validation, readiness, and shutdown; remote launch must
       never invoke `node`, `npm`, `npx`, or a JavaScript `t4code` package.
-- [ ] Verify desktop startup, settings-driven restart, WSL, SSH, and exit.
+- [x] Verify desktop startup, settings-driven restart, WSL, SSH, and exit.
 
 ### Task 15: Optimize And Harden The React/WebView Boundary
 
@@ -493,7 +510,7 @@ release-validation work; they do not require another architecture migration.
       other non-shell features; lower the chunk warning budget.
 - [ ] Record initial JS/CSS, parse, first-content, and interaction budgets in CI.
 
-### Task 16: Remove Node, TypeScript Server, And Migration Artifacts
+### Task 16: Remove Node, TypeScript Server, And Migration Artifacts (Landed)
 
 **Files:**
 
@@ -513,14 +530,14 @@ release-validation work; they do not require another architecture migration.
 - `t4code` resolves to the Rust binary. Desktop links the same Rust library.
 - No compatibility sidecar or hidden Node fallback remains.
 
-- [ ] Add a failing repository scan that rejects active Electron, Node runtime,
+- [x] Add a repository scan that rejects active Electron, Node runtime,
       server JavaScript bundle, helper executable, or `server-node_modules` paths.
-- [ ] Switch backend and desktop runtime build, dev, CI, release, and artifact
+- [x] Switch backend and desktop runtime build, dev, CI, release, and artifact
       paths to Cargo/Tauri; keep pnpm/Vite only for frontend compilation and tests.
-- [ ] Remove Node-only dependencies and regenerate `pnpm-lock.yaml`.
-- [ ] Delete obsolete migration adapters, fallbacks, measurements, plans, and
-      generated artifacts while retaining intentional historical documentation.
-- [ ] Build installers and inspect their contents to prove forbidden artifacts
+- [x] Remove production Node-only dependencies and regenerate `pnpm-lock.yaml`.
+- [x] Delete obsolete migration adapters, fallbacks, and generated artifacts
+      while retaining intentional historical measurements and plans.
+- [x] Build installers and inspect their contents to prove forbidden artifacts
       are absent.
 
 ### Task 17: Documentation And Completion Audit

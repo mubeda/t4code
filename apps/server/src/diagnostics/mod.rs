@@ -6,6 +6,7 @@ mod trace;
 pub use model::{
     DescendantEntry, ProcessDiagnosticsResult, ProcessResourceBucket, ProcessResourceHistory,
     ProcessResourceSummary, ProcessRow, ProcessSample, build_descendant_entries,
+    build_process_tree_entries,
 };
 pub use monitor::{DiagnosticsMonitor, ProcessSampler, SamplingError, SamplingLease};
 pub use native::{NativeProcessSampler, ProcessSignal, SignalError};

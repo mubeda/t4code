@@ -285,6 +285,7 @@ function useFileSaveCoordinator({
             input: { cwd, relativePath, contents: nextContents },
           }),
         onConfirmed: (confirmedContents) => {
+          setProjectFileQueryData(environmentId, cwd, relativePath, confirmedContents);
           confirmProjectFileQueryData(environmentId, cwd, relativePath, confirmedContents);
         },
       }),
@@ -392,7 +393,6 @@ function EditableFileSurface({
     () =>
       new Editor<FileCommentAnnotationGroup>({
         onChange: (file, nextLineAnnotations) => {
-          setProjectFileQueryData(environmentId, cwd, relativePath, file.contents);
           saveCoordinator.change(file.contents);
           if (nextLineAnnotations) {
             const remapped = remapFileCommentAnnotations(

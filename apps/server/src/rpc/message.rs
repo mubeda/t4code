@@ -115,7 +115,7 @@ pub struct RpcRequest {
 #[serde(tag = "_tag")]
 pub enum RpcExit {
     Success {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         value: Option<Value>,
     },
     Failure {
@@ -220,4 +220,19 @@ impl ServerMessage {
 pub enum WireMessage {
     Client(ClientMessage),
     Server(ServerMessage),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stream_success_serializes_an_explicit_null_value() {
+        let request_id = RequestId::try_from("1").expect("request id");
+        let encoded = serde_json::to_value(ServerMessage::success(request_id, None))
+            .expect("serialize stream success");
+        let exit = encoded["exit"].as_object().expect("exit object");
+
+        assert_eq!(exit.get("value"), Some(&Value::Null));
+    }
 }

@@ -108,7 +108,7 @@ impl StatusBroadcaster {
             )
         };
         if start_poller {
-            self.spawn_remote_poller(cwd.clone(), poller_cancellation);
+            self.spawn_status_poller(cwd.clone(), poller_cancellation);
         }
         Ok(StatusSubscription {
             receiver,
@@ -155,7 +155,7 @@ impl StatusBroadcaster {
         self.lock_state().repositories.len()
     }
 
-    fn spawn_remote_poller(&self, cwd: PathBuf, cancellation: CancellationToken) {
+    fn spawn_status_poller(&self, cwd: PathBuf, cancellation: CancellationToken) {
         let broadcaster = self.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(broadcaster.inner.refresh_interval);
@@ -164,6 +164,7 @@ impl StatusBroadcaster {
                 tokio::select! {
                     _ = cancellation.cancelled() => break,
                     _ = interval.tick() => {
+                        let _ = broadcaster.refresh_local(&cwd, &cancellation).await;
                         let result = broadcaster
                             .inner
                             .repository

@@ -96,10 +96,18 @@ pub struct ProviderEnvironmentVariableState {
 #[serde(rename_all = "camelCase")]
 pub struct ProviderInstanceState {
     pub driver: String,
+    #[serde(default = "enabled_by_default")]
+    pub enabled: bool,
     #[serde(default)]
     pub display_name: Option<String>,
     #[serde(default)]
     pub environment: Vec<ProviderEnvironmentVariableState>,
+    #[serde(default)]
+    pub config: Value,
+}
+
+const fn enabled_by_default() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -167,8 +175,10 @@ pub struct ProviderEnvironmentVariableInput {
 #[derive(Clone, Debug, Default)]
 pub struct ProviderInstanceInput {
     pub driver: String,
+    pub enabled: bool,
     pub display_name: Option<String>,
     pub environment: Vec<ProviderEnvironmentVariableInput>,
+    pub config: Value,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -424,6 +434,7 @@ fn apply_patch(
                     instance_id,
                     ProviderInstanceState {
                         driver: instance.driver,
+                        enabled: instance.enabled,
                         display_name: instance.display_name,
                         environment: instance
                             .environment
@@ -435,6 +446,7 @@ fn apply_patch(
                                 value_redacted: variable.value_redacted,
                             })
                             .collect(),
+                        config: instance.config,
                     },
                 )
             })

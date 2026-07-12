@@ -1,4 +1,5 @@
 use std::{
+    cmp::Reverse,
     collections::{BTreeMap, HashMap},
     fs::{self, OpenOptions},
     io::{self, Write},
@@ -49,7 +50,7 @@ impl TraceDiagnosticsStore {
     pub fn record_failure(&self, name: &str, error: &Value) -> io::Result<()> {
         let now = OffsetDateTime::now_utc().unix_timestamp_nanos();
         let id = Uuid::new_v4().simple().to_string();
-        let cause = redact_sensitive_text(&error_summary(error));
+        let cause = redact_sensitive_text(&error_summary(&redact_sensitive_value(error)));
         self.append_record(&json!({
             "type": "native-span",
             "name": non_empty(name, "native.failure"),
@@ -70,7 +71,7 @@ impl TraceDiagnosticsStore {
     pub fn record_otlp_payload(&self, payload: &Value) -> io::Result<usize> {
         let records = decode_otlp_records(payload);
         for record in &records {
-            self.append_record(record)?;
+            self.append_record(&redact_sensitive_value(record))?;
         }
         Ok(records.len())
     }
@@ -181,6 +182,7 @@ fn aggregate(path: &Path, max_files: usize) -> Value {
                 parse_error_count += 1;
                 continue;
             };
+            let record = redact_sensitive_value(&record);
             let Some(span) = parse_span(&record) else {
                 parse_error_count += 1;
                 continue;
@@ -295,7 +297,7 @@ fn aggregate(path: &Path, max_files: usize) -> Value {
             })
         })
         .collect::<Vec<_>>();
-    latest_failures.sort_by(|left, right| right.0.ended_at_ns.cmp(&left.0.ended_at_ns));
+    latest_failures.sort_by_key(|failure| Reverse(failure.0.ended_at_ns));
     let latest_failures = latest_failures
         .into_iter()
         .take(RECENT_LIMIT)
@@ -308,7 +310,7 @@ fn aggregate(path: &Path, max_files: usize) -> Value {
             value
         })
         .collect::<Vec<_>>();
-    logs.sort_by(|left, right| right.seen_at_ns.cmp(&left.seen_at_ns));
+    logs.sort_by_key(|event| Reverse(event.seen_at_ns));
     let logs = logs
         .into_iter()
         .take(RECENT_LIMIT)
@@ -503,15 +505,71 @@ pub(crate) fn redact_sensitive_text(input: &str) -> String {
         .join("\n")
 }
 
+fn redact_sensitive_value(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .map(|(key, value)| {
+                    let value = if is_sensitive_key(key) {
+                        Value::String("[REDACTED]".to_owned())
+                    } else {
+                        redact_sensitive_value(value)
+                    };
+                    (key.clone(), value)
+                })
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(values.iter().map(redact_sensitive_value).collect()),
+        Value::String(value) => Value::String(redact_sensitive_text(value)),
+        _ => value.clone(),
+    }
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    matches!(
+        normalized.as_str(),
+        "authorization"
+            | "proxyauthorization"
+            | "token"
+            | "accesstoken"
+            | "refreshtoken"
+            | "githubtoken"
+            | "apikey"
+            | "password"
+            | "secret"
+            | "clientsecret"
+            | "credential"
+            | "cookie"
+            | "setcookie"
+    )
+}
+
 fn redact_line(line: &str) -> String {
     let lower = line.to_ascii_lowercase();
     for marker in [
         "authorization:",
         "proxy-authorization:",
+        "bearer ",
         "access_token=",
+        "refresh_token=",
+        "github_token=",
+        "token=",
         "api_key=",
         "apikey=",
         "password=",
+        "secret=",
+        "\"token\":",
+        "\"access_token\":",
+        "\"refresh_token\":",
+        "\"api_key\":",
+        "\"password\":",
+        "\"secret\":",
     ] {
         if let Some(index) = lower.find(marker) {
             let end = index + marker.len();
