@@ -1,19 +1,24 @@
 use std::{ffi::OsString, path::Path, process::Stdio, time::Duration};
 
 use serde_json::{Value, json};
-use tokio::{process::Command, time::timeout};
+use tokio::{
+    process::Command,
+    time::{sleep, timeout},
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     git::{OutputPolicy, ProcessRequest, ProcessRunner},
     production::provider_runtime::{provider_launch_program, resolve_provider_executable},
-    provider::{codex, cursor, opencode},
+    provider::{claude, codex, cursor, grok, opencode},
 };
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+const CURSOR_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
+const LOCAL_OPENCODE_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
 const PROBE_OUTPUT_LIMIT: usize = 256 * 1024;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct ProviderDefinition {
     instance_id: String,
     driver: String,
@@ -23,6 +28,8 @@ struct ProviderDefinition {
     available: bool,
     custom_models: Vec<String>,
     endpoint: Option<String>,
+    server_password: Option<String>,
+    environment: Vec<(OsString, OsString)>,
 }
 
 pub(crate) async fn probe(settings: &Value, selected: Option<&str>, cwd: &Path) -> Vec<Value> {
@@ -80,6 +87,11 @@ fn definitions(settings: &Value) -> Vec<ProviderDefinition> {
                             .or_else(|| string_setting(legacy_settings, "apiEndpoint"))
                             .filter(|value| !value.trim().is_empty())
                             .map(str::to_owned),
+                        server_password: string_setting(config, "serverPassword")
+                            .or_else(|| string_setting(legacy_settings, "serverPassword"))
+                            .filter(|value| !value.is_empty())
+                            .map(str::to_owned),
+                        environment: provider_environment(instance),
                     }
                 })
                 .collect::<Vec<_>>()
@@ -111,6 +123,10 @@ fn definitions(settings: &Value) -> Vec<ProviderDefinition> {
                 .or_else(|| string_setting(driver_settings, "apiEndpoint"))
                 .filter(|value| !value.trim().is_empty())
                 .map(str::to_owned),
+            server_password: string_setting(driver_settings, "serverPassword")
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned),
+            environment: Vec::new(),
         });
     }
     definitions
@@ -154,6 +170,74 @@ mod tests {
             1
         );
     }
+
+    #[test]
+    fn codex_cli_version_is_normalized_to_semver() {
+        assert_eq!(
+            normalize_provider_version("codex", Some("codex-cli 0.144.1".to_owned())),
+            Some("0.144.1".to_owned())
+        );
+    }
+
+    #[test]
+    fn codex_required_auth_is_not_reported_as_ready() {
+        let account = json!({ "account": null, "requiresOpenaiAuth": true });
+
+        assert_eq!(
+            codex_probe_health(&account),
+            (
+                "error",
+                json!({ "status": "unauthenticated" }),
+                Some("Codex is installed but requires authentication.")
+            )
+        );
+    }
+
+    #[test]
+    fn codex_without_required_openai_auth_remains_ready() {
+        let account = json!({ "account": null, "requiresOpenaiAuth": false });
+
+        assert_eq!(
+            codex_probe_health(&account),
+            ("ready", json!({ "status": "unauthenticated" }), None)
+        );
+    }
+
+    #[test]
+    fn grok_inventory_has_a_builtin_model_before_acp_discovery() {
+        let definition = ProviderDefinition {
+            instance_id: "grok".to_owned(),
+            driver: "grok".to_owned(),
+            display_name: None,
+            enabled: true,
+            binary_path: "grok".to_owned(),
+            available: true,
+            custom_models: Vec::new(),
+            endpoint: None,
+            server_password: None,
+            environment: Vec::new(),
+        };
+
+        assert_eq!(
+            provider_models_without_version(&definition)[0]["slug"],
+            "grok-build"
+        );
+    }
+
+    #[test]
+    fn provider_environment_excludes_redacted_and_empty_entries() {
+        let instance = json!({
+            "environment": [
+                { "name": "API_KEY", "value": "secret", "valueRedacted": false },
+                { "name": "HIDDEN", "value": "redacted", "valueRedacted": true },
+                { "name": "", "value": "ignored", "valueRedacted": false }
+            ]
+        });
+        assert_eq!(
+            provider_environment(&instance),
+            vec![(OsString::from("API_KEY"), OsString::from("secret"))]
+        );
+    }
 }
 
 fn string_setting<'a>(value: Option<&'a Value>, name: &str) -> Option<&'a str> {
@@ -174,8 +258,39 @@ fn string_array(value: Option<&Value>, name: &str) -> Option<Vec<String>> {
     )
 }
 
+fn provider_environment(instance: &Value) -> Vec<(OsString, OsString)> {
+    instance
+        .get("environment")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|entry| {
+            !entry
+                .get("valueRedacted")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .filter_map(|entry| {
+            let name = entry.get("name").and_then(Value::as_str)?.trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some((
+                OsString::from(name),
+                OsString::from(
+                    entry
+                        .get("value")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                ),
+            ))
+        })
+        .collect()
+}
+
 async fn probe_one(definition: ProviderDefinition, cwd: &Path) -> Value {
     let checked_at = super::control::now_iso();
+    let default_models = provider_models_without_version(&definition);
     if !definition.available {
         return snapshot(
             &definition,
@@ -183,7 +298,7 @@ async fn probe_one(definition: ProviderDefinition, cwd: &Path) -> Value {
             None,
             "disabled",
             json!({ "status": "unknown" }),
-            Vec::new(),
+            default_models,
             Vec::new(),
             Some("Provider driver is unavailable in this build."),
             checked_at,
@@ -197,7 +312,7 @@ async fn probe_one(definition: ProviderDefinition, cwd: &Path) -> Value {
             None,
             "disabled",
             json!({ "status": "unknown" }),
-            custom_models(&definition.custom_models),
+            default_models,
             Vec::new(),
             None,
             checked_at,
@@ -206,7 +321,12 @@ async fn probe_one(definition: ProviderDefinition, cwd: &Path) -> Value {
     }
     if definition.driver == "opencode"
         && let Some(endpoint) = definition.endpoint.as_deref()
-        && let Some(inventory) = probe_opencode(endpoint, &definition.custom_models).await
+        && let Some(inventory) = probe_opencode(
+            endpoint,
+            definition.server_password.as_deref(),
+            &definition.custom_models,
+        )
+        .await
     {
         let models = serde_json::to_value(inventory.models)
             .ok()
@@ -232,7 +352,7 @@ async fn probe_one(definition: ProviderDefinition, cwd: &Path) -> Value {
             None,
             "error",
             json!({ "status": "unknown" }),
-            custom_models(&definition.custom_models),
+            default_models,
             Vec::new(),
             Some("Provider executable was not found."),
             checked_at,
@@ -240,10 +360,12 @@ async fn probe_one(definition: ProviderDefinition, cwd: &Path) -> Value {
         );
     };
 
-    let version_output = run_command(&executable, &["--version"], cwd).await;
+    let version_output =
+        run_command(&executable, &["--version"], cwd, &definition.environment).await;
     let version = version_output
         .as_ref()
         .and_then(|output| first_line(&output.stdout, &output.stderr));
+    let version = normalize_provider_version(&definition.driver, version);
     let mut installed = version_output.is_some();
     let mut status = match version_output.as_ref() {
         Some(output) if output.success => "ready",
@@ -251,7 +373,7 @@ async fn probe_one(definition: ProviderDefinition, cwd: &Path) -> Value {
         None => "error",
     };
     let mut auth = json!({ "status": "unknown" });
-    let mut models = custom_models(&definition.custom_models);
+    let mut models = default_models;
     let mut skills = Vec::new();
     let mut message = match version_output.as_ref() {
         Some(output) if !output.success => Some("Provider executable returned a non-zero status."),
@@ -261,11 +383,16 @@ async fn probe_one(definition: ProviderDefinition, cwd: &Path) -> Value {
 
     match definition.driver.as_str() {
         "codex" => {
-            if let Some(inventory) = probe_codex(&executable, cwd, &definition.custom_models).await
+            if let Some(inventory) = probe_codex(
+                &executable,
+                cwd,
+                &definition.custom_models,
+                &definition.environment,
+            )
+            .await
             {
                 installed = true;
-                status = "ready";
-                auth = codex_auth(&inventory.account);
+                (status, auth, message) = codex_probe_health(&inventory.account);
                 models = serde_json::to_value(inventory.models)
                     .ok()
                     .and_then(|value| value.as_array().cloned())
@@ -274,11 +401,12 @@ async fn probe_one(definition: ProviderDefinition, cwd: &Path) -> Value {
                     .ok()
                     .and_then(|value| value.as_array().cloned())
                     .unwrap_or_default();
-                message = None;
             }
         }
         "cursor" => {
-            if let Some(output) = run_command(&executable, &["about"], cwd).await {
+            if let Some(output) =
+                run_command(&executable, &["about"], cwd, &definition.environment).await
+            {
                 let about = cursor::parse_about_output(output.code, &output.stdout, &output.stderr);
                 installed = true;
                 status = if about.status == "ready" {
@@ -291,6 +419,8 @@ async fn probe_one(definition: ProviderDefinition, cwd: &Path) -> Value {
                     &executable,
                     definition.endpoint.as_deref(),
                     &definition.custom_models,
+                    cwd,
+                    &definition.environment,
                 )
                 .await
                 {
@@ -310,13 +440,42 @@ async fn probe_one(definition: ProviderDefinition, cwd: &Path) -> Value {
             }
         }
         "claudeAgent" => {
-            if let Some(output) = run_command(&executable, &["auth", "status", "--json"], cwd).await
+            if version_output.as_ref().is_some_and(|output| output.success)
+                && let Some(version) = version.as_deref()
+            {
+                models = claude::model::models_for_version(version, &definition.custom_models);
+            }
+            if let Some(output) = run_command(
+                &executable,
+                &["auth", "status", "--json"],
+                cwd,
+                &definition.environment,
+            )
+            .await
             {
                 auth = claude_auth(&output.stdout);
                 if auth["status"] == "unauthenticated" {
                     status = "warning";
                     message = Some("Claude is installed but not authenticated.");
                 }
+            }
+        }
+        "opencode" => {
+            if let Some(inventory) = probe_local_opencode(
+                &executable,
+                cwd,
+                &definition.custom_models,
+                &definition.environment,
+            )
+            .await
+            {
+                status = "ready";
+                auth = inventory.auth;
+                models = serde_json::to_value(inventory.models)
+                    .ok()
+                    .and_then(|value| value.as_array().cloned())
+                    .unwrap_or(models);
+                message = None;
             }
         }
         _ => {}
@@ -336,6 +495,17 @@ async fn probe_one(definition: ProviderDefinition, cwd: &Path) -> Value {
     )
 }
 
+fn provider_models_without_version(definition: &ProviderDefinition) -> Vec<Value> {
+    match definition.driver.as_str() {
+        "claudeAgent" => claude::model::all_models(&definition.custom_models),
+        "grok" => serde_json::to_value(grok::model::default_models(&definition.custom_models))
+            .ok()
+            .and_then(|value| value.as_array().cloned())
+            .unwrap_or_else(|| custom_models(&definition.custom_models)),
+        _ => custom_models(&definition.custom_models),
+    }
+}
+
 struct CommandOutput {
     success: bool,
     code: i32,
@@ -343,7 +513,12 @@ struct CommandOutput {
     stderr: String,
 }
 
-async fn run_command(executable: &Path, args: &[&str], cwd: &Path) -> Option<CommandOutput> {
+async fn run_command(
+    executable: &Path,
+    args: &[&str],
+    cwd: &Path,
+    environment: &[(OsString, OsString)],
+) -> Option<CommandOutput> {
     let (program, prefix_args) = provider_launch_program(executable);
     let process_args = prefix_args
         .into_iter()
@@ -357,7 +532,7 @@ async fn run_command(executable: &Path, args: &[&str], cwd: &Path) -> Option<Com
                 command: program,
                 args: process_args,
                 cwd: cwd.to_path_buf(),
-                env: Vec::new(),
+                env: environment.to_vec(),
                 stdin: None,
                 timeout: PROBE_TIMEOUT,
                 max_output_bytes: PROBE_OUTPUT_LIMIT,
@@ -381,9 +556,12 @@ async fn probe_codex(
     executable: &Path,
     cwd: &Path,
     custom_models: &[String],
+    environment: &[(OsString, OsString)],
 ) -> Option<codex::CodexProviderSnapshot> {
     let (program, prefix_args) = provider_launch_program(executable);
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    command.envs(environment.iter().cloned());
+    let mut child = command
         .args(prefix_args)
         .arg("app-server")
         .kill_on_drop(true)
@@ -415,10 +593,15 @@ async fn probe_cursor_models(
     executable: &Path,
     endpoint: Option<&str>,
     custom_models: &[String],
+    cwd: &Path,
+    environment: &[(OsString, OsString)],
 ) -> Option<Vec<Value>> {
     let (program, prefix_args) = provider_launch_program(executable);
     let mut command = Command::new(program);
-    command.args(prefix_args);
+    command
+        .args(prefix_args)
+        .current_dir(cwd)
+        .envs(environment.iter().cloned());
     if let Some(endpoint) = endpoint.filter(|value| !value.trim().is_empty()) {
         command.args(["-e", endpoint]);
     }
@@ -439,7 +622,7 @@ async fn probe_cursor_models(
         stderr,
         cursor::AcpConnectionConfig::default(),
     );
-    let response = timeout(PROBE_TIMEOUT, async {
+    let response = timeout(CURSOR_DISCOVERY_TIMEOUT, async {
         connection
             .request(
                 "initialize",
@@ -477,23 +660,38 @@ async fn probe_cursor_models(
 
 async fn probe_opencode(
     endpoint: &str,
+    server_password: Option<&str>,
     custom_models: &[String],
 ) -> Option<opencode::OpenCodeInventorySnapshot> {
+    probe_opencode_with_timeout(endpoint, server_password, custom_models, PROBE_TIMEOUT).await
+}
+
+async fn probe_opencode_with_timeout(
+    endpoint: &str,
+    server_password: Option<&str>,
+    custom_models: &[String],
+    request_timeout: Duration,
+) -> Option<opencode::OpenCodeInventorySnapshot> {
     let client = reqwest::Client::builder()
-        .timeout(PROBE_TIMEOUT)
+        .timeout(request_timeout)
         .build()
         .ok()?;
     let endpoint = endpoint.trim_end_matches('/');
-    let providers = client
-        .get(format!("{endpoint}/provider"))
+    let request = |url: String| {
+        let request = client.get(url);
+        match server_password.filter(|value| !value.is_empty()) {
+            Some(password) => request.basic_auth("opencode", Some(password)),
+            None => request,
+        }
+    };
+    let providers = request(format!("{endpoint}/provider"))
         .send()
         .await
         .ok()?
         .json::<Value>()
         .await
         .ok()?;
-    let agents = client
-        .get(format!("{endpoint}/agent"))
+    let agents = request(format!("{endpoint}/agent"))
         .send()
         .await
         .ok()?
@@ -507,6 +705,55 @@ async fn probe_opencode(
     ))
 }
 
+async fn probe_local_opencode(
+    executable: &Path,
+    cwd: &Path,
+    custom_models: &[String],
+    environment: &[(OsString, OsString)],
+) -> Option<opencode::OpenCodeInventorySnapshot> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.ok()?;
+    let port = listener.local_addr().ok()?.port();
+    drop(listener);
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let (program, prefix_args) = provider_launch_program(executable);
+    let mut command = Command::new(program);
+    command
+        .args(prefix_args)
+        .args(["serve", "--hostname=127.0.0.1", &format!("--port={port}")])
+        .current_dir(cwd)
+        .envs(environment.iter().cloned())
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let local_password = uuid::Uuid::new_v4().to_string();
+    command.env("OPENCODE_SERVER_PASSWORD", &local_password);
+    let mut child = command.spawn().ok()?;
+    let mut inventory = None;
+    for _ in 0..20 {
+        if child.try_wait().ok().flatten().is_some() {
+            break;
+        }
+        if let Some(snapshot) = probe_opencode_with_timeout(
+            &endpoint,
+            Some(&local_password),
+            custom_models,
+            LOCAL_OPENCODE_PROBE_TIMEOUT,
+        )
+        .await
+        {
+            if child.try_wait().ok().flatten().is_none() {
+                inventory = Some(snapshot);
+            }
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+    inventory
+}
+
 fn first_line(stdout: &str, stderr: &str) -> Option<String> {
     stdout
         .lines()
@@ -514,6 +761,39 @@ fn first_line(stdout: &str, stderr: &str) -> Option<String> {
         .map(str::trim)
         .find(|line| !line.is_empty())
         .map(str::to_owned)
+}
+
+fn normalize_provider_version(driver: &str, version: Option<String>) -> Option<String> {
+    let version = version?;
+    if driver != "codex" {
+        return Some(version);
+    }
+    version
+        .split_whitespace()
+        .find(|part| {
+            part.chars()
+                .next()
+                .is_some_and(|character| character.is_ascii_digit())
+                && part.contains('.')
+        })
+        .map(str::to_owned)
+        .or(Some(version))
+}
+
+fn codex_probe_health(account: &Value) -> (&'static str, Value, Option<&'static str>) {
+    let auth = codex_auth(account);
+    if account
+        .get("requiresOpenaiAuth")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return (
+            "error",
+            auth,
+            Some("Codex is installed but requires authentication."),
+        );
+    }
+    ("ready", auth, None)
 }
 
 fn codex_auth(account: &Value) -> Value {

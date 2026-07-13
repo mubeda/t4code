@@ -83,6 +83,27 @@ async fn registers_native_vcs_handlers_with_unchanged_wire_shapes() {
 }
 
 #[tokio::test]
+async fn generate_commit_message_is_empty_when_there_are_no_changes() {
+    let temp = TempDir::new().expect("temporary server directory");
+    let repository = TempDir::new().expect("temporary repository");
+    initialize_repository(&repository);
+    let (handle, mut socket) = start_git_server(&temp).await;
+
+    request(
+        &mut socket,
+        "6",
+        "vcs.generateCommitMessage",
+        json!({ "cwd": repository.path().to_string_lossy() }),
+    )
+    .await;
+    assert_success_eq(&mut socket, "6", json!({ "message": "" })).await;
+
+    socket.close(None).await.expect("close WebSocket");
+    handle.shutdown();
+    handle.join().await.expect("server joins");
+}
+
+#[tokio::test]
 async fn vcs_status_stream_is_bounded_and_cancellable() {
     let temp = TempDir::new().expect("temporary server directory");
     let repository = TempDir::new().expect("temporary repository");
@@ -146,6 +167,7 @@ async fn stacked_commit_stream_finishes_with_a_decodable_success_event() {
         vec!["init", "--quiet"],
         vec!["config", "user.name", "T4Code Test"],
         vec!["config", "user.email", "t4code@example.invalid"],
+        vec!["config", "core.autocrlf", "false"],
     ] {
         assert!(
             std::process::Command::new("git")
@@ -222,6 +244,575 @@ async fn stacked_commit_stream_finishes_with_a_decodable_success_event() {
     socket.close(None).await.expect("close WebSocket");
     handle.shutdown();
     handle.join().await.expect("server joins");
+}
+
+#[tokio::test]
+async fn stacked_commit_generates_a_message_when_the_ui_leaves_it_empty() {
+    let temp = TempDir::new().expect("temporary server directory");
+    let repository = TempDir::new().expect("temporary repository");
+    for args in [
+        vec!["init", "--quiet"],
+        vec!["config", "user.name", "T4Code Test"],
+        vec!["config", "user.email", "t4code@example.invalid"],
+        vec!["config", "core.autocrlf", "false"],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(repository.path())
+                .status()
+                .expect("git starts")
+                .success()
+        );
+    }
+    std::fs::write(repository.path().join("generated.txt"), "generated\n")
+        .expect("write commit fixture");
+    assert!(
+        std::process::Command::new("git")
+            .args(["add", "generated.txt"])
+            .current_dir(repository.path())
+            .status()
+            .expect("git add starts")
+            .success()
+    );
+
+    let mut registry = RpcRegistry::empty();
+    register_git_vcs_rpc(&mut registry, GitVcsRpcServices::default());
+    let handle = ServerRuntime::start_with_registry(test_config(&temp), registry)
+        .await
+        .expect("server starts");
+    let (mut socket, _) = connect_async(format!("ws://{}/ws", handle.local_addr()))
+        .await
+        .expect("WebSocket connects");
+    let cwd = repository.path().to_string_lossy();
+    request(
+        &mut socket,
+        "9",
+        "git.runStackedAction",
+        json!({
+            "actionId": "wire-action-generated",
+            "cwd": cwd,
+            "action": "commit",
+            "commitStagedIndexAsIs": true,
+        }),
+    )
+    .await;
+
+    assert!(matches!(
+        next_server_message(&mut socket).await,
+        ServerMessage::Chunk { request_id, values }
+            if request_id.as_str() == "9"
+                && values.len() == 1
+                && values[0]["kind"] == "action_started"
+    ));
+    send_json(&mut socket, json!({ "_tag": "Ack", "requestId": "9" })).await;
+    let finished = next_server_message(&mut socket).await;
+    assert!(matches!(
+        finished,
+        ServerMessage::Chunk { request_id, values }
+            if request_id.as_str() == "9"
+                && values.len() == 1
+                && values[0]["kind"] == "action_finished"
+                && values[0]["result"]["commit"]["status"] == "created"
+                && values[0]["result"]["commit"]["subject"] == "Update generated.txt"
+    ));
+
+    let subject = std::process::Command::new("git")
+        .args(["log", "-1", "--pretty=%s"])
+        .current_dir(repository.path())
+        .output()
+        .expect("git log starts");
+    assert!(subject.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&subject.stdout).trim(),
+        "Update generated.txt"
+    );
+
+    socket.close(None).await.expect("close WebSocket");
+    handle.shutdown();
+    handle.join().await.expect("server joins");
+}
+
+#[tokio::test]
+async fn stacked_feature_branch_commit_creates_and_switches_the_branch_first() {
+    let temp = TempDir::new().expect("temporary server directory");
+    let repository = TempDir::new().expect("temporary repository");
+    for args in [
+        vec!["init", "--quiet"],
+        vec!["config", "user.name", "T4Code Test"],
+        vec!["config", "user.email", "t4code@example.invalid"],
+        vec!["config", "core.autocrlf", "false"],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(repository.path())
+                .status()
+                .expect("git starts")
+                .success()
+        );
+    }
+    std::fs::write(repository.path().join("base.txt"), "base\n").expect("write base fixture");
+    for args in [
+        vec!["add", "base.txt"],
+        vec!["commit", "--quiet", "-m", "base"],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(repository.path())
+                .status()
+                .expect("git starts")
+                .success()
+        );
+    }
+    let original_branch = std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(repository.path())
+        .output()
+        .expect("read original branch");
+    let original_branch = String::from_utf8_lossy(&original_branch.stdout)
+        .trim()
+        .to_owned();
+    std::fs::write(repository.path().join("feature.txt"), "feature\n")
+        .expect("write feature fixture");
+    assert!(
+        std::process::Command::new("git")
+            .args(["add", "feature.txt"])
+            .current_dir(repository.path())
+            .status()
+            .expect("git add starts")
+            .success()
+    );
+
+    let mut registry = RpcRegistry::empty();
+    register_git_vcs_rpc(&mut registry, GitVcsRpcServices::default());
+    let handle = ServerRuntime::start_with_registry(test_config(&temp), registry)
+        .await
+        .expect("server starts");
+    let (mut socket, _) = connect_async(format!("ws://{}/ws", handle.local_addr()))
+        .await
+        .expect("WebSocket connects");
+    let cwd = repository.path().to_string_lossy();
+    request(
+        &mut socket,
+        "10",
+        "git.runStackedAction",
+        json!({
+            "actionId": "wire-action-feature",
+            "cwd": cwd,
+            "action": "commit",
+            "featureBranch": true,
+            "commitStagedIndexAsIs": true,
+        }),
+    )
+    .await;
+
+    assert!(matches!(
+        next_server_message(&mut socket).await,
+        ServerMessage::Chunk { request_id, values }
+            if request_id.as_str() == "10"
+                && values.len() == 1
+                && values[0]["kind"] == "action_started"
+                && values[0]["phases"] == json!(["branch", "commit"])
+    ));
+    send_json(&mut socket, json!({ "_tag": "Ack", "requestId": "10" })).await;
+    let finished = next_server_message(&mut socket).await;
+    let ServerMessage::Chunk { request_id, values } = finished else {
+        panic!("expected action_finished chunk");
+    };
+    assert_eq!(request_id.as_str(), "10");
+    assert_eq!(values.len(), 1);
+    assert_eq!(values[0]["kind"], "action_finished");
+    assert_eq!(values[0]["result"]["branch"]["status"], "created");
+    let created_branch = values[0]["result"]["branch"]["name"]
+        .as_str()
+        .expect("created branch name");
+    assert_eq!(created_branch, "feature/update-feature-txt");
+    assert_ne!(created_branch, original_branch);
+
+    let current_branch = std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(repository.path())
+        .output()
+        .expect("read current branch");
+    assert!(current_branch.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&current_branch.stdout).trim(),
+        created_branch
+    );
+
+    socket.close(None).await.expect("close WebSocket");
+    handle.shutdown();
+    handle.join().await.expect("server joins");
+}
+
+#[tokio::test]
+async fn stacked_commit_as_is_preserves_newer_unstaged_edits() {
+    let temp = TempDir::new().expect("temporary server directory");
+    let repository = TempDir::new().expect("temporary repository");
+    for args in [
+        vec!["init", "--quiet"],
+        vec!["config", "user.name", "T4Code Test"],
+        vec!["config", "user.email", "t4code@example.invalid"],
+        vec!["config", "core.autocrlf", "false"],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(repository.path())
+                .status()
+                .expect("git starts")
+                .success()
+        );
+    }
+    let tracked = repository.path().join("tracked.txt");
+    std::fs::write(&tracked, "base\n").expect("write base fixture");
+    for args in [
+        vec!["add", "tracked.txt"],
+        vec!["commit", "--quiet", "-m", "base"],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(repository.path())
+                .status()
+                .expect("git starts")
+                .success()
+        );
+    }
+    std::fs::write(&tracked, "staged\n").expect("write staged fixture");
+    assert!(
+        std::process::Command::new("git")
+            .args(["add", "tracked.txt"])
+            .current_dir(repository.path())
+            .status()
+            .expect("git add starts")
+            .success()
+    );
+    std::fs::write(&tracked, "unstaged\n").expect("write unstaged fixture");
+
+    let mut registry = RpcRegistry::empty();
+    register_git_vcs_rpc(&mut registry, GitVcsRpcServices::default());
+    let handle = ServerRuntime::start_with_registry(test_config(&temp), registry)
+        .await
+        .expect("server starts");
+    let (mut socket, _) = connect_async(format!("ws://{}/ws", handle.local_addr()))
+        .await
+        .expect("WebSocket connects");
+    let cwd = repository.path().to_string_lossy();
+    request(
+        &mut socket,
+        "11",
+        "git.runStackedAction",
+        json!({
+            "actionId": "wire-action-index-as-is",
+            "cwd": cwd,
+            "action": "commit",
+            "commitMessage": "test: preserve the staged snapshot",
+            "filePaths": ["tracked.txt"],
+            "commitStagedIndexAsIs": true,
+        }),
+    )
+    .await;
+
+    assert!(matches!(
+        next_server_message(&mut socket).await,
+        ServerMessage::Chunk { request_id, values }
+            if request_id.as_str() == "11"
+                && values.len() == 1
+                && values[0]["kind"] == "action_started"
+    ));
+    send_json(&mut socket, json!({ "_tag": "Ack", "requestId": "11" })).await;
+    assert!(matches!(
+        next_server_message(&mut socket).await,
+        ServerMessage::Chunk { request_id, values }
+            if request_id.as_str() == "11"
+                && values.len() == 1
+                && values[0]["kind"] == "action_finished"
+    ));
+
+    let committed = std::process::Command::new("git")
+        .args(["show", "HEAD:tracked.txt"])
+        .current_dir(repository.path())
+        .output()
+        .expect("git show starts");
+    assert!(committed.status.success());
+    assert_eq!(String::from_utf8_lossy(&committed.stdout), "staged\n");
+    assert_eq!(
+        std::fs::read_to_string(&tracked).expect("read worktree"),
+        "unstaged\n"
+    );
+
+    socket.close(None).await.expect("close WebSocket");
+    handle.shutdown();
+    handle.join().await.expect("server joins");
+}
+
+#[tokio::test]
+async fn stacked_selected_commit_excludes_unrelated_staged_files() {
+    let temp = TempDir::new().expect("temporary server directory");
+    let repository = TempDir::new().expect("temporary repository");
+    initialize_repository(&repository);
+    std::fs::write(repository.path().join("a.txt"), "base a\n").expect("write base a");
+    std::fs::write(repository.path().join("b.txt"), "base b\n").expect("write base b");
+    run_git(&repository, &["add", "-A"]);
+    run_git(&repository, &["commit", "--quiet", "-m", "base"]);
+
+    std::fs::write(repository.path().join("a.txt"), "selected a\n").expect("write selected a");
+    std::fs::write(repository.path().join("b.txt"), "unrelated b\n").expect("write unrelated b");
+    run_git(&repository, &["add", "b.txt"]);
+
+    let (handle, mut socket) = start_git_server(&temp).await;
+    let result = run_stacked_action(
+        &mut socket,
+        "12",
+        json!({
+            "actionId": "wire-action-selected",
+            "cwd": repository.path().to_string_lossy(),
+            "action": "commit",
+            "commitMessage": "test: commit only the selection",
+            "filePaths": ["a.txt"],
+        }),
+    )
+    .await;
+    assert_eq!(result["kind"], "action_finished");
+    assert_eq!(result["result"]["commit"]["status"], "created");
+
+    assert_eq!(
+        git_stdout(&repository, &["show", "HEAD:a.txt"]),
+        "selected a\n"
+    );
+    assert_eq!(git_stdout(&repository, &["show", "HEAD:b.txt"]), "base b\n");
+    assert_eq!(
+        git_stdout(&repository, &["status", "--short"]),
+        " M b.txt\n"
+    );
+
+    socket.close(None).await.expect("close WebSocket");
+    handle.shutdown();
+    handle.join().await.expect("server joins");
+}
+
+#[tokio::test]
+async fn stacked_commit_without_paths_stages_all_changes() {
+    let temp = TempDir::new().expect("temporary server directory");
+    let repository = TempDir::new().expect("temporary repository");
+    initialize_repository(&repository);
+    std::fs::write(repository.path().join("tracked.txt"), "base\n").expect("write base");
+    run_git(&repository, &["add", "tracked.txt"]);
+    run_git(&repository, &["commit", "--quiet", "-m", "base"]);
+    std::fs::write(repository.path().join("tracked.txt"), "updated\n").expect("update tracked");
+    std::fs::write(repository.path().join("untracked.txt"), "new\n").expect("write untracked");
+
+    let (handle, mut socket) = start_git_server(&temp).await;
+    let result = run_stacked_action(
+        &mut socket,
+        "13",
+        json!({
+            "actionId": "wire-action-all",
+            "cwd": repository.path().to_string_lossy(),
+            "action": "commit",
+            "commitMessage": "test: commit all changes",
+        }),
+    )
+    .await;
+    assert_eq!(result["kind"], "action_finished");
+    assert_eq!(result["result"]["commit"]["status"], "created");
+    assert_eq!(
+        git_stdout(&repository, &["show", "HEAD:tracked.txt"]),
+        "updated\n"
+    );
+    assert_eq!(
+        git_stdout(&repository, &["show", "HEAD:untracked.txt"]),
+        "new\n"
+    );
+    assert_eq!(git_stdout(&repository, &["status", "--short"]), "");
+
+    socket.close(None).await.expect("close WebSocket");
+    handle.shutdown();
+    handle.join().await.expect("server joins");
+}
+
+#[tokio::test]
+async fn stacked_clean_commit_is_a_successful_no_op() {
+    let temp = TempDir::new().expect("temporary server directory");
+    let repository = TempDir::new().expect("temporary repository");
+    initialize_repository(&repository);
+    std::fs::write(repository.path().join("tracked.txt"), "base\n").expect("write base");
+    run_git(&repository, &["add", "tracked.txt"]);
+    run_git(&repository, &["commit", "--quiet", "-m", "base"]);
+
+    let (handle, mut socket) = start_git_server(&temp).await;
+    let result = run_stacked_action(
+        &mut socket,
+        "14",
+        json!({
+            "actionId": "wire-action-clean",
+            "cwd": repository.path().to_string_lossy(),
+            "action": "commit",
+        }),
+    )
+    .await;
+    assert_eq!(result["kind"], "action_finished");
+    assert_eq!(result["result"]["commit"]["status"], "skipped_no_changes");
+    assert_eq!(
+        git_stdout(&repository, &["log", "--oneline"])
+            .lines()
+            .count(),
+        1
+    );
+
+    socket.close(None).await.expect("close WebSocket");
+    handle.shutdown();
+    handle.join().await.expect("server joins");
+}
+
+#[tokio::test]
+async fn stacked_feature_branch_rejects_a_clean_worktree_without_creating_a_branch() {
+    let temp = TempDir::new().expect("temporary server directory");
+    let repository = TempDir::new().expect("temporary repository");
+    initialize_repository(&repository);
+    std::fs::write(repository.path().join("tracked.txt"), "base\n").expect("write base");
+    run_git(&repository, &["add", "tracked.txt"]);
+    run_git(&repository, &["commit", "--quiet", "-m", "base"]);
+    let original_branch = git_stdout(&repository, &["branch", "--show-current"]);
+
+    let (handle, mut socket) = start_git_server(&temp).await;
+    let result = run_stacked_action(
+        &mut socket,
+        "15",
+        json!({
+            "actionId": "wire-action-clean-feature",
+            "cwd": repository.path().to_string_lossy(),
+            "action": "commit",
+            "featureBranch": true,
+        }),
+    )
+    .await;
+    assert_eq!(result["kind"], "action_failed");
+    assert!(
+        result["message"]
+            .as_str()
+            .expect("failure message")
+            .contains("no changes to commit")
+    );
+    assert_eq!(
+        git_stdout(&repository, &["branch", "--show-current"]),
+        original_branch
+    );
+    assert_eq!(
+        git_stdout(&repository, &["branch", "--format=%(refname:short)"])
+            .lines()
+            .count(),
+        1
+    );
+
+    socket.close(None).await.expect("close WebSocket");
+    handle.shutdown();
+    handle.join().await.expect("server joins");
+}
+
+#[tokio::test]
+async fn stacked_create_pr_rejects_dirty_worktree_before_push() {
+    let temp = TempDir::new().expect("temporary server directory");
+    let repository = TempDir::new().expect("temporary repository");
+    initialize_repository(&repository);
+    std::fs::write(repository.path().join("tracked.txt"), "base\n").expect("write base");
+    run_git(&repository, &["add", "tracked.txt"]);
+    run_git(&repository, &["commit", "--quiet", "-m", "base"]);
+    std::fs::write(repository.path().join("tracked.txt"), "dirty\n").expect("dirty worktree");
+
+    let (handle, mut socket) = start_git_server(&temp).await;
+    let result = run_stacked_action(
+        &mut socket,
+        "16",
+        json!({
+            "actionId": "wire-action-dirty-pr",
+            "cwd": repository.path().to_string_lossy(),
+            "action": "create_pr",
+        }),
+    )
+    .await;
+    assert_eq!(result["kind"], "action_failed");
+    assert_eq!(
+        result["message"],
+        "Commit local changes before creating a PR."
+    );
+
+    socket.close(None).await.expect("close WebSocket");
+    handle.shutdown();
+    handle.join().await.expect("server joins");
+}
+
+fn initialize_repository(repository: &TempDir) {
+    run_git(repository, &["init", "--quiet"]);
+    run_git(repository, &["config", "user.name", "T4Code Test"]);
+    run_git(
+        repository,
+        &["config", "user.email", "t4code@example.invalid"],
+    );
+    run_git(repository, &["config", "core.autocrlf", "false"]);
+}
+
+fn run_git(repository: &TempDir, args: &[&str]) {
+    assert!(
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(repository.path())
+            .status()
+            .expect("git starts")
+            .success(),
+        "git {args:?} failed"
+    );
+}
+
+fn git_stdout(repository: &TempDir, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repository.path())
+        .output()
+        .expect("git starts");
+    assert!(output.status.success(), "git {args:?} failed");
+    String::from_utf8(output.stdout).expect("git output is UTF-8")
+}
+
+async fn start_git_server(
+    temp: &TempDir,
+) -> (
+    t4code_server::ServerHandle,
+    WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+) {
+    let mut registry = RpcRegistry::empty();
+    register_git_vcs_rpc(&mut registry, GitVcsRpcServices::default());
+    let handle = ServerRuntime::start_with_registry(test_config(temp), registry)
+        .await
+        .expect("server starts");
+    let (socket, _) = connect_async(format!("ws://{}/ws", handle.local_addr()))
+        .await
+        .expect("WebSocket connects");
+    (handle, socket)
+}
+
+async fn run_stacked_action<S>(
+    socket: &mut WebSocketStream<S>,
+    request_id: &str,
+    payload: Value,
+) -> Value
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    request(socket, request_id, "git.runStackedAction", payload).await;
+    let started = next_server_message(socket).await;
+    assert!(
+        matches!(started, ServerMessage::Chunk { ref values, .. } if values[0]["kind"] == "action_started")
+    );
+    send_json(socket, json!({ "_tag": "Ack", "requestId": request_id })).await;
+    let event = next_server_message(socket).await;
+    let ServerMessage::Chunk { values, .. } = event else {
+        panic!("expected stacked action event, got {event:?}");
+    };
+    values.into_iter().next().expect("stacked action event")
 }
 
 fn test_config(temp: &TempDir) -> ServerConfig {

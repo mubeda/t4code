@@ -967,10 +967,49 @@ impl GitRepository {
         cwd: &Path,
         message: &str,
         file_paths: Option<&[String]>,
+        preserve_index: bool,
         cancellation: &CancellationToken,
-    ) -> Result<String, GitCommandError> {
-        if let Some(paths) = file_paths {
-            self.stage_files(cwd, paths, cancellation).await?;
+    ) -> Result<Option<String>, GitCommandError> {
+        if !preserve_index {
+            if let Some(paths) = file_paths.filter(|paths| !paths.is_empty()) {
+                let _ = self
+                    .execute(
+                        "GitVcsDriver.prepareCommitContext.reset",
+                        cwd,
+                        &strings(&["reset"]),
+                        true,
+                        cancellation,
+                    )
+                    .await?;
+                let mut args = strings(&["add", "-A", "--"]);
+                args.extend(paths.iter().cloned());
+                self.run(
+                    "GitVcsDriver.prepareCommitContext.addSelected",
+                    cwd,
+                    &args,
+                    cancellation,
+                )
+                .await?;
+            } else {
+                self.run(
+                    "GitVcsDriver.prepareCommitContext.addAll",
+                    cwd,
+                    &strings(&["add", "-A"]),
+                    cancellation,
+                )
+                .await?;
+            }
+        }
+        let staged = self
+            .run(
+                "GitVcsDriver.prepareCommitContext.stagedSummary",
+                cwd,
+                &strings(&["diff", "--cached", "--name-status"]),
+                cancellation,
+            )
+            .await?;
+        if staged.stdout.trim().is_empty() {
+            return Ok(None);
         }
         self.run(
             "GitVcsDriver.commit",
@@ -987,7 +1026,7 @@ impl GitRepository {
                 cancellation,
             )
             .await?;
-        Ok(sha.stdout.trim().to_owned())
+        Ok(Some(sha.stdout.trim().to_owned()))
     }
 
     pub async fn push_current_branch(

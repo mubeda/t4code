@@ -17,6 +17,7 @@ const h = vi.hoisted(() => {
   const state = {
     routeThreadRef: null as unknown,
     diffSelection: { kind: "branch", baseRef: null } as unknown,
+    gitRefreshRequestId: 0,
     thread: null as unknown,
     project: null as unknown,
     settings: { wordWrap: false, diffIgnoreWhitespace: false, timestampFormat: "24h" } as Record<
@@ -41,6 +42,7 @@ const h = vi.hoisted(() => {
     },
     openInPreferredEditor: vi.fn(async (_path: string) => ({ _tag: "Success" }) as unknown),
     openDiffFilePrimaryAction: vi.fn(),
+    diffPreviewRefresh: vi.fn(),
     stateIndex: 0,
     stateSeeds: new Map<number, unknown>(),
     captured: {} as Record<string, Record<string, unknown>>,
@@ -99,6 +101,7 @@ vi.mock("../diffPanelStore", () => {
   return {
     useDiffPanelStore,
     selectThreadDiffPanelSelection: () => h.diffSelection,
+    selectThreadDiffPanelRefreshRequest: () => h.gitRefreshRequestId,
   };
 });
 
@@ -115,7 +118,7 @@ vi.mock("../state/query", () => ({
       data: key ? (h.queryDataByKey.get(key) ?? null) : null,
       error: queryState?.error ?? null,
       isPending: queryState?.isPending ?? false,
-      refresh: () => undefined,
+      refresh: key === "review.diffPreview" ? h.diffPreviewRefresh : () => undefined,
     };
   },
 }));
@@ -396,6 +399,7 @@ function runEffects(): Array<() => void> {
 beforeEach(() => {
   h.routeThreadRef = routeRef;
   h.diffSelection = { kind: "branch", baseRef: null };
+  h.gitRefreshRequestId = 0;
   h.thread = thread;
   h.project = project;
   h.settings = { wordWrap: false, diffIgnoreWhitespace: false, timestampFormat: "24h" };
@@ -425,6 +429,7 @@ beforeEach(() => {
   h.storeApi.selectBranchBaseRef.mockClear();
   h.openInPreferredEditor.mockClear();
   h.openDiffFilePrimaryAction.mockClear();
+  h.diffPreviewRefresh.mockClear();
 });
 
 afterEach(() => {
@@ -535,6 +540,13 @@ describe("DiffPanel: files patch", () => {
     // and the scroll effect returns early (no selected file path).
     expect(() => runEffects()).not.toThrow();
     expect(h.storeApi.reconcileTurnSelection).not.toHaveBeenCalled();
+  });
+
+  it("refreshes the git preview when Source Control reopens a scope", () => {
+    h.gitRefreshRequestId = 2;
+    render();
+    runEffects();
+    expect(h.diffPreviewRefresh).toHaveBeenCalledOnce();
   });
 
   it("skips scrolling when the selected file is not among the rendered files", () => {

@@ -380,10 +380,12 @@ async fn branch_commit_context_and_history_workflow_uses_real_git_state() {
             repo.path(),
             "feat: port git to rust",
             Some(&["tracked.txt".into()]),
+            false,
             &cancellation(),
         )
         .await
-        .expect("commit selected file");
+        .expect("commit selected file")
+        .expect("selected file produced a commit");
     assert_eq!(sha.len(), 40);
     repository
         .rename_ref(

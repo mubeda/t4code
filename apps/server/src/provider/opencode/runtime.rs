@@ -3,6 +3,8 @@ use std::{
     sync::Arc,
 };
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -10,6 +12,7 @@ use tokio::{
     sync::{Mutex, mpsc},
     task::JoinHandle,
 };
+use url::Url;
 use uuid::Uuid;
 
 use super::model::{merge_assistant_text, parse_model_slug};
@@ -74,6 +77,8 @@ pub enum OpenCodeRuntimeError {
     InvalidResponse(String),
     #[error("Unknown pending question id {0}")]
     UnknownQuestion(String),
+    #[error("Unknown pending permission id {0}")]
+    UnknownPermission(String),
     #[error("Session is not started")]
     MissingSession,
 }
@@ -88,7 +93,8 @@ struct RuntimeInner {
     base_url: String,
     thread_id: String,
     directory: String,
-    model: Option<(String, String)>,
+    model: Mutex<Option<(String, String)>>,
+    runtime_mode: Mutex<String>,
     session_id: Mutex<Option<String>>,
     active_turn_id: Mutex<Option<String>>,
     active_user_message_id: Mutex<Option<String>>,
@@ -98,6 +104,7 @@ struct RuntimeInner {
     events_rx: Mutex<mpsc::UnboundedReceiver<OpenCodeRuntimeEvent>>,
     event_counter: Mutex<u64>,
     pending_questions: Mutex<HashMap<String, PendingQuestion>>,
+    pending_permissions: Mutex<HashMap<String, Option<String>>>,
     event_pump: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -109,14 +116,37 @@ struct PendingQuestion {
 
 impl OpenCodeSessionRuntime {
     pub fn new(base_url: &str, thread_id: &str, directory: &str, model: Option<&str>) -> Self {
+        Self::new_with_password(base_url, thread_id, directory, model, None)
+            .expect("OpenCode client without credentials must be valid")
+    }
+
+    pub fn new_with_password(
+        base_url: &str,
+        thread_id: &str,
+        directory: &str,
+        model: Option<&str>,
+        password: Option<&str>,
+    ) -> Result<Self, OpenCodeRuntimeError> {
         let (events_tx, events_rx) = mpsc::unbounded_channel();
-        Self {
+        let mut headers = HeaderMap::new();
+        if let Some(password) = password.filter(|value| !value.is_empty()) {
+            let credentials = STANDARD.encode(format!("opencode:{password}"));
+            let header = HeaderValue::from_str(&format!("Basic {credentials}"))
+                .map_err(|error| OpenCodeRuntimeError::Http(error.to_string()))?;
+            headers.insert(AUTHORIZATION, header);
+        }
+        let client = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()
+            .map_err(|error| OpenCodeRuntimeError::Http(error.to_string()))?;
+        Ok(Self {
             inner: Arc::new(RuntimeInner {
-                client: reqwest::Client::new(),
+                client,
                 base_url: base_url.trim_end_matches('/').to_owned(),
                 thread_id: thread_id.to_owned(),
                 directory: directory.to_owned(),
-                model: model.and_then(parse_model_slug),
+                model: Mutex::new(model.and_then(parse_model_slug)),
+                runtime_mode: Mutex::new("approval-required".to_owned()),
                 session_id: Mutex::new(None),
                 active_turn_id: Mutex::new(None),
                 active_user_message_id: Mutex::new(None),
@@ -126,17 +156,22 @@ impl OpenCodeSessionRuntime {
                 events_rx: Mutex::new(events_rx),
                 event_counter: Mutex::new(0),
                 pending_questions: Mutex::new(HashMap::new()),
+                pending_permissions: Mutex::new(HashMap::new()),
                 event_pump: Mutex::new(None),
             }),
-        }
+        })
     }
 
     pub async fn start(&self) -> Result<String, OpenCodeRuntimeError> {
+        let permission = build_permission_rules(&self.inner.runtime_mode.lock().await);
         let response = self
             .inner
             .client
             .post(self.request_url("/session")?)
-            .json(&json!({ "title": format!("T4Code {}", self.inner.thread_id) }))
+            .json(&json!({
+                "title": format!("T4Code {}", self.inner.thread_id),
+                "permission": permission,
+            }))
             .send()
             .await
             .map_err(|error| OpenCodeRuntimeError::Http(error.to_string()))?;
@@ -185,7 +220,47 @@ impl OpenCodeSessionRuntime {
         Ok(session_id.to_owned())
     }
 
-    pub async fn send_turn(&self, text: &str) -> Result<String, OpenCodeRuntimeError> {
+    pub async fn add_mcp_server(
+        &self,
+        name: &str,
+        url: &str,
+        authorization_header: &str,
+    ) -> Result<(), OpenCodeRuntimeError> {
+        let mut endpoint = Url::parse(&format!("{}/mcp", self.inner.base_url))
+            .map_err(|error| OpenCodeRuntimeError::Http(error.to_string()))?;
+        endpoint
+            .query_pairs_mut()
+            .append_pair("directory", &self.inner.directory);
+        let response = self
+            .inner
+            .client
+            .post(endpoint)
+            .json(&json!({
+                "name": name,
+                "config": {
+                    "type": "remote",
+                    "url": url,
+                    "headers": { "Authorization": authorization_header },
+                    "oauth": false,
+                }
+            }))
+            .send()
+            .await
+            .map_err(|error| OpenCodeRuntimeError::Http(error.to_string()))?;
+        if !response.status().is_success() {
+            return Err(OpenCodeRuntimeError::Http(format!(
+                "OpenCode MCP registration returned HTTP {}",
+                response.status()
+            )));
+        }
+        Ok(())
+    }
+
+    pub async fn send_turn(
+        &self,
+        text: Option<&str>,
+        attachments: Vec<Value>,
+    ) -> Result<String, OpenCodeRuntimeError> {
         let session_id = self.session_id().await?;
         let turn_id = format!("turn-{}", Uuid::new_v4());
         *self.inner.active_user_message_id.lock().await = None;
@@ -196,9 +271,9 @@ impl OpenCodeSessionRuntime {
             .await;
         let mut body = json!({
             "sessionID": session_id,
-            "parts": [{ "type": "text", "text": text }],
+            "parts": crate::provider::attachments::prompt_parts(text, attachments),
         });
-        if let Some((provider_id, model_id)) = self.inner.model.as_ref() {
+        if let Some((provider_id, model_id)) = self.inner.model.lock().await.as_ref() {
             body["model"] = json!({
                 "providerID": provider_id,
                 "modelID": model_id,
@@ -220,6 +295,64 @@ impl OpenCodeSessionRuntime {
             )));
         }
         Ok(turn_id)
+    }
+
+    pub async fn set_model(&self, model: &str) -> Result<(), OpenCodeRuntimeError> {
+        let parsed = parse_model_slug(model).ok_or_else(|| {
+            OpenCodeRuntimeError::InvalidResponse(
+                "model selection must use the provider/model format".to_owned(),
+            )
+        })?;
+        *self.inner.model.lock().await = Some(parsed);
+        Ok(())
+    }
+
+    pub async fn configure_runtime_mode(&self, mode: &str) {
+        *self.inner.runtime_mode.lock().await = mode.to_owned();
+    }
+
+    pub async fn respond_to_permission(
+        &self,
+        request_id: &str,
+        decision: &str,
+    ) -> Result<(), OpenCodeRuntimeError> {
+        let turn_id = self
+            .inner
+            .pending_permissions
+            .lock()
+            .await
+            .remove(request_id)
+            .ok_or_else(|| OpenCodeRuntimeError::UnknownPermission(request_id.to_owned()))?;
+        let reply = match decision {
+            "acceptForSession" => "always",
+            "accept" => "once",
+            _ => "reject",
+        };
+        let response = self
+            .inner
+            .client
+            .post(self.request_url(&format!("/permission/{request_id}/reply"))?)
+            .json(&json!({ "reply": reply }))
+            .send()
+            .await
+            .map_err(|error| OpenCodeRuntimeError::Http(error.to_string()))?;
+        if !response.status().is_success() {
+            return Err(OpenCodeRuntimeError::Http(format!(
+                "permission reply returned HTTP {}",
+                response.status()
+            )));
+        }
+        self.emit(
+            "request.resolved",
+            turn_id,
+            Some(request_id.to_owned()),
+            json!({
+                "requestType": "exec_command_approval",
+                "decision": decision,
+            }),
+        )
+        .await;
+        Ok(())
     }
 
     pub async fn interrupt_turn(&self) -> Result<(), OpenCodeRuntimeError> {
@@ -617,6 +750,49 @@ impl OpenCodeSessionRuntime {
                 )
                 .await;
             }
+            "permission.asked" => {
+                let request_id = properties
+                    .get("requestID")
+                    .or_else(|| properties.get("id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("permission-1")
+                    .to_owned();
+                let permission = properties
+                    .get("permission")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool");
+                let patterns = properties
+                    .get("patterns")
+                    .and_then(Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default();
+                let detail = if patterns.is_empty() {
+                    permission.to_owned()
+                } else {
+                    format!("{permission}: {patterns}")
+                };
+                self.inner
+                    .pending_permissions
+                    .lock()
+                    .await
+                    .insert(request_id.clone(), turn_id.clone());
+                self.emit(
+                    "request.opened",
+                    turn_id,
+                    Some(request_id),
+                    json!({
+                        "requestType": "exec_command_approval",
+                        "detail": detail,
+                    }),
+                )
+                .await;
+            }
             _ => {}
         }
     }
@@ -659,5 +835,53 @@ impl OpenCodeSessionRuntime {
         url.query_pairs_mut()
             .append_pair("directory", &self.inner.directory);
         Ok(url.to_string())
+    }
+}
+
+fn build_permission_rules(runtime_mode: &str) -> Vec<Value> {
+    if runtime_mode == "full-access" {
+        return vec![json!({ "permission": "*", "pattern": "*", "action": "allow" })];
+    }
+    [
+        "*",
+        "bash",
+        "edit",
+        "webfetch",
+        "websearch",
+        "codesearch",
+        "external_directory",
+        "doom_loop",
+    ]
+    .into_iter()
+    .map(|permission| json!({ "permission": permission, "pattern": "*", "action": "ask" }))
+    .chain(std::iter::once(json!({
+        "permission": "question",
+        "pattern": "*",
+        "action": "allow",
+    })))
+    .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    #[test]
+    fn permission_rules_match_runtime_mode() {
+        assert_eq!(
+            super::build_permission_rules("full-access"),
+            vec![json!({ "permission": "*", "pattern": "*", "action": "allow" })]
+        );
+        let approval = super::build_permission_rules("approval-required");
+        assert!(approval.contains(&json!({
+            "permission": "bash",
+            "pattern": "*",
+            "action": "ask"
+        })));
+        assert!(approval.contains(&json!({
+            "permission": "question",
+            "pattern": "*",
+            "action": "allow"
+        })));
     }
 }

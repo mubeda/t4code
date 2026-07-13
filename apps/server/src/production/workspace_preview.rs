@@ -580,6 +580,9 @@ fn normalize_review_result(mut value: Value) -> RpcResult {
         .and_then(Value::as_array_mut)
         .ok_or_else(|| invalid_request("review.getDiffPreview", "invalid review sources"))?;
     for (index, source) in sources.iter_mut().enumerate() {
+        if source.get("kind").is_some() {
+            continue;
+        }
         let path = source
             .get("path")
             .and_then(Value::as_str)

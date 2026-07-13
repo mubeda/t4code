@@ -18,15 +18,18 @@ use crate::{
     },
     persistence::{ProviderSessionRuntime, Repositories},
     production::{
-        operational_logs::ProviderOperationalLog, orchestration_effects::process_compatible_path,
+        connect_mcp::ConnectMcpService, operational_logs::ProviderOperationalLog,
+        orchestration_effects::process_compatible_path,
     },
     provider::{
+        attachments::{AttachmentMaterializer, MaterializedImage},
         claude::{
             ClaudeControlRequest, ClaudeProviderRuntime, Decision, RuntimeMode as ClaudeRuntimeMode,
         },
         codex::{
-            CodexRuntimeMode, CodexSessionOptions, CodexSessionRuntime, ConnectionConfig,
-            JsonRpcConnection,
+            CodexHomeLayout, CodexRuntimeMode, CodexSessionOptions, CodexSessionRuntime,
+            ConnectionConfig, JsonRpcConnection, materialize_codex_shadow_home,
+            resolve_codex_home_layout,
         },
         cursor::{
             AcpConnectionConfig as CursorConnectionConfig,
@@ -50,7 +53,7 @@ use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader},
-    sync::{Mutex, mpsc, oneshot},
+    sync::{Mutex, RwLock, mpsc, oneshot},
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
@@ -72,9 +75,21 @@ pub struct ProviderLaunchRequest {
     pub runtime_mode: String,
     pub interaction_mode: String,
     pub model: Option<String>,
+    pub service_tier: Option<String>,
+    pub effort: Option<String>,
     pub resume_cursor: Option<Value>,
     pub environment: BTreeMap<String, String>,
     pub endpoint: Option<String>,
+    pub server_password: Option<String>,
+    pub mcp: Option<ProviderMcpConfig>,
+    pub codex_home: Option<CodexHomeLayout>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderMcpConfig {
+    pub endpoint: String,
+    pub authorization_header: String,
+    pub provider_session_id: String,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -115,6 +130,12 @@ pub trait ProviderDriver: Send + Sync {
         answers: Value,
     ) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>>;
     fn set_mode(&self, mode: String) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>>;
+    fn set_interaction_mode(
+        &self,
+        _mode: String,
+    ) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
+        Box::pin(async { Ok(()) })
+    }
     fn set_model(&self, model: String) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>>;
     fn rollback(&self, turn_count: i64) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>>;
     fn next_event(&self) -> BoxRuntimeFuture<'_, Option<ProviderEvent>>;
@@ -179,6 +200,7 @@ pub struct ProviderRuntimeSupervisor {
     sender: mpsc::Sender<SupervisorMessage>,
     stopped: CancellationToken,
     worker: Arc<Mutex<Option<JoinHandle<()>>>>,
+    connect_mcp: Arc<RwLock<Option<Arc<ConnectMcpService>>>>,
 }
 
 enum SupervisorMessage {
@@ -240,10 +262,38 @@ impl ProviderRuntimeSupervisor {
             sender,
             stopped,
             worker: Arc::new(Mutex::new(Some(worker))),
+            connect_mcp: Arc::new(RwLock::new(None)),
         }
     }
 
-    pub async fn launch(&self, request: ProviderLaunchRequest) -> Result<(), ProviderRuntimeError> {
+    pub async fn attach_connect_mcp(&self, service: Arc<ConnectMcpService>) {
+        *self.connect_mcp.write().await = Some(service);
+    }
+
+    pub async fn launch(
+        &self,
+        mut request: ProviderLaunchRequest,
+    ) -> Result<(), ProviderRuntimeError> {
+        if request.mcp.is_none()
+            && let Some(connect) = self.connect_mcp.read().await.clone()
+        {
+            let provider_instance_id = request
+                .provider_instance_id
+                .clone()
+                .unwrap_or_else(|| request.provider.clone());
+            let issued = connect
+                .issue_mcp_credential(request.thread_id.clone(), provider_instance_id)
+                .await
+                .map_err(|error| ProviderRuntimeError::Provider {
+                    provider: request.provider.clone(),
+                    detail: format!("could not issue T4Code MCP credential: {error:?}"),
+                })?;
+            request.mcp = Some(ProviderMcpConfig {
+                endpoint: issued.endpoint,
+                authorization_header: issued.authorization_header,
+                provider_session_id: issued.provider_session_id,
+            });
+        }
         self.request(|response| SupervisorMessage::Launch {
             request: Box::new(request),
             response,
@@ -481,6 +531,20 @@ async fn launch_request_for_command(
         .filter(|entry| !entry.name.trim().is_empty() && !entry.value_redacted)
         .map(|entry| (entry.name.clone(), entry.value.clone()))
         .collect();
+    let codex_home = (provider == "codex").then(|| {
+        let config = instance.map(|value| &value.config);
+        resolve_codex_home_layout(
+            config
+                .and_then(|value| value.get("homePath"))
+                .and_then(Value::as_str),
+            config
+                .and_then(|value| value.get("shadowHomePath"))
+                .and_then(Value::as_str),
+            dirs::home_dir()
+                .as_deref()
+                .unwrap_or_else(|| Path::new(".")),
+        )
+    });
     let persisted = repositories
         .get_provider_session_runtime(thread_id.clone())
         .await
@@ -502,9 +566,15 @@ async fn launch_request_for_command(
         runtime_mode: runtime_mode.clone(),
         interaction_mode: interaction_mode.clone(),
         model: model_from_selection(selection),
+        service_tier: selection_string_option(selection, "serviceTier"),
+        effort: selection_string_option(selection, "reasoningEffort"),
         resume_cursor: persisted.and_then(|runtime| runtime.resume_cursor),
         environment,
         endpoint: (!binary.server_url.trim().is_empty()).then(|| binary.server_url.clone()),
+        server_password: (!binary.server_password.is_empty())
+            .then(|| binary.server_password.clone()),
+        mcp: None,
+        codex_home,
     })
 }
 
@@ -745,8 +815,30 @@ async fn handle_command(
         OrchestrationCommand::ThreadInteractionModeSet {
             interaction_mode, ..
         } => {
-            entry.launch.interaction_mode = interaction_mode;
-            persist_entry(&engine.repositories(), entry, "ready").await
+            match entry
+                .driver
+                .set_interaction_mode(interaction_mode.clone())
+                .await
+            {
+                Ok(()) => {
+                    entry.launch.interaction_mode = interaction_mode;
+                    persist_entry(&engine.repositories(), entry, "ready").await
+                }
+                Err(ProviderRuntimeError::UnsupportedCapability { .. }) => {
+                    let mut launch = entry.launch.clone();
+                    launch.interaction_mode = interaction_mode;
+                    restart_session(
+                        engine,
+                        factory,
+                        sessions,
+                        &thread_id,
+                        launch,
+                        operational_log,
+                    )
+                    .await
+                }
+                Err(error) => Err(error),
+            }
         }
         OrchestrationCommand::ThreadMetaUpdate {
             model_selection: Some(selection),
@@ -837,6 +929,22 @@ fn model_from_selection(selection: &Value) -> Option<String> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|model| !model.is_empty() && !model.eq_ignore_ascii_case("auto"))
+        .map(str::to_owned)
+}
+
+fn selection_string_option(selection: &Value, id: &str) -> Option<String> {
+    selection
+        .get("options")
+        .and_then(Value::as_array)
+        .and_then(|options| {
+            options
+                .iter()
+                .find(|option| option.get("id").and_then(Value::as_str) == Some(id))
+        })
+        .and_then(|option| option.get("value"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
         .map(str::to_owned)
 }
 
@@ -1181,8 +1289,19 @@ fn now() -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct NativeProviderDriverFactory;
+#[derive(Clone, Debug)]
+pub struct NativeProviderDriverFactory {
+    attachments: AttachmentMaterializer,
+}
+
+impl NativeProviderDriverFactory {
+    #[must_use]
+    pub fn new(attachments_dir: PathBuf) -> Self {
+        Self {
+            attachments: AttachmentMaterializer::new(attachments_dir),
+        }
+    }
+}
 
 impl ProviderDriverFactory for NativeProviderDriverFactory {
     fn create(
@@ -1191,21 +1310,23 @@ impl ProviderDriverFactory for NativeProviderDriverFactory {
     ) -> BoxRuntimeFuture<'_, Result<Arc<dyn ProviderDriver>, ProviderRuntimeError>> {
         Box::pin(async move {
             match request.provider.as_str() {
-                "codex" => {
-                    Ok(Arc::new(CodexDriver::spawn(request).await?) as Arc<dyn ProviderDriver>)
-                }
-                "cursor" => {
-                    Ok(Arc::new(CursorDriver::spawn(request).await?) as Arc<dyn ProviderDriver>)
-                }
-                "grok" => {
-                    Ok(Arc::new(GrokDriver::spawn(request).await?) as Arc<dyn ProviderDriver>)
-                }
-                "opencode" => {
-                    Ok(Arc::new(OpenCodeDriver::spawn(request).await?) as Arc<dyn ProviderDriver>)
-                }
-                "claude" | "claudeAgent" => {
-                    Ok(Arc::new(ClaudeDriver::spawn(request).await?) as Arc<dyn ProviderDriver>)
-                }
+                "codex" => Ok(
+                    Arc::new(CodexDriver::spawn(request, self.attachments.clone()).await?)
+                        as Arc<dyn ProviderDriver>,
+                ),
+                "cursor" => Ok(Arc::new(
+                    CursorDriver::spawn(request, self.attachments.clone()).await?,
+                ) as Arc<dyn ProviderDriver>),
+                "grok" => Ok(
+                    Arc::new(GrokDriver::spawn(request, self.attachments.clone()).await?)
+                        as Arc<dyn ProviderDriver>,
+                ),
+                "opencode" => Ok(Arc::new(
+                    OpenCodeDriver::spawn(request, self.attachments.clone()).await?,
+                ) as Arc<dyn ProviderDriver>),
+                "claude" | "claudeAgent" => Ok(Arc::new(
+                    ClaudeDriver::spawn(request, self.attachments.clone()).await?,
+                ) as Arc<dyn ProviderDriver>),
                 provider => Err(ProviderRuntimeError::UnsupportedProvider {
                     provider: provider.to_owned(),
                 }),
@@ -1346,11 +1467,42 @@ fn runtime_mode(value: &str) -> CodexRuntimeMode {
 struct CodexDriver {
     runtime: CodexSessionRuntime,
     child: SharedChild,
+    attachments: AttachmentMaterializer,
 }
 
 impl CodexDriver {
-    async fn spawn(request: ProviderLaunchRequest) -> Result<Self, ProviderRuntimeError> {
-        let args = vec!["app-server".to_owned()];
+    async fn spawn(
+        mut request: ProviderLaunchRequest,
+        attachments: AttachmentMaterializer,
+    ) -> Result<Self, ProviderRuntimeError> {
+        if let Some(layout) = request.codex_home.as_ref() {
+            materialize_codex_shadow_home(layout)
+                .await
+                .map_err(provider_error("codex"))?;
+            if let Some(effective_home) = layout.effective_home_path.as_ref() {
+                request.environment.insert(
+                    "CODEX_HOME".to_owned(),
+                    effective_home.to_string_lossy().into_owned(),
+                );
+            }
+        }
+        let mut args = Vec::new();
+        if let Some(mcp) = request.mcp.as_ref() {
+            request.environment.insert(
+                "T4CODE_MCP_BEARER_TOKEN".to_owned(),
+                mcp.authorization_header
+                    .strip_prefix("Bearer ")
+                    .unwrap_or(&mcp.authorization_header)
+                    .to_owned(),
+            );
+            args.extend([
+                "-c".to_owned(),
+                format!("mcp_servers.t4code.url={}", mcp.endpoint),
+                "-c".to_owned(),
+                "mcp_servers.t4code.bearer_token_env_var=\"T4CODE_MCP_BEARER_TOKEN\"".to_owned(),
+            ]);
+        }
+        args.push("app-server".to_owned());
         let mut child = spawn_child(&request, &args, true)?;
         let stdout = child
             .stdout()
@@ -1374,8 +1526,8 @@ impl CodexDriver {
                 cwd: request.cwd.to_string_lossy().into_owned(),
                 runtime_mode: runtime_mode(&request.runtime_mode),
                 model: request.model,
-                service_tier: None,
-                effort: None,
+                service_tier: request.service_tier,
+                effort: request.effort,
                 resume_cursor,
             },
             connection,
@@ -1384,6 +1536,7 @@ impl CodexDriver {
         Ok(Self {
             runtime,
             child: Arc::new(Mutex::new(child)),
+            attachments,
         })
     }
 }
@@ -1411,6 +1564,14 @@ impl ProviderDriver for CodexDriver {
         interaction_mode: String,
     ) -> BoxRuntimeFuture<'_, Result<Option<String>, ProviderRuntimeError>> {
         Box::pin(async move {
+            let attachments = self
+                .attachments
+                .materialize(attachments)
+                .await
+                .map_err(attachment_error("codex"))?
+                .into_iter()
+                .map(codex_image)
+                .collect();
             self.runtime
                 .send_turn(Some(text), attachments, Some(interaction_mode))
                 .await
@@ -1499,10 +1660,13 @@ impl ProviderDriver for CodexDriver {
 struct CursorDriver {
     runtime: CursorSessionRuntime,
     child: SharedChild,
-    resume_cursor: Option<Value>,
+    attachments: AttachmentMaterializer,
 }
 impl CursorDriver {
-    async fn spawn(request: ProviderLaunchRequest) -> Result<Self, ProviderRuntimeError> {
+    async fn spawn(
+        request: ProviderLaunchRequest,
+        attachments: AttachmentMaterializer,
+    ) -> Result<Self, ProviderRuntimeError> {
         let mut args = Vec::new();
         if let Some(endpoint) = request.endpoint.as_ref() {
             args.extend(["-e".to_owned(), endpoint.clone()]);
@@ -1523,14 +1687,15 @@ impl CursorDriver {
             .ok_or_else(|| pipe_error(&request.provider, "stderr"))?;
         let (connection, incoming) =
             CursorConnection::spawn(stdout, stdin, stderr, CursorConnectionConfig::default());
-        let resume_cursor = request.resume_cursor.clone();
         let runtime = CursorSessionRuntime::new(
             CursorSessionOptions {
                 thread_id: request.thread_id,
                 cwd: request.cwd.to_string_lossy().into_owned(),
                 runtime_mode: request.runtime_mode,
+                interaction_mode: request.interaction_mode,
                 model: request.model.unwrap_or_default(),
                 resume_session_id: request.resume_cursor.as_ref().and_then(resume_string),
+                mcp_servers: acp_mcp_servers(request.mcp.as_ref()),
             },
             connection,
             incoming,
@@ -1538,7 +1703,7 @@ impl CursorDriver {
         Ok(Self {
             runtime,
             child: Arc::new(Mutex::new(child)),
-            resume_cursor,
+            attachments,
         })
     }
 }
@@ -1546,12 +1711,16 @@ impl CursorDriver {
 impl ProviderDriver for CursorDriver {
     fn start(&self) -> BoxRuntimeFuture<'_, Result<StartedSession, ProviderRuntimeError>> {
         Box::pin(async move {
-            self.runtime
+            let session_id = self
+                .runtime
                 .start()
                 .await
                 .map_err(provider_error("cursor"))?;
             Ok(StartedSession {
-                resume_cursor: self.resume_cursor.clone(),
+                resume_cursor: Some(json!({
+                    "schemaVersion": 1,
+                    "sessionId": session_id,
+                })),
                 runtime_payload: None,
             })
         })
@@ -1559,12 +1728,20 @@ impl ProviderDriver for CursorDriver {
     fn send(
         &self,
         text: String,
-        _: Vec<Value>,
+        attachments: Vec<Value>,
         _: String,
     ) -> BoxRuntimeFuture<'_, Result<Option<String>, ProviderRuntimeError>> {
         Box::pin(async move {
+            let attachments = self
+                .attachments
+                .materialize(attachments)
+                .await
+                .map_err(attachment_error("cursor"))?
+                .into_iter()
+                .map(acp_image)
+                .collect();
             self.runtime
-                .send_turn(&text)
+                .send_turn(Some(&text), attachments)
                 .await
                 .map(Some)
                 .map_err(provider_error("cursor"))
@@ -1605,11 +1782,32 @@ impl ProviderDriver for CursorDriver {
                 .map_err(provider_error("cursor"))
         })
     }
-    fn set_mode(&self, _: String) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
-        unsupported("cursor", "post-start runtime mode changes")
+    fn set_mode(&self, mode: String) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
+        Box::pin(async move {
+            self.runtime
+                .set_runtime_mode(&mode)
+                .await
+                .map_err(provider_error("cursor"))
+        })
     }
-    fn set_model(&self, _: String) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
-        unsupported("cursor", "post-start model changes")
+    fn set_interaction_mode(
+        &self,
+        mode: String,
+    ) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
+        Box::pin(async move {
+            self.runtime
+                .set_interaction_mode(&mode)
+                .await
+                .map_err(provider_error("cursor"))
+        })
+    }
+    fn set_model(&self, model: String) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
+        Box::pin(async move {
+            self.runtime
+                .set_model(&model)
+                .await
+                .map_err(provider_error("cursor"))
+        })
     }
     fn rollback(&self, _: i64) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
         unsupported("cursor", "checkpoint rollback")
@@ -1636,9 +1834,14 @@ impl ProviderDriver for CursorDriver {
 struct GrokDriver {
     runtime: GrokSessionRuntime,
     child: SharedChild,
+    requested_model: Option<String>,
+    attachments: AttachmentMaterializer,
 }
 impl GrokDriver {
-    async fn spawn(mut request: ProviderLaunchRequest) -> Result<Self, ProviderRuntimeError> {
+    async fn spawn(
+        mut request: ProviderLaunchRequest,
+        attachments: AttachmentMaterializer,
+    ) -> Result<Self, ProviderRuntimeError> {
         request
             .environment
             .entry("GROK_OAUTH2_REFERRER".to_owned())
@@ -1674,6 +1877,9 @@ impl GrokDriver {
             GrokSessionOptions {
                 thread_id: request.thread_id,
                 cwd: request.cwd.to_string_lossy().into_owned(),
+                mcp_servers: acp_mcp_servers(request.mcp.as_ref()),
+                runtime_mode: request.runtime_mode,
+                interaction_mode: request.interaction_mode,
             },
             connection,
             incoming,
@@ -1683,6 +1889,8 @@ impl GrokDriver {
         Ok(Self {
             runtime,
             child: Arc::new(Mutex::new(child)),
+            requested_model: request.model,
+            attachments,
         })
     }
 }
@@ -1691,8 +1899,14 @@ impl ProviderDriver for GrokDriver {
     fn start(&self) -> BoxRuntimeFuture<'_, Result<StartedSession, ProviderRuntimeError>> {
         Box::pin(async move {
             let id = self.runtime.start().await.map_err(provider_error("grok"))?;
+            if let Some(model) = self.requested_model.as_deref() {
+                self.runtime
+                    .set_model(model)
+                    .await
+                    .map_err(provider_error("grok"))?;
+            }
             Ok(StartedSession {
-                resume_cursor: Some(json!({"sessionId": id})),
+                resume_cursor: Some(json!({"schemaVersion":1,"sessionId": id})),
                 runtime_payload: None,
             })
         })
@@ -1700,12 +1914,20 @@ impl ProviderDriver for GrokDriver {
     fn send(
         &self,
         text: String,
-        _: Vec<Value>,
+        attachments: Vec<Value>,
         _: String,
     ) -> BoxRuntimeFuture<'_, Result<Option<String>, ProviderRuntimeError>> {
         Box::pin(async move {
+            let attachments = self
+                .attachments
+                .materialize(attachments)
+                .await
+                .map_err(attachment_error("grok"))?
+                .into_iter()
+                .map(acp_image)
+                .collect();
             self.runtime
-                .send_turn(&text)
+                .send_turn(Some(&text), attachments)
                 .await
                 .map(Some)
                 .map_err(provider_error("grok"))
@@ -1749,11 +1971,32 @@ impl ProviderDriver for GrokDriver {
                 .map_err(provider_error("grok"))
         })
     }
-    fn set_mode(&self, _: String) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
-        unsupported("grok", "post-start runtime mode changes")
+    fn set_mode(&self, mode: String) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
+        Box::pin(async move {
+            self.runtime
+                .set_runtime_mode(&mode)
+                .await
+                .map_err(provider_error("grok"))
+        })
     }
-    fn set_model(&self, _: String) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
-        unsupported("grok", "post-start model changes")
+    fn set_interaction_mode(
+        &self,
+        mode: String,
+    ) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
+        Box::pin(async move {
+            self.runtime
+                .set_interaction_mode(&mode)
+                .await
+                .map_err(provider_error("grok"))
+        })
+    }
+    fn set_model(&self, model: String) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
+        Box::pin(async move {
+            self.runtime
+                .set_model(&model)
+                .await
+                .map_err(provider_error("grok"))
+        })
     }
     fn rollback(&self, _: i64) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
         unsupported("grok", "checkpoint rollback")
@@ -1781,19 +2024,28 @@ struct OpenCodeDriver {
     runtime: OpenCodeSessionRuntime,
     child: Option<SharedChild>,
     resume_session_id: Option<String>,
+    attachments: AttachmentMaterializer,
 }
 impl OpenCodeDriver {
-    async fn spawn(request: ProviderLaunchRequest) -> Result<Self, ProviderRuntimeError> {
+    async fn spawn(
+        mut request: ProviderLaunchRequest,
+        attachments: AttachmentMaterializer,
+    ) -> Result<Self, ProviderRuntimeError> {
         if let Some(endpoint) = request.endpoint.as_ref() {
+            let runtime = OpenCodeSessionRuntime::new_with_password(
+                endpoint,
+                &request.thread_id,
+                &request.cwd.to_string_lossy(),
+                request.model.as_deref(),
+                request.server_password.as_deref(),
+            )
+            .map_err(provider_error("opencode"))?;
+            runtime.configure_runtime_mode(&request.runtime_mode).await;
             return Ok(Self {
-                runtime: OpenCodeSessionRuntime::new(
-                    endpoint,
-                    &request.thread_id,
-                    &request.cwd.to_string_lossy(),
-                    request.model.as_deref(),
-                ),
+                runtime,
                 child: None,
                 resume_session_id: request.resume_cursor.as_ref().and_then(resume_string),
+                attachments,
             });
         }
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1805,6 +2057,11 @@ impl OpenCodeDriver {
             .port();
         drop(listener);
         let endpoint = format!("http://127.0.0.1:{port}");
+        let local_password = Uuid::new_v4().to_string();
+        request.environment.insert(
+            "OPENCODE_SERVER_PASSWORD".to_owned(),
+            local_password.clone(),
+        );
         let args = vec![
             "serve".to_owned(),
             "--hostname=127.0.0.1".to_owned(),
@@ -1812,15 +2069,26 @@ impl OpenCodeDriver {
         ];
         let child = Arc::new(Mutex::new(spawn_child(&request, &args, false)?));
         wait_for_endpoint(&endpoint, &child).await?;
+        let runtime = OpenCodeSessionRuntime::new_with_password(
+            &endpoint,
+            &request.thread_id,
+            &request.cwd.to_string_lossy(),
+            request.model.as_deref(),
+            Some(&local_password),
+        )
+        .map_err(provider_error("opencode"))?;
+        runtime.configure_runtime_mode(&request.runtime_mode).await;
+        if let Some(mcp) = request.mcp.as_ref() {
+            runtime
+                .add_mcp_server("t4code", &mcp.endpoint, &mcp.authorization_header)
+                .await
+                .map_err(provider_error("opencode"))?;
+        }
         Ok(Self {
-            runtime: OpenCodeSessionRuntime::new(
-                &endpoint,
-                &request.thread_id,
-                &request.cwd.to_string_lossy(),
-                request.model.as_deref(),
-            ),
+            runtime,
             child: Some(child),
             resume_session_id: request.resume_cursor.as_ref().and_then(resume_string),
+            attachments,
         })
     }
 }
@@ -1842,12 +2110,20 @@ impl ProviderDriver for OpenCodeDriver {
     fn send(
         &self,
         text: String,
-        _: Vec<Value>,
+        attachments: Vec<Value>,
         _: String,
     ) -> BoxRuntimeFuture<'_, Result<Option<String>, ProviderRuntimeError>> {
         Box::pin(async move {
+            let attachments = self
+                .attachments
+                .materialize(attachments)
+                .await
+                .map_err(attachment_error("opencode"))?
+                .into_iter()
+                .map(opencode_file)
+                .collect();
             self.runtime
-                .send_turn(&text)
+                .send_turn(Some(&text), attachments)
                 .await
                 .map(Some)
                 .map_err(provider_error("opencode"))
@@ -1866,10 +2142,15 @@ impl ProviderDriver for OpenCodeDriver {
     }
     fn approve(
         &self,
-        _: String,
-        _: String,
+        request_id: String,
+        decision: String,
     ) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
-        unsupported("opencode", "approval responses")
+        Box::pin(async move {
+            self.runtime
+                .respond_to_permission(&request_id, &decision)
+                .await
+                .map_err(provider_error("opencode"))
+        })
     }
     fn answer(
         &self,
@@ -1886,8 +2167,13 @@ impl ProviderDriver for OpenCodeDriver {
     fn set_mode(&self, _: String) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
         unsupported("opencode", "post-start runtime mode changes")
     }
-    fn set_model(&self, _: String) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
-        unsupported("opencode", "post-start model changes")
+    fn set_model(&self, model: String) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
+        Box::pin(async move {
+            self.runtime
+                .set_model(&model)
+                .await
+                .map_err(provider_error("opencode"))
+        })
     }
     fn rollback(&self, count: i64) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
         Box::pin(async move {
@@ -1936,11 +2222,17 @@ struct ClaudeDriver {
     child: SharedChild,
     session_id: String,
     runtime_mode: Mutex<ClaudeRuntimeMode>,
+    configured_runtime_mode: Mutex<String>,
+    interaction_mode: Mutex<String>,
     sequence: Mutex<u64>,
+    attachments: AttachmentMaterializer,
 }
 
 impl ClaudeDriver {
-    async fn spawn(request: ProviderLaunchRequest) -> Result<Self, ProviderRuntimeError> {
+    async fn spawn(
+        request: ProviderLaunchRequest,
+        attachments: AttachmentMaterializer,
+    ) -> Result<Self, ProviderRuntimeError> {
         let mode = claude_mode(&request.runtime_mode, &request.interaction_mode);
         let session_id = request
             .resume_cursor
@@ -1964,6 +2256,18 @@ impl ClaudeDriver {
         }
         if let Some(model) = request.model.as_ref() {
             args.extend(["--model".to_owned(), model.clone()]);
+        }
+        if let Some(mcp) = request.mcp.as_ref() {
+            let config = json!({
+                "mcpServers": {
+                    "t4code": {
+                        "type": "http",
+                        "url": mcp.endpoint,
+                        "headers": { "Authorization": mcp.authorization_header },
+                    }
+                }
+            });
+            args.extend(["--mcp-config".to_owned(), config.to_string()]);
         }
         let mut child = spawn_child(&request, &args, true)?;
         let stdout = child
@@ -1998,7 +2302,10 @@ impl ClaudeDriver {
             child: Arc::new(Mutex::new(child)),
             session_id,
             runtime_mode: Mutex::new(mode),
+            configured_runtime_mode: Mutex::new(request.runtime_mode),
+            interaction_mode: Mutex::new(request.interaction_mode),
             sequence: Mutex::new(0),
+            attachments,
         })
     }
 
@@ -2018,6 +2325,19 @@ impl ClaudeDriver {
         *value += 1;
         *value
     }
+
+    async fn apply_mode(&self) -> Result<(), ProviderRuntimeError> {
+        let runtime_mode = self.configured_runtime_mode.lock().await.clone();
+        let interaction_mode = self.interaction_mode.lock().await.clone();
+        let mode = claude_mode(&runtime_mode, &interaction_mode);
+        *self.runtime_mode.lock().await = mode;
+        let request = ClaudeControlRequest::set_permission_mode(
+            self.next_sequence().await,
+            mode.permission_mode(),
+        );
+        self.write_json(json!({"type":"control_request","request":request}))
+            .await
+    }
 }
 
 impl ProviderDriver for ClaudeDriver {
@@ -2035,11 +2355,20 @@ impl ProviderDriver for ClaudeDriver {
     fn send(
         &self,
         text: String,
-        _: Vec<Value>,
+        attachments: Vec<Value>,
         _: String,
     ) -> BoxRuntimeFuture<'_, Result<Option<String>, ProviderRuntimeError>> {
         Box::pin(async move {
             let turn_id = Uuid::new_v4().to_string();
+            let attachments = self
+                .attachments
+                .materialize(attachments)
+                .await
+                .map_err(attachment_error("claude"))?
+                .into_iter()
+                .map(claude_image)
+                .collect();
+            let content = crate::provider::attachments::prompt_parts(Some(&text), attachments);
             self.runtime
                 .lock()
                 .await
@@ -2047,7 +2376,7 @@ impl ProviderDriver for ClaudeDriver {
                     turn_id: turn_id.clone(),
                     input: text.clone(),
                 });
-            self.write_json(json!({"type":"user","session_id":self.session_id,"message":{"role":"user","content":[{"type":"text","text":text}]},"parent_tool_use_id":null})).await?;
+            self.write_json(json!({"type":"user","session_id":self.session_id,"message":{"role":"user","content":content},"parent_tool_use_id":null})).await?;
             Ok(Some(turn_id))
         })
     }
@@ -2094,14 +2423,17 @@ impl ProviderDriver for ClaudeDriver {
     }
     fn set_mode(&self, mode: String) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
         Box::pin(async move {
-            let mode = claude_mode(&mode, "default");
-            *self.runtime_mode.lock().await = mode;
-            let request = ClaudeControlRequest::set_permission_mode(
-                self.next_sequence().await,
-                mode.permission_mode(),
-            );
-            self.write_json(json!({"type":"control_request","request":request}))
-                .await
+            *self.configured_runtime_mode.lock().await = mode;
+            self.apply_mode().await
+        })
+    }
+    fn set_interaction_mode(
+        &self,
+        mode: String,
+    ) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
+        Box::pin(async move {
+            *self.interaction_mode.lock().await = mode;
+            self.apply_mode().await
         })
     }
     fn set_model(&self, _: String) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
@@ -2220,6 +2552,104 @@ fn provider_error<E: std::fmt::Display>(
     }
 }
 
+fn attachment_error(
+    provider: &str,
+) -> impl FnOnce(crate::provider::attachments::AttachmentMaterializationError) -> ProviderRuntimeError + '_
+{
+    provider_error(provider)
+}
+
+fn codex_image(image: MaterializedImage) -> Value {
+    json!({
+        "type": "image",
+        "url": format!("data:{};base64,{}", image.mime_type, image.base64_data),
+    })
+}
+
+fn acp_image(image: MaterializedImage) -> Value {
+    json!({
+        "type": "image",
+        "data": image.base64_data,
+        "mimeType": image.mime_type,
+    })
+}
+
+fn claude_image(image: MaterializedImage) -> Value {
+    json!({
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": image.mime_type,
+            "data": image.base64_data,
+        },
+    })
+}
+
+fn opencode_file(image: MaterializedImage) -> Value {
+    json!({
+        "type": "file",
+        "mime": image.mime_type,
+        "url": image.file_url,
+        "filename": image.name,
+    })
+}
+
+fn acp_mcp_servers(mcp: Option<&ProviderMcpConfig>) -> Vec<Value> {
+    mcp.map_or_else(Vec::new, |mcp| {
+        vec![json!({
+            "type": "http",
+            "name": "t4code",
+            "url": mcp.endpoint,
+            "headers": [{
+                "name": "Authorization",
+                "value": mcp.authorization_header,
+            }],
+        })]
+    })
+}
+
+#[cfg(test)]
+mod attachment_adapter_tests {
+    use super::*;
+
+    fn image() -> MaterializedImage {
+        MaterializedImage {
+            name: "screen.png".to_owned(),
+            mime_type: "image/png".to_owned(),
+            base64_data: "aW1hZ2U=".to_owned(),
+            file_url: "file:///state/attachments/image-1".to_owned(),
+        }
+    }
+
+    #[test]
+    fn materialized_images_match_each_provider_wire_format() {
+        assert_eq!(
+            codex_image(image()),
+            json!({ "type": "image", "url": "data:image/png;base64,aW1hZ2U=" })
+        );
+        assert_eq!(
+            acp_image(image()),
+            json!({ "type": "image", "data": "aW1hZ2U=", "mimeType": "image/png" })
+        );
+        assert_eq!(
+            claude_image(image()),
+            json!({
+                "type": "image",
+                "source": { "type": "base64", "media_type": "image/png", "data": "aW1hZ2U=" }
+            })
+        );
+        assert_eq!(
+            opencode_file(image()),
+            json!({
+                "type": "file",
+                "mime": "image/png",
+                "url": "file:///state/attachments/image-1",
+                "filename": "screen.png"
+            })
+        );
+    }
+}
+
 fn unsupported<T>(
     provider: &str,
     capability: &'static str,
@@ -2243,6 +2673,18 @@ async fn wait_for_endpoint(
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
         if reqwest::get(endpoint).await.is_ok() {
+            if child
+                .lock()
+                .await
+                .try_wait()
+                .map_err(provider_error("opencode"))?
+                .is_some()
+            {
+                return Err(ProviderRuntimeError::Provider {
+                    provider: "opencode".to_owned(),
+                    detail: "server process exited before claiming its reserved port".to_owned(),
+                });
+            }
             return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {
@@ -2267,6 +2709,26 @@ mod tests {
         assert_eq!(
             super::model_from_selection(&json!({"model":"gpt-5.4"})),
             Some("gpt-5.4".to_owned())
+        );
+    }
+
+    #[test]
+    fn provider_string_options_are_extracted_from_canonical_selections() {
+        let selection = json!({
+            "model": "gpt-5.4",
+            "options": [
+                { "id": "reasoningEffort", "value": "high" },
+                { "id": "serviceTier", "value": "fast" }
+            ]
+        });
+
+        assert_eq!(
+            super::selection_string_option(&selection, "reasoningEffort"),
+            Some("high".to_owned())
+        );
+        assert_eq!(
+            super::selection_string_option(&selection, "serviceTier"),
+            Some("fast".to_owned())
         );
     }
 

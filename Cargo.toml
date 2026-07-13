@@ -16,6 +16,7 @@ futures-util = { version = "0.3.32", features = ["sink"] }
 getrandom = "0.3.4"
 hmac = "0.12.1"
 httpdate = "1.0.3"
+junction = "1.4.2"
 mime_guess = "2.0.5"
 open = "5.3.6"
 percent-encoding = "2.3.2"

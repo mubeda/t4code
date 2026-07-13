@@ -1,4 +1,5 @@
 pub mod canonical;
+pub mod model;
 pub mod protocol;
 pub mod runtime;
 

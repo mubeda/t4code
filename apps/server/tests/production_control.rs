@@ -77,6 +77,40 @@ async fn write_provider_fixture(directory: &TempDir) -> PathBuf {
     path
 }
 
+async fn write_claude_fixture(directory: &TempDir, version: &str) -> PathBuf {
+    #[cfg(windows)]
+    let (name, contents) = (
+        "claude.cmd",
+        format!(
+            "@echo off\r\nif \"%1\"==\"--version\" (echo {version} (Claude Code)& exit /b 0)\r\nif \"%1\"==\"auth\" (echo {{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"email\":\"dev@example.com\"}}& exit /b 0)\r\nexit /b 1\r\n"
+        ),
+    );
+    #[cfg(not(windows))]
+    let (name, contents) = (
+        "claude",
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo '{version} (Claude Code)'\nelif [ \"$1\" = \"auth\" ]; then\n  echo '{{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"email\":\"dev@example.com\"}}'\nelse\n  exit 1\nfi\n"
+        ),
+    );
+    let path = directory.path().join(name);
+    tokio::fs::write(&path, contents)
+        .await
+        .expect("write Claude fixture");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut permissions = tokio::fs::metadata(&path)
+            .await
+            .expect("Claude fixture metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        tokio::fs::set_permissions(&path, permissions)
+            .await
+            .expect("make Claude fixture executable");
+    }
+    path
+}
+
 async fn call(control: &NativeServerControl, method: &'static str, payload: Value) -> Value {
     control
         .call(method, payload, CancellationToken::new())
@@ -351,6 +385,118 @@ async fn provider_inventory_uses_provider_specific_status_and_configured_models(
             .iter()
             .any(|model| { model["slug"] == "cursor/custom-test" && model["isCustom"] == true })
     );
+}
+
+#[tokio::test]
+async fn claude_inventory_restores_the_built_in_model_catalog_from_the_node_server() {
+    let directory = tempfile::tempdir().expect("temporary state directory");
+    let executable = write_claude_fixture(&directory, "2.1.207").await;
+    let settings = json!({
+        "providerInstances": {
+            "claudeAgent": {
+                "driver": "claudeAgent",
+                "enabled": true,
+                "config": {
+                    "binaryPath": executable,
+                    "customModels": ["claude-custom-test"]
+                }
+            }
+        }
+    });
+    let settings_path = directory.path().join("userdata/settings.json");
+    tokio::fs::create_dir_all(settings_path.parent().unwrap())
+        .await
+        .expect("create settings directory");
+    tokio::fs::write(settings_path, serde_json::to_vec(&settings).unwrap())
+        .await
+        .expect("write settings fixture");
+    let control =
+        NativeServerControl::new(ServerConfig::new(directory.path()), auth_descriptor()).await;
+
+    let config = call(&control, "server.getConfig", json!({})).await;
+    let provider = config["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|provider| provider["instanceId"] == "claudeAgent")
+        .expect("Claude provider snapshot");
+    let models = provider["models"].as_array().unwrap();
+    let slugs = models
+        .iter()
+        .filter_map(|model| model["slug"].as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(provider["status"], "ready");
+    assert_eq!(provider["auth"]["status"], "authenticated");
+    assert_eq!(models.len(), 9);
+    for expected in [
+        "claude-fable-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-opus-4-5",
+        "claude-sonnet-5",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
+        "claude-custom-test",
+    ] {
+        assert!(slugs.contains(&expected), "missing Claude model {expected}");
+    }
+    let sonnet = models
+        .iter()
+        .find(|model| model["slug"] == "claude-sonnet-5")
+        .expect("Claude Sonnet 5 model");
+    let option_ids = sonnet["capabilities"]["optionDescriptors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|option| option["id"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(option_ids, ["effort", "contextWindow"]);
+}
+
+#[tokio::test]
+async fn claude_inventory_hides_models_unsupported_by_the_installed_cli_version() {
+    let directory = tempfile::tempdir().expect("temporary state directory");
+    let executable = write_claude_fixture(&directory, "2.1.100").await;
+    let settings = json!({
+        "providerInstances": {
+            "claudeAgent": {
+                "driver": "claudeAgent",
+                "enabled": true,
+                "config": { "binaryPath": executable }
+            }
+        }
+    });
+    let settings_path = directory.path().join("userdata/settings.json");
+    tokio::fs::create_dir_all(settings_path.parent().unwrap())
+        .await
+        .expect("create settings directory");
+    tokio::fs::write(settings_path, serde_json::to_vec(&settings).unwrap())
+        .await
+        .expect("write settings fixture");
+    let control =
+        NativeServerControl::new(ServerConfig::new(directory.path()), auth_descriptor()).await;
+
+    let config = call(&control, "server.getConfig", json!({})).await;
+    let provider = config["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|provider| provider["instanceId"] == "claudeAgent")
+        .expect("Claude provider snapshot");
+    let slugs = provider["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|model| model["slug"].as_str())
+        .collect::<Vec<_>>();
+
+    assert!(!slugs.contains(&"claude-fable-5"));
+    assert!(!slugs.contains(&"claude-opus-4-8"));
+    assert!(!slugs.contains(&"claude-opus-4-7"));
+    assert!(slugs.contains(&"claude-opus-4-6"));
+    assert!(slugs.contains(&"claude-sonnet-5"));
 }
 
 #[tokio::test]

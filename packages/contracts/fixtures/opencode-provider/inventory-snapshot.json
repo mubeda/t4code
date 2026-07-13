@@ -39,41 +39,27 @@
         "capabilities": {
           "optionDescriptors": [
             {
-              "id": "agent",
-              "label": "Agent",
-              "type": "select",
-              "options": [
-                {
-                  "id": "build",
-                  "label": "build",
-                  "isDefault": true
-                }
-              ]
-            },
-            {
               "id": "variant",
               "label": "Variant",
               "type": "select",
+              "currentValue": "medium",
               "options": [
                 {
                   "id": "high",
-                  "label": "high",
-                  "isDefault": false
+                  "label": "High"
                 },
                 {
                   "id": "low",
-                  "label": "low",
-                  "isDefault": false
+                  "label": "Low"
                 },
                 {
                   "id": "medium",
-                  "label": "medium",
+                  "label": "Medium",
                   "isDefault": true
                 },
                 {
                   "id": "none",
-                  "label": "none",
-                  "isDefault": false
+                  "label": "None"
                 }
               ]
             }

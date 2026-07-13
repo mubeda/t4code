@@ -1,21 +1,31 @@
-use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    path::{Path, PathBuf},
+    pin::Pin,
+    sync::Arc,
+    time::Duration,
+};
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::process::Command;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     ServerConfig,
     assets::{AssetAccess, ResolvedAsset},
     auth::AuthService,
     diagnostics::{DiagnosticsMonitor, NativeProcessSampler, TraceDiagnosticsStore},
+    git::GitRepository,
     mcp::preview_automation::PreviewAutomationBroker,
     observability::BrowserTraceCollector,
     orchestration::{EngineOptions, OrchestrationCommand, OrchestrationEngine, load_snapshot},
     persistence::{Database, Repositories, StatePaths},
     preview::PreviewManager,
     production::{
+        connect_mcp::ConnectMcpService,
         control::NativeServerControl,
         git_vcs::{GitVcsRpcServices, register_git_vcs_rpc},
         http_routes::{
@@ -59,6 +69,10 @@ pub struct ProductionRuntime {
 }
 
 impl ProductionRuntime {
+    pub async fn attach_connect_mcp(&self, service: Arc<ConnectMcpService>) {
+        self.provider_runtime.attach_connect_mcp(service).await;
+    }
+
     pub async fn start(
         config: &ServerConfig,
         database: Database,
@@ -88,7 +102,9 @@ impl ProductionRuntime {
         .await?;
         let provider_runtime = Arc::new(ProviderRuntimeSupervisor::start_with_operational_log(
             orchestration.clone(),
-            Arc::new(NativeProviderDriverFactory),
+            Arc::new(NativeProviderDriverFactory::new(
+                state_paths.attachments_dir.clone(),
+            )),
             SupervisorOptions::default(),
             operational_logs.provider(),
         ));
@@ -404,6 +420,10 @@ impl AssetContextResolver for ProjectionAssetContext {
 
 struct GitReviewBackend;
 
+const MAX_UNTRACKED_REVIEW_FILES: usize = 500;
+const MAX_UNTRACKED_REVIEW_FILE_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_UNTRACKED_REVIEW_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
+
 impl ReviewBackend for GitReviewBackend {
     fn get_diff_preview<'a>(
         &'a self,
@@ -412,29 +432,63 @@ impl ReviewBackend for GitReviewBackend {
         Box<dyn Future<Output = Result<Option<ReviewDiffPreviewResult>, ReviewError>> + Send + 'a>,
     > {
         Box::pin(async move {
-            let mut command = Command::new("git");
-            command
-                .arg("-C")
-                .arg(&input.cwd)
-                .args(["diff", "--no-ext-diff"]);
-            if input.ignore_whitespace.unwrap_or(false) {
-                command.arg("--ignore-all-space");
-            }
-            if let Some(base_ref) = &input.base_ref {
-                command.arg(base_ref);
-            }
-            command.arg("--");
-            let output = command
-                .output()
+            let cancellation = CancellationToken::new();
+            let status = GitRepository::default()
+                .local_status(Path::new(&input.cwd), &cancellation)
                 .await
                 .map_err(|error| ReviewError::Backend(error.to_string()))?;
-            if !output.status.success() {
-                return Err(ReviewError::Backend(
-                    String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-                ));
+            if !status.is_repo {
+                return Ok(Some(ReviewDiffPreviewResult {
+                    cwd: input.cwd.clone(),
+                    generated_at: now_millis(),
+                    sources: Vec::new(),
+                }));
             }
-            let diff = String::from_utf8_lossy(&output.stdout).into_owned();
-            let sources = split_git_diff(&diff);
+
+            let ignore_whitespace = input.ignore_whitespace.unwrap_or(false);
+            let tracked_worktree = run_review_diff(
+                &input.cwd,
+                review_diff_args(ignore_whitespace, Some("HEAD"), false),
+            )
+            .await?;
+            let untracked = untracked_review_diff(&input.cwd).await?;
+            let working_tree_diff = join_review_diffs(&tracked_worktree, &untracked.diff);
+
+            let base_ref = input.base_ref.clone().or(status.default_ref_name);
+            let branch_diff = match (&base_ref, &status.ref_name) {
+                (Some(base_ref), Some(_)) => {
+                    let range = format!("{base_ref}...HEAD");
+                    run_review_diff(
+                        &input.cwd,
+                        review_diff_args(ignore_whitespace, Some(&range), true),
+                    )
+                    .await?
+                }
+                _ => String::new(),
+            };
+            let sources = vec![
+                review_source(
+                    "working-tree",
+                    "working-tree",
+                    "Dirty worktree",
+                    Some("HEAD".to_owned()),
+                    None,
+                    working_tree_diff,
+                    untracked.truncated,
+                ),
+                review_source(
+                    "branch-range",
+                    "branch-range",
+                    base_ref.as_ref().map_or_else(
+                        || "Against base branch".to_owned(),
+                        |base| format!("Against {base}"),
+                    ),
+                    base_ref,
+                    Some(status.ref_name.unwrap_or_else(|| "HEAD".to_owned())),
+                    branch_diff,
+                    false,
+                ),
+            ];
             Ok(Some(ReviewDiffPreviewResult {
                 cwd: input.cwd.clone(),
                 generated_at: now_millis(),
@@ -444,21 +498,157 @@ impl ReviewBackend for GitReviewBackend {
     }
 }
 
-fn split_git_diff(diff: &str) -> Vec<ReviewSource> {
-    diff.split("diff --git ")
-        .filter(|section| !section.trim().is_empty())
-        .map(|section| {
-            let path = section
-                .lines()
-                .find_map(|line| line.strip_prefix("+++ b/"))
-                .unwrap_or("unknown")
-                .to_owned();
-            ReviewSource {
-                path,
-                diff: format!("diff --git {section}"),
-            }
-        })
-        .collect()
+struct UntrackedReviewDiff {
+    diff: String,
+    truncated: bool,
+}
+
+fn review_diff_args(ignore_whitespace: bool, target: Option<&str>, three_dot: bool) -> Vec<String> {
+    let mut args = vec![
+        "diff".to_owned(),
+        "--no-ext-diff".to_owned(),
+        "--patch".to_owned(),
+        "--minimal".to_owned(),
+    ];
+    if ignore_whitespace {
+        args.push("--ignore-all-space".to_owned());
+    }
+    if let Some(target) = target {
+        args.push(target.to_owned());
+    }
+    if !three_dot {
+        args.push("--".to_owned());
+    }
+    args
+}
+
+async fn run_review_diff(cwd: &str, args: Vec<String>) -> Result<String, ReviewError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .await
+        .map_err(|error| ReviewError::Backend(error.to_string()))?;
+    Ok(if output.status.success() {
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    } else {
+        String::new()
+    })
+}
+
+fn join_review_diffs(left: &str, right: &str) -> String {
+    [left.trim_end(), right.trim_end()]
+        .into_iter()
+        .filter(|diff| !diff.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn review_source(
+    id: &str,
+    kind: &str,
+    title: impl Into<String>,
+    base_ref: Option<String>,
+    head_ref: Option<String>,
+    diff: String,
+    truncated: bool,
+) -> ReviewSource {
+    let diff_hash = format!("{:x}", Sha256::digest(diff.as_bytes()));
+    ReviewSource {
+        id: id.to_owned(),
+        kind: kind.to_owned(),
+        title: title.into(),
+        base_ref,
+        head_ref,
+        diff,
+        diff_hash,
+        truncated,
+    }
+}
+
+async fn untracked_review_diff(cwd: &str) -> Result<UntrackedReviewDiff, ReviewError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args([
+            "-c",
+            "core.quotePath=false",
+            "ls-files",
+            "-z",
+            "--others",
+            "--exclude-standard",
+        ])
+        .output()
+        .await
+        .map_err(|error| ReviewError::Backend(error.to_string()))?;
+    if !output.status.success() {
+        return Err(ReviewError::Backend(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        ));
+    }
+
+    let root = PathBuf::from(cwd);
+    let mut total_bytes = 0_u64;
+    let mut diffs = Vec::new();
+    let mut truncated = false;
+    for path in output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .take(MAX_UNTRACKED_REVIEW_FILES)
+    {
+        let path = String::from_utf8_lossy(path).into_owned();
+        let absolute = root.join(&path);
+        let metadata = tokio::fs::symlink_metadata(&absolute)
+            .await
+            .map_err(|error| ReviewError::Backend(error.to_string()))?;
+        if !metadata.file_type().is_file() {
+            continue;
+        }
+        if metadata.len() > MAX_UNTRACKED_REVIEW_FILE_BYTES
+            || total_bytes.saturating_add(metadata.len()) > MAX_UNTRACKED_REVIEW_TOTAL_BYTES
+        {
+            diffs.push(binary_untracked_diff(&path));
+            truncated = true;
+            continue;
+        }
+        let contents = tokio::fs::read(&absolute)
+            .await
+            .map_err(|error| ReviewError::Backend(error.to_string()))?;
+        total_bytes = total_bytes.saturating_add(contents.len() as u64);
+        diffs.push(if contents.contains(&0) {
+            binary_untracked_diff(&path)
+        } else {
+            text_untracked_diff(&path, &String::from_utf8_lossy(&contents))
+        });
+    }
+    Ok(UntrackedReviewDiff {
+        diff: diffs.join("\n"),
+        truncated,
+    })
+}
+
+fn binary_untracked_diff(path: &str) -> String {
+    format!(
+        "diff --git a/{path} b/{path}\nnew file mode 100644\nBinary files /dev/null and b/{path} differ\n"
+    )
+}
+
+fn text_untracked_diff(path: &str, contents: &str) -> String {
+    let line_count = contents.lines().count();
+    let mut diff = format!(
+        "diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{line_count} @@\n"
+    );
+    for line in contents.split_inclusive('\n') {
+        diff.push('+');
+        diff.push_str(line);
+    }
+    if !contents.is_empty() && !contents.ends_with('\n') {
+        diff.push('\n');
+        diff.push_str("\\ No newline at end of file\n");
+    }
+    diff
 }
 
 fn bad_request(error: impl std::fmt::Display) -> HttpRouteError {
@@ -497,3 +687,89 @@ fn now_iso() -> String {
 }
 
 const FALLBACK_FAVICON: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="8" fill="#171717"/><path d="M17 19h30v8H36v22h-8V27H17z" fill="#fafafa"/></svg>"##;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn git_review_backend_includes_untracked_files() {
+        let repository = TempDir::new().expect("temporary repository");
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(repository.path())
+                .status()
+                .expect("git starts")
+                .success()
+        );
+        std::fs::write(repository.path().join("untracked.txt"), "first\nsecond\n")
+            .expect("write untracked fixture");
+
+        let input = ReviewDiffPreviewInput {
+            cwd: repository.path().to_string_lossy().into_owned(),
+            base_ref: None,
+            ignore_whitespace: Some(false),
+        };
+        let preview = GitReviewBackend
+            .get_diff_preview(&input)
+            .await
+            .expect("review succeeds")
+            .expect("review preview");
+
+        assert_eq!(preview.sources.len(), 2);
+        assert_eq!(preview.sources[0].kind, "working-tree");
+        assert!(preview.sources[0].diff.contains("+++ b/untracked.txt"));
+        assert!(preview.sources[0].diff.contains("+first"));
+        assert!(preview.sources[0].diff.contains("+second"));
+        assert_eq!(preview.sources[1].kind, "branch-range");
+    }
+
+    #[tokio::test]
+    async fn git_review_backend_includes_staged_changes_and_branch_range() {
+        let repository = TempDir::new().expect("temporary repository");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repository.path())
+                .output()
+                .expect("git starts");
+            assert!(
+                output.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "--quiet", "--initial-branch=main"]);
+        git(&["config", "user.email", "test@t4code.local"]);
+        git(&["config", "user.name", "T4Code Test"]);
+        std::fs::write(repository.path().join("tracked.txt"), "base\n").expect("write base");
+        git(&["add", "tracked.txt"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        git(&["switch", "--quiet", "-c", "feature"]);
+        std::fs::write(repository.path().join("branch.txt"), "feature\n").expect("write branch");
+        git(&["add", "branch.txt"]);
+        git(&["commit", "--quiet", "-m", "feature"]);
+        std::fs::write(repository.path().join("tracked.txt"), "staged\n").expect("write staged");
+        git(&["add", "tracked.txt"]);
+
+        let input = ReviewDiffPreviewInput {
+            cwd: repository.path().to_string_lossy().into_owned(),
+            base_ref: None,
+            ignore_whitespace: Some(false),
+        };
+        let preview = GitReviewBackend
+            .get_diff_preview(&input)
+            .await
+            .expect("review succeeds")
+            .expect("review preview");
+
+        assert!(preview.sources[0].diff.contains("+++ b/tracked.txt"));
+        assert!(preview.sources[0].diff.contains("+staged"));
+        assert_eq!(preview.sources[1].base_ref.as_deref(), Some("main"));
+        assert!(preview.sources[1].diff.contains("+++ b/branch.txt"));
+        assert!(preview.sources[1].diff.contains("+feature"));
+    }
+}

@@ -9,8 +9,9 @@ pub use discovery::{
 };
 #[allow(unused_imports)]
 pub use pull_request::{
-    ChangeRequestState, PullRequestService, ResolvePullRequestInput, ResolvedPullRequest,
-    SourceControlProviderError, parse_github_pull_request, parse_gitlab_merge_request,
+    ChangeRequestState, CreatePullRequestInput, PullRequestService, ResolvePullRequestInput,
+    ResolvedPullRequest, SourceControlProviderError, parse_github_pull_request,
+    parse_gitlab_merge_request,
 };
 
 use serde::{Deserialize, Serialize};
