@@ -29,6 +29,7 @@ export interface ReferenceRepoSyncPlan {
   readonly action: ReferenceRepoSyncAction;
   readonly ref: string;
   readonly args: ReadonlyArray<string>;
+  readonly pruneArgs: ReadonlyArray<string> | null;
 }
 
 export class ReferenceRepoSelectionError extends Schema.TaggedErrorClass<ReferenceRepoSelectionError>()(
@@ -217,10 +218,24 @@ export const planReferenceRepoSync = Effect.fn("planReferenceRepoSync")(function
     action,
     ref,
     args: ["subtree", action, `--prefix=${repo.prefix}`, repo.repository, ref, "--squash"],
+    pruneArgs:
+      repo.prunePaths && repo.prunePaths.length > 0
+        ? [
+            "rm",
+            "-rf",
+            "--ignore-unmatch",
+            "--",
+            ...repo.prunePaths.map((prunePath) => `${repo.prefix}/${prunePath}`),
+          ]
+        : null,
   } satisfies ReferenceRepoSyncPlan;
 });
 
-const runGit = Effect.fn("runGit")(function* (rootDir: string, plan: ReferenceRepoSyncPlan) {
+const runGitCommand = Effect.fn("runGitCommand")(function* (
+  rootDir: string,
+  plan: ReferenceRepoSyncPlan,
+  args: ReadonlyArray<string>,
+) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const errorContext = {
     repoId: plan.repo.id,
@@ -228,9 +243,9 @@ const runGit = Effect.fn("runGit")(function* (rootDir: string, plan: ReferenceRe
     repository: plan.repo.repository,
     ref: plan.ref,
     rootDir,
-    argumentCount: plan.args.length,
+    argumentCount: args.length,
   } as const;
-  const child = yield* spawner.spawn(ChildProcess.make("git", plan.args, { cwd: rootDir })).pipe(
+  const child = yield* spawner.spawn(ChildProcess.make("git", args, { cwd: rootDir })).pipe(
     Effect.mapError(
       (cause) =>
         new ReferenceRepoGitSubtreeError({
@@ -270,6 +285,13 @@ const runGit = Effect.fn("runGit")(function* (rootDir: string, plan: ReferenceRe
 
   if (stdout.trim().length > 0) {
     yield* Console.log(stdout.trim());
+  }
+});
+
+const runGit = Effect.fn("runGit")(function* (rootDir: string, plan: ReferenceRepoSyncPlan) {
+  yield* runGitCommand(rootDir, plan, plan.args);
+  if (plan.pruneArgs) {
+    yield* runGitCommand(rootDir, plan, plan.pruneArgs);
   }
 });
 
