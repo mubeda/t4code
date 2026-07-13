@@ -230,6 +230,7 @@ impl ServerRuntime {
                     .await
                     .map_err(|error| ServerError::ProductionInitialize(format!("{error:?}")))?,
                 );
+                runtime.attach_connect_mcp(connect.clone()).await;
                 (
                     runtime.registry.clone(),
                     core_http_routes(auth.clone(), runtime.clone(), connect),

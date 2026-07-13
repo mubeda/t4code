@@ -682,13 +682,7 @@ impl CodexSessionRuntime {
                 if let Some(error) = error {
                     payload["error"] = error;
                 }
-                self.emit(
-                    "turn.completed",
-                    turn_id,
-                    None,
-                    payload,
-                )
-                .await;
+                self.emit("turn.completed", turn_id, None, payload).await;
             }
             "item/agentMessage/delta" => {
                 let turn_id = params

@@ -41,6 +41,14 @@ async fn grok_runtime_matches_user_input_and_cancel_traces() {
         GrokSessionOptions {
             thread_id: "grok-thread-1".to_owned(),
             cwd: "/tmp/project".to_owned(),
+            mcp_servers: vec![json!({
+                "type": "http",
+                "name": "t4code",
+                "url": "http://127.0.0.1:3773/mcp",
+                "headers": [{ "name": "Authorization", "value": "Bearer secret" }],
+            })],
+            runtime_mode: "approval-required".to_owned(),
+            interaction_mode: "default".to_owned(),
         },
         connection.clone(),
         incoming,
@@ -51,8 +59,38 @@ async fn grok_runtime_matches_user_input_and_cancel_traces() {
     peer.expect_request("authenticate")
         .respond(json!({ "status": "ok" }));
     peer.expect_request("session/create")
-        .respond(json!({ "sessionId": "grok-session-1" }));
+        .expect_params(json!({
+            "cwd": "/tmp/project",
+            "mcpServers": [{
+                "type": "http",
+                "name": "t4code",
+                "url": "http://127.0.0.1:3773/mcp",
+                "headers": [{ "name": "Authorization", "value": "Bearer secret" }],
+            }],
+        }))
+        .respond(json!({
+            "sessionId": "grok-session-1",
+            "modes": {
+                "currentModeId": "code",
+                "availableModes": [
+                    { "id": "code", "name": "Agent" },
+                    { "id": "ask", "name": "Ask" }
+                ]
+            }
+        }));
+    peer.expect_request("session/set_mode")
+        .expect_params(json!({ "sessionId": "grok-session-1", "modeId": "ask" }))
+        .respond(json!({}));
+    peer.expect_request("session/set_model")
+        .respond(json!({ "modelId": "grok-build" }));
     peer.expect_request("session/prompt")
+        .expect_params(json!({
+            "sessionId": "grok-session-1",
+            "prompt": [
+                { "type": "text", "text": "ask before continuing" },
+                { "type": "image", "data": "aW1hZ2U=", "mimeType": "image/png" }
+            ]
+        }))
         .emit_request(json!({
             "jsonrpc": "2.0",
             "id": 2001,
@@ -106,10 +144,17 @@ async fn grok_runtime_matches_user_input_and_cancel_traces() {
 
     let peer_task = tokio::spawn(peer.run());
     runtime.start().await.expect("start");
+    runtime.set_model("grok-build").await.expect("set model");
 
     let send_runtime = runtime.clone();
-    let send_turn =
-        tokio::spawn(async move { send_runtime.send_turn("ask before continuing").await });
+    let send_turn = tokio::spawn(async move {
+        send_runtime
+            .send_turn(
+                Some("ask before continuing"),
+                vec![json!({ "type": "image", "data": "aW1hZ2U=", "mimeType": "image/png" })],
+            )
+            .await
+    });
     let first = runtime.next_event().await.expect("session started");
     assert_eq!(first.event_type, "session.started");
     let second = runtime.next_event().await.expect("thread started");
@@ -139,7 +184,7 @@ async fn grok_runtime_matches_user_input_and_cancel_traces() {
     let cancel_runtime = runtime.clone();
     let mut cancel_turn = tokio::spawn(async move {
         cancel_runtime
-            .send_turn("cancel before the late update")
+            .send_turn(Some("cancel before the late update"), vec![])
             .await
     });
     let cancel_started = runtime.next_event().await.expect("cancel started");
@@ -236,6 +281,7 @@ impl ScriptedPeer {
     fn expect_request(&mut self, method: &str) -> &mut PeerStep {
         self.steps.push(PeerStep::ExpectRequest {
             method: method.to_owned(),
+            expected_params: None,
             response: None,
             emits: Vec::new(),
             expected_follow_up: None,
@@ -254,6 +300,7 @@ impl ScriptedPeer {
         for step in self.steps {
             let PeerStep::ExpectRequest {
                 method,
+                expected_params,
                 response,
                 emits,
                 expected_follow_up,
@@ -264,6 +311,9 @@ impl ScriptedPeer {
             } = step;
             let message = read_json_message(&mut reader, &format!("request:{method}")).await;
             assert_eq!(message["method"], method);
+            if let Some(expected_params) = expected_params {
+                assert_eq!(message["params"], expected_params);
+            }
             if let Some(delay_before_emits_ms) = delay_before_emits_ms {
                 tokio::time::sleep(Duration::from_millis(delay_before_emits_ms)).await;
             }
@@ -306,6 +356,7 @@ impl ScriptedPeer {
 enum PeerStep {
     ExpectRequest {
         method: String,
+        expected_params: Option<Value>,
         response: Option<Value>,
         emits: Vec<Value>,
         expected_follow_up: Option<Value>,
@@ -317,6 +368,14 @@ enum PeerStep {
 }
 
 impl PeerStep {
+    fn expect_params(&mut self, value: Value) -> &mut Self {
+        let PeerStep::ExpectRequest {
+            expected_params, ..
+        } = self;
+        *expected_params = Some(value);
+        self
+    }
+
     fn respond(&mut self, result: Value) -> &mut Self {
         let PeerStep::ExpectRequest { response, .. } = self;
         *response = Some(result);

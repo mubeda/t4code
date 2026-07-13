@@ -475,6 +475,54 @@ beforeEach(() => {
 });
 
 describe("ModelPickerContent", () => {
+  it.each(["codex", "claude", "cursor", "opencode", "grok"])(
+    "locks a %s chat panel to its creating provider instance",
+    (activeProvider) => {
+      const providerEntries = ["codex", "claude", "cursor", "opencode", "grok"].map((provider) =>
+        entry({
+          instanceId: provider,
+          driverKind: driver(provider),
+          displayName: provider,
+        }),
+      );
+      const modelOptionsByInstance = new Map(
+        providerEntries.map((providerEntry) => [
+          providerEntry.instanceId,
+          [
+            {
+              slug: `${providerEntry.instanceId}-model`,
+              name: `${providerEntry.displayName} Model`,
+            },
+          ],
+        ]),
+      );
+      const onInstanceModelChange = vi.fn();
+
+      const markup = render(
+        buildProps({
+          activeInstanceId: id(activeProvider),
+          model: `${activeProvider}-model`,
+          lockToActiveInstance: true,
+          instanceEntries: providerEntries,
+          modelOptionsByInstance,
+          onInstanceModelChange,
+        }),
+      );
+
+      expect(markup).not.toContain('data-testid="sidebar"');
+      expect(captured.combobox[0]?.items).toEqual([`${activeProvider}:${activeProvider}-model`]);
+      expect(renderedRowKeys()).toEqual([`${activeProvider}:${activeProvider}-model`]);
+
+      captured.input[0]?.onChange({ target: { value: "model" } });
+      rerender();
+      expect(renderedRowKeys()).toEqual([`${activeProvider}:${activeProvider}-model`]);
+
+      const foreignProvider = activeProvider === "codex" ? "claude" : "codex";
+      captured.combobox[0]?.onValueChange(`${foreignProvider}:${foreignProvider}-model`);
+      expect(onInstanceModelChange).not.toHaveBeenCalled();
+    },
+  );
+
   it("renders only ready instances' models for the active instance", () => {
     const markup = render(buildProps());
 

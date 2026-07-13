@@ -5,7 +5,7 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::sse::{Event, KeepAlive, Sse},
     routing::{delete, get, post},
 };
@@ -51,6 +51,94 @@ fn opencode_helper_outputs_match_fixtures() {
 }
 
 #[tokio::test]
+async fn opencode_runtime_authenticates_with_configured_server_password() {
+    let state = Arc::new(TestServerState::default());
+    let app = Router::new()
+        .route("/session", post(create_authenticated_session))
+        .route("/event", get(subscribe_events))
+        .with_state(state);
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address: SocketAddr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+    let runtime = OpenCodeSessionRuntime::new_with_password(
+        &format!("http://{address}"),
+        "opencode-auth-thread",
+        "/tmp/project",
+        None,
+        Some("secret"),
+    )
+    .expect("authenticated runtime");
+
+    assert_eq!(
+        runtime.start().await.expect("start"),
+        "authenticated-session"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn opencode_runtime_registers_the_t4code_mcp_server() {
+    let app = Router::new().route("/mcp", post(register_mcp));
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address: SocketAddr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+    let runtime = OpenCodeSessionRuntime::new(
+        &format!("http://{address}"),
+        "opencode-mcp-thread",
+        "C:/repo with spaces",
+        None,
+    );
+
+    runtime
+        .add_mcp_server("t4code", "http://127.0.0.1:3773/mcp", "Bearer secret")
+        .await
+        .expect("register MCP");
+    server.abort();
+}
+
+#[tokio::test]
+async fn opencode_runtime_surfaces_and_resolves_permission_requests() {
+    let state = Arc::new(TestServerState::default());
+    let app = Router::new()
+        .route("/session", post(create_session))
+        .route("/event", get(subscribe_permission_events))
+        .route("/permission/{request_id}/reply", post(reply_permission))
+        .with_state(state.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address: SocketAddr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+    let runtime = OpenCodeSessionRuntime::new(
+        &format!("http://{address}"),
+        "opencode-permission-thread",
+        "/tmp/project",
+        None,
+    );
+    runtime.start().await.expect("start");
+    let events = timeout(Duration::from_secs(2), runtime.collect_events(3))
+        .await
+        .expect("permission event");
+    assert!(events.iter().any(|event| {
+        event.event_type == "request.opened" && event.request_id.as_deref() == Some("permission-1")
+    }));
+
+    runtime
+        .respond_to_permission("permission-1", "acceptForSession")
+        .await
+        .expect("permission reply");
+    assert_eq!(
+        state.permission_reply.lock().await.as_ref(),
+        Some(&json!({ "reply": "always" }))
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn opencode_runtime_matches_session_and_rollback_traces() {
     let state = Arc::new(TestServerState::default());
     let app = Router::new()
@@ -75,8 +163,24 @@ async fn opencode_runtime_matches_session_and_rollback_traces() {
         Some("openai/gpt-5"),
     );
     runtime.start().await.expect("start");
+    runtime
+        .set_model("openai/gpt-5.4")
+        .await
+        .expect("switch model");
     let send_runtime = runtime.clone();
-    let send_turn = tokio::spawn(async move { send_runtime.send_turn("hello").await });
+    let send_turn = tokio::spawn(async move {
+        send_runtime
+            .send_turn(
+                Some("hello"),
+                vec![json!({
+                    "type": "file",
+                    "mime": "image/png",
+                    "url": "file:///state/attachments/image-1",
+                    "filename": "screen.png"
+                })],
+            )
+            .await
+    });
     let mut session_events = timeout(Duration::from_secs(2), runtime.collect_events(5))
         .await
         .expect("initial OpenCode events");
@@ -101,8 +205,16 @@ async fn opencode_runtime_matches_session_and_rollback_traces() {
         state.prompt_body.lock().await.as_ref(),
         Some(&json!({
             "sessionID": "session-1",
-            "model": { "providerID": "openai", "modelID": "gpt-5" },
-            "parts": [{ "type": "text", "text": "hello" }],
+            "model": { "providerID": "openai", "modelID": "gpt-5.4" },
+            "parts": [
+                { "type": "text", "text": "hello" },
+                {
+                    "type": "file",
+                    "mime": "image/png",
+                    "url": "file:///state/attachments/image-1",
+                    "filename": "screen.png"
+                }
+            ],
         }))
     );
     session_events.extend(
@@ -160,7 +272,10 @@ async fn opencode_runtime_surfaces_session_errors_and_removes_the_unanswered_pro
         Some("openai/gpt-5"),
     );
     runtime.start().await.expect("start");
-    runtime.send_turn("hello").await.expect("send turn");
+    runtime
+        .send_turn(Some("hello"), vec![])
+        .await
+        .expect("send turn");
     let events = timeout(Duration::from_secs(2), runtime.collect_events(4))
         .await
         .expect("failed OpenCode turn events");
@@ -216,13 +331,19 @@ async fn opencode_turn_ids_remain_unique_across_runtime_restarts() {
     let first =
         OpenCodeSessionRuntime::new(&endpoint, "opencode-restart-thread", "/tmp/project", None);
     first.start().await.expect("first start");
-    let first_turn_id = first.send_turn("first").await.expect("first turn");
+    let first_turn_id = first
+        .send_turn(Some("first"), vec![])
+        .await
+        .expect("first turn");
     first.stop().await.expect("first stop");
 
     let second =
         OpenCodeSessionRuntime::new(&endpoint, "opencode-restart-thread", "/tmp/project", None);
     second.start().await.expect("second start");
-    let second_turn_id = second.send_turn("second").await.expect("second turn");
+    let second_turn_id = second
+        .send_turn(Some("second"), vec![])
+        .await
+        .expect("second turn");
     second.stop().await.expect("second stop");
 
     assert_ne!(first_turn_id, second_turn_id);
@@ -237,10 +358,47 @@ struct TestServerState {
     deleted_messages: Mutex<Vec<String>>,
     abort_count: Mutex<usize>,
     messages: Mutex<Vec<Value>>,
+    permission_reply: Mutex<Option<Value>>,
 }
 
 async fn create_session(State(_state): State<Arc<TestServerState>>) -> Json<Value> {
     Json(json!({ "id": "session-1" }))
+}
+
+async fn register_mcp(
+    Query(query): Query<std::collections::HashMap<String, String>>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    assert_eq!(
+        query.get("directory").map(String::as_str),
+        Some("C:/repo with spaces")
+    );
+    assert_eq!(
+        body,
+        json!({
+            "name": "t4code",
+            "config": {
+                "type": "remote",
+                "url": "http://127.0.0.1:3773/mcp",
+                "headers": { "Authorization": "Bearer secret" },
+                "oauth": false,
+            }
+        })
+    );
+    Json(json!({ "t4code": { "status": "connected" } }))
+}
+
+async fn create_authenticated_session(
+    State(_state): State<Arc<TestServerState>>,
+    headers: HeaderMap,
+) -> Json<Value> {
+    assert_eq!(
+        headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok()),
+        Some("Basic b3BlbmNvZGU6c2VjcmV0")
+    );
+    Json(json!({ "id": "authenticated-session" }))
 }
 
 async fn subscribe_events(
@@ -354,6 +512,35 @@ async fn subscribe_events(
     });
     let stream = initial.chain(tail);
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+async fn subscribe_permission_events(
+    State(_state): State<Arc<TestServerState>>,
+    Query(_query): Query<std::collections::HashMap<String, String>>,
+) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let event = json!({
+        "type": "permission.asked",
+        "properties": {
+            "sessionID": "session-1",
+            "id": "permission-1",
+            "permission": "bash",
+            "patterns": ["git status"]
+        }
+    });
+    Sse::new(stream::iter(vec![Ok(
+        Event::default().data(event.to_string())
+    )]))
+    .keep_alive(KeepAlive::default())
+}
+
+async fn reply_permission(
+    Path(request_id): Path<String>,
+    State(state): State<Arc<TestServerState>>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    assert_eq!(request_id, "permission-1");
+    *state.permission_reply.lock().await = Some(body);
+    Json(json!({ "ok": true }))
 }
 
 async fn reply_question(

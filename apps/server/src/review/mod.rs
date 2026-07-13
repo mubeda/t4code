@@ -27,8 +27,14 @@ pub struct ReviewDiffPreviewResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewSource {
-    pub path: String,
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub base_ref: Option<String>,
+    pub head_ref: Option<String>,
     pub diff: String,
+    pub diff_hash: String,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Error)]

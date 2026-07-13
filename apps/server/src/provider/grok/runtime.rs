@@ -18,6 +18,9 @@ const FIXED_EVENT_TIME: &str = "2026-07-10T00:00:00.000Z";
 pub struct GrokSessionOptions {
     pub thread_id: String,
     pub cwd: String,
+    pub mcp_servers: Vec<Value>,
+    pub runtime_mode: String,
+    pub interaction_mode: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -83,6 +86,9 @@ struct RuntimeInner {
     resume_session_id: Option<String>,
     connection: Mutex<AcpJsonRpcConnection>,
     provider_session_id: Mutex<Option<String>>,
+    mode_state: Mutex<Option<Value>>,
+    runtime_mode: Mutex<String>,
+    interaction_mode: Mutex<String>,
     active_turn_id: Mutex<Option<String>>,
     events_tx: mpsc::UnboundedSender<GrokRuntimeEvent>,
     events_rx: Mutex<mpsc::UnboundedReceiver<GrokRuntimeEvent>>,
@@ -127,12 +133,17 @@ impl GrokSessionRuntime {
         resume_session_id: Option<String>,
     ) -> Self {
         let (events_tx, events_rx) = mpsc::unbounded_channel();
+        let runtime_mode = options.runtime_mode.clone();
+        let interaction_mode = options.interaction_mode.clone();
         let inner = Arc::new(RuntimeInner {
             options,
             auth_method_id,
             resume_session_id,
             connection: Mutex::new(connection.clone()),
             provider_session_id: Mutex::new(None),
+            mode_state: Mutex::new(None),
+            runtime_mode: Mutex::new(runtime_mode),
+            interaction_mode: Mutex::new(interaction_mode),
             active_turn_id: Mutex::new(None),
             events_tx,
             events_rx: Mutex::new(events_rx),
@@ -175,7 +186,13 @@ impl GrokSessionRuntime {
             }
             None => {
                 connection
-                    .request("session/create", json!({ "cwd": self.inner.options.cwd }))
+                    .request(
+                        "session/create",
+                        json!({
+                            "cwd": self.inner.options.cwd,
+                            "mcpServers": self.inner.options.mcp_servers,
+                        }),
+                    )
                     .await?
             }
         };
@@ -185,13 +202,19 @@ impl GrokSessionRuntime {
             .map(str::to_owned)
             .or_else(|| self.inner.resume_session_id.clone())
             .ok_or(GrokRuntimeError::MissingProviderSessionId)?;
+        *self.inner.mode_state.lock().await = response.get("modes").cloned();
         *self.inner.provider_session_id.lock().await = Some(session_id.clone());
+        self.apply_mode().await?;
         self.emit("session.started", None, None, json!({})).await;
         self.emit("thread.started", None, None, json!({})).await;
         Ok(session_id)
     }
 
-    pub async fn send_turn(&self, input: &str) -> Result<String, GrokRuntimeError> {
+    pub async fn send_turn(
+        &self,
+        input: Option<&str>,
+        attachments: Vec<Value>,
+    ) -> Result<String, GrokRuntimeError> {
         let session_id = self.provider_session_id().await?;
         let turn_id = format!("turn-{}", Uuid::new_v4());
         *self.inner.active_turn_id.lock().await = Some(turn_id.clone());
@@ -201,14 +224,14 @@ impl GrokSessionRuntime {
         let connection = self.inner.connection.lock().await.clone();
         let runtime = self.clone();
         let background_turn_id = turn_id.clone();
-        let prompt = input.to_owned();
+        let prompt = crate::provider::attachments::prompt_parts(input, attachments);
         tokio::spawn(async move {
             let result = connection
                 .request(
                     "session/prompt",
                     json!({
                         "sessionId": session_id,
-                        "prompt": [{ "type": "text", "text": prompt }],
+                        "prompt": prompt,
                     }),
                 )
                 .await;
@@ -252,6 +275,61 @@ impl GrokSessionRuntime {
             }
         });
         Ok(turn_id)
+    }
+
+    pub async fn set_model(&self, model: &str) -> Result<(), GrokRuntimeError> {
+        self.inner
+            .connection
+            .lock()
+            .await
+            .request(
+                "session/set_model",
+                json!({
+                    "sessionId": self.provider_session_id().await?,
+                    "modelId": model,
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_runtime_mode(&self, mode: &str) -> Result<(), GrokRuntimeError> {
+        *self.inner.runtime_mode.lock().await = mode.to_owned();
+        self.apply_mode().await
+    }
+
+    pub async fn set_interaction_mode(&self, mode: &str) -> Result<(), GrokRuntimeError> {
+        *self.inner.interaction_mode.lock().await = mode.to_owned();
+        self.apply_mode().await
+    }
+
+    async fn apply_mode(&self) -> Result<(), GrokRuntimeError> {
+        let mode_state = self.inner.mode_state.lock().await.clone();
+        let runtime_mode = self.inner.runtime_mode.lock().await.clone();
+        let interaction_mode = self.inner.interaction_mode.lock().await.clone();
+        let Some(mode_id) = crate::provider::acp_mode::resolve_requested_mode_id(
+            mode_state.as_ref(),
+            &runtime_mode,
+            &interaction_mode,
+        ) else {
+            return Ok(());
+        };
+        self.inner
+            .connection
+            .lock()
+            .await
+            .request(
+                "session/set_mode",
+                json!({
+                    "sessionId": self.provider_session_id().await?,
+                    "modeId": mode_id,
+                }),
+            )
+            .await?;
+        if let Some(state) = self.inner.mode_state.lock().await.as_mut() {
+            state["currentModeId"] = Value::String(mode_id);
+        }
+        Ok(())
     }
 
     pub async fn interrupt_turn(&self, turn_id: &str) -> Result<(), GrokRuntimeError> {
@@ -506,6 +584,23 @@ impl GrokSessionRuntime {
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default();
+                if self.inner.runtime_mode.lock().await.as_str() == "full-access"
+                    && let Some(option_id) =
+                        crate::provider::acp_mode::auto_approved_option_id(&options)
+                {
+                    connection
+                        .respond(
+                            wire_id,
+                            json!({
+                                "outcome": {
+                                    "outcome": "selected",
+                                    "optionId": option_id,
+                                }
+                            }),
+                        )
+                        .await?;
+                    return Ok(());
+                }
                 self.inner.pending_requests.lock().await.insert(
                     request_id.clone(),
                     PendingRequest {

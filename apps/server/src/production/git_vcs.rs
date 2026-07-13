@@ -12,12 +12,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     git::{
-        CreateWorktreeInput, GitRepository, OutputPolicy, ProcessRequest, ProcessRunner,
-        StatusBroadcaster,
+        ChangeRequest, CreateWorktreeInput, GitRepository, OutputPolicy, ProcessRequest,
+        ProcessRunner, StatusBroadcaster, VcsStatusLocalResult, VcsStatusRemoteResult,
+        VcsStatusStreamEvent,
     },
     rpc::{RpcRegistry, RpcRequest, RpcResult, RpcStreamChunk},
     source_control::{
-        ProviderKind, PullRequestService, ResolvePullRequestInput, SourceControlDiscovery,
+        ChangeRequestState, CreatePullRequestInput, ProviderKind, PullRequestService,
+        ResolvePullRequestInput, ResolvedPullRequest, SourceControlDiscovery,
     },
 };
 
@@ -110,7 +112,21 @@ impl GitVcsRpcServices {
             }
             "vcs.refreshStatus" => {
                 let input: CwdInput = decode(request.payload, "vcs.refreshStatus")?;
-                encode_result(self.repository.status(&input.cwd, &cancellation).await)
+                let mut status = self
+                    .repository
+                    .status(&input.cwd, &cancellation)
+                    .await
+                    .map_err(serialize_error)?;
+                enrich_remote_pull_request(
+                    &self.pull_requests,
+                    &input.cwd,
+                    &status.local,
+                    &mut status.remote,
+                    &cancellation,
+                )
+                .await;
+                serde_json::to_value(status)
+                    .map_err(|error| request_error("vcs.refreshStatus", &error.to_string()))
             }
             "vcs.listRefs" => {
                 let input: ListRefsInput = decode(request.payload, "vcs.listRefs")?;
@@ -295,6 +311,7 @@ impl GitVcsRpcServices {
     ) -> mpsc::Receiver<RpcStreamChunk> {
         let (sender, receiver) = mpsc::channel(STREAM_CAPACITY);
         let broadcaster = self.broadcaster.clone();
+        let pull_requests = self.pull_requests.clone();
         tokio::spawn(async move {
             let input = match decode::<CwdInput>(request.payload, "subscribeVcsStatus") {
                 Ok(input) => input,
@@ -303,19 +320,50 @@ impl GitVcsRpcServices {
                     return;
                 }
             };
-            let mut subscription =
-                match broadcaster.subscribe(input.cwd, cancellation.clone()).await {
-                    Ok(subscription) => subscription,
-                    Err(error) => {
-                        let _ = sender.send(Err(serialize_error(error))).await;
-                        return;
-                    }
-                };
+            let mut subscription = match broadcaster
+                .subscribe(input.cwd.clone(), cancellation.clone())
+                .await
+            {
+                Ok(subscription) => subscription,
+                Err(error) => {
+                    let _ = sender.send(Err(serialize_error(error))).await;
+                    return;
+                }
+            };
+            let mut current_local = None;
             loop {
                 tokio::select! {
                     _ = cancellation.cancelled() => break,
                     event = subscription.recv() => {
-                        let Some(event) = event else { break };
+                        let Some(mut event) = event else { break };
+                        match &mut event {
+                            VcsStatusStreamEvent::Snapshot { local, remote } => {
+                                current_local = Some(local.clone());
+                                if let Some(remote) = remote {
+                                    enrich_remote_pull_request(
+                                        &pull_requests,
+                                        &input.cwd,
+                                        local,
+                                        remote,
+                                        &cancellation,
+                                    ).await;
+                                }
+                            }
+                            VcsStatusStreamEvent::LocalUpdated { local } => {
+                                current_local = Some(local.clone());
+                            }
+                            VcsStatusStreamEvent::RemoteUpdated { remote } => {
+                                if let (Some(local), Some(remote)) = (current_local.as_ref(), remote) {
+                                    enrich_remote_pull_request(
+                                        &pull_requests,
+                                        &input.cwd,
+                                        local,
+                                        remote,
+                                        &cancellation,
+                                    ).await;
+                                }
+                            }
+                        }
                         let chunk = serde_json::to_value(event).map(|event| vec![event]).map_err(|error| {
                             request_error("subscribeVcsStatus", &error.to_string())
                         });
@@ -334,6 +382,7 @@ impl GitVcsRpcServices {
     ) -> mpsc::Receiver<RpcStreamChunk> {
         let (sender, receiver) = mpsc::channel(STREAM_CAPACITY);
         let repository = Arc::clone(&self.repository);
+        let pull_requests = self.pull_requests.clone();
         tokio::spawn(async move {
             let input = match decode::<StackedActionInput>(request.payload, "git.runStackedAction")
             {
@@ -343,7 +392,7 @@ impl GitVcsRpcServices {
                     return;
                 }
             };
-            let phases = action_phases(&input.action);
+            let phases = action_phases(&input.action, input.feature_branch.unwrap_or(false));
             if send_event(
                 &sender,
                 json!({
@@ -356,7 +405,8 @@ impl GitVcsRpcServices {
             {
                 return;
             }
-            let result = run_stacked_action(&repository, &input, &cancellation).await;
+            let result =
+                run_stacked_action(&repository, &pull_requests, &input, &cancellation).await;
             let event = match result {
                 Ok(result) => json!({
                     "actionId": input.action_id, "cwd": input.cwd, "action": input.action,
@@ -665,10 +715,12 @@ impl GitVcsRpcServices {
                 .spawn()
                 .map(|_| ()),
         };
-        result.map(|()| Value::Null).map_err(|error| json!({
-            "_tag": "ExternalLauncherEditorSpawnError", "editor": input.editor,
-            "target": target, "command": command, "args": args, "cause": error.to_string()
-        }))
+        result.map(|()| Value::Null).map_err(|error| {
+            json!({
+                "_tag": "ExternalLauncherEditorSpawnError", "editor": input.editor,
+                "target": target, "command": command, "args": args, "cause": error.to_string()
+            })
+        })
     }
 }
 
@@ -814,9 +866,7 @@ struct StackedActionInput {
     action: String,
     commit_message: Option<String>,
     file_paths: Option<Vec<String>>,
-    #[allow(dead_code)]
     feature_branch: Option<bool>,
-    #[allow(dead_code)]
     commit_staged_index_as_is: Option<bool>,
 }
 #[derive(Deserialize)]
@@ -853,35 +903,119 @@ struct LaunchEditorInput {
 
 async fn run_stacked_action(
     repository: &GitRepository,
+    pull_requests: &PullRequestService,
     input: &StackedActionInput,
     cancellation: &CancellationToken,
 ) -> Result<Value, Value> {
+    if !matches!(
+        input.action.as_str(),
+        "commit" | "push" | "create_pr" | "commit_push" | "commit_push_pr"
+    ) {
+        return Err(request_error(
+            "git.runStackedAction",
+            &format!("Unsupported Git action '{}'.", input.action),
+        ));
+    }
     let wants_commit = matches!(
         input.action.as_str(),
         "commit" | "commit_push" | "commit_push_pr"
     );
-    let wants_push = matches!(
-        input.action.as_str(),
-        "push" | "create_pr" | "commit_push" | "commit_push_pr"
-    );
     let wants_pr = matches!(input.action.as_str(), "create_pr" | "commit_push_pr");
+    let feature_branch = input.feature_branch.unwrap_or(false);
+    let commit_staged_index_as_is = input.commit_staged_index_as_is.unwrap_or(false);
+    if feature_branch && !wants_commit {
+        return Err(request_error(
+            "git.runStackedAction",
+            "Feature-branch checkout is only supported for commit actions.",
+        ));
+    }
+    let initial_local = repository
+        .local_status(&input.cwd, cancellation)
+        .await
+        .map_err(serialize_error)?;
+    if feature_branch && !initial_local.has_working_tree_changes {
+        return Err(request_error(
+            "git.runStackedAction",
+            "Cannot create a feature branch because there are no changes to commit.",
+        ));
+    }
+    if input.action == "create_pr" && initial_local.has_working_tree_changes {
+        return Err(request_error(
+            "git.runStackedAction",
+            "Commit local changes before creating a PR.",
+        ));
+    }
+    if !feature_branch && (wants_pr || input.action == "push") && initial_local.ref_name.is_none() {
+        let detail = if wants_pr {
+            "Cannot create a pull request from detached HEAD."
+        } else {
+            "Cannot push from detached HEAD."
+        };
+        return Err(request_error("git.runStackedAction", detail));
+    }
+    let wants_push = if input.action == "create_pr" {
+        let remote = repository
+            .remote_status(&input.cwd, cancellation)
+            .await
+            .map_err(serialize_error)?;
+        remote.is_none_or(|status| !status.has_upstream || status.ahead_count > 0)
+    } else {
+        matches!(
+            input.action.as_str(),
+            "push" | "commit_push" | "commit_push_pr"
+        )
+    };
+    let resolved_message = if wants_commit {
+        Some(match input.commit_message.as_deref().map(str::trim) {
+            Some(message) if !message.is_empty() => message.to_owned(),
+            _ => {
+                let context = repository
+                    .commit_context(&input.cwd, cancellation)
+                    .await
+                    .map_err(serialize_error)?;
+                let message = summarize_commit_context(&context, input.file_paths.as_deref());
+                if message.is_empty() {
+                    "Update working tree".to_owned()
+                } else {
+                    message
+                }
+            }
+        })
+    } else {
+        None
+    };
+    let branch = if feature_branch {
+        let subject = resolved_message
+            .as_deref()
+            .and_then(|message| message.lines().next())
+            .unwrap_or("update");
+        let preferred = sanitize_feature_branch_name(subject);
+        let existing = local_branch_names(repository, &input.cwd, cancellation).await?;
+        let name = resolve_feature_branch_name(&existing, &preferred);
+        repository
+            .create_ref(&input.cwd, &name, true, cancellation)
+            .await
+            .map_err(serialize_error)?;
+        json!({ "status": "created", "name": name })
+    } else {
+        json!({ "status": "skipped_not_requested" })
+    };
     let commit = if wants_commit {
-        let message = input.commit_message.as_deref().ok_or_else(|| {
-            request_error(
-                "git.runStackedAction",
-                "commitMessage is required for commit actions.",
-            )
-        })?;
+        let message = resolved_message.as_deref().unwrap_or("Update working tree");
         let sha = repository
             .commit(
                 &input.cwd,
                 message,
                 input.file_paths.as_deref(),
+                commit_staged_index_as_is,
                 cancellation,
             )
             .await
             .map_err(serialize_error)?;
-        json!({ "status": "created", "commitSha": sha, "subject": message.lines().next().unwrap_or(message) })
+        sha.map_or_else(
+            || json!({ "status": "skipped_no_changes" }),
+            |sha| json!({ "status": "created", "commitSha": sha, "subject": message.lines().next().unwrap_or(message) }),
+        )
     } else {
         json!({ "status": "skipped_not_requested" })
     };
@@ -895,57 +1029,70 @@ async fn run_stacked_action(
         json!({ "status": "skipped_not_requested" })
     };
     let pull_request = if wants_pr {
-        let output = ProcessRunner
-            .run(
-                ProcessRequest {
-                    operation: "git.runStackedAction.createPullRequest".into(),
-                    command: "gh".into(),
-                    args: ["pr", "create", "--fill"]
-                        .into_iter()
-                        .map(OsString::from)
-                        .collect(),
-                    cwd: input.cwd.clone(),
-                    env: vec![],
-                    stdin: None,
-                    timeout: Duration::from_secs(60),
-                    max_output_bytes: 128_000,
-                    output_policy: OutputPolicy::Error,
-                    append_truncation_marker: false,
-                    allow_non_zero_exit: false,
-                },
-                cancellation,
-            )
+        let current_local = repository
+            .local_status(&input.cwd, cancellation)
             .await
-            .map_err(|error| {
-                source_control_error("github", "createPullRequest", &error.to_string())
-            })?;
-        let url = output
-            .stdout
-            .lines()
-            .find(|line| line.starts_with("http"))
-            .map(str::trim)
-            .unwrap_or_default();
-        if url.is_empty() {
-            return Err(source_control_error(
-                "github",
-                "createPullRequest",
-                "GitHub CLI did not return a pull-request URL.",
-            ));
-        }
-        let number = url
-            .rsplit('/')
-            .next()
-            .and_then(|value| value.parse::<u64>().ok());
-        number.map_or_else(
-            || json!({ "status": "created", "url": url }),
-            |number| json!({ "status": "created", "url": url, "number": number }),
+            .map_err(serialize_error)?;
+        let provider = local_provider_kind(&current_local);
+        let head_branch = current_local.ref_name.as_deref().ok_or_else(|| {
+            request_error(
+                "git.runStackedAction",
+                "Cannot create a pull request from detached HEAD.",
+            )
+        })?;
+        if let Some(existing) = resolve_open_pull_request(
+            pull_requests,
+            &input.cwd,
+            provider,
+            head_branch,
+            cancellation,
         )
+        .await
+        {
+            resolved_pull_request_step("opened_existing", &existing)
+        } else {
+            let title = match resolved_message
+                .as_deref()
+                .and_then(|message| message.lines().next())
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+            {
+                Some(title) => title.to_owned(),
+                None => repository
+                    .list_commits(&input.cwd, 1, 0, cancellation)
+                    .await
+                    .map_err(serialize_error)?
+                    .commits
+                    .into_iter()
+                    .next()
+                    .map_or_else(|| format!("Update {head_branch}"), |commit| commit.subject),
+            };
+            let base_branch = current_local
+                .default_ref_name
+                .clone()
+                .unwrap_or_else(|| "main".to_owned());
+            let created = pull_requests
+                .create(
+                    CreatePullRequestInput {
+                        cwd: input.cwd.clone(),
+                        provider,
+                        base_branch,
+                        head_branch: head_branch.to_owned(),
+                        title,
+                        body: String::new(),
+                    },
+                    cancellation,
+                )
+                .await
+                .map_err(serialize_error)?;
+            resolved_pull_request_step("created", &created)
+        }
     } else {
         json!({ "status": "skipped_not_requested" })
     };
     Ok(json!({
         "action": input.action,
-        "branch": { "status": "skipped_not_requested" },
+        "branch": branch,
         "commit": commit,
         "push": push,
         "pr": pull_request,
@@ -953,15 +1100,182 @@ async fn run_stacked_action(
     }))
 }
 
-fn action_phases(action: &str) -> Vec<&'static str> {
-    match action {
+fn local_provider_kind(local: &VcsStatusLocalResult) -> ProviderKind {
+    local
+        .source_control_provider
+        .as_ref()
+        .map_or(ProviderKind::Unknown, |provider| match provider.kind {
+            crate::git::ProviderKind::Github => ProviderKind::Github,
+            crate::git::ProviderKind::Gitlab => ProviderKind::Gitlab,
+            crate::git::ProviderKind::AzureDevops => ProviderKind::AzureDevops,
+            crate::git::ProviderKind::Bitbucket => ProviderKind::Bitbucket,
+            crate::git::ProviderKind::Unknown => ProviderKind::Unknown,
+        })
+}
+
+async fn resolve_open_pull_request(
+    pull_requests: &PullRequestService,
+    cwd: &std::path::Path,
+    provider: ProviderKind,
+    reference: &str,
+    cancellation: &CancellationToken,
+) -> Option<ResolvedPullRequest> {
+    if provider == ProviderKind::Unknown {
+        return None;
+    }
+    pull_requests
+        .resolve_current(
+            ResolvePullRequestInput {
+                cwd: cwd.to_path_buf(),
+                provider,
+                reference: reference.to_owned(),
+            },
+            cancellation,
+        )
+        .await
+        .ok()
+        .filter(|pull_request| pull_request.state == ChangeRequestState::Open)
+}
+
+fn resolved_pull_request_step(status: &str, pull_request: &ResolvedPullRequest) -> Value {
+    json!({
+        "status": status,
+        "url": pull_request.url,
+        "number": pull_request.number,
+        "baseBranch": pull_request.base_branch,
+        "headBranch": pull_request.head_branch,
+        "title": pull_request.title,
+    })
+}
+
+async fn enrich_remote_pull_request(
+    pull_requests: &PullRequestService,
+    cwd: &std::path::Path,
+    local: &VcsStatusLocalResult,
+    remote: &mut VcsStatusRemoteResult,
+    cancellation: &CancellationToken,
+) {
+    let Some(reference) = local.ref_name.as_deref() else {
+        return;
+    };
+    let Some(pull_request) = resolve_open_pull_request(
+        pull_requests,
+        cwd,
+        local_provider_kind(local),
+        reference,
+        cancellation,
+    )
+    .await
+    else {
+        return;
+    };
+    remote.pr = Some(ChangeRequest {
+        number: pull_request.number,
+        title: pull_request.title,
+        url: pull_request.url,
+        base_ref: pull_request.base_branch,
+        head_ref: pull_request.head_branch,
+        state: "open".to_owned(),
+    });
+}
+
+async fn local_branch_names(
+    repository: &GitRepository,
+    cwd: &std::path::Path,
+    cancellation: &CancellationToken,
+) -> Result<Vec<String>, Value> {
+    let mut names = Vec::new();
+    let mut cursor = 0;
+    loop {
+        let page = repository
+            .list_refs(cwd, None, cursor, 200, true, Some("local"), cancellation)
+            .await
+            .map_err(serialize_error)?;
+        names.extend(page.refs.into_iter().map(|reference| reference.name));
+        let Some(next_cursor) = page.next_cursor else {
+            break;
+        };
+        cursor = next_cursor;
+    }
+    Ok(names)
+}
+
+fn sanitize_branch_fragment(raw: &str) -> String {
+    let mut fragment = String::with_capacity(raw.len().min(64));
+    for character in raw.trim().to_lowercase().chars() {
+        if matches!(character, '\'' | '"' | '`') {
+            continue;
+        }
+        if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+            if character != '-' || !fragment.ends_with('-') {
+                fragment.push(character);
+            }
+        } else if character == '/' {
+            if !fragment.ends_with('/') {
+                fragment.push('/');
+            }
+        } else if !fragment.ends_with('-') {
+            fragment.push('-');
+        }
+        if fragment.len() >= 64 {
+            fragment.truncate(64);
+            break;
+        }
+    }
+    let fragment = fragment
+        .trim_matches(|character| matches!(character, '.' | '/' | '_' | '-'))
+        .to_owned();
+    if fragment.is_empty() {
+        "update".to_owned()
+    } else {
+        fragment
+    }
+}
+
+fn sanitize_feature_branch_name(raw: &str) -> String {
+    let fragment = sanitize_branch_fragment(raw);
+    if fragment.starts_with("feature/") {
+        fragment
+    } else {
+        format!("feature/{fragment}")
+    }
+}
+
+fn resolve_feature_branch_name(existing: &[String], preferred: &str) -> String {
+    if !existing
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(preferred))
+    {
+        return preferred.to_owned();
+    }
+    let mut suffix = 2;
+    loop {
+        let candidate = format!("{preferred}-{suffix}");
+        if !existing
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(&candidate))
+        {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
+fn action_phases(action: &str, feature_branch: bool) -> Vec<&'static str> {
+    let mut phases = if feature_branch {
+        vec!["branch"]
+    } else {
+        vec![]
+    };
+    phases.extend(match action {
         "commit" => vec!["commit"],
         "push" => vec!["push"],
         "create_pr" => vec!["push", "pr"],
         "commit_push" => vec!["commit", "push"],
         "commit_push_pr" => vec!["commit", "push", "pr"],
         _ => vec![],
-    }
+    });
+    phases
 }
 
 async fn send_event(sender: &mpsc::Sender<RpcStreamChunk>, event: Value) -> Result<(), ()> {
@@ -1042,6 +1356,9 @@ fn summarize_commit_context(context: &str, paths: Option<&[String]>) -> String {
         && !paths.is_empty()
     {
         return format!("Update {}", paths.join(", "));
+    }
+    if context.trim().is_empty() {
+        return String::new();
     }
     context
         .lines()

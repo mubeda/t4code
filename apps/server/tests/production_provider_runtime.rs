@@ -210,9 +210,14 @@ fn launch() -> ProviderLaunchRequest {
         runtime_mode: "full-access".to_owned(),
         interaction_mode: "default".to_owned(),
         model: Some("gpt-5".to_owned()),
+        service_tier: None,
+        effort: None,
         resume_cursor: None,
         environment: Default::default(),
         endpoint: None,
+        server_password: None,
+        mcp: None,
+        codex_home: None,
     }
 }
 
@@ -767,7 +772,7 @@ fn provider_driver_trait_is_send_and_sync() {
 
 #[tokio::test]
 async fn native_factory_rejects_unknown_providers_without_a_fallback() {
-    let factory = NativeProviderDriverFactory;
+    let factory = NativeProviderDriverFactory::new(TempDir::new().unwrap().path().to_path_buf());
     let mut request = launch();
     request.provider = "node-fallback".to_owned();
     let error = match factory.create(request).await {
@@ -782,7 +787,7 @@ async fn native_factory_rejects_unknown_providers_without_a_fallback() {
 
 #[tokio::test]
 async fn native_factory_routes_resume_to_the_native_adapter_without_a_fallback() {
-    let factory = NativeProviderDriverFactory;
+    let factory = NativeProviderDriverFactory::new(TempDir::new().unwrap().path().to_path_buf());
     let mut request = launch();
     request.provider = "opencode".to_owned();
     request.binary_path = "t4code-missing-opencode-resume-fixture".to_owned();

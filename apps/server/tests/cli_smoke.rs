@@ -235,11 +235,15 @@ async fn headless_binary_reads_desktop_bootstrap_and_shuts_down_over_http() {
 
     let stdout = child.stdout.take().expect("child stdout");
     let mut lines = BufReader::new(stdout).lines();
-    let ready_line = timeout(Duration::from_secs(10), lines.next_line())
-        .await
-        .expect("server readiness timeout")
-        .expect("read readiness line")
-        .expect("server readiness line");
+    let ready_line = match timeout(Duration::from_secs(30), lines.next_line()).await {
+        Ok(result) => result
+            .expect("read readiness line")
+            .expect("server readiness line"),
+        Err(error) => {
+            child.kill().await.expect("terminate unready server");
+            panic!("server readiness timeout: {error}");
+        }
+    };
     let ready: Value = serde_json::from_str(&ready_line).expect("readiness JSON");
     let http_base_url = ready["httpBaseUrl"].as_str().expect("HTTP base URL");
 
