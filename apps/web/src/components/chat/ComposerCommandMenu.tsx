@@ -1,6 +1,7 @@
 import {
   type ProjectEntry,
   type ProviderDriverKind,
+  type ServerProviderAgent,
   type ServerProviderSkill,
   type ServerProviderSlashCommand,
 } from "@t4code/contracts";
@@ -41,6 +42,14 @@ export type ComposerCommandItem =
       type: "provider-slash-command";
       provider: ProviderDriverKind;
       command: ServerProviderSlashCommand;
+      label: string;
+      description: string;
+    }
+  | {
+      id: string;
+      type: "provider-agent";
+      provider: ProviderDriverKind;
+      agent: ServerProviderAgent;
       label: string;
       description: string;
     }
@@ -92,6 +101,7 @@ function groupCommandItems(
 
   const builtInItems = items.filter((item) => item.type === "slash-command");
   const providerItems = items.filter((item) => item.type === "provider-slash-command");
+  const agentItems = items.filter((item) => item.type === "provider-agent");
 
   const groups: ComposerCommandGroup[] = [];
   if (builtInItems.length > 0) {
@@ -99,6 +109,9 @@ function groupCommandItems(
   }
   if (providerItems.length > 0) {
     groups.push({ id: "provider", label: "Provider", items: providerItems });
+  }
+  if (agentItems.length > 0) {
+    groups.push({ id: "agents", label: "Agents", items: agentItems });
   }
   return groups;
 }
@@ -235,6 +248,9 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
         />
       ) : null}
       {props.item.type === "slash-command" ? (
+        <BotIcon className="size-4 shrink-0 text-muted-foreground/80" />
+      ) : null}
+      {props.item.type === "provider-agent" ? (
         <BotIcon className="size-4 shrink-0 text-muted-foreground/80" />
       ) : null}
       {props.item.type === "provider-slash-command" ? (

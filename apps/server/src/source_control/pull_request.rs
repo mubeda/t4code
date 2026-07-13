@@ -613,7 +613,7 @@ impl PullRequestService {
         self.runner
             .run(
                 ProcessRequest {
-                    operation: format!("source-control.{operation}").into(),
+                    operation: format!("source-control.{operation}"),
                     command: command.into(),
                     args,
                     cwd: cwd.to_path_buf(),

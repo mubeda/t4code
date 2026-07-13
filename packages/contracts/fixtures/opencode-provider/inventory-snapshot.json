@@ -25,12 +25,33 @@
       "name": "build"
     }
   ],
+  "commands": [
+    {
+      "name": "review",
+      "description": "Review changes",
+      "template": "Review $ARGUMENTS"
+    }
+  ],
   "customModels": [],
   "expected": {
     "status": "ready",
     "auth": {
       "status": "authenticated"
     },
+    "commands": [
+      {
+        "name": "review",
+        "description": "Review changes",
+        "input": {
+          "hint": "arguments"
+        }
+      }
+    ],
+    "agents": [
+      {
+        "name": "build"
+      }
+    ],
     "models": [
       {
         "slug": "openai/gpt-5.4",

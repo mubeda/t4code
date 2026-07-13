@@ -388,6 +388,7 @@ const codexProvider: ServerProvider = {
   models: [{ slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: null }],
   slashCommands: [],
   skills: [],
+  agents: [],
 };
 
 function makeProject(overrides: Partial<Project> = {}): Project {

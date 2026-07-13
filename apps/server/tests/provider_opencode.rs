@@ -29,6 +29,7 @@ fn opencode_helper_outputs_match_fixtures() {
             inventory_fixture["agents"]
                 .get("data")
                 .unwrap_or(&inventory_fixture["agents"]),
+            &inventory_fixture["commands"],
             &inventory_fixture["customModels"]
                 .as_array()
                 .expect("custom models")
@@ -245,6 +246,47 @@ async fn opencode_runtime_matches_session_and_rollback_traces() {
 }
 
 #[tokio::test]
+async fn opencode_runtime_dispatches_native_commands_with_agent_and_model() {
+    let state = Arc::new(TestServerState::default());
+    let app = Router::new()
+        .route("/session", post(create_session))
+        .route("/event", get(subscribe_permission_events))
+        .route("/session/{session_id}/command", post(run_command))
+        .with_state(state.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address: SocketAddr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+
+    let runtime = OpenCodeSessionRuntime::new_with_options(
+        &format!("http://{}", address),
+        "opencode-command-thread",
+        "/tmp/project",
+        Some("openai/gpt-5.4"),
+        None,
+        Some("reviewer"),
+    )
+    .expect("runtime");
+    runtime.start().await.expect("start");
+    runtime
+        .send_command("review", "src/provider")
+        .await
+        .expect("native command");
+
+    assert_eq!(
+        state.command_body.lock().await.as_ref(),
+        Some(&json!({
+            "command": "review",
+            "arguments": "src/provider",
+            "agent": "reviewer",
+            "model": "openai/gpt-5.4",
+        }))
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn opencode_runtime_surfaces_session_errors_and_removes_the_unanswered_prompt() {
     let state = Arc::new(TestServerState::default());
     let app = Router::new()
@@ -359,6 +401,7 @@ struct TestServerState {
     abort_count: Mutex<usize>,
     messages: Mutex<Vec<Value>>,
     permission_reply: Mutex<Option<Value>>,
+    command_body: Mutex<Option<Value>>,
 }
 
 async fn create_session(State(_state): State<Arc<TestServerState>>) -> Json<Value> {
@@ -480,7 +523,7 @@ async fn subscribe_events(
     let tail_state = state.clone();
     let tail = stream::once(async move {
         tail_state.question_replied.notified().await;
-        let events = [
+        [
             json!({
                 "type": "message.part.updated",
                 "properties": {
@@ -500,8 +543,7 @@ async fn subscribe_events(
                     "status": { "type": "idle" }
                 }
             }),
-        ];
-        events
+        ]
     })
     .flat_map(|events| {
         stream::iter(
@@ -564,6 +606,16 @@ async fn prompt_async(
     *state.prompt_body.lock().await = Some(body);
     state.prompt_received.notify_one();
     StatusCode::NO_CONTENT
+}
+
+async fn run_command(
+    Path(session_id): Path<String>,
+    State(state): State<Arc<TestServerState>>,
+    Json(body): Json<Value>,
+) -> StatusCode {
+    assert_eq!(session_id, "session-1");
+    *state.command_body.lock().await = Some(body);
+    StatusCode::OK
 }
 
 async fn subscribe_error_events(

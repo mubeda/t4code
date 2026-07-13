@@ -371,6 +371,7 @@ async fn provider_inventory_uses_provider_specific_status_and_configured_models(
     let control =
         NativeServerControl::new(ServerConfig::new(directory.path()), auth_descriptor()).await;
 
+    call(&control, "server.refreshProviders", json!({})).await;
     let config = call(&control, "server.getConfig", json!({})).await;
     let provider = &config["providers"][0];
     assert_eq!(provider["instanceId"], "cursor-work");
@@ -413,6 +414,7 @@ async fn claude_inventory_restores_the_built_in_model_catalog_from_the_node_serv
     let control =
         NativeServerControl::new(ServerConfig::new(directory.path()), auth_descriptor()).await;
 
+    call(&control, "server.refreshProviders", json!({})).await;
     let config = call(&control, "server.getConfig", json!({})).await;
     let provider = config["providers"]
         .as_array()
@@ -478,6 +480,7 @@ async fn claude_inventory_hides_models_unsupported_by_the_installed_cli_version(
     let control =
         NativeServerControl::new(ServerConfig::new(directory.path()), auth_descriptor()).await;
 
+    call(&control, "server.refreshProviders", json!({})).await;
     let config = call(&control, "server.getConfig", json!({})).await;
     let provider = config["providers"]
         .as_array()
