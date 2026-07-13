@@ -35,6 +35,7 @@ function provider(input: {
     })),
     slashCommands: [],
     skills: [],
+    agents: [],
   };
 }
 

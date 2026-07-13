@@ -174,6 +174,15 @@ async fn session_runtime_matches_text_tool_and_approval_traces() {
         "model": "gpt-5.3-codex",
         "thread": { "id": "provider-thread-1" }
     }));
+    peer.expect_request(
+        "thread/goal/set",
+        json!({
+            "threadId": "provider-thread-1",
+            "objective": "Finish the provider parity work",
+            "status": "active",
+        }),
+    )
+    .respond(json!({ "goal": { "status": "active" } }));
     peer.expect_request("turn/start", fixture("turn-start-text.json"))
         .respond(json!({
             "turn": { "id": "fixture-turn" }
@@ -309,6 +318,11 @@ async fn session_runtime_matches_text_tool_and_approval_traces() {
     let startup_events = runtime.collect_events(2).await;
     assert_eq!(startup_events[0].event_type, "session.connecting");
     assert_eq!(startup_events[1].event_type, "session.ready");
+
+    runtime
+        .set_goal("Finish the provider parity work")
+        .await
+        .expect("goal is set through app-server");
 
     runtime
         .send_turn(Some("Small text turn".to_owned()), vec![], None)

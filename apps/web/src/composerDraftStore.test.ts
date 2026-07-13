@@ -1808,6 +1808,7 @@ function serverProvider(input: {
     })),
     slashCommands: [],
     skills: [],
+    agents: [],
   };
 }
 

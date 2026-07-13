@@ -381,6 +381,31 @@ impl CodexSessionRuntime {
         })
     }
 
+    pub async fn set_goal(&self, objective: &str) -> Result<(), RuntimeError> {
+        let objective = objective.trim();
+        if objective.is_empty() || objective.chars().count() > 4_000 {
+            return Err(RuntimeError::InvalidPayload {
+                message: "goal objective must contain between 1 and 4000 characters".to_owned(),
+            });
+        }
+        let provider_thread_id = self.provider_thread_id().await?;
+        self.inner
+            .connection
+            .lock()
+            .await
+            .clone()
+            .request(
+                "thread/goal/set",
+                json!({
+                    "threadId": provider_thread_id,
+                    "objective": objective,
+                    "status": "active",
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
     pub async fn interrupt_turn(&self, turn_id: Option<String>) -> Result<(), RuntimeError> {
         let provider_thread_id = self.provider_thread_id().await?;
         let active_turn_id = if let Some(turn_id) = turn_id {

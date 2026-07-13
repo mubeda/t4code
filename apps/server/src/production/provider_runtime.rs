@@ -77,6 +77,7 @@ pub struct ProviderLaunchRequest {
     pub model: Option<String>,
     pub service_tier: Option<String>,
     pub effort: Option<String>,
+    pub agent: Option<String>,
     pub resume_cursor: Option<Value>,
     pub environment: BTreeMap<String, String>,
     pub endpoint: Option<String>,
@@ -568,6 +569,7 @@ async fn launch_request_for_command(
         model: model_from_selection(selection),
         service_tier: selection_string_option(selection, "serviceTier"),
         effort: selection_string_option(selection, "reasoningEffort"),
+        agent: selection_string_option(selection, "agent"),
         resume_cursor: persisted.and_then(|runtime| runtime.resume_cursor),
         environment,
         endpoint: (!binary.server_url.trim().is_empty()).then(|| binary.server_url.clone()),
@@ -946,6 +948,20 @@ fn selection_string_option(selection: &Value, id: &str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
+}
+
+fn parse_provider_command(text: &str) -> Option<(&str, &str)> {
+    let command = text.strip_prefix('/')?;
+    let split = command.find(char::is_whitespace).unwrap_or(command.len());
+    let name = &command[..split];
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':' | b'.'))
+    {
+        return None;
+    }
+    Some((name, command[split..].trim()))
 }
 
 fn spawn_event_pump(
@@ -1564,7 +1580,18 @@ impl ProviderDriver for CodexDriver {
         interaction_mode: String,
     ) -> BoxRuntimeFuture<'_, Result<Option<String>, ProviderRuntimeError>> {
         Box::pin(async move {
-            let attachments = self
+            let text = if let Some(("goal", objective)) = parse_provider_command(&text)
+                && !objective.is_empty()
+            {
+                self.runtime
+                    .set_goal(objective)
+                    .await
+                    .map_err(provider_error("codex"))?;
+                objective.to_owned()
+            } else {
+                text
+            };
+            let attachments: Vec<Value> = self
                 .attachments
                 .materialize(attachments)
                 .await
@@ -2032,12 +2059,13 @@ impl OpenCodeDriver {
         attachments: AttachmentMaterializer,
     ) -> Result<Self, ProviderRuntimeError> {
         if let Some(endpoint) = request.endpoint.as_ref() {
-            let runtime = OpenCodeSessionRuntime::new_with_password(
+            let runtime = OpenCodeSessionRuntime::new_with_options(
                 endpoint,
                 &request.thread_id,
                 &request.cwd.to_string_lossy(),
                 request.model.as_deref(),
                 request.server_password.as_deref(),
+                request.agent.as_deref(),
             )
             .map_err(provider_error("opencode"))?;
             runtime.configure_runtime_mode(&request.runtime_mode).await;
@@ -2069,12 +2097,13 @@ impl OpenCodeDriver {
         ];
         let child = Arc::new(Mutex::new(spawn_child(&request, &args, false)?));
         wait_for_endpoint(&endpoint, &child).await?;
-        let runtime = OpenCodeSessionRuntime::new_with_password(
+        let runtime = OpenCodeSessionRuntime::new_with_options(
             &endpoint,
             &request.thread_id,
             &request.cwd.to_string_lossy(),
             request.model.as_deref(),
             Some(&local_password),
+            request.agent.as_deref(),
         )
         .map_err(provider_error("opencode"))?;
         runtime.configure_runtime_mode(&request.runtime_mode).await;
@@ -2114,7 +2143,7 @@ impl ProviderDriver for OpenCodeDriver {
         _: String,
     ) -> BoxRuntimeFuture<'_, Result<Option<String>, ProviderRuntimeError>> {
         Box::pin(async move {
-            let attachments = self
+            let attachments: Vec<Value> = self
                 .attachments
                 .materialize(attachments)
                 .await
@@ -2122,11 +2151,17 @@ impl ProviderDriver for OpenCodeDriver {
                 .into_iter()
                 .map(opencode_file)
                 .collect();
-            self.runtime
-                .send_turn(Some(&text), attachments)
-                .await
-                .map(Some)
-                .map_err(provider_error("opencode"))
+            let turn = if attachments.is_empty() {
+                match parse_provider_command(&text) {
+                    Some((command, arguments)) => {
+                        self.runtime.send_command(command, arguments).await
+                    }
+                    None => self.runtime.send_turn(Some(&text), attachments).await,
+                }
+            } else {
+                self.runtime.send_turn(Some(&text), attachments).await
+            };
+            turn.map(Some).map_err(provider_error("opencode"))
         })
     }
     fn interrupt(
@@ -2230,7 +2265,7 @@ struct ClaudeDriver {
 
 impl ClaudeDriver {
     async fn spawn(
-        request: ProviderLaunchRequest,
+        mut request: ProviderLaunchRequest,
         attachments: AttachmentMaterializer,
     ) -> Result<Self, ProviderRuntimeError> {
         let mode = claude_mode(&request.runtime_mode, &request.interaction_mode);
@@ -2239,13 +2274,19 @@ impl ClaudeDriver {
             .as_ref()
             .and_then(resume_string)
             .unwrap_or_else(|| Uuid::new_v4().to_string());
+        request
+            .environment
+            .entry("CLAUDE_CODE_ENTRYPOINT".to_owned())
+            .or_insert_with(|| "sdk-rust".to_owned());
         let mut args = vec![
+            "--print".to_owned(),
             "--input-format".to_owned(),
             "stream-json".to_owned(),
             "--output-format".to_owned(),
             "stream-json".to_owned(),
             "--include-partial-messages".to_owned(),
             "--verbose".to_owned(),
+            "--setting-sources=user,project,local".to_owned(),
             "--permission-mode".to_owned(),
             claude_permission_arg(mode).to_owned(),
         ];
@@ -2256,6 +2297,9 @@ impl ClaudeDriver {
         }
         if let Some(model) = request.model.as_ref() {
             args.extend(["--model".to_owned(), model.clone()]);
+        }
+        if let Some(agent) = request.agent.as_ref() {
+            args.extend(["--agent".to_owned(), agent.clone()]);
         }
         if let Some(mcp) = request.mcp.as_ref() {
             let config = json!({

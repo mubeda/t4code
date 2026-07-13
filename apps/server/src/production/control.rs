@@ -1,6 +1,9 @@
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -31,6 +34,7 @@ pub struct NativeServerControl {
     keybinding_rules: Arc<RwLock<Vec<Value>>>,
     keybinding_issues: Arc<RwLock<Vec<Value>>>,
     providers: Arc<RwLock<Vec<Value>>>,
+    full_provider_refresh_running: Arc<AtomicBool>,
     config_events: broadcast::Sender<Value>,
     trace_diagnostics: TraceDiagnosticsStore,
 }
@@ -67,10 +71,11 @@ impl NativeServerControl {
             state_directory,
             settings_path,
             keybindings_path,
-            settings: Arc::new(RwLock::new(settings)),
+            settings: Arc::new(RwLock::new(settings.clone())),
             keybinding_rules: Arc::new(RwLock::new(loaded_keybindings.rules)),
             keybinding_issues: Arc::new(RwLock::new(loaded_keybindings.issues)),
             providers: Arc::new(RwLock::new(providers)),
+            full_provider_refresh_running: Arc::new(AtomicBool::new(false)),
             config_events,
             trace_diagnostics,
         }
@@ -125,12 +130,14 @@ impl NativeServerControl {
 
         let cwd = std::env::current_dir().unwrap_or_else(|_| self.config.base_dir.clone());
         let providers = provider_inventory::probe(&next, None, &cwd).await;
-        *self.providers.write().await = providers;
         self.publish(json!({
             "version": 1,
             "type": "settingsUpdated",
             "payload": { "settings": next.clone() },
         }));
+        let providers = self.merge_provider_snapshots(providers, false).await;
+        self.publish_provider_snapshots(&providers);
+        self.spawn_full_provider_refresh(next.clone(), cwd);
         Ok(next)
     }
 
@@ -138,26 +145,69 @@ impl NativeServerControl {
         let instance_id = payload.get("instanceId").and_then(Value::as_str);
         let settings = self.settings.read().await.clone();
         let cwd = std::env::current_dir().unwrap_or_else(|_| self.config.base_dir.clone());
-        let providers = provider_inventory::probe(&settings, instance_id, &cwd).await;
-        if instance_id.is_some() {
-            let mut current = self.providers.write().await;
-            for refreshed in providers {
-                if let Some(id) = refreshed.get("instanceId").and_then(Value::as_str)
-                    && let Some(position) = current.iter().position(|row| row["instanceId"] == id)
-                {
-                    current[position] = refreshed;
+        let providers = provider_inventory::probe_full(&settings, instance_id, &cwd).await;
+        let providers = self
+            .merge_provider_snapshots(providers, instance_id.is_some())
+            .await;
+        self.publish_provider_snapshots(&providers);
+        json!({ "providers": providers })
+    }
+
+    async fn merge_provider_snapshots(&self, refreshed: Vec<Value>, partial: bool) -> Vec<Value> {
+        let mut current = self.providers.write().await;
+        if partial {
+            for provider in refreshed {
+                let Some(id) = provider.get("instanceId").and_then(Value::as_str) else {
+                    continue;
+                };
+                if let Some(position) = current.iter().position(|row| row["instanceId"] == id) {
+                    current[position] = provider;
+                } else {
+                    current.push(provider);
                 }
             }
         } else {
-            *self.providers.write().await = providers;
+            *current = refreshed;
         }
-        let providers = self.providers.read().await.clone();
+        current.clone()
+    }
+
+    fn publish_provider_snapshots(&self, providers: &[Value]) {
         self.publish(json!({
             "version": 1,
             "type": "providerStatuses",
-            "payload": { "providers": providers.clone() },
+            "payload": { "providers": providers },
         }));
-        json!({ "providers": providers })
+    }
+
+    fn spawn_full_provider_refresh(&self, mut settings: Value, cwd: PathBuf) {
+        if self
+            .full_provider_refresh_running
+            .swap(true, Ordering::AcqRel)
+        {
+            return;
+        }
+        let control = self.clone();
+        tokio::spawn(async move {
+            loop {
+                let providers = provider_inventory::probe_full(&settings, None, &cwd).await;
+                let latest_settings = control.settings.read().await.clone();
+                if latest_settings != settings {
+                    settings = latest_settings;
+                    continue;
+                }
+                let providers = control.merge_provider_snapshots(providers, false).await;
+                control.publish_provider_snapshots(&providers);
+                break;
+            }
+            control
+                .full_provider_refresh_running
+                .store(false, Ordering::Release);
+            let latest_settings = control.settings.read().await.clone();
+            if latest_settings != settings {
+                control.spawn_full_provider_refresh(latest_settings, cwd);
+            }
+        });
     }
 
     async fn update_keybinding(&self, method: &str, payload: Value) -> Result<Value, Value> {
@@ -248,6 +298,10 @@ impl ProductionServerControl for NativeServerControl {
         tokio::spawn(async move {
             match method {
                 "subscribeServerConfig" => {
+                    let settings = control.settings.read().await.clone();
+                    let cwd =
+                        std::env::current_dir().unwrap_or_else(|_| control.config.base_dir.clone());
+                    control.spawn_full_provider_refresh(settings, cwd);
                     let mut updates = control.config_events.subscribe();
                     if send_event(
                         &sender,

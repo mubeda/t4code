@@ -119,6 +119,7 @@ function provider(updateStatus?: "succeeded"): ServerProvider {
     models: [],
     slashCommands: [],
     skills: [],
+    agents: [],
     versionAdvisory: {
       status: updateStatus ? "current" : "behind_latest",
       currentVersion: updateStatus ? "1.1.0" : "1.0.0",

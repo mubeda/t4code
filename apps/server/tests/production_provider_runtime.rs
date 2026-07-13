@@ -212,6 +212,7 @@ fn launch() -> ProviderLaunchRequest {
         model: Some("gpt-5".to_owned()),
         service_tier: None,
         effort: None,
+        agent: None,
         resume_cursor: None,
         environment: Default::default(),
         endpoint: None,

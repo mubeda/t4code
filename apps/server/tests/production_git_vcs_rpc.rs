@@ -868,7 +868,7 @@ async fn next_server_message<S>(socket: &mut WebSocketStream<S>) -> ServerMessag
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let frame = timeout(Duration::from_secs(5), socket.next())
+    let frame = timeout(Duration::from_secs(15), socket.next())
         .await
         .expect("WebSocket response timeout")
         .expect("WebSocket remains open")

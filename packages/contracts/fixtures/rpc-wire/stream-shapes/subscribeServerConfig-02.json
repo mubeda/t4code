@@ -176,40 +176,81 @@
                 "displayName": "[$"
               },
               {
-                "name": ",x+I9yNO",
-                "path": ">UKc[Se+%Zd",
-                "enabled": false,
-                "shortDescription": "P=U5(+6$"
+                "name": "x+I9yN",
+                "description": "RN",
+                "path": "U",
+                "enabled": true,
+                "invocation": "dollar"
               },
               {
-                "name": "JZs|)ly:,T%",
-                "path": "p8H>r>\"WoqPp",
-                "enabled": true
+                "name": "8VY[qdb^",
+                "path": "5(",
+                "enabled": true,
+                "shortDescription": "s|)"
               },
               {
-                "name": ">vl1O;WX,+",
-                "description": "Abd1ls.7",
-                "path": ")sO8x",
-                "scope": "`XK)EcT",
+                "name": ",T%*_#p8",
+                "description": ">\"WoqP",
+                "path": "ae",
+                "enabled": true,
+                "displayName": ">vl1O;WX,+",
+                "shortDescription": "Abd1ls.7",
+                "invocation": "dollar"
+              },
+              {
+                "name": "xai",
+                "path": "XK",
                 "enabled": false
-              },
+              }
+            ],
+            "agents": [
               {
                 "name": ".",
                 "description": "0}!Z\\Q=B#s}",
-                "path": "4md<3NdKem6",
-                "scope": "}(#mf.0NsQr",
-                "enabled": false,
-                "shortDescription": "#[JY%4"
+                "model": "d<3NdKem6\"9",
+                "mode": "#"
+              },
+              {
+                "name": ".0NsQr\"X%",
+                "description": "#[JY%4",
+                "mode": "rV`79:C)FOM("
+              },
+              {
+                "name": "cx6{,~WNX",
+                "description": "ow5vh~,",
+                "mode": "x"
+              },
+              {
+                "name": "[k"
+              },
+              {
+                "name": "`NX~f",
+                "mode": ";I8F.lzY63}"
+              },
+              {
+                "name": "X",
+                "model": "rl=B;>;DK"
+              },
+              {
+                "name": "sjBSHRnw,b^A",
+                "description": "r]FkU;rf9)A^"
               }
             ],
             "versionAdvisory": {
               "status": "behind_latest",
-              "currentVersion": "rV`79:C)FOM(",
-              "latestVersion": null,
-              "updateCommand": "x6{,~WNX,9\\",
+              "currentVersion": "?^A|QN)O",
+              "latestVersion": "s/",
+              "updateCommand": "QLr@Qs%+!DV",
               "canUpdate": true,
               "checkedAt": null,
-              "message": "h~"
+              "message": "YzS)$o%iC|k"
+            },
+            "updateState": {
+              "status": "succeeded",
+              "startedAt": null,
+              "finishedAt": null,
+              "message": null,
+              "output": null
             }
           }
         ]

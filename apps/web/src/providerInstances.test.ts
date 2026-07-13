@@ -30,6 +30,7 @@ function provider(input: {
     models: [],
     slashCommands: [],
     skills: [],
+    agents: [],
   };
 }
 

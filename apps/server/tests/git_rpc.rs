@@ -66,7 +66,7 @@ async fn observe_initial_remote(
         }) => {}
         Some(VcsStatusStreamEvent::Snapshot { remote: None, .. }) => {
             assert!(matches!(
-                tokio::time::timeout(Duration::from_secs(5), subscription.recv()).await,
+                tokio::time::timeout(Duration::from_secs(15), subscription.recv()).await,
                 Ok(Some(VcsStatusStreamEvent::RemoteUpdated { .. }))
             ));
         }

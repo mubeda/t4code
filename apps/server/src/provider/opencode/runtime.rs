@@ -94,6 +94,7 @@ struct RuntimeInner {
     thread_id: String,
     directory: String,
     model: Mutex<Option<(String, String)>>,
+    agent: Option<String>,
     runtime_mode: Mutex<String>,
     session_id: Mutex<Option<String>>,
     active_turn_id: Mutex<Option<String>>,
@@ -127,6 +128,17 @@ impl OpenCodeSessionRuntime {
         model: Option<&str>,
         password: Option<&str>,
     ) -> Result<Self, OpenCodeRuntimeError> {
+        Self::new_with_options(base_url, thread_id, directory, model, password, None)
+    }
+
+    pub fn new_with_options(
+        base_url: &str,
+        thread_id: &str,
+        directory: &str,
+        model: Option<&str>,
+        password: Option<&str>,
+        agent: Option<&str>,
+    ) -> Result<Self, OpenCodeRuntimeError> {
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let mut headers = HeaderMap::new();
         if let Some(password) = password.filter(|value| !value.is_empty()) {
@@ -146,6 +158,10 @@ impl OpenCodeSessionRuntime {
                 thread_id: thread_id.to_owned(),
                 directory: directory.to_owned(),
                 model: Mutex::new(model.and_then(parse_model_slug)),
+                agent: agent
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned),
                 runtime_mode: Mutex::new("approval-required".to_owned()),
                 session_id: Mutex::new(None),
                 active_turn_id: Mutex::new(None),
@@ -262,13 +278,7 @@ impl OpenCodeSessionRuntime {
         attachments: Vec<Value>,
     ) -> Result<String, OpenCodeRuntimeError> {
         let session_id = self.session_id().await?;
-        let turn_id = format!("turn-{}", Uuid::new_v4());
-        *self.inner.active_user_message_id.lock().await = None;
-        self.inner.assistant_message_ids.lock().await.clear();
-        self.inner.assistant_text.lock().await.clear();
-        *self.inner.active_turn_id.lock().await = Some(turn_id.clone());
-        self.emit("turn.started", Some(turn_id.clone()), None, json!({}))
-            .await;
+        let turn_id = self.begin_turn().await;
         let mut body = json!({
             "sessionID": session_id,
             "parts": crate::provider::attachments::prompt_parts(text, attachments),
@@ -278,6 +288,9 @@ impl OpenCodeSessionRuntime {
                 "providerID": provider_id,
                 "modelID": model_id,
             });
+        }
+        if let Some(agent) = self.inner.agent.as_ref() {
+            body["agent"] = json!(agent);
         }
         let response = self
             .inner
@@ -297,6 +310,47 @@ impl OpenCodeSessionRuntime {
         Ok(turn_id)
     }
 
+    pub async fn send_command(
+        &self,
+        command: &str,
+        arguments: &str,
+    ) -> Result<String, OpenCodeRuntimeError> {
+        let session_id = self.session_id().await?;
+        let command = command.trim().trim_start_matches('/');
+        if command.is_empty() {
+            return Err(OpenCodeRuntimeError::InvalidResponse(
+                "command name cannot be empty".to_owned(),
+            ));
+        }
+        let turn_id = self.begin_turn().await;
+        let mut body = json!({
+            "command": command,
+            "arguments": arguments.trim(),
+        });
+        if let Some(agent) = self.inner.agent.as_ref() {
+            body["agent"] = json!(agent);
+        }
+        if let Some((provider_id, model_id)) = self.inner.model.lock().await.as_ref() {
+            body["model"] = json!(format!("{provider_id}/{model_id}"));
+        }
+        let response = self
+            .inner
+            .client
+            .post(self.request_url(&format!("/session/{session_id}/command"))?)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| OpenCodeRuntimeError::Http(error.to_string()))?;
+        if !response.status().is_success() {
+            *self.inner.active_turn_id.lock().await = None;
+            return Err(OpenCodeRuntimeError::Http(format!(
+                "command returned HTTP {}",
+                response.status()
+            )));
+        }
+        Ok(turn_id)
+    }
+
     pub async fn set_model(&self, model: &str) -> Result<(), OpenCodeRuntimeError> {
         let parsed = parse_model_slug(model).ok_or_else(|| {
             OpenCodeRuntimeError::InvalidResponse(
@@ -305,6 +359,17 @@ impl OpenCodeSessionRuntime {
         })?;
         *self.inner.model.lock().await = Some(parsed);
         Ok(())
+    }
+
+    async fn begin_turn(&self) -> String {
+        let turn_id = format!("turn-{}", Uuid::new_v4());
+        *self.inner.active_user_message_id.lock().await = None;
+        self.inner.assistant_message_ids.lock().await.clear();
+        self.inner.assistant_text.lock().await.clear();
+        *self.inner.active_turn_id.lock().await = Some(turn_id.clone());
+        self.emit("turn.started", Some(turn_id.clone()), None, json!({}))
+            .await;
+        turn_id
     }
 
     pub async fn configure_runtime_mode(&self, mode: &str) {

@@ -519,7 +519,14 @@ const codexProvider: ServerProvider = {
       scope: "project",
       enabled: true,
     },
-    { name: "docs", path: "/skills/docs", enabled: true },
+    { name: "docs", path: "/skills/docs", enabled: true, invocation: "slash" },
+  ],
+  agents: [
+    {
+      name: "code-reviewer",
+      description: "Review changes with a dedicated agent",
+      model: "gpt-5.4",
+    },
   ],
 };
 
@@ -1221,6 +1228,7 @@ describe("ChatComposer command menu", () => {
       "slash:plan",
       "slash:default",
       "provider-slash-command:codex:review",
+      "provider-agent:codex:code-reviewer",
     ]);
     expect(menu["groupSlashCommandSections"]).toBe(true);
     expect(menu["emptyStateText"]).toBe("No matching command.");
@@ -1412,6 +1420,27 @@ describe("ChatComposer menu selection", () => {
     onSelect(items[0]!);
 
     expect(draftOf(threadRef)?.prompt).toBe("$refactor ");
+  });
+
+  it("uses provider-native slash invocation for slash skills", () => {
+    seedPrompt("$doc");
+    renderComposer();
+    setEditorSnapshot("$doc", 4);
+    const menu = findCapture("ComposerCommandMenu");
+    const onSelect = menu["onSelect"] as (item: Record<string, unknown>) => void;
+    const items = menu["items"] as Array<Record<string, unknown>>;
+
+    onSelect(items[0]!);
+
+    expect(draftOf(threadRef)?.prompt).toBe("/docs ");
+  });
+
+  it("inserts an explicit provider-agent instruction", () => {
+    const { onSelect, items } = renderSlashMenu("/code");
+
+    onSelect(items.find((item) => item["id"] === "provider-agent:codex:code-reviewer")!);
+
+    expect(draftOf(threadRef)?.prompt).toBe("Use the code-reviewer agent to ");
   });
 
   it("routes custom answers through the pending input callback instead of the store", () => {

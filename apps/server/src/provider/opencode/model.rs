@@ -18,6 +18,8 @@ pub struct OpenCodeInventorySnapshot {
     pub status: String,
     pub auth: Value,
     pub models: Vec<OpenCodeProviderModel>,
+    pub commands: Vec<Value>,
+    pub agents: Vec<Value>,
 }
 
 pub fn parse_model_slug(slug: &str) -> Option<(String, String)> {
@@ -31,6 +33,7 @@ pub fn parse_model_slug(slug: &str) -> Option<(String, String)> {
 pub fn build_inventory_snapshot(
     provider_list: &Value,
     agents: &Value,
+    commands: &Value,
     custom_models: &[String],
 ) -> OpenCodeInventorySnapshot {
     let connected = provider_list
@@ -85,7 +88,76 @@ pub fn build_inventory_snapshot(
         status: "ready".to_owned(),
         auth: json!({ "status": if connected.is_empty() { "unknown" } else { "authenticated" } }),
         models,
+        commands: command_inventory(commands),
+        agents: agent_inventory(agents),
     }
+}
+
+pub fn command_inventory(commands: &Value) -> Vec<Value> {
+    commands
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|command| {
+            let name = command
+                .get("name")?
+                .as_str()?
+                .trim()
+                .trim_start_matches('/');
+            if name.is_empty() {
+                return None;
+            }
+            let mut result = json!({ "name": name });
+            if let Some(description) = command
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                result["description"] = json!(description);
+            }
+            if command
+                .get("template")
+                .and_then(Value::as_str)
+                .is_some_and(|template| template.contains("$ARGUMENTS"))
+            {
+                result["input"] = json!({ "hint": "arguments" });
+            }
+            Some(result)
+        })
+        .collect()
+}
+
+fn agent_inventory(agents: &Value) -> Vec<Value> {
+    agents
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|agent| {
+            !agent
+                .get("hidden")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .filter_map(|agent| {
+            let name = agent.get("name")?.as_str()?.trim();
+            if name.is_empty() {
+                return None;
+            }
+            let mut result = json!({ "name": name });
+            for key in ["description", "model", "mode"] {
+                if let Some(value) = agent
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    result[key] = json!(value);
+                }
+            }
+            Some(result)
+        })
+        .collect()
 }
 
 pub fn merge_assistant_text(previous: Option<&str>, next: &str) -> (String, String) {
@@ -249,7 +321,7 @@ mod tests {
             ]
         });
 
-        let snapshot = build_inventory_snapshot(&provider_list, &json!([]), &[]);
+        let snapshot = build_inventory_snapshot(&provider_list, &json!([]), &json!([]), &[]);
         let slugs = snapshot
             .models
             .iter()
@@ -277,7 +349,7 @@ mod tests {
             { "name": "explore", "hidden": false, "mode": "subagent" }
         ]);
 
-        let snapshot = build_inventory_snapshot(&provider_list, &agents, &[]);
+        let snapshot = build_inventory_snapshot(&provider_list, &agents, &json!([]), &[]);
 
         assert_eq!(
             snapshot.models[0].capabilities,

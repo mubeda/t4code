@@ -982,8 +982,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           description: command.description ?? command.input?.hint ?? "Run provider command",
         }),
       );
+      const providerAgentItems = (selectedProviderStatus?.agents ?? []).map((agent) => ({
+        id: `provider-agent:${selectedProvider}:${agent.name}`,
+        type: "provider-agent" as const,
+        provider: selectedProvider,
+        agent,
+        label: `@${agent.name}`,
+        description: agent.description ?? agent.model ?? "Use provider agent",
+      }));
       const query = composerTrigger.query.trim().toLowerCase();
-      const slashCommandItems = [...builtInSlashCommandItems, ...providerSlashCommandItems];
+      const slashCommandItems = [
+        ...builtInSlashCommandItems,
+        ...providerSlashCommandItems,
+        ...providerAgentItems,
+      ];
       if (!query) {
         return slashCommandItems;
       }
@@ -1611,8 +1623,31 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         }
         return;
       }
+      if (item.type === "provider-agent") {
+        const replacement = `Use the ${item.agent.name} agent to `;
+        const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
+          snapshot.value,
+          trigger.rangeEnd,
+          replacement,
+        );
+        const applied = applyPromptReplacement(
+          trigger.rangeStart,
+          replacementRangeEnd,
+          replacement,
+          { expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd) },
+        );
+        if (applied) {
+          setComposerHighlightedItemId(null);
+        }
+        return;
+      }
       if (item.type === "skill") {
-        const replacement = `$${item.skill.name} `;
+        const replacement =
+          item.skill.invocation === "slash"
+            ? `/${item.skill.name} `
+            : item.skill.invocation === "prompt"
+              ? `Use the ${item.skill.name} skill to `
+              : `$${item.skill.name} `;
         const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
           snapshot.value,
           trigger.rangeEnd,
