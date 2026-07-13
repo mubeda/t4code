@@ -240,6 +240,50 @@ it.layer(NodeServices.layer)("sync-reference-repos", (it) => {
     });
   });
 
+  it.effect("prunes the nested Alchemy submodule after syncing alchemy-effect", () => {
+    const commands: Array<{ readonly command: string; readonly args: ReadonlyArray<string> }> = [];
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const rootDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "sync-reference-repos-prune-",
+      });
+      const versionSourcePath = path.join(rootDir, "infra", "relay", "package.json");
+      yield* fs.makeDirectory(path.dirname(versionSourcePath), { recursive: true });
+      yield* fs.writeFileString(versionSourcePath, '{"dependencies":{"alchemy":"2.0.0-beta.49"}}');
+
+      yield* syncReferenceRepos({ rootDir, repoId: "alchemy-effect" }).pipe(
+        Effect.provide(mockSpawnerLayer(commands)),
+      );
+
+      assert.deepStrictEqual(commands, [
+        {
+          command: "git",
+          args: [
+            "subtree",
+            "add",
+            "--prefix=.repos/alchemy-effect",
+            "https://github.com/alchemy-run/alchemy-effect.git",
+            "v2.0.0-beta.49",
+            "--squash",
+          ],
+        },
+        {
+          command: "git",
+          args: [
+            "rm",
+            "-rf",
+            "--ignore-unmatch",
+            "--",
+            ".repos/alchemy-effect/.gitmodules",
+            ".repos/alchemy-effect/.vendor/alchemy",
+          ],
+        },
+      ]);
+    });
+  });
+
   it.effect("rejects unknown repo selectors", () =>
     Effect.gen(function* () {
       const error = yield* syncReferenceRepos({
