@@ -1,18 +1,23 @@
-use std::{net::SocketAddr, time::Duration};
+use std::{io::ErrorKind, net::SocketAddr, path::PathBuf, time::Duration};
 
+use futures_util::{SinkExt, StreamExt};
 use reqwest::{Client, StatusCode, redirect::Policy};
 use serde_json::Value;
 use t4code_server::{
     ConfigError, DESKTOP_SHUTDOWN_PATH, DESKTOP_SHUTDOWN_TOKEN_HEADER, ROUTE_INVENTORY,
-    ServerConfig, ServerMode, ServerRuntime,
+    RpcRegistry, ServerConfig, ServerError, ServerMode, ServerRuntime,
 };
 use tempfile::TempDir;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
+    net::{TcpListener, TcpStream},
     time::timeout,
 };
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
+use uuid::Uuid;
+
+const PROVIDER_DRIVERS: [&str; 5] = ["codex", "claudeAgent", "cursor", "grok", "opencode"];
 
 fn test_config(temp: &TempDir) -> ServerConfig {
     ServerConfig::new(temp.path()).with_bind("127.0.0.1", 0)
@@ -20,6 +25,141 @@ fn test_config(temp: &TempDir) -> ServerConfig {
 
 fn endpoint(address: SocketAddr, path: &str) -> String {
     format!("http://{address}{path}")
+}
+
+fn proxy_free_client() -> Client {
+    Client::builder()
+        .no_proxy()
+        .build()
+        .expect("proxy-free HTTP client")
+}
+
+async fn assert_json_wire(response: reqwest::Response, status: StatusCode, body: &str) {
+    assert_eq!(response.status(), status);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    assert_eq!(response.headers()["content-type"], "application/json");
+    assert_eq!(response.text().await.expect("JSON response body"), body);
+}
+
+async fn assert_missing_credential_wire(response: reqwest::Response) {
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.headers()["content-type"], "application/json");
+    let mut body = response.json::<Value>().await.expect("authentication JSON");
+    let trace_id = body
+        .as_object_mut()
+        .expect("authentication error object")
+        .remove("traceId")
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .expect("authentication trace id");
+    Uuid::parse_str(&trace_id).expect("UUID authentication trace id");
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "_tag": "EnvironmentAuthInvalidError",
+            "code": "auth_invalid",
+            "reason": "missing_credential"
+        })
+    );
+}
+
+async fn exchange_startup_credential(
+    client: &Client,
+    address: SocketAddr,
+    credential: &str,
+) -> String {
+    let response = client
+        .post(endpoint(address, "/oauth/token"))
+        .form(&[
+            (
+                "grant_type",
+                "urn:ietf:params:oauth:grant-type:token-exchange",
+            ),
+            ("subject_token", credential),
+            (
+                "subject_token_type",
+                "urn:t4code:params:oauth:token-type:environment-bootstrap",
+            ),
+            (
+                "requested_token_type",
+                "urn:ietf:params:oauth:token-type:access_token",
+            ),
+        ])
+        .send()
+        .await
+        .expect("startup credential exchange");
+    assert_eq!(response.status(), StatusCode::OK);
+    response.json::<Value>().await.expect("token exchange JSON")["access_token"]
+        .as_str()
+        .expect("bearer access token")
+        .to_owned()
+}
+
+fn write_disabled_provider_settings(temp: &TempDir) -> PathBuf {
+    let settings_path = temp.path().join("userdata").join("settings.json");
+    std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+        .expect("create settings directory");
+    std::fs::write(
+        &settings_path,
+        serde_json::to_vec(&serde_json::json!({
+            "providers": {
+                "codex": { "enabled": false },
+                "claudeAgent": { "enabled": false },
+                "cursor": { "enabled": false },
+                "grok": { "enabled": false },
+                "opencode": { "enabled": false }
+            }
+        }))
+        .expect("encode provider settings"),
+    )
+    .expect("write provider settings");
+    settings_path
+}
+
+async fn fetch_server_config(client: &Client, address: SocketAddr, access_token: &str) -> Value {
+    let ticket_response = client
+        .post(endpoint(address, "/api/auth/websocket-ticket"))
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .expect("WebSocket ticket response");
+    assert_eq!(ticket_response.status(), StatusCode::OK);
+    let ticket_body = ticket_response
+        .json::<Value>()
+        .await
+        .expect("WebSocket ticket JSON");
+    let ticket = ticket_body["ticket"].as_str().expect("WebSocket ticket");
+    let (mut socket, _) = connect_async(format!("ws://{address}/ws?wsTicket={ticket}"))
+        .await
+        .expect("configuration WebSocket");
+    socket
+        .send(Message::Text(
+            serde_json::json!({
+                "_tag": "Request",
+                "id": "1",
+                "tag": "server.getConfig",
+                "payload": {},
+                "headers": []
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send server configuration request");
+    let frame = timeout(Duration::from_secs(2), socket.next())
+        .await
+        .expect("server configuration timeout")
+        .expect("configuration WebSocket remains open")
+        .expect("server configuration frame");
+    let wire: Value = serde_json::from_str(frame.to_text().expect("configuration text frame"))
+        .expect("server configuration JSON");
+    assert_eq!(wire["_tag"], "Exit");
+    assert_eq!(wire["requestId"], "1");
+    assert_eq!(wire["exit"]["_tag"], "Success");
+    socket
+        .close(None)
+        .await
+        .expect("close configuration WebSocket");
+    wire["exit"]["value"].clone()
 }
 
 #[tokio::test]
@@ -125,6 +265,363 @@ async fn native_mcp_routes_are_live_and_enforce_authentication() {
 
     handle.shutdown();
     handle.join().await.expect("server joins");
+}
+
+#[tokio::test]
+async fn custom_registry_uses_exact_fallback_http_responses() {
+    let temp = TempDir::new().expect("temporary base directory");
+    let handle = ServerRuntime::start_with_registry(test_config(&temp), RpcRegistry::empty())
+        .await
+        .expect("custom-registry server starts");
+    let client = proxy_free_client();
+    let startup = handle
+        .startup_access()
+        .expect("authenticated web startup access");
+    assert!(handle.local_addr().ip().is_loopback());
+    assert_eq!(
+        startup.connection_string,
+        format!("http://{}", handle.local_addr())
+    );
+    assert!(!startup.credential.is_empty());
+    let pairing_url = Url::parse(&startup.pairing_url).expect("valid pairing URL");
+    assert_eq!(pairing_url.scheme(), "http");
+    assert_eq!(pairing_url.host_str(), Some("127.0.0.1"));
+    assert_eq!(pairing_url.port(), Some(handle.local_addr().port()));
+    assert_eq!(pairing_url.path(), "/pair");
+    assert_eq!(pairing_url.query(), None);
+    let expected_fragment = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("token", &startup.credential)
+        .finish();
+    assert_eq!(pairing_url.fragment(), Some(expected_fragment.as_str()));
+    let decoded_fragment = url::form_urlencoded::parse(expected_fragment.as_bytes())
+        .into_owned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        decoded_fragment,
+        vec![("token".to_owned(), startup.credential.clone())]
+    );
+    assert_missing_credential_wire(
+        client
+            .get(endpoint(handle.local_addr(), "/api/orchestration/snapshot"))
+            .send()
+            .await
+            .expect("unauthenticated fallback JSON response"),
+    )
+    .await;
+    let access_token =
+        exchange_startup_credential(&client, handle.local_addr(), startup.credential.as_str())
+            .await;
+
+    assert_json_wire(
+        client
+            .get(endpoint(
+                handle.local_addr(),
+                "/api/orchestration/snapshot",
+            ))
+            .bearer_auth(&access_token)
+            .send()
+            .await
+            .expect("fallback JSON response"),
+        StatusCode::SERVICE_UNAVAILABLE,
+        r#"{"_tag":"NativeRuntimeUnavailableError","message":"The native production runtime is unavailable."}"#,
+    )
+    .await;
+
+    assert_json_wire(
+        client
+            .get(endpoint(
+                handle.local_addr(),
+                "/api/assets/missing-token/missing.txt",
+            ))
+            .send()
+            .await
+            .expect("fallback asset response"),
+        StatusCode::NOT_FOUND,
+        r#"{"_tag":"AssetNotFoundError"}"#,
+    )
+    .await;
+
+    for request in [
+        client.post(endpoint(handle.local_addr(), "/mcp")),
+        client.delete(endpoint(handle.local_addr(), "/mcp")),
+    ] {
+        assert_json_wire(
+            request.send().await.expect("fallback MCP response"),
+            StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"_tag":"McpUnavailableError"}"#,
+        )
+        .await;
+    }
+
+    handle.shutdown();
+    timeout(Duration::from_secs(2), handle.join())
+        .await
+        .expect("shutdown timeout")
+        .expect("custom-registry server joins");
+}
+
+#[tokio::test]
+async fn unspecified_bind_uses_localhost_startup_access_and_waits_for_shutdown() {
+    let temp = TempDir::new().expect("temporary base directory");
+    let handle = ServerRuntime::start_with_registry(
+        ServerConfig::new(temp.path()).with_bind("0.0.0.0", 0),
+        RpcRegistry::empty(),
+    )
+    .await
+    .expect("unspecified-address server starts");
+    assert!(handle.local_addr().ip().is_unspecified());
+    let startup = handle
+        .startup_access()
+        .expect("authenticated web startup access");
+    assert!(!startup.credential.is_empty());
+    assert_eq!(
+        startup.connection_string,
+        format!("http://localhost:{}", handle.local_addr().port())
+    );
+    let pairing_url = Url::parse(&startup.pairing_url).expect("valid pairing URL");
+    assert_eq!(pairing_url.host_str(), Some("localhost"));
+    assert_eq!(pairing_url.port(), Some(handle.local_addr().port()));
+    assert_eq!(pairing_url.path(), "/pair");
+    assert_eq!(pairing_url.query(), None);
+    let fragment = pairing_url.fragment().expect("pairing URL fragment");
+    assert_eq!(
+        url::form_urlencoded::parse(fragment.as_bytes())
+            .into_owned()
+            .collect::<Vec<_>>(),
+        vec![("token".to_owned(), startup.credential.clone())]
+    );
+
+    handle.shutdown();
+    timeout(Duration::from_secs(2), handle.wait_for_shutdown())
+        .await
+        .expect("shutdown notification timeout");
+    timeout(Duration::from_secs(2), handle.join())
+        .await
+        .expect("shutdown join timeout")
+        .expect("unspecified-address server joins");
+}
+
+#[tokio::test]
+async fn existing_file_as_base_directory_returns_typed_creation_error() {
+    let temp = TempDir::new().expect("temporary parent directory");
+    let base_file = temp.path().join("base-file");
+    std::fs::write(&base_file, "not a directory").expect("base path fixture");
+
+    let error = match ServerRuntime::start_with_registry(
+        ServerConfig::new(&base_file).with_bind("127.0.0.1", 0),
+        RpcRegistry::empty(),
+    )
+    .await
+    {
+        Ok(handle) => {
+            drop(handle);
+            panic!("file base path must fail startup");
+        }
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.to_string(),
+        "failed to create the server base directory"
+    );
+    match error {
+        ServerError::CreateBaseDirectory(source) => {
+            assert_eq!(source.kind(), ErrorKind::AlreadyExists);
+            assert!(!source.to_string().trim().is_empty());
+        }
+        other => panic!("expected CreateBaseDirectory, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn occupied_listener_address_returns_typed_bind_error() {
+    let occupied = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("occupy ephemeral listener");
+    let occupied_addr = occupied.local_addr().expect("occupied listener address");
+    let temp = TempDir::new().expect("temporary base directory");
+
+    let error = match ServerRuntime::start_with_registry(
+        ServerConfig::new(temp.path()).with_bind("127.0.0.1", occupied_addr.port()),
+        RpcRegistry::empty(),
+    )
+    .await
+    {
+        Ok(handle) => {
+            drop(handle);
+            panic!("occupied listener must fail startup");
+        }
+        Err(error) => error,
+    };
+    assert_eq!(error.to_string(), "failed to bind the server listener");
+    match error {
+        ServerError::Bind(source) => {
+            assert_eq!(source.kind(), ErrorKind::AddrInUse);
+            assert!(!source.to_string().trim().is_empty());
+        }
+        other => panic!("expected Bind, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn file_at_state_directory_returns_typed_state_files_error() {
+    let temp = TempDir::new().expect("temporary base directory");
+    let state_directory = temp.path().join("userdata");
+    std::fs::write(&state_directory, "not a directory").expect("state path fixture");
+
+    let error =
+        match ServerRuntime::start_with_registry(test_config(&temp), RpcRegistry::empty()).await {
+            Ok(handle) => {
+                drop(handle);
+                panic!("file state path must fail startup");
+            }
+            Err(error) => error,
+        };
+    match error {
+        ServerError::StateFiles(message) => {
+            assert!(message.contains("failed to create state directory"));
+            assert!(message.contains("userdata"));
+        }
+        other => panic!("expected StateFiles, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn directory_at_database_path_returns_typed_persistence_error() {
+    let temp = TempDir::new().expect("temporary base directory");
+    let database_path = temp.path().join("userdata").join("state.sqlite");
+    std::fs::create_dir_all(&database_path).expect("database path fixture");
+
+    let error =
+        match ServerRuntime::start_with_registry(test_config(&temp), RpcRegistry::empty()).await {
+            Ok(handle) => {
+                drop(handle);
+                panic!("directory database path must fail startup");
+            }
+            Err(error) => error,
+        };
+    match error {
+        ServerError::PersistenceInitialize(message) => {
+            assert!(database_path.is_dir(), "deliberate database fixture");
+            assert_eq!(
+                message,
+                format!("failed to open SQLite database {}", database_path.display())
+            );
+        }
+        other => panic!("expected PersistenceInitialize, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn production_runtime_adapters_serve_snapshot_and_asset_errors() {
+    let temp = TempDir::new().expect("temporary base directory");
+    let settings_path = write_disabled_provider_settings(&temp);
+    assert_eq!(
+        settings_path,
+        temp.path().join("userdata").join("settings.json")
+    );
+    let handle = ServerRuntime::start(test_config(&temp))
+        .await
+        .expect("production server starts");
+    let client = proxy_free_client();
+    let credential = handle
+        .startup_access()
+        .expect("authenticated web startup access")
+        .credential
+        .clone();
+    let access_token = exchange_startup_credential(&client, handle.local_addr(), &credential).await;
+    let config = fetch_server_config(&client, handle.local_addr(), &access_token).await;
+    let providers = config["providers"].as_array().expect("provider snapshots");
+    assert_eq!(providers.len(), PROVIDER_DRIVERS.len());
+    for driver in PROVIDER_DRIVERS {
+        assert_eq!(config["settings"]["providers"][driver]["enabled"], false);
+        let provider = providers
+            .iter()
+            .find(|provider| provider["instanceId"] == driver)
+            .unwrap_or_else(|| panic!("missing disabled provider snapshot for {driver}"));
+        assert_eq!(provider["driver"], driver);
+        assert_eq!(provider["enabled"], false);
+        assert_eq!(provider["installed"], false);
+        assert_eq!(provider["status"], "disabled");
+    }
+
+    let snapshot_response = client
+        .get(endpoint(handle.local_addr(), "/api/orchestration/snapshot"))
+        .bearer_auth(&access_token)
+        .send()
+        .await
+        .expect("production snapshot response");
+    assert_eq!(snapshot_response.status(), StatusCode::OK);
+    assert_eq!(snapshot_response.headers()["cache-control"], "no-store");
+    let snapshot: Value = snapshot_response.json().await.expect("snapshot JSON");
+    for collection in [
+        "projects",
+        "threads",
+        "messages",
+        "activities",
+        "sessions",
+        "approvals",
+        "proposed_plans",
+        "turns",
+        "checkpoints",
+        "states",
+        "receipts",
+        "diffs",
+    ] {
+        assert_eq!(snapshot[collection], serde_json::json!([]), "{collection}");
+    }
+
+    assert_json_wire(
+        client
+            .get(endpoint(
+                handle.local_addr(),
+                "/api/assets/missing-token/missing.txt",
+            ))
+            .send()
+            .await
+            .expect("production asset response"),
+        StatusCode::NOT_FOUND,
+        r#"{"_tag":"AssetNotFoundError","message":"Asset was not found or its access token expired."}"#,
+    )
+    .await;
+
+    handle.shutdown();
+    timeout(Duration::from_secs(2), handle.join())
+        .await
+        .expect("production shutdown timeout")
+        .expect("production server joins");
+}
+
+#[tokio::test]
+async fn dropping_server_handle_aborts_the_task_and_releases_the_listener() {
+    let temp = TempDir::new().expect("temporary base directory");
+    let handle = ServerRuntime::start_with_registry(
+        test_config(&temp).with_unsafe_no_auth(),
+        RpcRegistry::empty(),
+    )
+    .await
+    .expect("custom-registry server starts");
+    assert!(handle.startup_access().is_none());
+    let address = handle.local_addr();
+
+    drop(handle);
+
+    let replacement = timeout(Duration::from_secs(2), async {
+        loop {
+            match TcpListener::bind(address).await {
+                Ok(listener) => break listener,
+                Err(error) if error.kind() == ErrorKind::AddrInUse => {
+                    tokio::task::yield_now().await;
+                }
+                Err(error) => panic!("unexpected listener rebind error: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("dropped server releases listener before timeout");
+    assert_eq!(
+        replacement.local_addr().expect("replacement address"),
+        address
+    );
 }
 
 #[tokio::test]

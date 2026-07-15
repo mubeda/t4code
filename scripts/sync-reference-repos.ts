@@ -44,6 +44,27 @@ export class ReferenceRepoSelectionError extends Schema.TaggedErrorClass<Referen
   }
 }
 
+export class ReferenceRepoPathValidationError extends Schema.TaggedErrorClass<ReferenceRepoPathValidationError>()(
+  "ReferenceRepoPathValidationError",
+  {
+    repoId: Schema.String,
+    field: Schema.Literals(["prefix", "prunePath"]),
+    value: Schema.String,
+    reason: Schema.Literals([
+      "empty",
+      "absolute",
+      "backslash",
+      "ambiguous-segment",
+      "windows-ambiguous",
+      "outside-repos",
+    ]),
+  },
+) {
+  override get message(): string {
+    return `Reference repo "${this.repoId}" has unsafe ${this.field} path "${this.value}" (${this.reason}).`;
+  }
+}
+
 export class ReferenceRepoVersionSourceError extends Schema.TaggedErrorClass<ReferenceRepoVersionSourceError>()(
   "ReferenceRepoVersionSourceError",
   {
@@ -94,6 +115,7 @@ export class ReferenceRepoGitSubtreeError extends Schema.TaggedErrorClass<Refere
 
 export const ReferenceRepoSyncError = Schema.Union([
   ReferenceRepoSelectionError,
+  ReferenceRepoPathValidationError,
   ReferenceRepoVersionSourceError,
   ReferenceRepoVersionResolutionError,
   ReferenceRepoGitSubtreeError,
@@ -103,6 +125,71 @@ export const isReferenceRepoSyncError = Schema.is(ReferenceRepoSyncError);
 
 const decodeJsonSource = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
 const decodeYamlSource = Schema.decodeEffect(fromYaml(Schema.Unknown));
+const WINDOWS_ABSOLUTE_PATH = /^[A-Za-z]:/;
+const WINDOWS_RESERVED_BASENAME = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i;
+const WINDOWS_FORBIDDEN_CHARACTER = /[<>:"|?*]/;
+
+const hasWindowsControlCharacter = (segment: string): boolean =>
+  Array.from(segment).some((character) => {
+    const codePoint = character.codePointAt(0)!;
+    return codePoint <= 0x1f || codePoint === 0x7f;
+  });
+
+const isWindowsAmbiguousSegment = (segment: string): boolean =>
+  segment.endsWith(" ") ||
+  segment.endsWith(".") ||
+  WINDOWS_RESERVED_BASENAME.test(segment) ||
+  WINDOWS_FORBIDDEN_CHARACTER.test(segment) ||
+  hasWindowsControlCharacter(segment);
+
+const validateRepositoryRelativePath = (
+  repo: ReferenceRepo,
+  field: "prefix" | "prunePath",
+  value: string,
+): Effect.Effect<void, ReferenceRepoPathValidationError> => {
+  const fail = (reason: ReferenceRepoPathValidationError["reason"]) =>
+    Effect.fail(
+      new ReferenceRepoPathValidationError({
+        repoId: repo.id,
+        field,
+        value,
+        reason,
+      }),
+    );
+
+  if (value.length === 0) return fail("empty");
+  if (value.includes("\\")) return fail("backslash");
+  if (value.startsWith("/") || WINDOWS_ABSOLUTE_PATH.test(value)) return fail("absolute");
+
+  const segments = value.split("/");
+  if (
+    segments.some(
+      (segment) =>
+        segment.length === 0 ||
+        segment === "." ||
+        segment === ".." ||
+        segment.trim() !== segment ||
+        segment.includes("\0"),
+    )
+  ) {
+    return fail("ambiguous-segment");
+  }
+  if (segments.some(isWindowsAmbiguousSegment)) return fail("windows-ambiguous");
+
+  if (field === "prefix") {
+    return segments[0] === ".repos" && segments.length >= 2 ? Effect.void : fail("outside-repos");
+  }
+  return segments[0] === ".repos" ? fail("outside-repos") : Effect.void;
+};
+
+const validateReferenceRepoPaths = Effect.fn("validateReferenceRepoPaths")(function* (
+  repo: ReferenceRepo,
+) {
+  yield* validateRepositoryRelativePath(repo, "prefix", repo.prefix);
+  for (const prunePath of repo.prunePaths ?? []) {
+    yield* validateRepositoryRelativePath(repo, "prunePath", prunePath);
+  }
+});
 
 const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.Effect<string, E> =>
   stream.pipe(
@@ -206,6 +293,7 @@ export const planReferenceRepoSync = Effect.fn("planReferenceRepoSync")(function
   rootDir: string,
   latest: boolean,
 ) {
+  yield* validateReferenceRepoPaths(repo);
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const action: ReferenceRepoSyncAction = (yield* fs.exists(path.join(rootDir, repo.prefix)))
@@ -346,9 +434,20 @@ export const syncReferenceReposCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Sync vendored reference repositories under .repos/."));
 
-if (import.meta.main) {
-  Command.run(syncReferenceReposCommand, { version: "0.0.0" }).pipe(
-    Effect.provide(NodeServices.layer),
-    NodeRuntime.runMain,
+type MainLauncher = <E, A>(effect: Effect.Effect<A, E, never>) => void;
+
+export const runSyncReferenceReposMain = (
+  isMain: boolean,
+  launch: MainLauncher = NodeRuntime.runMain,
+) => {
+  if (!isMain) return false;
+
+  launch(
+    Command.run(syncReferenceReposCommand, { version: "0.0.0" }).pipe(
+      Effect.provide(NodeServices.layer),
+    ),
   );
-}
+  return true;
+};
+
+runSyncReferenceReposMain(import.meta.main);

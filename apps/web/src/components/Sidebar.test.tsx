@@ -10,6 +10,7 @@
  */
 import * as Cause from "effect/Cause";
 import { renderToStaticMarkup } from "react-dom/server";
+import { createRoot, type Root } from "react-dom/client";
 import * as React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -22,6 +23,10 @@ import type {
   EnvironmentProject,
   EnvironmentThreadShell,
 } from "@t4code/client-runtime/state/shell";
+
+const browserRuntime =
+  typeof document !== "undefined" && typeof document.createElement === "function";
+const staticDescribe = browserRuntime ? describe.skip : describe;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Hoisted harness state shared with every vi.mock factory.
@@ -83,8 +88,35 @@ const h = vi.hoisted(() => {
       const passthrough: Record<string, unknown> = {
         "data-mock": name,
       };
-      if (props["data-testid"] !== undefined) passthrough["data-testid"] = props["data-testid"];
-      if (props["aria-label"] !== undefined) passthrough["aria-label"] = props["aria-label"];
+      const domProps = new Set([
+        "aria-label",
+        "autoFocus",
+        "className",
+        "disabled",
+        "id",
+        "onBlur",
+        "onBlurCapture",
+        "onChange",
+        "onClick",
+        "onContextMenu",
+        "onDoubleClick",
+        "onFocus",
+        "onKeyDown",
+        "onMouseLeave",
+        "onPointerDown",
+        "placeholder",
+        "readOnly",
+        "role",
+        "tabIndex",
+        "title",
+        "type",
+        "value",
+      ]);
+      for (const [key, value] of Object.entries(props)) {
+        if (key.startsWith("data-") || domProps.has(key)) {
+          passthrough[key] = value;
+        }
+      }
       if (render !== undefined && R.isValidElement(render)) {
         return children === undefined
           ? R.cloneElement(render as never, passthrough as never)
@@ -470,6 +502,7 @@ vi.mock("../terminalUiStateStore", async (importOriginal) => {
 });
 
 vi.mock("../composerDraftStore", () => ({
+  DraftId: { make: (value: string) => value },
   useComposerDraftStore: {
     getState: () => ({
       getDraftThreadByProjectRef: h.spies.getDraftThreadByProjectRef,
@@ -894,22 +927,24 @@ beforeEach(() => {
   h.spies.closestCorners.mockReturnValue([]);
   h.spies.windowConfirm.mockReturnValue(true);
 
-  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-    callback(0);
-    return 0;
-  });
-  vi.stubGlobal("document", { activeElement: null, querySelector: () => null });
-  vi.stubGlobal("window", {
-    setTimeout: (callback: () => void) => {
-      callback();
+  if (!browserRuntime) {
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
       return 0;
-    },
-    clearTimeout: () => {},
-    confirm: h.spies.windowConfirm,
-    desktopBridge: undefined,
-    addEventListener: () => {},
-    removeEventListener: () => {},
-  });
+    });
+    vi.stubGlobal("document", { activeElement: null, querySelector: () => null });
+    vi.stubGlobal("window", {
+      setTimeout: (callback: () => void) => {
+        callback();
+        return 0;
+      },
+      clearTimeout: () => {},
+      confirm: h.spies.windowConfirm,
+      desktopBridge: undefined,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    });
+  }
 });
 
 afterEach(() => {
@@ -920,7 +955,7 @@ afterEach(() => {
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("SidebarBrandContent", () => {
+staticDescribe("SidebarBrandContent", () => {
   it("renders base name and stage label", () => {
     const markup = render(<SidebarBrandContent appBaseName="T4Code" stageLabel="Dev" />);
     expect(markup).toContain("T4Code");
@@ -928,7 +963,7 @@ describe("SidebarBrandContent", () => {
   });
 });
 
-describe("Sidebar full render", () => {
+staticDescribe("Sidebar full render", () => {
   it("renders the project header, primary row, and workspace thread rows", () => {
     baseScenario();
     const markup = render(<Sidebar />);
@@ -1118,6 +1153,67 @@ describe("Sidebar full render", () => {
     );
   });
 
+  it("keeps update actions quiet when the bridge or actionable result is absent", async () => {
+    baseScenario();
+    h.state.desktopUpdateState = { phase: "idle" };
+    h.state.showArmWarning = true;
+    h.state.updateBtnAction = "download";
+    render(<Sidebar />);
+    const button = captured("Button").find(
+      (entry) => entry.props["children"] === "Download ARM build",
+    )!;
+    invoke(button.props, "onClick", mouseEvent());
+    expect(h.spies.toastAdd).not.toHaveBeenCalled();
+
+    const downloadUpdate = vi.fn(async () => ({ completed: false, toast: false }));
+    (globalThis.window as unknown as Record<string, unknown>)["desktopBridge"] = {
+      downloadUpdate,
+      installUpdate: vi.fn(),
+    };
+    invoke(button.props, "onClick", mouseEvent());
+    await flush();
+    expect(downloadUpdate).toHaveBeenCalled();
+    expect(h.spies.toastAdd).not.toHaveBeenCalled();
+  });
+
+  it("uses generic messages for opaque update failures", async () => {
+    baseScenario();
+    h.state.desktopUpdateState = { phase: "idle" };
+    h.state.showArmWarning = true;
+    h.state.updateBtnAction = "download";
+    (globalThis.window as unknown as Record<string, unknown>)["desktopBridge"] = {
+      downloadUpdate: vi.fn(async () => Promise.reject("opaque download failure")),
+      installUpdate: vi.fn(),
+    };
+    render(<Sidebar />);
+    const download = captured("Button").find(
+      (entry) => entry.props["children"] === "Download ARM build",
+    )!;
+    invoke(download.props, "onClick", mouseEvent());
+    await flush();
+    expect(h.spies.toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ description: "An unexpected error occurred." }),
+    );
+
+    h.spies.toastAdd.mockClear();
+    h.state.desktopUpdateState = { phase: "downloaded" };
+    h.state.updateBtnAction = "install";
+    (globalThis.window as unknown as Record<string, unknown>)["desktopBridge"] = {
+      downloadUpdate: vi.fn(),
+      installUpdate: vi.fn(async () => Promise.reject("opaque install failure")),
+    };
+    h.state.captures.length = 0;
+    render(<Sidebar />);
+    const install = captured("Button").find(
+      (entry) => entry.props["children"] === "Install ARM build",
+    )!;
+    invoke(install.props, "onClick", mouseEvent());
+    await flush();
+    expect(h.spies.toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ description: "An unexpected error occurred." }),
+    );
+  });
+
   it("renders local secondary backend connection status", () => {
     baseScenario();
     h.state.environments = [
@@ -1220,7 +1316,7 @@ describe("Sidebar full render", () => {
   });
 });
 
-describe("Sidebar sort menu", () => {
+staticDescribe("Sidebar sort menu", () => {
   it("updates settings from the sort menus and clamps the preview count", () => {
     baseScenario();
     render(<Sidebar />);
@@ -1254,7 +1350,7 @@ describe("Sidebar sort menu", () => {
   });
 });
 
-describe("Sidebar manual project sorting", () => {
+staticDescribe("Sidebar manual project sorting", () => {
   function manualScenario() {
     const projectB = makeProject("project-b", { title: "Repo B", workspaceRoot: "C:/repo-b" });
     h.state.projects = [projectA, projectB];
@@ -1361,7 +1457,7 @@ describe("Sidebar manual project sorting", () => {
   });
 });
 
-describe("project header context menu", () => {
+staticDescribe("project header context menu", () => {
   function projectHeaderProps() {
     baseScenario();
     render(<Sidebar />);
@@ -1504,7 +1600,7 @@ describe("project header context menu", () => {
   });
 });
 
-describe("thread rows in the full sidebar", () => {
+staticDescribe("thread rows in the full sidebar", () => {
   function renderedRow(threadId: string) {
     return mustFindProps(byTestId(`thread-row-${threadId}`), `row ${threadId}`);
   }
@@ -1551,18 +1647,9 @@ describe("thread rows in the full sidebar", () => {
     h.spies.routerNavigate.mockClear();
     invoke(row, "onKeyDown", keyboardEvent("x"));
     expect(h.spies.routerNavigate).not.toHaveBeenCalled();
-  });
 
-  it("starts an inline rename on double-click but not with modifiers or on controls", () => {
-    baseScenario();
-    render(<Sidebar />);
-    const row = renderedRow("thread-idle");
-
-    invoke(row, "onDoubleClick", mouseEvent({ metaKey: true }));
-    invoke(row, "onDoubleClick", mouseEvent({ target: { closest: () => ({}) } }));
-    const rename = mouseEvent();
-    invoke(row, "onDoubleClick", rename);
-    expect(rename.preventDefault).toHaveBeenCalled();
+    invoke(row, "onKeyDown", keyboardEvent(" "));
+    expect(h.spies.routerNavigate).toHaveBeenCalled();
   });
 
   it("archives immediately when confirmation is disabled", async () => {
@@ -1628,9 +1715,27 @@ describe("thread rows in the full sidebar", () => {
       expect.objectContaining({ title: "Unable to open preview", description: "preview broke" }),
     );
   });
+
+  it("uses a generic message for opaque preview failures", async () => {
+    baseScenario();
+    h.state.discoveredPortsByThreadId = {
+      [threadIdle.id]: [{ port: 5733, protocol: "http", label: "Preview" }],
+    };
+    h.state.openDiscoveredPortResult = {
+      _tag: "Failure",
+      cause: Cause.fail("opaque preview failure"),
+    };
+    render(<Sidebar />);
+    const preview = mustFindProps(byAriaLabel("Open localhost:5733"), "preview button");
+    invoke(preview, "onClick", mouseEvent());
+    await flush();
+    expect(h.spies.toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ description: "The preview could not be opened." }),
+    );
+  });
 });
 
-describe("thread context menu", () => {
+staticDescribe("thread context menu", () => {
   function setupMenu(clickedId: string | null) {
     baseScenario();
     render(<Sidebar />);
@@ -1803,6 +1908,31 @@ describe("thread context menu", () => {
     );
   });
 
+  it("uses generic messages for opaque row and multi-select menu failures", async () => {
+    baseScenario();
+    h.selectionStore.setState({ selectedThreadKeys: new Set([threadKeyOf(threadIdle)]) });
+    render(<Sidebar />);
+    fakeLocalApi();
+    h.spies.contextMenuShow.mockRejectedValue("opaque menu failure");
+    let row = mustFindProps(byTestId("thread-row-thread-idle"), "idle row");
+    invoke(row, "onContextMenu", mouseEvent());
+    await flush();
+    expect(h.spies.toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ description: "An error occurred." }),
+    );
+
+    h.spies.toastAdd.mockClear();
+    h.selectionStore.setState({ selectedThreadKeys: new Set() });
+    h.state.captures.length = 0;
+    render(<Sidebar />);
+    row = mustFindProps(byTestId("thread-row-thread-idle"), "idle row");
+    invoke(row, "onContextMenu", mouseEvent());
+    await flush();
+    expect(h.spies.toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ description: "An error occurred." }),
+    );
+  });
+
   it("clears a selection that does not include the row before showing the row menu", async () => {
     baseScenario();
     render(<Sidebar />);
@@ -1816,7 +1946,7 @@ describe("thread context menu", () => {
   });
 });
 
-describe("primary row", () => {
+staticDescribe("primary row", () => {
   it("navigates to the default thread on click", () => {
     baseScenario();
     render(<Sidebar />);
@@ -1943,6 +2073,58 @@ describe("primary row", () => {
     );
   });
 
+  it("keeps the primary-row menu inert without a local API or a matching editor", async () => {
+    baseScenario();
+    render(<Sidebar />);
+    const primaryRow = captured("SidebarMenuSubButton").find(
+      (entry) =>
+        entry.props["data-thread-item"] !== undefined && entry.props["render"] === undefined,
+    )!;
+
+    invoke(primaryRow.props, "onContextMenu", mouseEvent());
+    await flush();
+    expect(h.spies.contextMenuShow).not.toHaveBeenCalled();
+
+    fakeLocalApi();
+    h.spies.contextMenuShow.mockResolvedValue("open-in:unknown");
+    invoke(primaryRow.props, "onContextMenu", mouseEvent());
+    await flush();
+    expect(h.state.commandCalls).toEqual([]);
+  });
+
+  it("suppresses interrupted primary-row actions and reports opaque failures", async () => {
+    baseScenario();
+    render(<Sidebar />);
+    fakeLocalApi();
+    const primaryRow = captured("SidebarMenuSubButton").find(
+      (entry) =>
+        entry.props["data-thread-item"] !== undefined && entry.props["render"] === undefined,
+    )!;
+
+    h.spies.contextMenuShow.mockResolvedValue("update");
+    h.state.commandResults["vcs.pull"] = () => ({
+      _tag: "Failure",
+      cause: Cause.interrupt(1),
+    });
+    invoke(primaryRow.props, "onContextMenu", mouseEvent());
+    await flush();
+    expect(h.spies.toastAdd).not.toHaveBeenCalled();
+
+    h.spies.contextMenuShow.mockResolvedValue("open-in:vscode");
+    h.state.commandResults["shell.openInEditor"] = () => ({
+      _tag: "Failure",
+      cause: Cause.fail("opaque editor failure"),
+    });
+    invoke(primaryRow.props, "onContextMenu", mouseEvent());
+    await flush();
+    expect(h.spies.toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Failed to open editor",
+        description: "An error occurred.",
+      }),
+    );
+  });
+
   it("does not expose project removal from the primary branch row", async () => {
     h.state.projects = [projectA];
     h.state.threads = [threadDefault];
@@ -1967,7 +2149,7 @@ describe("primary row", () => {
   });
 });
 
-describe("new thread entry points", () => {
+staticDescribe("new thread entry points", () => {
   it("creates a main-branch chat for a single-member project", () => {
     baseScenario();
     render(<Sidebar />);
@@ -2004,7 +2186,7 @@ describe("new thread entry points", () => {
   });
 });
 
-describe("grouped and remote projects", () => {
+staticDescribe("grouped and remote projects", () => {
   const repoIdentity = {
     canonicalKey: "github.com/acme/repo-a",
     locator: {
@@ -2069,6 +2251,52 @@ describe("grouped and remote projects", () => {
     );
   });
 
+  it("does not create a grouped-project chat when its picker is unavailable or cancelled", async () => {
+    groupedScenario();
+    render(<Sidebar />);
+    const newThread = mustFindProps(byTestId("new-thread-button"), "new thread button");
+    invoke(newThread, "onClick", mouseEvent());
+    await flush();
+    expect(h.spies.newThreadHandler).not.toHaveBeenCalled();
+
+    fakeLocalApi();
+    h.spies.contextMenuShow.mockResolvedValue(null);
+    invoke(newThread, "onClick", mouseEvent());
+    await flush();
+    h.spies.contextMenuShow.mockResolvedValue("missing-member");
+    invoke(newThread, "onClick", mouseEvent());
+    await flush();
+    expect(h.spies.newThreadHandler).not.toHaveBeenCalled();
+  });
+
+  it("uses workspace paths when grouped members have no environment label", async () => {
+    groupedScenario();
+    h.state.environments = [];
+    render(<Sidebar />);
+    fakeLocalApi();
+    h.spies.contextMenuShow.mockImplementation(async (items: Array<{ label: string }>) => {
+      expect(items.every((item) => item.label.includes("C:/"))).toBe(true);
+      return null;
+    });
+    const newThread = mustFindProps(byTestId("new-thread-button"), "new thread button");
+    invoke(newThread, "onClick", mouseEvent());
+    await flush();
+    expect(h.spies.contextMenuShow).toHaveBeenCalled();
+  });
+
+  it("uses a generic message for opaque member-picker failures", async () => {
+    groupedScenario();
+    render(<Sidebar />);
+    fakeLocalApi();
+    h.spies.contextMenuShow.mockRejectedValue("opaque picker failure");
+    const newThread = mustFindProps(byTestId("new-thread-button"), "new thread button");
+    invoke(newThread, "onClick", mouseEvent());
+    await flush();
+    expect(h.spies.toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ description: "An error occurred." }),
+    );
+  });
+
   it("toasts when the environment picker fails", async () => {
     groupedScenario();
     render(<Sidebar />);
@@ -2098,7 +2326,7 @@ describe("grouped and remote projects", () => {
   });
 });
 
-describe("SidebarThreadRow direct rendering", () => {
+staticDescribe("SidebarThreadRow direct rendering", () => {
   type ThreadRowProps = React.ComponentProps<typeof SidebarThreadRow>;
 
   function rowProps(
@@ -2334,7 +2562,7 @@ describe("SidebarThreadRow direct rendering", () => {
   });
 });
 
-describe("project rename and grouping dialogs", () => {
+staticDescribe("project rename and grouping dialogs", () => {
   it("wires the rename dialog inputs and guards empty submits", async () => {
     baseScenario();
     render(<Sidebar />);
@@ -2397,3 +2625,205 @@ describe("project rename and grouping dialogs", () => {
     expect(markup).toContain("own sidebar row");
   });
 });
+
+if (browserRuntime) {
+  describe("SidebarThreadRow browser interactions", () => {
+    type ThreadRowProps = React.ComponentProps<typeof SidebarThreadRow>;
+
+    beforeEach(() => {
+      h.state.environments = [
+        environmentFixture({ environmentId: ENV_MAIN, label: "Main", connectionId: "primary" }),
+      ];
+      h.state.primaryEnvironmentId = ENV_MAIN;
+      h.state.projects = [projectA];
+      (
+        globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+      ).IS_REACT_ACT_ENVIRONMENT = true;
+    });
+
+    function requiredElement<T extends Element>(container: ParentNode, selector: string): T {
+      const element = container.querySelector<T>(selector);
+      if (!element) throw new Error(`Missing DOM element: ${selector}`);
+      return element;
+    }
+
+    function rowProps(
+      thread: EnvironmentThreadShell,
+      overrides: Partial<ThreadRowProps> = {},
+    ): ThreadRowProps {
+      return {
+        thread,
+        projectCwd: "C:/repo-a",
+        orderedProjectThreadKeys: [threadKeyOf(thread)],
+        isActive: false,
+        jumpLabel: null,
+        appSettingsConfirmThreadArchive: false,
+        renamingThreadKey: null,
+        renamingTitle: "",
+        setRenamingTitle: vi.fn(),
+        startThreadRename: vi.fn(),
+        renamingInputRef: { current: null },
+        renamingCommittedRef: { current: false },
+        confirmingArchiveThreadKey: null,
+        setConfirmingArchiveThreadKey: vi.fn(),
+        confirmArchiveButtonRefs: { current: new Map<string, HTMLButtonElement>() },
+        handleThreadClick: vi.fn(),
+        navigateToThread: vi.fn(),
+        handleMultiSelectContextMenu: vi.fn(async () => {}),
+        handleThreadContextMenu: vi.fn(async () => {}),
+        clearSelection: vi.fn(),
+        commitRename: vi.fn(async () => {}),
+        cancelRename: vi.fn(),
+        attemptArchiveThread: vi.fn(async () => {}),
+        openPrLink: vi.fn(),
+        ...overrides,
+      };
+    }
+
+    async function mount(element: React.ReactElement): Promise<{
+      container: HTMLDivElement;
+      root: Root;
+    }> {
+      const container = document.createElement("div");
+      document.body.append(container);
+      const root = createRoot(container);
+      await React.act(async () => {
+        root.render(element);
+      });
+      return { container, root };
+    }
+
+    async function dispatch(element: Element, event: Event): Promise<void> {
+      await React.act(async () => {
+        element.dispatchEvent(event);
+      });
+    }
+
+    async function nextFrame(): Promise<void> {
+      await React.act(
+        () =>
+          new Promise<void>((resolve) => {
+            requestAnimationFrame(() => resolve());
+          }),
+      );
+    }
+
+    async function unmount(root: Root, container: HTMLElement): Promise<void> {
+      await React.act(async () => root.unmount());
+      container.remove();
+    }
+
+    it("starts inline rename only for an unmodified row-body double-click", async () => {
+      const thread = makeThread("thread-browser-rename", { title: "Rename me" });
+      const startThreadRename = vi.fn();
+
+      function Harness() {
+        const [renamingThreadKey, setRenamingThreadKey] = React.useState<string | null>(null);
+        const [renamingTitle, setRenamingTitle] = React.useState("");
+        const renamingInputRef = React.useRef<HTMLInputElement | null>(null);
+        const renamingCommittedRef = React.useRef(false);
+        const beginRename = React.useCallback((threadKey: string, title: string) => {
+          startThreadRename(threadKey, title);
+          setRenamingThreadKey(threadKey);
+          setRenamingTitle(title);
+        }, []);
+        return (
+          <SidebarThreadRow
+            {...rowProps(thread, {
+              renamingThreadKey,
+              renamingTitle,
+              setRenamingTitle,
+              startThreadRename: beginRename,
+              renamingInputRef,
+              renamingCommittedRef,
+            })}
+          />
+        );
+      }
+
+      const { container, root } = await mount(<Harness />);
+      const row = requiredElement<HTMLElement>(
+        container,
+        "[data-testid='thread-row-thread-browser-rename']",
+      );
+      for (const modifier of ["metaKey", "ctrlKey", "shiftKey", "altKey"] as const) {
+        await dispatch(
+          row,
+          new MouseEvent("dblclick", { bubbles: true, cancelable: true, [modifier]: true }),
+        );
+        expect(startThreadRename, `${modifier} must not start rename`).not.toHaveBeenCalled();
+        expect(container.querySelector("input")).toBeNull();
+      }
+
+      const archive = requiredElement<HTMLButtonElement>(
+        container,
+        "[data-testid='thread-archive-thread-browser-rename']",
+      );
+      await dispatch(archive, new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+      expect(startThreadRename, "nested controls must not start rename").not.toHaveBeenCalled();
+      expect(container.querySelector("input")).toBeNull();
+
+      await dispatch(row, new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+      expect(startThreadRename).toHaveBeenCalledOnce();
+      expect(startThreadRename).toHaveBeenCalledWith(threadKeyOf(thread), "Rename me");
+      const input = requiredElement<HTMLInputElement>(container, "input");
+      expect(input.value).toBe("Rename me");
+      expect(document.activeElement).toBe(input);
+      await unmount(root, container);
+    });
+
+    it("retains archive confirmation for focus inside the row and clears it after focus leaves", async () => {
+      const thread = makeThread("thread-browser-archive", { title: "Archive me" });
+
+      function Harness() {
+        const [confirmingArchiveThreadKey, setConfirmingArchiveThreadKey] = React.useState<
+          string | null
+        >(null);
+        const confirmArchiveButtonRefs = React.useRef(new Map<string, HTMLButtonElement>());
+        return (
+          <SidebarThreadRow
+            {...rowProps(thread, {
+              appSettingsConfirmThreadArchive: true,
+              confirmingArchiveThreadKey,
+              setConfirmingArchiveThreadKey,
+              confirmArchiveButtonRefs,
+            })}
+          />
+        );
+      }
+
+      const outside = document.createElement("button");
+      outside.textContent = "Outside";
+      document.body.append(outside);
+      const { container, root } = await mount(<Harness />);
+      const archive = requiredElement<HTMLButtonElement>(
+        container,
+        "[data-testid='thread-archive-thread-browser-archive']",
+      );
+      await dispatch(archive, new MouseEvent("click", { bubbles: true, cancelable: true }));
+      await nextFrame();
+
+      const confirmSelector = "[data-testid='thread-archive-confirm-thread-browser-archive']";
+      const confirm = requiredElement<HTMLButtonElement>(container, confirmSelector);
+      expect(confirm.textContent).toBe("Confirm");
+      expect(document.activeElement).toBe(confirm);
+
+      const row = requiredElement<HTMLElement>(
+        container,
+        "[data-testid='thread-row-thread-browser-archive']",
+      );
+      await React.act(async () => row.focus());
+      await nextFrame();
+      expect(requiredElement<HTMLButtonElement>(container, confirmSelector).textContent).toBe(
+        "Confirm",
+      );
+
+      await React.act(async () => outside.focus());
+      await nextFrame();
+      expect(container.querySelector(confirmSelector)).toBeNull();
+
+      await unmount(root, container);
+      outside.remove();
+    });
+  });
+}

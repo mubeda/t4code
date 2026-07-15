@@ -1,15 +1,89 @@
-import type { VcsStatusRemoteResult, VcsStatusResult } from "@t4code/contracts";
+import type {
+  VcsRef,
+  VcsStatusLocalResult,
+  VcsStatusRemoteResult,
+  VcsStatusResult,
+} from "@t4code/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   applyGitStatusStreamEvent,
   buildTemporaryWorktreeBranchName,
+  dedupeRemoteBranchesWithLocalMatches,
+  deriveLocalBranchNameFromRemoteRef,
+  detectSourceControlProviderFromGitRemoteUrl,
   isTemporaryWorktreeBranch,
+  mergeGitStatusParts,
   mergeWorkingTreeFilesByPath,
   normalizeGitRemoteUrl,
   parseGitHubRepositoryNameWithOwnerFromRemoteUrl,
+  resolveAutoFeatureBranchName,
+  sanitizeBranchFragment,
+  sanitizeFeatureBranchName,
   WORKTREE_BRANCH_PREFIX,
 } from "./git.ts";
+
+const localStatus: VcsStatusLocalResult = {
+  isRepo: true,
+  hasPrimaryRemote: true,
+  isDefaultRef: false,
+  refName: "feature/demo",
+  hasWorkingTreeChanges: true,
+  workingTree: {
+    files: [{ path: "src/demo.ts", insertions: 1, deletions: 0 }],
+    insertions: 1,
+    deletions: 0,
+  },
+};
+
+const remoteStatus: VcsStatusRemoteResult = {
+  hasUpstream: true,
+  aheadCount: 2,
+  behindCount: 1,
+  pr: null,
+};
+
+function ref(input: Pick<VcsRef, "name"> & Partial<VcsRef>): VcsRef {
+  return {
+    current: false,
+    isDefault: false,
+    worktreePath: null,
+    ...input,
+  };
+}
+
+describe("branch names", () => {
+  it("sanitizes branch fragments and supplies a non-empty fallback", () => {
+    expect(sanitizeBranchFragment("  `Fix API!!!`  ")).toBe("fix-api");
+    expect(sanitizeBranchFragment("...___///")).toBe("update");
+    expect(sanitizeBranchFragment(`topic/${"a".repeat(80)}---`)).toHaveLength(64);
+  });
+
+  it("normalizes feature namespaces", () => {
+    expect(sanitizeFeatureBranchName("Login screen")).toBe("feature/login-screen");
+    expect(sanitizeFeatureBranchName("feature/Login Screen")).toBe("feature/login-screen");
+    expect(sanitizeFeatureBranchName("team/Login Screen")).toBe("feature/team/login-screen");
+  });
+
+  it("selects the first available feature branch case-insensitively", () => {
+    expect(resolveAutoFeatureBranchName([], "Release notes")).toBe("feature/release-notes");
+    expect(
+      resolveAutoFeatureBranchName(
+        ["FEATURE/RELEASE-NOTES", "feature/release-notes-2", "feature/release-notes-3"],
+        "release notes",
+      ),
+    ).toBe("feature/release-notes-4");
+    expect(resolveAutoFeatureBranchName([], "   ")).toBe("feature/update");
+    expect(resolveAutoFeatureBranchName([])).toBe("feature/update");
+  });
+
+  it("strips only a complete remote prefix", () => {
+    expect(deriveLocalBranchNameFromRemoteRef("origin/feature/demo")).toBe("feature/demo");
+    expect(deriveLocalBranchNameFromRemoteRef("main")).toBe("main");
+    expect(deriveLocalBranchNameFromRemoteRef("/main")).toBe("/main");
+    expect(deriveLocalBranchNameFromRemoteRef("origin/")).toBe("origin/");
+  });
+});
 
 describe("normalizeGitRemoteUrl", () => {
   it("canonicalizes equivalent GitHub remotes across protocol variants", () => {
@@ -41,6 +115,12 @@ describe("normalizeGitRemoteUrl", () => {
       "gitlab.company.com/team/project",
     );
   });
+
+  it("preserves malformed and non-repository URL shapes", () => {
+    expect(normalizeGitRemoteUrl("https://[invalid/repo.git")).toBe("https://[invalid/repo");
+    expect(normalizeGitRemoteUrl("git:///owner/repo.git")).toBe("git:///owner/repo");
+    expect(normalizeGitRemoteUrl("local/path/repo.git///")).toBe("local/path/repo");
+  });
 });
 
 describe("parseGitHubRepositoryNameWithOwnerFromRemoteUrl", () => {
@@ -51,6 +131,54 @@ describe("parseGitHubRepositoryNameWithOwnerFromRemoteUrl", () => {
     expect(
       parseGitHubRepositoryNameWithOwnerFromRemoteUrl("https://github.com/T4Code/T4Code.git"),
     ).toBe("T4Code/T4Code");
+    expect(
+      parseGitHubRepositoryNameWithOwnerFromRemoteUrl("ssh://git@github.com/T4Code/T4Code"),
+    ).toBe("T4Code/T4Code");
+    expect(parseGitHubRepositoryNameWithOwnerFromRemoteUrl("git://github.com/a/b/ ")).toBe("a/b");
+  });
+
+  it("rejects missing, unrelated, and incomplete remotes", () => {
+    expect(parseGitHubRepositoryNameWithOwnerFromRemoteUrl(null)).toBeNull();
+    expect(parseGitHubRepositoryNameWithOwnerFromRemoteUrl("   ")).toBeNull();
+    expect(
+      parseGitHubRepositoryNameWithOwnerFromRemoteUrl("https://gitlab.com/a/b.git"),
+    ).toBeNull();
+    expect(parseGitHubRepositoryNameWithOwnerFromRemoteUrl("https://github.com/owner")).toBeNull();
+  });
+});
+
+describe("remote branch deduplication", () => {
+  it("hides origin refs with local matches while preserving order and other remotes", () => {
+    const refs = [
+      ref({ name: "feature/demo", isRemote: false }),
+      ref({ name: "origin/feature/demo", isRemote: true, remoteName: "origin" }),
+      ref({ name: "upstream/feature/demo", isRemote: true, remoteName: "upstream" }),
+      ref({ name: "origin/feature/other", isRemote: true, remoteName: "origin" }),
+    ];
+
+    expect(dedupeRemoteBranchesWithLocalMatches(refs).map((entry) => entry.name)).toEqual([
+      "feature/demo",
+      "upstream/feature/demo",
+      "origin/feature/other",
+    ]);
+  });
+
+  it("retains malformed-but-typed remote names that have no local candidate", () => {
+    const refs = [
+      ref({ name: "main" }),
+      ref({ name: "origin/", isRemote: true, remoteName: "origin" }),
+      ref({ name: "upstream/other", isRemote: true, remoteName: "origin" }),
+    ];
+    expect(dedupeRemoteBranchesWithLocalMatches(refs)).toEqual(refs);
+  });
+});
+
+describe("source control provider delegation", () => {
+  it("detects providers through the git-facing API", () => {
+    expect(
+      detectSourceControlProviderFromGitRemoteUrl("https://github.com/t4code/t4code.git")?.kind,
+    ).toBe("github");
+    expect(detectSourceControlProviderFromGitRemoteUrl("invalid")).toBeNull();
   });
 });
 
@@ -139,6 +267,70 @@ describe("applyGitStatusStreamEvent", () => {
       behindCount: 1,
       pr: null,
     });
+  });
+
+  it("applies snapshots and defaults a missing remote status", () => {
+    expect(
+      applyGitStatusStreamEvent(null, { _tag: "snapshot", local: localStatus, remote: null }),
+    ).toEqual({
+      ...localStatus,
+      hasUpstream: false,
+      aheadCount: 0,
+      behindCount: 0,
+      aheadOfDefaultCount: 0,
+      pr: null,
+    });
+    expect(mergeGitStatusParts(localStatus, remoteStatus)).toEqual({
+      ...localStatus,
+      ...remoteStatus,
+    });
+  });
+
+  it("applies local updates while preserving current remote-only fields", () => {
+    const current: VcsStatusResult = {
+      ...localStatus,
+      ...remoteStatus,
+      aheadOfDefaultCount: 7,
+    };
+    const nextLocal = { ...localStatus, refName: "feature/next" };
+    expect(applyGitStatusStreamEvent(current, { _tag: "localUpdated", local: nextLocal })).toEqual({
+      ...nextLocal,
+      ...remoteStatus,
+      aheadOfDefaultCount: 7,
+    });
+
+    const withoutAheadOfDefault = { ...current };
+    delete withoutAheadOfDefault.aheadOfDefaultCount;
+    expect(
+      Object.hasOwn(
+        applyGitStatusStreamEvent(withoutAheadOfDefault, {
+          _tag: "localUpdated",
+          local: nextLocal,
+        }),
+        "aheadOfDefaultCount",
+      ),
+    ).toBe(false);
+  });
+
+  it("defaults remote fields for a local update without current state", () => {
+    expect(applyGitStatusStreamEvent(null, { _tag: "localUpdated", local: localStatus })).toEqual({
+      ...localStatus,
+      hasUpstream: false,
+      aheadCount: 0,
+      behindCount: 0,
+      aheadOfDefaultCount: 0,
+      pr: null,
+    });
+  });
+
+  it("omits an absent source-control provider when rebuilding local state", () => {
+    const current: VcsStatusResult = { ...localStatus, ...remoteStatus };
+    const updated = applyGitStatusStreamEvent(current, {
+      _tag: "remoteUpdated",
+      remote: { ...remoteStatus, aheadCount: 9 },
+    });
+    expect(updated.aheadCount).toBe(9);
+    expect(Object.hasOwn(updated, "sourceControlProvider")).toBe(false);
   });
 });
 

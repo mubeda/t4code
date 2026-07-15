@@ -5,6 +5,7 @@ import { HostProcessPlatform } from "@t4code/shared/hostProcess";
 import { assert, describe, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
@@ -14,12 +15,15 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   checkPortAvailabilityOnHosts,
+  applyDevRunnerRepoEnv,
   createDevRunnerEnv,
   findFirstAvailableOffset,
   getDevRunnerModeArgs,
   resolveModePortOffsets,
   resolveOffset,
   runDevRunnerWithInput,
+  runDevRunnerMain,
+  DevRunnerPortExhaustedError,
 } from "./dev-runner.ts";
 
 const emptyConfigLayer = ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }));
@@ -30,15 +34,20 @@ const netServiceLayer = Layer.succeed(NetService.NetService, {
   findAvailablePort: (port) => Effect.succeed(port),
 });
 
-function mockProcess(exit: number | PlatformError.PlatformError) {
+function mockProcess(
+  exit: number | PlatformError.PlatformError | Effect.Effect<never>,
+  onKill: () => void = () => undefined,
+) {
   return ChildProcessSpawner.makeHandle({
     pid: ChildProcessSpawner.ProcessId(1),
     exitCode:
       typeof exit === "number"
         ? Effect.succeed(ChildProcessSpawner.ExitCode(exit))
-        : Effect.fail(exit),
+        : Effect.isEffect(exit)
+          ? exit
+          : Effect.fail(exit),
     isRunning: Effect.succeed(false),
-    kill: () => Effect.void,
+    kill: () => Effect.sync(onKill),
     unref: Effect.succeed(Effect.void),
     stdin: Sink.drain,
     stdout: Stream.empty,
@@ -100,6 +109,19 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
       }),
     );
 
+    it.effect("uses default and numeric instance offsets", () =>
+      Effect.gen(function* () {
+        assert.deepStrictEqual(
+          yield* resolveOffset({ portOffset: undefined, devInstance: "   " }),
+          { offset: 0, source: "default ports" },
+        );
+        assert.deepStrictEqual(
+          yield* resolveOffset({ portOffset: undefined, devInstance: " 42 " }),
+          { offset: 42, source: "numeric T4CODE_DEV_INSTANCE=42" },
+        );
+      }),
+    );
+
     it.effect("returns structured context for a negative port offset", () =>
       Effect.gen(function* () {
         const error = yield* resolveOffset({ portOffset: -1, devInstance: undefined }).pipe(
@@ -110,6 +132,7 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
         assert.equal(error.configKey, "T4CODE_PORT_OFFSET");
         assert.equal(error.portOffset, -1);
         assert.equal(error.minimum, 0);
+        assert.include(error.message, "must be at least 0");
         assert.ok(!("cause" in error));
       }),
     );
@@ -209,6 +232,30 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
 
         assert.equal(env.T4CODE_LOG_WS_EVENTS, "0");
       }),
+    );
+
+    it.effect(
+      "forwards true bootstrap and false browser flags while clearing desktop routing",
+      () =>
+        Effect.gen(function* () {
+          const env = yield* createDevRunnerEnv({
+            mode: "dev:web",
+            baseEnv: { T4CODE_DESKTOP_WS_URL: "ws://desktop", T4CODE_NO_BROWSER: "stale" },
+            serverOffset: 2,
+            webOffset: 3,
+            t4codeHome: undefined,
+            noBrowser: false,
+            autoBootstrapProjectFromCwd: true,
+            logWebSocketEvents: undefined,
+            host: undefined,
+            port: undefined,
+            devUrl: undefined,
+          });
+          assert.equal(env.T4CODE_NO_BROWSER, "false");
+          assert.equal(env.T4CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD, "1");
+          assert.equal(env.T4CODE_DESKTOP_WS_URL, undefined);
+          assert.equal(env.PORT, "5736");
+        }),
     );
 
     it.effect("uses custom t4codeHome when provided", () =>
@@ -314,7 +361,43 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
         assert.equal(error.baseServerPort, 13_773);
         assert.equal(error.baseWebPort, 5_733);
         assert.equal(error.maximumPort, 65_535);
+        assert.include(error.message, "No required dev ports were available");
+        assert.instanceOf(error, DevRunnerPortExhaustedError);
         assert.ok(!("cause" in error));
+      }),
+    );
+
+    it.effect("returns immediately when no ports are required", () =>
+      Effect.gen(function* () {
+        const offset = yield* findFirstAvailableOffset({
+          startOffset: 5,
+          requireServerPort: false,
+          requireWebPort: false,
+          checkPortAvailability: () => Effect.succeed(false),
+        });
+        assert.equal(offset, 5);
+      }),
+    );
+
+    it.effect("uses the default network service and stops after the first unavailable host", () =>
+      Effect.gen(function* () {
+        const hosts: string[] = [];
+        const layer = Layer.succeed(NetService.NetService, {
+          canListenOnHost: (port: number, host: string) => {
+            hosts.push(host);
+            return Effect.succeed(port !== 13_773 || host !== "0.0.0.0");
+          },
+          isPortAvailableOnLoopback: () => Effect.succeed(true),
+          reserveLoopbackPort: () => Effect.succeed(49_152),
+          findAvailablePort: (port: number) => Effect.succeed(port),
+        } as never);
+        const offset = yield* findFirstAvailableOffset({
+          startOffset: 0,
+          requireServerPort: true,
+          requireWebPort: false,
+        }).pipe(Effect.provide(layer));
+        assert.equal(offset, 1);
+        assert.deepStrictEqual(hosts.slice(0, 2), ["127.0.0.1", "0.0.0.0"]);
       }),
     );
   });
@@ -345,6 +428,22 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
           [13_773, "0.0.0.0"],
           [13_773, "::"],
         ]);
+      }),
+    );
+
+    it.effect("stops probing after the first unavailable host", () =>
+      Effect.gen(function* () {
+        const calls: string[] = [];
+        const available = yield* checkPortAvailabilityOnHosts(
+          13_773,
+          ["127.0.0.1", "0.0.0.0", "::1"],
+          (_port, host) => {
+            calls.push(host);
+            return Effect.succeed(host !== "0.0.0.0");
+          },
+        );
+        assert.equal(available, false);
+        assert.deepStrictEqual(calls, ["127.0.0.1", "0.0.0.0"]);
       }),
     );
   });
@@ -425,6 +524,65 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
   });
 
   describe("runDevRunnerWithInput", () => {
+    it.effect("completes dry runs without spawning and records shifted port selection", () => {
+      let spawnCount = 0;
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() => {
+          spawnCount += 1;
+          return Effect.succeed(mockProcess(0));
+        }),
+      );
+      const shiftingNet = Layer.succeed(NetService.NetService, {
+        canListenOnHost: (port: number) => Effect.succeed(port !== 13_773 && port !== 5_733),
+        isPortAvailableOnLoopback: () => Effect.succeed(true),
+        reserveLoopbackPort: () => Effect.succeed(49_152),
+        findAvailablePort: (port: number) => Effect.succeed(port),
+      } as never);
+
+      return runDevRunnerWithInput({
+        ...devServerInput,
+        mode: "dev",
+        port: undefined,
+        dryRun: true,
+      }).pipe(
+        Effect.provide(Layer.mergeAll(emptyConfigLayer, shiftingNet, spawnerLayer)),
+        Effect.provideService(HostProcessPlatform, "linux"),
+        Effect.tap(() => Effect.sync(() => assert.equal(spawnCount, 0))),
+      );
+    });
+
+    it.effect("accepts zero exits from the Vite+ child", () => {
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() => Effect.succeed(mockProcess(0))),
+      );
+      return runDevRunnerWithInput(devServerInput).pipe(
+        Effect.provide(Layer.mergeAll(emptyConfigLayer, netServiceLayer, spawnerLayer)),
+        Effect.provideService(HostProcessPlatform, "linux"),
+      );
+    });
+
+    it.effect("kills the scoped child when the runner is interrupted", () =>
+      Effect.gen(function* () {
+        let killCount = 0;
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.succeed(mockProcess(Effect.never, () => (killCount += 1))),
+          ),
+        );
+        const fiber = yield* runDevRunnerWithInput(devServerInput).pipe(
+          Effect.provide(Layer.mergeAll(emptyConfigLayer, netServiceLayer, spawnerLayer)),
+          Effect.provideService(HostProcessPlatform, "linux"),
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.yieldNow;
+        yield* Fiber.interrupt(fiber);
+        assert.equal(killCount, 1);
+      }),
+    );
+
     it.effect("preserves invalid configuration as the exact cause", () =>
       Effect.gen(function* () {
         const error = yield* runDevRunnerWithInput({ ...devServerInput, dryRun: true }).pipe(
@@ -543,4 +701,39 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
       });
     });
   });
+});
+
+it("applies repository environment only for the direct CLI entrypoint", () => {
+  const key = "T4CODE_DEV_RUNNER_TEST_ENV";
+  const previous = process.env[key];
+  const launched: unknown[] = [];
+  const applied: Array<Readonly<Record<string, string | undefined>>> = [];
+  try {
+    applyDevRunnerRepoEnv({ [key]: "configured" });
+    assert.equal(process.env[key], "configured");
+  } finally {
+    if (previous === undefined) delete process.env[key];
+    else process.env[key] = previous;
+  }
+
+  assert.equal(
+    runDevRunnerMain(
+      false,
+      (effect) => launched.push(effect),
+      { TEST: "1" },
+      (env) => applied.push(env),
+    ),
+    false,
+  );
+  assert.equal(
+    runDevRunnerMain(
+      true,
+      (effect) => launched.push(effect),
+      { TEST: "1" },
+      (env) => applied.push(env),
+    ),
+    true,
+  );
+  assert.equal(launched.length, 1);
+  assert.deepStrictEqual(applied, [{ TEST: "1" }]);
 });

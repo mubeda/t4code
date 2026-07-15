@@ -4,15 +4,19 @@ import * as Schema from "effect/Schema";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   ClientSettingsSchema,
+  CodexSettings,
   DEFAULT_SERVER_SETTINGS,
   ServerSettings,
+  ServerSettingsError,
   ServerSettingsPatch,
+  makeProviderSettingsSchema,
 } from "./settings.ts";
 
 const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
+const decodeCodexSettings = Schema.decodeUnknownSync(CodexSettings);
 
 describe("ClientSettings word wrap", () => {
   it("defaults word wrap on", () => {
@@ -184,5 +188,44 @@ describe("ServerSettingsPatch string normalization", () => {
 
     expect(encoded.addProjectBaseDirectory).toBe("~/Development");
     expect(encoded.providers?.codex?.binaryPath).toBe("/opt/homebrew/bin/codex");
+  });
+});
+
+describe("provider settings schema helpers", () => {
+  it("uses the binary fallback when a persisted path is empty", () => {
+    expect(decodeCodexSettings({ binaryPath: "" }).binaryPath).toBe("codex");
+  });
+
+  it("omits ordering metadata when no order is configured", () => {
+    const schema = makeProviderSettingsSchema({ label: Schema.String });
+
+    expect(Schema.decodeUnknownSync(schema)({ label: "Local" })).toEqual({ label: "Local" });
+    expect(Schema.resolveAnnotations(schema)?.providerSettingsFormSchema).toBeUndefined();
+  });
+});
+
+describe("ServerSettingsError", () => {
+  it("formats operation failures with optional provider context", () => {
+    const cause = new Error("sensitive settings detail");
+    const baseError = new ServerSettingsError({
+      settingsPath: "/home/user/.config/t4code/settings.json",
+      operation: "read-file",
+      cause,
+    });
+    const providerError = new ServerSettingsError({
+      settingsPath: "/home/user/.config/t4code/settings.json",
+      operation: "read-secret",
+      providerInstanceId: "codex_personal",
+      environmentVariable: "OPENAI_API_KEY",
+      cause,
+    });
+
+    expect(baseError.message).toBe(
+      "Server settings read-file failed at /home/user/.config/t4code/settings.json.",
+    );
+    expect(providerError.message).toBe(
+      "Server settings read-secret failed for provider codex_personal and environment variable OPENAI_API_KEY at /home/user/.config/t4code/settings.json.",
+    );
+    expect(providerError.message).not.toContain(cause.message);
   });
 });

@@ -16,7 +16,7 @@ const toPascalCase = (value: string) =>
   value
     .split(/[_-]/u)
     .filter((segment) => segment.length > 0)
-    .map((segment) => segment[0]?.toUpperCase() + segment.slice(1))
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
     .join("");
 
 const expectedNamespaceAlias = (source: string) => {
@@ -30,39 +30,26 @@ const expectedNamespaceAlias = (source: string) => {
     .join("")}`;
 };
 
-const literalStringValue = (node: unknown): string | undefined => {
-  if (typeof node !== "object" || node === null) return undefined;
-  if (!("type" in node) || node.type !== "Literal") return undefined;
-  if (!("value" in node) || typeof node.value !== "string") return undefined;
-  return node.value;
-};
-
-const identifierName = (node: unknown): string | undefined => {
-  if (typeof node !== "object" || node === null) return undefined;
-  if (!("type" in node) || node.type !== "Identifier") return undefined;
-  if (!("name" in node) || typeof node.name !== "string") return undefined;
-  return node.name;
-};
-
 export default defineRule({
   meta: {
     type: "problem",
     docs: {
-      description: "Require canonical namespace imports for Node.js built-in modules.",
+      description:
+        "Require canonical namespace syntax and aliases for static ESM imports from node: modules; re-exports, dynamic imports, and CommonJS require are outside this rule.",
     },
   },
   create(context) {
     return {
       ImportDeclaration(node) {
-        const source = literalStringValue(node.source);
-        if (source === undefined || !source.startsWith("node:")) return;
+        const source = node.source.value;
+        if (!source.startsWith("node:")) return;
 
         const expectedAlias = expectedNamespaceAlias(source);
         const namespaceImport =
           node.specifiers.length === 1 && node.specifiers[0]?.type === "ImportNamespaceSpecifier"
             ? node.specifiers[0]
             : undefined;
-        const actualAlias = identifierName(namespaceImport?.local);
+        const actualAlias = namespaceImport?.local.name;
 
         if (actualAlias === expectedAlias) return;
 

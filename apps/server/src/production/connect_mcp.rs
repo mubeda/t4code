@@ -1404,3 +1404,6 @@ fn tool_descriptors() -> Vec<Value> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests;

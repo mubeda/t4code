@@ -1,4 +1,5 @@
 import { DEFAULT_SERVER_SETTINGS, ProviderDriverKind, ProviderInstanceId } from "@t4code/contracts";
+import * as Duration from "effect/Duration";
 import { describe, expect, it } from "vite-plus/test";
 import { createModelSelection } from "./model.ts";
 import {
@@ -11,6 +12,7 @@ import {
 describe("serverSettings helpers", () => {
   it("normalizes optional persisted strings", () => {
     expect(normalizePersistedServerSettingString(undefined)).toBeUndefined();
+    expect(normalizePersistedServerSettingString(null)).toBeUndefined();
     expect(normalizePersistedServerSettingString("   ")).toBeUndefined();
     expect(normalizePersistedServerSettingString("  http://localhost:4318/v1/traces  ")).toBe(
       "http://localhost:4318/v1/traces",
@@ -28,6 +30,14 @@ describe("serverSettings helpers", () => {
     ).toEqual({
       otlpTracesUrl: "http://localhost:4318/v1/traces",
       otlpMetricsUrl: "http://localhost:4318/v1/metrics",
+    });
+    expect(extractPersistedServerObservabilitySettings({})).toEqual({
+      otlpTracesUrl: undefined,
+      otlpMetricsUrl: undefined,
+    });
+    expect(extractPersistedServerObservabilitySettings({ observability: {} })).toEqual({
+      otlpTracesUrl: undefined,
+      otlpMetricsUrl: undefined,
     });
   });
 
@@ -52,6 +62,26 @@ describe("serverSettings helpers", () => {
       otlpTracesUrl: undefined,
       otlpMetricsUrl: undefined,
     });
+    expect(parsePersistedServerObservabilitySettings("{}")).toEqual({
+      otlpTracesUrl: undefined,
+      otlpMetricsUrl: undefined,
+    });
+  });
+
+  it("applies ordinary nested patches and explicit automatic fetch intervals", () => {
+    const interval = Duration.seconds(60);
+    const next = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      enableAssistantStreaming: true,
+      automaticGitFetchInterval: interval,
+      observability: { otlpTracesUrl: "http://localhost:4318/v1/traces" },
+    });
+    expect(next.enableAssistantStreaming).toBe(true);
+    expect(next.automaticGitFetchInterval).toEqual(interval);
+    expect(next.observability).toEqual({
+      ...DEFAULT_SERVER_SETTINGS.observability,
+      otlpTracesUrl: "http://localhost:4318/v1/traces",
+    });
+    expect(DEFAULT_SERVER_SETTINGS.enableAssistantStreaming).toBe(false);
   });
 
   it("replaces text generation selection when provider/model are provided", () => {
@@ -107,6 +137,51 @@ describe("serverSettings helpers", () => {
         { id: "fastMode", value: false },
       ],
     });
+  });
+
+  it("clones unchanged options for an empty selection patch", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      textGenerationModelSelection: createModelSelection(
+        ProviderInstanceId.make("codex"),
+        "gpt-5.4-mini",
+        [{ id: "reasoningEffort", value: "high" }],
+      ),
+    };
+    const next = applyServerSettingsPatch(current, { textGenerationModelSelection: {} });
+    expect(next.textGenerationModelSelection).toEqual(current.textGenerationModelSelection);
+    expect(next.textGenerationModelSelection.options).not.toBe(
+      current.textGenerationModelSelection.options,
+    );
+  });
+
+  it("handles empty and newly introduced option lists", () => {
+    const withoutOptions = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4-mini");
+    const current = { ...DEFAULT_SERVER_SETTINGS, textGenerationModelSelection: withoutOptions };
+
+    expect(
+      applyServerSettingsPatch(current, { textGenerationModelSelection: {} })
+        .textGenerationModelSelection,
+    ).toEqual(withoutOptions);
+    expect(
+      applyServerSettingsPatch(current, {
+        textGenerationModelSelection: { options: [{ id: "fastMode", value: true }] },
+      }).textGenerationModelSelection,
+    ).toEqual({ ...withoutOptions, options: [{ id: "fastMode", value: true }] });
+
+    const withOptions = {
+      ...DEFAULT_SERVER_SETTINGS,
+      textGenerationModelSelection: createModelSelection(
+        ProviderInstanceId.make("codex"),
+        "gpt-5.4-mini",
+        [{ id: "fastMode", value: true }],
+      ),
+    };
+    expect(
+      applyServerSettingsPatch(withOptions, {
+        textGenerationModelSelection: { options: [] },
+      }).textGenerationModelSelection,
+    ).toEqual({ instanceId: "codex", model: "gpt-5.4-mini" });
   });
 
   it("replaces text generation selection across providers without leaking stale options", () => {

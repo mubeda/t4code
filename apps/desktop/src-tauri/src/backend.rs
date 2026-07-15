@@ -529,8 +529,10 @@ impl BackendSupervisor {
     ) -> Result<BackendRunConfig, String> {
         let (config, managed, pid) =
             start_managed_backend(plan.clone(), readiness, self.next_run_id()?).await?;
-        let monitor_plan = plan.clone();
-        let slot_key = backend_slot_key(&plan);
+        let mut active_plan = plan;
+        active_plan.config = config.clone();
+        let monitor_plan = active_plan.clone();
+        let slot_key = backend_slot_key(&active_plan);
         let (managed, previous) = {
             let mut state = self
                 .state
@@ -538,7 +540,7 @@ impl BackendSupervisor {
                 .expect("backend supervisor mutex poisoned");
             let slot = state.slots.entry(slot_key.clone()).or_default();
             let previous = slot.backend.take();
-            slot.launch_plan = Some(plan);
+            slot.launch_plan = Some(active_plan);
             slot.pid = pid;
             slot.last_error = None;
             slot.restart_scheduled = false;
@@ -1443,6 +1445,14 @@ fn resolve_backend_exposure(
     settings: &BackendDesktopSettings,
     port: u16,
 ) -> ResolvedBackendExposure {
+    resolve_backend_exposure_with(settings, port, resolve_lan_advertised_host)
+}
+
+fn resolve_backend_exposure_with(
+    settings: &BackendDesktopSettings,
+    port: u16,
+    resolve_advertised_host: impl FnOnce() -> Option<String>,
+) -> ResolvedBackendExposure {
     if settings.server_exposure_mode != "network-accessible" {
         return ResolvedBackendExposure {
             mode: "local-only".to_string(),
@@ -1452,7 +1462,7 @@ fn resolve_backend_exposure(
         };
     }
 
-    match resolve_lan_advertised_host() {
+    match resolve_advertised_host() {
         Some(advertised_host) => ResolvedBackendExposure {
             mode: "network-accessible".to_string(),
             bind_host: DESKTOP_LAN_BIND_HOST.to_string(),
@@ -1520,11 +1530,9 @@ fn read_backend_desktop_settings(app: &AppHandle) -> Result<BackendDesktopSettin
         })
         .join(DESKTOP_SETTINGS_FILE_NAME);
 
-    let document = match fs::read_to_string(&path) {
-        Ok(raw) => serde_json::from_str::<BackendDesktopSettingsDocument>(&raw).unwrap_or_default(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            BackendDesktopSettingsDocument::default()
-        }
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => Some(raw),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => {
             return Err(format!(
                 "Could not read desktop backend settings from {}: {error}",
@@ -1533,7 +1541,15 @@ fn read_backend_desktop_settings(app: &AppHandle) -> Result<BackendDesktopSettin
         }
     };
 
-    Ok(BackendDesktopSettings {
+    Ok(decode_backend_desktop_settings(raw.as_deref()))
+}
+
+fn decode_backend_desktop_settings(raw: Option<&str>) -> BackendDesktopSettings {
+    let document = raw
+        .and_then(|raw| serde_json::from_str::<BackendDesktopSettingsDocument>(raw).ok())
+        .unwrap_or_default();
+
+    BackendDesktopSettings {
         server_exposure_mode: match document.server_exposure_mode.as_deref() {
             Some("network-accessible") => "network-accessible".to_string(),
             _ => "local-only".to_string(),
@@ -1543,7 +1559,7 @@ fn read_backend_desktop_settings(app: &AppHandle) -> Result<BackendDesktopSettin
         wsl_backend_enabled: document.wsl_backend_enabled.unwrap_or(false),
         wsl_only: document.wsl_only.unwrap_or(false),
         wsl_distro: normalize_wsl_distro(document.wsl_distro),
-    })
+    }
 }
 
 fn desktop_base_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -1561,10 +1577,137 @@ fn desktop_base_dir(app: &AppHandle) -> Result<PathBuf, String> {
 mod tests {
     use super::*;
     use std::{
+        cell::Cell,
+        collections::VecDeque,
         io::{Read, Write},
         net::TcpListener,
+        pin::Pin,
+        sync::mpsc,
+        task::{Context, Poll},
+        thread,
         time::Duration,
     };
+    use tokio::io::{AsyncRead, ReadBuf};
+
+    struct ScriptedReader {
+        steps: VecDeque<io::Result<Vec<u8>>>,
+        completion: Option<oneshot::Sender<()>>,
+    }
+
+    impl AsyncRead for ScriptedReader {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            buffer: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            match self.steps.pop_front() {
+                Some(Ok(bytes)) => {
+                    buffer.put_slice(&bytes);
+                    Poll::Ready(Ok(()))
+                }
+                Some(Err(error)) => {
+                    if let Some(completion) = self.completion.take() {
+                        let _ = completion.send(());
+                    }
+                    Poll::Ready(Err(error))
+                }
+                None => {
+                    if let Some(completion) = self.completion.take() {
+                        let _ = completion.send(());
+                    }
+                    Poll::Ready(Ok(()))
+                }
+            }
+        }
+    }
+
+    fn spawn_http_response(
+        response: &'static [u8],
+    ) -> (String, mpsc::Receiver<String>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("test listener should bind");
+        let address = listener.local_addr().expect("listener address");
+        let (sender, receiver) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("listener should accept one request");
+            let mut buffer = [0_u8; 4096];
+            let count = stream.read(&mut buffer).expect("request should read");
+            sender
+                .send(String::from_utf8_lossy(&buffer[..count]).into_owned())
+                .expect("request should be captured");
+            stream.write_all(response).expect("response should write");
+        });
+        (format!("http://{address}"), receiver, server)
+    }
+
+    fn spawn_http_responses(
+        responses: Vec<&'static [u8]>,
+    ) -> (String, mpsc::Receiver<String>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("test listener should bind");
+        let address = listener.local_addr().expect("listener address");
+        let (sender, receiver) = mpsc::channel();
+        let server = thread::spawn(move || {
+            for response in responses {
+                let (mut stream, _) = listener.accept().expect("listener should accept request");
+                let mut buffer = [0_u8; 4096];
+                let count = stream.read(&mut buffer).expect("request should read");
+                sender
+                    .send(String::from_utf8_lossy(&buffer[..count]).into_owned())
+                    .expect("request should be captured");
+                stream.write_all(response).expect("response should write");
+            }
+        });
+        (format!("http://{address}"), receiver, server)
+    }
+
+    #[cfg(windows)]
+    fn spawn_external_backend_http_server(
+        shutdown_signal_path: PathBuf,
+    ) -> (u16, mpsc::Receiver<String>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("test listener should bind");
+        let port = listener.local_addr().expect("listener address").port();
+        let (sender, receiver) = mpsc::channel();
+        let server = thread::spawn(move || {
+            for (index, response) in [
+                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".as_slice(),
+                b"HTTP/1.1 202 Accepted\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+                    .as_slice(),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let (mut stream, _) = listener.accept().expect("listener should accept request");
+                let mut buffer = [0_u8; 8192];
+                let count = stream.read(&mut buffer).expect("request should read");
+                sender
+                    .send(String::from_utf8_lossy(&buffer[..count]).into_owned())
+                    .expect("request should be captured");
+                stream.write_all(response).expect("response should write");
+                stream.flush().expect("response should flush");
+                if index == 1 {
+                    fs::write(&shutdown_signal_path, b"shutdown")
+                        .expect("shutdown signal should write");
+                }
+            }
+        });
+        (port, receiver, server)
+    }
+
+    #[cfg(windows)]
+    fn powershell_string_literal(path: &Path) -> String {
+        format!("'{}'", path.to_string_lossy().replace('\'', "''"))
+    }
+
+    async fn start_test_server(base_dir: &Path) -> (t4code_server::ServerHandle, BackendRunConfig) {
+        let mut config = local_test_config(0);
+        let handle =
+            ServerRuntime::start(server_config_for_launch(base_dir.to_path_buf(), &config))
+                .await
+                .expect("test server should start");
+        config.port = handle.local_addr().port();
+        (handle, config)
+    }
 
     fn local_test_config(port: u16) -> BackendRunConfig {
         BackendRunConfig {
@@ -1595,6 +1738,41 @@ mod tests {
         assert_eq!(bootstrap["httpBaseUrl"], "http://127.0.0.1:3773");
         assert_eq!(bootstrap["wsBaseUrl"], "ws://127.0.0.1:3773");
         assert_eq!(bootstrap["bootstrapToken"], "desktop-token");
+    }
+
+    #[test]
+    fn run_config_builds_http_and_websocket_urls_from_renderer_host() {
+        let mut config = local_test_config(65_535);
+        config.local_host = "192.0.2.10".to_string();
+
+        assert_eq!(config.http_base_url(), "http://192.0.2.10:65535");
+        assert_eq!(config.ws_base_url(), "ws://192.0.2.10:65535");
+    }
+
+    #[test]
+    fn backend_lifecycle_defaults_match_operational_limits() {
+        assert_eq!(
+            BackendReadinessConfig::default(),
+            BackendReadinessConfig {
+                timeout: Duration::from_secs(30),
+                interval: Duration::from_millis(250),
+                request_timeout: Duration::from_secs(2),
+            }
+        );
+        assert_eq!(
+            BackendShutdownConfig::default(),
+            BackendShutdownConfig {
+                timeout: Duration::from_millis(1_500),
+            }
+        );
+        assert_eq!(
+            BackendRestartConfig::default(),
+            BackendRestartConfig {
+                initial_delay: Duration::from_millis(250),
+                max_delay: Duration::from_secs(5),
+                monitor_interval: Duration::from_millis(250),
+            }
+        );
     }
 
     #[test]
@@ -1809,6 +1987,150 @@ mod tests {
     }
 
     #[test]
+    fn supervisor_state_queries_handle_empty_error_and_secondary_slots() {
+        let supervisor = BackendSupervisor::new();
+        assert_eq!(supervisor.current_run_config(), None);
+        assert!(supervisor.local_environment_bootstraps().is_empty());
+
+        let secondary = BackendLaunchPlan::wsl(WslBackendLaunchPlanInput {
+            environment_id: "wsl:Debian".to_string(),
+            label: "WSL (Debian)".to_string(),
+            running_distro: "Debian".to_string(),
+            port: 4_101,
+            renderer_host: "172.20.0.2".to_string(),
+            desktop_bootstrap_token: "secondary-token".to_string(),
+            binary_path: "/usr/local/bin/t4code".to_string(),
+        });
+        {
+            let mut state = supervisor
+                .state
+                .lock()
+                .expect("backend supervisor mutex poisoned");
+            state.slots.insert(
+                PRIMARY_LOCAL_ENVIRONMENT_ID.to_string(),
+                BackendSlotState {
+                    launch_plan: Some(BackendLaunchPlan::local(
+                        PathBuf::from("C:/state"),
+                        local_test_config(4_100),
+                    )),
+                    ..BackendSlotState::default()
+                },
+            );
+            state.slots.insert(
+                "wsl:Debian".to_string(),
+                BackendSlotState {
+                    launch_plan: Some(secondary.clone()),
+                    ..BackendSlotState::default()
+                },
+            );
+        }
+
+        supervisor.record_error("primary failed");
+        let bootstraps = supervisor.local_environment_bootstraps();
+        assert_eq!(bootstraps.len(), 1);
+        assert_eq!(bootstraps[0]["id"], "wsl:Debian");
+
+        {
+            let mut state = supervisor
+                .state
+                .lock()
+                .expect("backend supervisor mutex poisoned");
+            state.slots.remove(PRIMARY_LOCAL_ENVIRONMENT_ID);
+        }
+        assert_eq!(supervisor.current_run_config(), Some(secondary.config));
+    }
+
+    #[test]
+    fn record_plan_error_resets_runtime_state_and_hides_bootstrap() {
+        let supervisor = BackendSupervisor::new();
+        let plan = BackendLaunchPlan::local(PathBuf::from("C:/state"), local_test_config(4_200));
+
+        supervisor.record_plan_error(&plan, "launch failed".to_string());
+
+        assert!(supervisor.local_environment_bootstraps().is_empty());
+        let state = supervisor
+            .state
+            .lock()
+            .expect("backend supervisor mutex poisoned");
+        let slot = state
+            .slots
+            .get(PRIMARY_LOCAL_ENVIRONMENT_ID)
+            .expect("primary slot should be recorded");
+        assert_eq!(slot.launch_plan.as_ref(), Some(&plan));
+        assert!(slot.backend.is_none());
+        assert_eq!(slot.pid, None);
+        assert_eq!(slot.last_error.as_deref(), Some("launch failed"));
+        assert!(!slot.restart_scheduled);
+    }
+
+    #[test]
+    fn supervisor_run_ids_increment_and_saturate() {
+        let supervisor = BackendSupervisor::new();
+        assert_eq!(supervisor.next_run_id(), Ok(0));
+        assert_eq!(supervisor.next_run_id(), Ok(1));
+
+        supervisor
+            .state
+            .lock()
+            .expect("backend supervisor mutex poisoned")
+            .next_run_id = u64::MAX;
+        assert_eq!(supervisor.next_run_id(), Ok(u64::MAX));
+        assert_eq!(supervisor.next_run_id(), Ok(u64::MAX));
+    }
+
+    #[test]
+    fn restart_desire_requires_a_scheduled_plan_without_a_backend() {
+        let supervisor = BackendSupervisor::new();
+        assert!(!supervisor.restart_still_desired("missing"));
+
+        let plan = BackendLaunchPlan::local(PathBuf::from("C:/state"), local_test_config(4_250));
+        let mut state = supervisor
+            .state
+            .lock()
+            .expect("backend supervisor mutex poisoned");
+        state.slots.insert(
+            PRIMARY_LOCAL_ENVIRONMENT_ID.to_string(),
+            BackendSlotState {
+                launch_plan: Some(plan),
+                restart_scheduled: true,
+                ..BackendSlotState::default()
+            },
+        );
+        drop(state);
+        assert!(supervisor.restart_still_desired(PRIMARY_LOCAL_ENVIRONMENT_ID));
+
+        let mut state = supervisor
+            .state
+            .lock()
+            .expect("backend supervisor mutex poisoned");
+        state
+            .slots
+            .get_mut(PRIMARY_LOCAL_ENVIRONMENT_ID)
+            .expect("primary slot")
+            .restart_scheduled = false;
+        drop(state);
+        assert!(!supervisor.restart_still_desired(PRIMARY_LOCAL_ENVIRONMENT_ID));
+    }
+
+    #[tokio::test]
+    async fn stopping_an_empty_supervisor_is_idempotent() {
+        let supervisor = BackendSupervisor::new();
+
+        supervisor
+            .stop(BackendShutdownConfig {
+                timeout: Duration::ZERO,
+            })
+            .await
+            .expect("empty supervisor should stop");
+        supervisor
+            .stop(BackendShutdownConfig {
+                timeout: Duration::ZERO,
+            })
+            .await
+            .expect("repeated empty stop should succeed");
+    }
+
+    #[test]
     fn parses_wsl_distribution_list_with_default_marker() {
         let entries = parse_wsl_distro_entries(
             "\
@@ -1834,6 +2156,20 @@ mod tests {
     }
 
     #[test]
+    fn wsl_parser_ignores_headers_blank_rows_and_embedded_nuls() {
+        assert_eq!(
+            parse_wsl_distro_entries(
+                "\0NAME STATE VERSION\0\n\n name Stopped 2\n*\0Fedora\0 Running 2\n"
+            ),
+            vec![WslDistroEntry {
+                name: "Fedora".to_string(),
+                is_default: true,
+            }]
+        );
+        assert!(parse_wsl_distro_entries("\n\0\nNAME STATE VERSION\n").is_empty());
+    }
+
+    #[test]
     fn decodes_utf16_little_endian_wsl_output() {
         let text = "NAME\0\n*\0 Ubuntu\0\n";
         let mut bytes = vec![0xff, 0xfe];
@@ -1842,6 +2178,17 @@ mod tests {
         }
 
         assert_eq!(decode_wsl_command_output(&bytes), text);
+    }
+
+    #[test]
+    fn decodes_plain_and_lossy_wsl_output() {
+        assert_eq!(decode_wsl_command_output(b"Ubuntu\n"), "Ubuntu\n");
+        assert_eq!(decode_wsl_command_output(&[b'a', 0xff]), "a\u{fffd}");
+
+        let mut odd_utf16 = vec![0xff, 0xfe];
+        odd_utf16.extend_from_slice(&u16::from(b'A').to_le_bytes());
+        odd_utf16.push(0xff);
+        assert_eq!(decode_wsl_command_output(&odd_utf16), "A");
     }
 
     #[test]
@@ -1854,6 +2201,161 @@ mod tests {
         assert_eq!(
             normalize_wsl_distro(Some("Ubuntu; rm -rf /".to_string())),
             None
+        );
+        assert_eq!(normalize_wsl_distro(None), None);
+        assert_eq!(
+            normalize_wsl_distro(Some("Fedora_41.test".to_string())),
+            Some("Fedora_41.test".to_string())
+        );
+    }
+
+    #[test]
+    fn configured_wsl_distro_does_not_require_discovery() {
+        let settings = BackendDesktopSettings {
+            server_exposure_mode: "local-only".to_string(),
+            tailscale_serve_enabled: false,
+            tailscale_serve_port: 443,
+            wsl_backend_enabled: true,
+            wsl_only: false,
+            wsl_distro: Some("Debian".to_string()),
+        };
+
+        assert_eq!(resolve_wsl_distro(&settings), Ok("Debian".to_string()));
+    }
+
+    #[test]
+    fn normalizes_tailscale_ports_and_local_only_exposure() {
+        assert_eq!(normalize_tailscale_serve_port(None), 443);
+        assert_eq!(normalize_tailscale_serve_port(Some(0)), 443);
+        assert_eq!(normalize_tailscale_serve_port(Some(1)), 1);
+        assert_eq!(normalize_tailscale_serve_port(Some(65_535)), 65_535);
+        assert_eq!(normalize_tailscale_serve_port(Some(65_536)), 443);
+
+        let settings = BackendDesktopSettings {
+            server_exposure_mode: "unsupported".to_string(),
+            tailscale_serve_enabled: true,
+            tailscale_serve_port: 8_443,
+            wsl_backend_enabled: false,
+            wsl_only: false,
+            wsl_distro: None,
+        };
+        assert_eq!(
+            resolve_backend_exposure(&settings, 3_773),
+            ResolvedBackendExposure {
+                mode: "local-only".to_string(),
+                bind_host: "127.0.0.1".to_string(),
+                endpoint_url: None,
+                advertised_host: None,
+            }
+        );
+    }
+
+    #[test]
+    fn desktop_settings_decode_defaults_malformed_input_and_valid_fields() {
+        let defaults = decode_backend_desktop_settings(None);
+        assert_eq!(
+            defaults,
+            BackendDesktopSettings {
+                server_exposure_mode: "local-only".to_string(),
+                tailscale_serve_enabled: false,
+                tailscale_serve_port: 443,
+                wsl_backend_enabled: false,
+                wsl_only: false,
+                wsl_distro: None,
+            }
+        );
+        assert_eq!(decode_backend_desktop_settings(Some("not-json")), defaults);
+
+        assert_eq!(
+            decode_backend_desktop_settings(Some(
+                r#"{
+                    "serverExposureMode": "network-accessible",
+                    "tailscaleServeEnabled": true,
+                    "tailscaleServePort": 8443,
+                    "wslBackendEnabled": true,
+                    "wslOnly": true,
+                    "wslDistro": "  Ubuntu-24.04  "
+                }"#,
+            )),
+            BackendDesktopSettings {
+                server_exposure_mode: "network-accessible".to_string(),
+                tailscale_serve_enabled: true,
+                tailscale_serve_port: 8_443,
+                wsl_backend_enabled: true,
+                wsl_only: true,
+                wsl_distro: Some("Ubuntu-24.04".to_string()),
+            }
+        );
+
+        let invalid = decode_backend_desktop_settings(Some(
+            r#"{
+                "serverExposureMode": "public",
+                "tailscaleServePort": 70000,
+                "wslDistro": "Ubuntu;rm"
+            }"#,
+        ));
+        assert_eq!(invalid.server_exposure_mode, "local-only");
+        assert_eq!(invalid.tailscale_serve_port, 443);
+        assert_eq!(invalid.wsl_distro, None);
+    }
+
+    #[test]
+    fn network_exposure_uses_resolved_host_or_falls_back_closed() {
+        let settings = BackendDesktopSettings {
+            server_exposure_mode: "network-accessible".to_string(),
+            tailscale_serve_enabled: false,
+            tailscale_serve_port: 443,
+            wsl_backend_enabled: false,
+            wsl_only: false,
+            wsl_distro: None,
+        };
+
+        assert_eq!(
+            resolve_backend_exposure_with(&settings, 3_773, || Some("10.0.0.8".to_string())),
+            ResolvedBackendExposure {
+                mode: "network-accessible".to_string(),
+                bind_host: "0.0.0.0".to_string(),
+                endpoint_url: Some("http://10.0.0.8:3773".to_string()),
+                advertised_host: Some("10.0.0.8".to_string()),
+            }
+        );
+        assert_eq!(
+            resolve_backend_exposure_with(&settings, 3_773, || None),
+            ResolvedBackendExposure {
+                mode: "local-only".to_string(),
+                bind_host: "127.0.0.1".to_string(),
+                endpoint_url: None,
+                advertised_host: None,
+            }
+        );
+    }
+
+    #[test]
+    fn local_only_exposure_does_not_resolve_lan_route() {
+        let settings = BackendDesktopSettings {
+            server_exposure_mode: "local-only".to_string(),
+            tailscale_serve_enabled: false,
+            tailscale_serve_port: 443,
+            wsl_backend_enabled: false,
+            wsl_only: false,
+            wsl_distro: None,
+        };
+        let resolver_called = Cell::new(false);
+
+        let exposure = resolve_backend_exposure_with(&settings, 3_773, || {
+            resolver_called.set(true);
+            Some("10.0.0.8".to_string())
+        });
+
+        assert!(!resolver_called.get());
+        assert_eq!(
+            exposure,
+            ResolvedBackendExposure {
+                mode: "local-only".to_string(),
+                bind_host: "127.0.0.1".to_string(),
+                endpoint_url: None,
+                advertised_host: None,
+            }
         );
     }
 
@@ -1879,6 +2381,63 @@ mod tests {
         assert!(contents.contains("[stdout] ready\n"));
         assert!(contents.contains("[stderr] warn\n"));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn backend_log_open_creates_parents_and_rejects_invalid_targets() {
+        let temp = tempfile::tempdir().expect("tempdir should open");
+        let nested = temp.path().join("nested").join("backend.log");
+        let mut file = open_backend_log_file(&nested).expect("nested log should open");
+        write_backend_log_chunk(&mut file, "stdout", b"").expect("empty chunk should write");
+        drop(file);
+        assert_eq!(
+            fs::read_to_string(&nested).expect("nested log should read"),
+            "[stdout] \n"
+        );
+
+        let parent_file = temp.path().join("not-a-directory");
+        fs::write(&parent_file, b"file").expect("parent fixture should write");
+        assert!(open_backend_log_file(&parent_file.join("backend.log")).is_none());
+        assert!(open_backend_log_file(temp.path()).is_none());
+    }
+
+    #[tokio::test]
+    async fn drain_output_persists_chunks_and_stops_on_end_or_read_error() {
+        let temp = tempfile::tempdir().expect("tempdir should open");
+        let log_path = temp.path().join("backend.log");
+        let (completion, completed) = oneshot::channel();
+        drain_output(
+            "stdout",
+            Some(ScriptedReader {
+                steps: VecDeque::from([Ok(b"first".to_vec()), Ok(b"second\n".to_vec())]),
+                completion: Some(completion),
+            }),
+            Some(log_path.clone()),
+        );
+        completed.await.expect("output drain should reach EOF");
+        assert_eq!(
+            fs::read_to_string(&log_path).expect("drained log should read"),
+            "[stdout] first\n[stdout] second\n"
+        );
+
+        let (completion, completed) = oneshot::channel();
+        drain_output(
+            "stderr",
+            Some(ScriptedReader {
+                steps: VecDeque::from([Err(io::Error::other("read failed"))]),
+                completion: Some(completion),
+            }),
+            None,
+        );
+        completed
+            .await
+            .expect("output drain should observe read error");
+    }
+
+    #[test]
+    fn drain_output_without_a_stream_is_a_noop() {
+        let stream: Option<tokio::io::Empty> = None;
+        drain_output("stdout", stream, None);
     }
 
     #[tokio::test]
@@ -1910,6 +2469,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn readiness_probe_accepts_http_10_and_rejects_non_success_or_malformed_status() {
+        for (response, expected) in [
+            (
+                b"HTTP/1.0 204 No Content\r\ncontent-length: 0\r\n\r\n" as &'static [u8],
+                true,
+            ),
+            (
+                b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\n\r\n" as &'static [u8],
+                false,
+            ),
+            (b"not-http\r\n\r\n" as &'static [u8], false),
+        ] {
+            let (base_url, request, server) = spawn_http_response(response);
+            assert_eq!(
+                probe_http_ready(&base_url, Duration::from_secs(1)).await,
+                Ok(expected)
+            );
+            let request = request.recv().expect("request should be captured");
+            assert!(request.starts_with("GET /.well-known/t4code/environment HTTP/1.1"));
+            server.join().expect("server should finish");
+        }
+    }
+
+    #[test]
+    fn readiness_probe_rejects_invalid_and_unsupported_urls() {
+        let invalid = probe_http_ready_blocking("not a URL", Duration::from_millis(10))
+            .expect_err("invalid URL should fail");
+        assert!(invalid.contains("Invalid backend URL"));
+
+        let unsupported = probe_http_ready_blocking("https://localhost", Duration::from_millis(10))
+            .expect_err("HTTPS should fail closed");
+        assert_eq!(
+            unsupported,
+            "Unsupported backend readiness URL scheme: https"
+        );
+    }
+
+    #[tokio::test]
+    async fn readiness_wait_reports_the_last_non_success_status_at_deadline() {
+        let (base_url, _request, server) =
+            spawn_http_response(b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\n\r\n");
+        let error = wait_for_http_ready(
+            &base_url,
+            &BackendReadinessConfig {
+                timeout: Duration::ZERO,
+                interval: Duration::ZERO,
+                request_timeout: Duration::from_secs(1),
+            },
+        )
+        .await
+        .expect_err("non-success should miss readiness deadline");
+
+        assert!(error.contains(&format!("{base_url}{BACKEND_READINESS_PATH}")));
+        assert!(error.contains("readiness endpoint returned a non-success status"));
+        server.join().expect("server should finish");
+    }
+
+    #[tokio::test]
+    async fn readiness_wait_retries_after_non_success_until_endpoint_is_ready() {
+        let (base_url, requests, server) = spawn_http_responses(vec![
+            b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}",
+        ]);
+
+        wait_for_http_ready(
+            &base_url,
+            &BackendReadinessConfig {
+                timeout: Duration::from_secs(2),
+                interval: Duration::ZERO,
+                request_timeout: Duration::from_secs(1),
+            },
+        )
+        .await
+        .expect("second readiness response should succeed");
+
+        assert!(requests.recv().expect("first request").starts_with("GET "));
+        assert!(requests.recv().expect("second request").starts_with("GET "));
+        server.join().expect("server should finish");
+    }
+
+    #[tokio::test]
     async fn requests_soft_shutdown_endpoint_with_desktop_bootstrap_token() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("test listener should bind");
         let port = listener.local_addr().expect("listener address").port();
@@ -1937,6 +2577,400 @@ mod tests {
         let request = receiver.recv().expect("request should be captured");
         assert!(request.starts_with("POST /.well-known/t4code/desktop/shutdown HTTP/1.1"));
         assert!(request.contains("x-t4code-desktop-bootstrap-token: desktop-token"));
+    }
+
+    #[tokio::test]
+    async fn soft_shutdown_rejects_non_success_status() {
+        let (base_url, request, server) =
+            spawn_http_response(b"HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n");
+        let port = url::Url::parse(&base_url)
+            .expect("base URL should parse")
+            .port()
+            .expect("base URL should have port");
+        let error = request_backend_soft_shutdown(&local_test_config(port), Duration::from_secs(1))
+            .await
+            .expect_err("non-success shutdown should fail");
+
+        assert_eq!(error, "Desktop backend shutdown endpoint returned 403.");
+        assert!(
+            request
+                .recv()
+                .expect("request should be captured")
+                .starts_with("POST /.well-known/t4code/desktop/shutdown HTTP/1.1")
+        );
+        server.join().expect("server should finish");
+    }
+
+    #[tokio::test]
+    async fn managed_backend_reports_process_spawn_and_local_bind_failures() {
+        let missing = BackendLaunchPlan {
+            target: BackendLaunchTarget::ExternalProcess {
+                program: format!("missing-t4code-backend-{}", Uuid::new_v4().simple()),
+                args: Vec::new(),
+                bootstrap_line: "{}\n".to_string(),
+            },
+            log_path: None,
+            config: local_test_config(4_300),
+        };
+        let error = start_managed_backend(
+            missing,
+            BackendReadinessConfig {
+                timeout: Duration::ZERO,
+                interval: Duration::ZERO,
+                request_timeout: Duration::ZERO,
+            },
+            0,
+        )
+        .await
+        .expect_err("missing executable should fail");
+        assert!(error.contains("Could not start desktop backend using"));
+
+        let temp = tempfile::tempdir().expect("tempdir should open");
+        let occupied = TcpListener::bind(("127.0.0.1", 0)).expect("port fixture should bind");
+        let port = occupied.local_addr().expect("listener address").port();
+        let error = start_managed_backend(
+            BackendLaunchPlan::local(temp.path().to_path_buf(), local_test_config(port)),
+            BackendReadinessConfig {
+                timeout: Duration::ZERO,
+                interval: Duration::ZERO,
+                request_timeout: Duration::ZERO,
+            },
+            1,
+        )
+        .await
+        .expect_err("occupied local port should fail");
+        assert!(error.contains("Could not start in-process desktop backend"));
+    }
+
+    #[tokio::test]
+    async fn in_process_start_cleans_up_when_renderer_readiness_is_unreachable() {
+        let temp = tempfile::tempdir().expect("tempdir should open");
+        let mut config = local_test_config(0);
+        config.local_host = "127.0.0.2".to_string();
+        let error = start_managed_backend(
+            BackendLaunchPlan::local(temp.path().to_path_buf(), config),
+            BackendReadinessConfig {
+                timeout: Duration::ZERO,
+                interval: Duration::ZERO,
+                request_timeout: Duration::from_millis(20),
+            },
+            8,
+        )
+        .await
+        .expect_err("unreachable renderer address should fail readiness");
+
+        assert!(error.contains("Desktop backend did not become ready"));
+        assert!(error.contains(BACKEND_READINESS_PATH));
+    }
+
+    #[tokio::test]
+    async fn managed_runtime_stop_is_idempotent_and_waits_for_server_completion() {
+        let temp = tempfile::tempdir().expect("tempdir should open");
+        let (handle, _config) = start_test_server(temp.path()).await;
+        let runtime = ManagedBackendRuntime::new(41, handle);
+        assert_eq!(
+            format!("{runtime:?}"),
+            "ManagedBackendRuntime { run_id: 41, .. }"
+        );
+        assert!(!runtime.stop_requested.load(Ordering::SeqCst));
+
+        runtime.request_stop();
+        runtime.request_stop();
+        assert!(runtime.stop_requested.load(Ordering::SeqCst));
+        runtime
+            .wait_for_completion()
+            .await
+            .expect("runtime should join cleanly");
+        runtime
+            .wait_for_completion()
+            .await
+            .expect("completed runtime result should remain available");
+    }
+
+    #[tokio::test]
+    async fn stop_managed_backend_shuts_down_an_in_process_runtime() {
+        let temp = tempfile::tempdir().expect("tempdir should open");
+        let (handle, _config) = start_test_server(temp.path()).await;
+        let runtime = ManagedBackendRuntime::new(42, handle);
+
+        stop_managed_backend(
+            ManagedBackend::Runtime(Box::new(runtime)),
+            BackendShutdownConfig {
+                timeout: Duration::from_secs(2),
+            },
+        )
+        .await
+        .expect("managed runtime should stop");
+    }
+
+    #[tokio::test]
+    async fn public_start_persists_the_os_assigned_in_process_port() {
+        let temp = tempfile::tempdir().expect("tempdir should open");
+        let supervisor = BackendSupervisor::new();
+
+        let started = supervisor
+            .start(BackendLaunchPlan::local(
+                temp.path().to_path_buf(),
+                local_test_config(0),
+            ))
+            .await
+            .expect("ephemeral-port runtime should start");
+
+        assert_ne!(started.port, 0);
+        assert_eq!(supervisor.current_run_config(), Some(started.clone()));
+        assert_eq!(
+            supervisor.local_environment_bootstraps()[0]["httpBaseUrl"],
+            started.http_base_url()
+        );
+        supervisor
+            .stop(BackendShutdownConfig {
+                timeout: Duration::from_secs(2),
+            })
+            .await
+            .expect("ephemeral-port runtime should stop");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn stop_managed_backend_accepts_an_already_exited_child() {
+        let mut process = Command::new("cmd.exe")
+            .args(["/D", "/C", "exit", "0"])
+            .spawn()
+            .expect("fixture child should start");
+        process.wait().await.expect("fixture child should exit");
+        let mut config = local_test_config(4_350);
+        config.local_host = "invalid host".to_string();
+        let child = ManagedBackendChild::new(9, config, process);
+        assert_eq!(
+            format!("{child:?}"),
+            "ManagedBackendChild { run_id: 9, .. }"
+        );
+
+        stop_managed_backend(
+            ManagedBackend::Child(Box::new(child)),
+            BackendShutdownConfig {
+                timeout: Duration::ZERO,
+            },
+        )
+        .await
+        .expect("already exited child should be accepted");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn external_backend_receives_bootstrap_serves_readiness_and_shuts_down() {
+        let temp = tempfile::tempdir().expect("tempdir should open");
+        let bootstrap_path = temp.path().join("bootstrap.txt");
+        let shutdown_signal_path = temp.path().join("shutdown.signal");
+        let shutdown_observed_path = temp.path().join("shutdown-observed.txt");
+        let shutdown_signal_name = PathBuf::from(
+            shutdown_signal_path
+                .file_name()
+                .expect("shutdown signal should have a file name"),
+        );
+        let (port, requests, server) =
+            spawn_external_backend_http_server(shutdown_signal_path.clone());
+        let script = format!(
+            r#"
+$watcher = [IO.FileSystemWatcher]::new({}, {})
+$sourceIdentifier = 't4code-shutdown-' + [Guid]::NewGuid().ToString('N')
+[void](Register-ObjectEvent -InputObject $watcher -EventName Created -SourceIdentifier $sourceIdentifier)
+$watcher.EnableRaisingEvents = $true
+try {{
+  $bootstrap = [Console]::In.ReadToEnd()
+  [IO.File]::WriteAllText({}, $bootstrap)
+  if (-not [IO.File]::Exists({})) {{
+    [void](Wait-Event -SourceIdentifier $sourceIdentifier)
+  }}
+  [IO.File]::WriteAllText({}, 'shutdown-observed')
+}} finally {{
+  $watcher.EnableRaisingEvents = $false
+  Unregister-Event -SourceIdentifier $sourceIdentifier -ErrorAction SilentlyContinue
+  $watcher.Dispose()
+}}
+"#,
+            powershell_string_literal(temp.path()),
+            powershell_string_literal(&shutdown_signal_name),
+            powershell_string_literal(&bootstrap_path),
+            powershell_string_literal(&shutdown_signal_path),
+            powershell_string_literal(&shutdown_observed_path),
+        );
+        let bootstrap_line = "{\"mode\":\"desktop-test\"}\n".to_string();
+        let plan = BackendLaunchPlan {
+            target: BackendLaunchTarget::ExternalProcess {
+                program: "powershell.exe".to_string(),
+                args: vec![
+                    "-NoLogo".to_string(),
+                    "-NoProfile".to_string(),
+                    "-NonInteractive".to_string(),
+                    "-Command".to_string(),
+                    script,
+                ],
+                bootstrap_line: bootstrap_line.clone(),
+            },
+            log_path: Some(temp.path().join("child.log")),
+            config: local_test_config(port),
+        };
+
+        let (config, backend, pid) = start_managed_backend(
+            plan,
+            BackendReadinessConfig {
+                timeout: Duration::from_secs(5),
+                interval: Duration::from_millis(10),
+                request_timeout: Duration::from_secs(1),
+            },
+            10,
+        )
+        .await
+        .expect("external backend should become ready");
+        assert_eq!(config.port, port);
+        assert!(pid.is_some());
+        assert!(matches!(backend, ManagedBackend::Child(_)));
+        let readiness = requests
+            .recv_timeout(Duration::from_secs(1))
+            .expect("readiness request should be captured")
+            .to_ascii_lowercase();
+        assert!(readiness.starts_with(&format!("get {BACKEND_READINESS_PATH} http/1.1")));
+
+        stop_managed_backend(
+            backend,
+            BackendShutdownConfig {
+                timeout: Duration::from_secs(3),
+            },
+        )
+        .await
+        .expect("external backend should shut down gracefully");
+
+        assert_eq!(
+            fs::read_to_string(&bootstrap_path).expect("bootstrap should be captured"),
+            bootstrap_line
+        );
+        let shutdown = requests
+            .recv_timeout(Duration::from_secs(1))
+            .expect("shutdown request should be captured")
+            .to_ascii_lowercase();
+        assert!(shutdown.starts_with("post /.well-known/t4code/desktop/shutdown http/1.1"));
+        assert!(shutdown.contains("x-t4code-desktop-bootstrap-token: desktop-token"));
+        server.join().expect("test HTTP server should finish");
+        assert!(shutdown_signal_path.is_file());
+        assert_eq!(
+            fs::read_to_string(&shutdown_observed_path)
+                .expect("child should record observing shutdown"),
+            "shutdown-observed"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn child_that_ignores_soft_shutdown_is_force_killed_after_timeout() {
+        let (base_url, requests, server) = spawn_http_responses(vec![
+            b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}",
+            b"HTTP/1.1 202 Accepted\r\ncontent-length: 2\r\n\r\n{}",
+        ]);
+        let port = url::Url::parse(&base_url)
+            .expect("base URL should parse")
+            .port()
+            .expect("base URL should have port");
+        let plan = BackendLaunchPlan {
+            target: BackendLaunchTarget::ExternalProcess {
+                program: "powershell.exe".to_string(),
+                args: vec![
+                    "-NoLogo".to_string(),
+                    "-NoProfile".to_string(),
+                    "-NonInteractive".to_string(),
+                    "-Command".to_string(),
+                    "Wait-Event".to_string(),
+                ],
+                bootstrap_line: "{}\n".to_string(),
+            },
+            log_path: None,
+            config: local_test_config(port),
+        };
+        let (_config, backend, _pid) = start_managed_backend(
+            plan,
+            BackendReadinessConfig {
+                timeout: Duration::from_secs(2),
+                interval: Duration::ZERO,
+                request_timeout: Duration::from_secs(1),
+            },
+            11,
+        )
+        .await
+        .expect("independent readiness endpoint should accept child");
+
+        stop_managed_backend(
+            backend,
+            BackendShutdownConfig {
+                timeout: Duration::from_millis(250),
+            },
+        )
+        .await
+        .expect("unresponsive child should be force-killed");
+
+        assert!(
+            requests
+                .recv()
+                .expect("readiness request")
+                .starts_with("GET ")
+        );
+        assert!(
+            requests
+                .recv()
+                .expect("shutdown request")
+                .starts_with("POST ")
+        );
+        server.join().expect("server should finish");
+    }
+
+    #[tokio::test]
+    async fn soft_shutdown_reports_connection_failure() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("port fixture should bind");
+        let port = listener.local_addr().expect("listener address").port();
+        drop(listener);
+
+        let error =
+            request_backend_soft_shutdown(&local_test_config(port), Duration::from_millis(250))
+                .await
+                .expect_err("closed endpoint should reject shutdown request");
+        assert!(error.contains("Could not request desktop backend shutdown"));
+    }
+
+    #[test]
+    fn port_selection_excludes_requested_ports_and_wsl_candidates_cover_both_architectures() {
+        let selected = pick_desktop_backend_port_excluding(&[DEFAULT_BACKEND_PORT])
+            .expect("an alternate backend port should be available");
+        assert_ne!(selected, DEFAULT_BACKEND_PORT);
+        assert_ne!(selected, 0);
+        assert!(can_listen_on_host(0, "127.0.0.1"));
+        assert!(!can_listen_on_host(0, "127.0.0.1\0"));
+
+        let candidates = wsl_server_binary_candidates().expect("candidate discovery should work");
+        for suffix in [
+            PathBuf::from("target/x86_64-unknown-linux-gnu/debug/t4code"),
+            PathBuf::from("target/x86_64-unknown-linux-gnu/release/t4code"),
+            PathBuf::from("target/aarch64-unknown-linux-gnu/debug/t4code"),
+            PathBuf::from("target/aarch64-unknown-linux-gnu/release/t4code"),
+        ] {
+            assert!(
+                candidates
+                    .iter()
+                    .any(|candidate| candidate.ends_with(&suffix)),
+                "missing WSL candidate ending in {}",
+                suffix.display()
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_child_soft_termination_is_not_reported_as_available() {
+        let mut child = Command::new("cmd.exe")
+            .args(["/D", "/C", "exit", "0"])
+            .spawn()
+            .expect("fixture child should start");
+
+        assert!(!request_child_soft_termination(&mut child));
+        child.wait().await.expect("fixture child should exit");
     }
 
     #[tokio::test]

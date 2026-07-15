@@ -1,4 +1,9 @@
-use std::time::Duration;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    time::Duration,
+};
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -7,11 +12,59 @@ use t4code_server::{
 };
 use tempfile::TempDir;
 use tokio::time::timeout;
-use tokio_tungstenite::{WebSocketStream, connect_async, tungstenite::Message};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
 use t4code_server::production::git_vcs::{
     GIT_VCS_STREAM_METHODS, GIT_VCS_UNARY_METHODS, GitVcsRpcServices, register_git_vcs_rpc,
 };
+
+const ISOLATED_GIT_TEST: &str = "T4CODE_PRODUCTION_GIT_VCS_RPC_ISOLATED";
+
+type TestSocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+
+struct GitServerHarness {
+    handle: Option<t4code_server::ServerHandle>,
+    socket: Option<TestSocket>,
+}
+
+impl GitServerHarness {
+    async fn start(temp: &TempDir) -> Self {
+        let mut registry = RpcRegistry::empty();
+        register_git_vcs_rpc(&mut registry, GitVcsRpcServices::default());
+        let handle = ServerRuntime::start_with_registry(test_config(temp), registry)
+            .await
+            .expect("server starts");
+        let (socket, _) = connect_async(format!("ws://{}/ws", handle.local_addr()))
+            .await
+            .expect("WebSocket connects");
+        Self {
+            handle: Some(handle),
+            socket: Some(socket),
+        }
+    }
+
+    fn socket(&mut self) -> &mut TestSocket {
+        self.socket.as_mut().expect("active test socket")
+    }
+
+    async fn shutdown(mut self) {
+        if let Some(mut socket) = self.socket.take() {
+            let _ = socket.close(None).await;
+        }
+        if let Some(handle) = self.handle.take() {
+            handle.shutdown();
+            let _ = handle.join().await;
+        }
+    }
+}
+
+impl Drop for GitServerHarness {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.as_ref() {
+            handle.shutdown();
+        }
+    }
+}
 
 #[test]
 fn registrar_owns_the_complete_git_vcs_rpc_surface() {
@@ -745,21 +798,693 @@ async fn stacked_create_pr_rejects_dirty_worktree_before_push() {
     handle.join().await.expect("server joins");
 }
 
-fn initialize_repository(repository: &TempDir) {
-    run_git(repository, &["init", "--quiet"]);
-    run_git(repository, &["config", "user.name", "T4Code Test"]);
-    run_git(
-        repository,
-        &["config", "user.email", "t4code@example.invalid"],
+#[tokio::test]
+async fn list_refs_commits_and_ref_lifecycle_round_trip_over_rpc() {
+    if relaunch_with_isolated_git_config("list_refs_commits_and_ref_lifecycle_round_trip_over_rpc")
+    {
+        return;
+    }
+
+    let temp = TempDir::new().expect("temporary server directory");
+    let root = TempDir::new().expect("temporary fixture root");
+    let remote = root.path().join("refs-remote.git");
+    fs::create_dir(&remote).expect("create bare remote directory");
+    run_git_in(&remote, &["init", "--bare", "--initial-branch=main"]);
+
+    let repository = root.path().join("refs-repository");
+    fs::create_dir(&repository).expect("create repository directory");
+    initialize_repository_in(&repository);
+    commit_file(&repository, "first.txt", "one\n", "first");
+    commit_file(&repository, "second.txt", "two\n", "second");
+    commit_file(&repository, "third.txt", "three\n", "third");
+    let remote_url = local_file_url(&remote);
+    run_git_in(&repository, &["remote", "add", "origin", &remote_url]);
+    run_git_in(&repository, &["push", "-u", "origin", "main"]);
+    run_git_in(&repository, &["switch", "-c", "feature/one"]);
+    commit_file(&repository, "feature.txt", "feature\n", "feature work");
+    run_git_in(&repository, &["push", "-u", "origin", "feature/one"]);
+    run_git_in(&repository, &["switch", "main"]);
+
+    let worktree_parent = root.path().join("worktrees");
+    fs::create_dir(&worktree_parent).expect("create worktree parent");
+    let worktree_path = worktree_parent.join("feature-worktree");
+
+    let mut server = GitServerHarness::start(&temp).await;
+    let cwd = repository.to_string_lossy();
+
+    request(
+        server.socket(),
+        "201",
+        "vcs.listCommits",
+        json!({ "cwd": cwd, "limit": 2 }),
+    )
+    .await;
+    let first_page = success_value(server.socket(), "201").await;
+    assert_eq!(
+        first_page["commits"]
+            .as_array()
+            .expect("first history page")
+            .len(),
+        2
     );
-    run_git(repository, &["config", "core.autocrlf", "false"]);
+    assert_eq!(first_page["commits"][0]["subject"], "third");
+    assert_eq!(first_page["commits"][1]["subject"], "second");
+    assert_eq!(first_page["nextCursor"], 2);
+
+    request(
+        server.socket(),
+        "202",
+        "vcs.listCommits",
+        json!({ "cwd": cwd, "limit": 2, "cursor": 2 }),
+    )
+    .await;
+    let second_page = success_value(server.socket(), "202").await;
+    assert_eq!(
+        second_page["commits"]
+            .as_array()
+            .expect("second page")
+            .len(),
+        1
+    );
+    assert_eq!(second_page["commits"][0]["subject"], "first");
+    assert_eq!(second_page["nextCursor"], Value::Null);
+
+    request(
+        server.socket(),
+        "203",
+        "vcs.createRef",
+        json!({ "cwd": cwd, "refName": "feature/rpc-created", "switchRef": true }),
+    )
+    .await;
+    assert_success_eq(
+        server.socket(),
+        "203",
+        json!({ "refName": "feature/rpc-created" }),
+    )
+    .await;
+    assert_eq!(
+        git_stdout_in(&repository, &["branch", "--show-current"]).trim(),
+        "feature/rpc-created"
+    );
+
+    request(
+        server.socket(),
+        "204",
+        "vcs.switchRef",
+        json!({ "cwd": cwd, "refName": "main" }),
+    )
+    .await;
+    assert_success_eq(server.socket(), "204", json!({ "refName": "main" })).await;
+    assert_eq!(
+        git_stdout_in(&repository, &["branch", "--show-current"]).trim(),
+        "main"
+    );
+
+    request(
+        server.socket(),
+        "205",
+        "vcs.createWorktree",
+        json!({
+            "cwd": cwd,
+            "refName": "main",
+            "newRefName": "feature/worktree",
+            "baseRefName": "main",
+            "path": worktree_path,
+        }),
+    )
+    .await;
+    let created_worktree = success_value(server.socket(), "205").await;
+    assert_eq!(
+        created_worktree["worktree"]["refName"],
+        json!("feature/worktree")
+    );
+    assert_eq!(
+        PathBuf::from(
+            created_worktree["worktree"]["path"]
+                .as_str()
+                .expect("worktree path"),
+        ),
+        worktree_path
+    );
+    assert!(worktree_path.exists());
+
+    request(
+        server.socket(),
+        "206",
+        "vcs.listRefs",
+        json!({ "cwd": cwd, "limit": 2 }),
+    )
+    .await;
+    let paged_refs = success_value(server.socket(), "206").await;
+    assert_eq!(paged_refs["isRepo"], true);
+    assert_eq!(paged_refs["hasPrimaryRemote"], true);
+    assert_eq!(paged_refs["nextCursor"], 2);
+    assert_eq!(paged_refs["totalCount"], 4);
+    let first_ref_names = paged_refs["refs"]
+        .as_array()
+        .expect("first ref page")
+        .iter()
+        .map(|reference| reference["name"].as_str().expect("first-page ref name"))
+        .collect::<Vec<_>>();
+    assert_eq!(first_ref_names, vec!["main", "feature/one"]);
+
+    request(
+        server.socket(),
+        "207",
+        "vcs.listRefs",
+        json!({ "cwd": cwd, "cursor": 2, "limit": 2 }),
+    )
+    .await;
+    let remaining_refs = success_value(server.socket(), "207").await;
+    assert_eq!(remaining_refs["isRepo"], true);
+    assert_eq!(remaining_refs["hasPrimaryRemote"], true);
+    assert_eq!(remaining_refs["nextCursor"], Value::Null);
+    assert_eq!(remaining_refs["totalCount"], paged_refs["totalCount"]);
+    let remaining_ref_names = remaining_refs["refs"]
+        .as_array()
+        .expect("remaining ref page")
+        .iter()
+        .map(|reference| reference["name"].as_str().expect("remaining-page ref name"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        remaining_ref_names,
+        vec!["feature/rpc-created", "feature/worktree"]
+    );
+    assert!(
+        first_ref_names
+            .iter()
+            .all(|name| !remaining_ref_names.contains(name))
+    );
+
+    request(
+        server.socket(),
+        "208",
+        "vcs.listRefs",
+        json!({ "cwd": cwd, "query": "feature/", "refKind": "local", "limit": 20 }),
+    )
+    .await;
+    let local_feature_refs = success_value(server.socket(), "208").await;
+    let local_names = local_feature_refs["refs"]
+        .as_array()
+        .expect("local feature refs")
+        .iter()
+        .map(|reference| reference["name"].as_str().expect("local ref name"))
+        .collect::<Vec<_>>();
+    assert!(local_names.contains(&"feature/one"));
+    assert!(local_names.contains(&"feature/rpc-created"));
+    assert!(local_names.contains(&"feature/worktree"));
+    assert!(
+        local_feature_refs["refs"]
+            .as_array()
+            .expect("local refs array")
+            .iter()
+            .all(|reference| reference["isRemote"] == false)
+    );
+    let worktree_ref = local_feature_refs["refs"]
+        .as_array()
+        .expect("local refs array")
+        .iter()
+        .find(|reference| reference["name"] == "feature/worktree")
+        .expect("worktree ref listed");
+    assert_eq!(
+        PathBuf::from(
+            worktree_ref["worktreePath"]
+                .as_str()
+                .expect("listed worktree path"),
+        ),
+        worktree_path
+    );
+
+    request(
+        server.socket(),
+        "209",
+        "vcs.listRefs",
+        json!({
+            "cwd": cwd,
+            "query": "feature/",
+            "refKind": "remote",
+            "includeMatchingRemoteRefs": true,
+            "limit": 20
+        }),
+    )
+    .await;
+    let remote_feature_refs = success_value(server.socket(), "209").await;
+    let remote_names = remote_feature_refs["refs"]
+        .as_array()
+        .expect("remote feature refs")
+        .iter()
+        .map(|reference| reference["name"].as_str().expect("remote ref name"))
+        .collect::<Vec<_>>();
+    assert_eq!(remote_names, vec!["origin/feature/one"]);
+    assert_eq!(remote_feature_refs["refs"][0]["isRemote"], true);
+    assert_eq!(remote_feature_refs["refs"][0]["remoteName"], "origin");
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn stage_unstage_discard_and_invalid_pathspecs_round_trip_over_rpc() {
+    if relaunch_with_isolated_git_config(
+        "stage_unstage_discard_and_invalid_pathspecs_round_trip_over_rpc",
+    ) {
+        return;
+    }
+
+    let temp = TempDir::new().expect("temporary server directory");
+    let root = TempDir::new().expect("temporary fixture root");
+    let repository = root.path().join("stage-repository");
+    fs::create_dir(&repository).expect("create repository directory");
+    initialize_repository_in(&repository);
+    commit_file(&repository, "tracked.txt", "base\n", "base");
+    fs::write(repository.join("tracked.txt"), "staged\n").expect("write staged tracked file");
+    fs::create_dir_all(repository.join("selected/nested")).expect("create selected fixture");
+    fs::write(repository.join("selected/nested/file.txt"), "remove me\n")
+        .expect("write selected fixture");
+    fs::write(repository.join("keep.txt"), "keep\n").expect("write keep fixture");
+
+    let mut server = GitServerHarness::start(&temp).await;
+    let cwd = repository.to_string_lossy();
+
+    request(
+        server.socket(),
+        "301",
+        "vcs.stageFiles",
+        json!({ "cwd": cwd, "filePaths": ["tracked.txt"] }),
+    )
+    .await;
+    assert_success_eq(server.socket(), "301", Value::Null).await;
+
+    request(
+        server.socket(),
+        "302",
+        "vcs.refreshStatus",
+        json!({ "cwd": cwd }),
+    )
+    .await;
+    let staged_status = success_value(server.socket(), "302").await;
+    let staged_files = staged_status["workingTree"]["files"]
+        .as_array()
+        .expect("staged file list");
+    assert!(staged_files.iter().any(|file| {
+        file["path"] == "tracked.txt" && file["area"] == "staged" && file["status"] == "modified"
+    }));
+    assert!(
+        staged_files.iter().any(|file| {
+            file["path"] == "selected/nested/file.txt" && file["area"] == "untracked"
+        })
+    );
+
+    request(
+        server.socket(),
+        "303",
+        "vcs.unstageFiles",
+        json!({ "cwd": cwd, "filePaths": ["tracked.txt"] }),
+    )
+    .await;
+    assert_success_eq(server.socket(), "303", Value::Null).await;
+
+    request(
+        server.socket(),
+        "304",
+        "vcs.refreshStatus",
+        json!({ "cwd": cwd }),
+    )
+    .await;
+    let unstaged_status = success_value(server.socket(), "304").await;
+    let unstaged_files = unstaged_status["workingTree"]["files"]
+        .as_array()
+        .expect("unstaged file list");
+    assert!(unstaged_files.iter().any(|file| {
+        file["path"] == "tracked.txt" && file["area"] == "unstaged" && file["status"] == "modified"
+    }));
+    assert!(
+        unstaged_files.iter().any(|file| {
+            file["path"] == "selected/nested/file.txt" && file["area"] == "untracked"
+        })
+    );
+
+    request(
+        server.socket(),
+        "305",
+        "vcs.discardFiles",
+        json!({ "cwd": cwd, "filePaths": ["tracked.txt", "selected/nested/file.txt"] }),
+    )
+    .await;
+    assert_success_eq(server.socket(), "305", Value::Null).await;
+    assert_eq!(
+        fs::read_to_string(repository.join("tracked.txt")).expect("tracked contents"),
+        "base\n"
+    );
+    assert!(!repository.join("selected/nested/file.txt").exists());
+    assert!(repository.join("keep.txt").exists());
+
+    request(
+        server.socket(),
+        "306",
+        "vcs.refreshStatus",
+        json!({ "cwd": cwd }),
+    )
+    .await;
+    let discarded_status = success_value(server.socket(), "306").await;
+    let discarded_files = discarded_status["workingTree"]["files"]
+        .as_array()
+        .expect("discarded file list");
+    assert!(
+        discarded_files
+            .iter()
+            .all(|file| file["path"] != "tracked.txt")
+    );
+    assert!(
+        discarded_files
+            .iter()
+            .all(|file| file["path"] != "selected/nested/file.txt")
+    );
+    assert!(
+        discarded_files
+            .iter()
+            .any(|file| file["path"] == "keep.txt" && file["area"] == "untracked")
+    );
+
+    request(
+        server.socket(),
+        "307",
+        "vcs.stageFiles",
+        json!({ "cwd": cwd, "filePaths": ["../escape.txt"] }),
+    )
+    .await;
+    let invalid_pathspec = failure_value(server.socket(), "307").await;
+    assert_eq!(invalid_pathspec["_tag"], "GitCommandError");
+    assert_eq!(invalid_pathspec["operation"], "GitVcsDriver.stageFiles");
+    assert!(
+        invalid_pathspec["detail"]
+            .as_str()
+            .expect("invalid pathspec detail")
+            .contains("repository-relative")
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn clone_pull_and_worktree_lifecycle_round_trip_over_rpc() {
+    if relaunch_with_isolated_git_config("clone_pull_and_worktree_lifecycle_round_trip_over_rpc") {
+        return;
+    }
+
+    let temp = TempDir::new().expect("temporary server directory");
+    let root = TempDir::new().expect("temporary fixture root");
+    let remote = root.path().join("clone-remote.git");
+    fs::create_dir(&remote).expect("create clone remote directory");
+    run_git_in(&remote, &["init", "--bare", "--initial-branch=main"]);
+
+    let publisher = root.path().join("publisher");
+    fs::create_dir(&publisher).expect("create publisher directory");
+    initialize_repository_in(&publisher);
+    commit_file(&publisher, "tracked.txt", "base\n", "initial");
+    let remote_url = local_file_url(&remote);
+    run_git_in(&publisher, &["remote", "add", "origin", &remote_url]);
+    run_git_in(&publisher, &["push", "-u", "origin", "main"]);
+
+    let clone_parent = root.path().join("clones");
+    fs::create_dir(&clone_parent).expect("create clone parent");
+    let worktree_parent = root.path().join("worktrees");
+    fs::create_dir(&worktree_parent).expect("create worktree parent");
+    let worktree_path = worktree_parent.join("feature-pull-worktree");
+
+    let mut server = GitServerHarness::start(&temp).await;
+
+    request(
+        server.socket(),
+        "401",
+        "vcs.clone",
+        json!({
+            "url": remote_url,
+            "parentDir": clone_parent,
+            "directoryName": "consumer"
+        }),
+    )
+    .await;
+    let clone_result = success_value(server.socket(), "401").await;
+    let consumer = PathBuf::from(
+        clone_result["path"]
+            .as_str()
+            .expect("clone destination path"),
+    );
+    assert!(consumer.exists());
+    initialize_repository_identity(&consumer);
+
+    let consumer_cwd = consumer.to_string_lossy();
+    request(
+        server.socket(),
+        "402",
+        "vcs.pull",
+        json!({ "cwd": consumer_cwd }),
+    )
+    .await;
+    let skipped_pull = success_value(server.socket(), "402").await;
+    assert_eq!(skipped_pull["status"], "skipped_up_to_date");
+    assert_eq!(skipped_pull["refName"], "main");
+    assert_eq!(skipped_pull["upstreamRef"], "origin/main");
+
+    commit_file(
+        &publisher,
+        "tracked.txt",
+        "remote change\n",
+        "remote update",
+    );
+    run_git_in(&publisher, &["push"]);
+
+    request(
+        server.socket(),
+        "403",
+        "vcs.pull",
+        json!({ "cwd": consumer_cwd }),
+    )
+    .await;
+    let pulled = success_value(server.socket(), "403").await;
+    assert_eq!(pulled["status"], "pulled");
+    assert_eq!(
+        fs::read_to_string(consumer.join("tracked.txt"))
+            .expect("pulled tracked contents")
+            .replace("\r\n", "\n"),
+        "remote change\n"
+    );
+
+    request(
+        server.socket(),
+        "404",
+        "vcs.createWorktree",
+        json!({
+            "cwd": consumer_cwd,
+            "refName": "main",
+            "newRefName": "feature/pull-worktree",
+            "baseRefName": "main",
+            "path": worktree_path,
+        }),
+    )
+    .await;
+    let created_worktree = success_value(server.socket(), "404").await;
+    assert_eq!(
+        created_worktree["worktree"]["refName"],
+        "feature/pull-worktree"
+    );
+    assert!(worktree_path.exists());
+    fs::write(worktree_path.join("dirty.txt"), "dirty\n").expect("dirty worktree file");
+
+    request(
+        server.socket(),
+        "405",
+        "vcs.removeWorktree",
+        json!({ "cwd": consumer_cwd, "path": worktree_path, "force": true }),
+    )
+    .await;
+    assert_success_eq(server.socket(), "405", Value::Null).await;
+    assert!(!worktree_path.exists());
+    assert!(consumer.is_dir());
+    assert_eq!(
+        git_stdout_in(&consumer, &["rev-parse", "--is-inside-work-tree"]).trim(),
+        "true"
+    );
+    let worktree_metadata = git_stdout_in(&consumer, &["worktree", "list", "--porcelain"]);
+    let listed_worktrees = worktree_metadata
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .collect::<Vec<_>>();
+    let consumer_git_path = consumer.to_string_lossy().replace('\\', "/");
+    let removed_git_path = worktree_path.to_string_lossy().replace('\\', "/");
+    assert_eq!(listed_worktrees.len(), 1);
+    assert!(listed_worktrees[0].eq_ignore_ascii_case(&consumer_git_path));
+    assert!(
+        listed_worktrees
+            .iter()
+            .all(|path| !path.eq_ignore_ascii_case(&removed_git_path))
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn source_control_discovery_and_typed_errors_are_deterministic() {
+    if relaunch_with_isolated_git_config(
+        "source_control_discovery_and_typed_errors_are_deterministic",
+    ) {
+        return;
+    }
+
+    let temp = TempDir::new().expect("temporary server directory");
+    let root = TempDir::new().expect("temporary fixture root");
+    let remote = root.path().join("source-control-remote.git");
+    fs::create_dir(&remote).expect("create source-control remote directory");
+    run_git_in(&remote, &["init", "--bare", "--initial-branch=main"]);
+
+    let repository = root.path().join("publish-repository");
+    fs::create_dir(&repository).expect("create publish repository directory");
+    initialize_repository_in(&repository);
+    commit_file(&repository, "tracked.txt", "base\n", "initial");
+
+    let mut server = GitServerHarness::start(&temp).await;
+    let cwd = repository.to_string_lossy();
+
+    request(
+        server.socket(),
+        "501",
+        "server.discoverSourceControl",
+        json!({}),
+    )
+    .await;
+    let discovery = success_value(server.socket(), "501").await;
+    let git_vcs = discovery["versionControlSystems"]
+        .as_array()
+        .expect("discovered VCS entries")
+        .iter()
+        .find(|item| item["kind"] == "git")
+        .expect("git VCS discovery item");
+    assert_eq!(git_vcs["label"], "Git");
+    assert_eq!(git_vcs["executable"], "git");
+    assert_eq!(git_vcs["implemented"], true);
+    assert_eq!(git_vcs["status"], "available");
+    assert_eq!(git_vcs["version"]["_tag"], "Some");
+
+    request(
+        server.socket(),
+        "502",
+        "sourceControl.cloneRepository",
+        json!({
+            "remoteUrl": local_file_url(&remote),
+            "destinationPath": root.path().join("source-control-clone"),
+        }),
+    )
+    .await;
+    let cloned = success_value(server.socket(), "502").await;
+    let cloned_cwd = PathBuf::from(cloned["cwd"].as_str().expect("cloned cwd"));
+    assert!(cloned_cwd.exists());
+    assert_eq!(cloned["repository"], Value::Null);
+
+    request(
+        server.socket(),
+        "503",
+        "sourceControl.lookupRepository",
+        json!({ "provider": "bitbucket", "repository": "acme/repo" }),
+    )
+    .await;
+    let lookup_error = failure_value(server.socket(), "503").await;
+    assert_eq!(lookup_error["_tag"], "SourceControlRepositoryError");
+    assert_eq!(lookup_error["provider"], "bitbucket");
+    assert_eq!(lookup_error["operation"], "lookupRepository");
+
+    request(
+        server.socket(),
+        "504",
+        "sourceControl.cloneRepository",
+        json!({ "destinationPath": root.path().join("missing-remote") }),
+    )
+    .await;
+    let clone_error = failure_value(server.socket(), "504").await;
+    assert_eq!(clone_error["_tag"], "SourceControlRepositoryError");
+    assert_eq!(clone_error["operation"], "cloneRepository");
+    assert!(
+        clone_error["detail"]
+            .as_str()
+            .expect("clone error detail")
+            .contains("clone URL")
+    );
+
+    request(
+        server.socket(),
+        "505",
+        "sourceControl.publishRepository",
+        json!({
+            "cwd": cwd,
+            "provider": "github",
+            "repository": "acme/repo",
+            "visibility": "friends-only"
+        }),
+    )
+    .await;
+    let publish_error = failure_value(server.socket(), "505").await;
+    assert_eq!(publish_error["_tag"], "SourceControlRepositoryError");
+    assert_eq!(publish_error["provider"], "github");
+    assert_eq!(publish_error["operation"], "publishRepository");
+    assert!(
+        publish_error["detail"]
+            .as_str()
+            .expect("publish error detail")
+            .contains("private or public")
+    );
+
+    request(
+        server.socket(),
+        "506",
+        "vcs.init",
+        json!({ "cwd": root.path().join("jj-repository"), "kind": "jj" }),
+    )
+    .await;
+    let invalid_kind = failure_value(server.socket(), "506").await;
+    assert_eq!(invalid_kind["_tag"], "GitCommandError");
+    assert_eq!(invalid_kind["operation"], "vcs.init");
+    assert!(
+        invalid_kind["detail"]
+            .as_str()
+            .expect("invalid VCS kind detail")
+            .contains("Only the git VCS driver")
+    );
+
+    request(
+        server.socket(),
+        "507",
+        "vcs.listRefs",
+        json!({ "cursor": "bad" }),
+    )
+    .await;
+    let malformed = failure_value(server.socket(), "507").await;
+    assert_eq!(malformed["_tag"], "RpcRequestInvalid");
+    assert_eq!(malformed["method"], "vcs.listRefs");
+
+    request(
+        server.socket(),
+        "508",
+        "shell.openInEditor",
+        json!({ "cwd": cwd, "editor": "unknown-editor" }),
+    )
+    .await;
+    let unknown_editor = failure_value(server.socket(), "508").await;
+    assert_eq!(unknown_editor["_tag"], "ExternalLauncherUnknownEditorError");
+    assert_eq!(unknown_editor["editor"], "unknown-editor");
+
+    server.shutdown().await;
+}
+
+fn initialize_repository(repository: &TempDir) {
+    initialize_repository_in(repository.path());
 }
 
 fn run_git(repository: &TempDir, args: &[&str]) {
+    run_git_in(repository.path(), args);
+}
+
+fn run_git_in(cwd: &Path, args: &[&str]) {
     assert!(
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(repository.path())
+        git_command(cwd, args)
             .status()
             .expect("git starts")
             .success(),
@@ -768,13 +1493,102 @@ fn run_git(repository: &TempDir, args: &[&str]) {
 }
 
 fn git_stdout(repository: &TempDir, args: &[&str]) -> String {
-    let output = std::process::Command::new("git")
-        .args(args)
-        .current_dir(repository.path())
-        .output()
-        .expect("git starts");
-    assert!(output.status.success(), "git {args:?} failed");
+    git_stdout_in(repository.path(), args)
+}
+
+fn git_stdout_in(cwd: &Path, args: &[&str]) -> String {
+    let output = git_command(cwd, args).output().expect("git starts");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     String::from_utf8(output.stdout).expect("git output is UTF-8")
+}
+
+fn git_command(cwd: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new("git");
+    command
+        .args(args)
+        .current_dir(cwd)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_AUTHOR_NAME", "T4Code Test")
+        .env("GIT_AUTHOR_EMAIL", "t4code@example.invalid")
+        .env("GIT_COMMITTER_NAME", "T4Code Test")
+        .env("GIT_COMMITTER_EMAIL", "t4code@example.invalid");
+    command
+}
+
+fn initialize_repository_in(cwd: &Path) {
+    run_git_in(cwd, &["init", "--quiet", "-b", "main"]);
+    initialize_repository_identity(cwd);
+}
+
+fn initialize_repository_identity(cwd: &Path) {
+    run_git_in(cwd, &["config", "user.name", "T4Code Test"]);
+    run_git_in(cwd, &["config", "user.email", "t4code@example.invalid"]);
+    run_git_in(cwd, &["config", "core.autocrlf", "false"]);
+}
+
+fn commit_file(cwd: &Path, relative: &str, contents: &str, message: &str) {
+    let path = cwd.join(relative);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("create fixture parent directory");
+    }
+    fs::write(&path, contents).expect("write fixture file");
+    run_git_in(cwd, &["add", "--", relative]);
+    run_git_in(cwd, &["commit", "--quiet", "-m", message]);
+}
+
+fn local_file_url(path: &Path) -> String {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    format!("file:///{}", normalized.trim_start_matches("//?/"))
+}
+
+fn relaunch_with_isolated_git_config(test_name: &str) -> bool {
+    if std::env::var_os(ISOLATED_GIT_TEST).is_some() {
+        return false;
+    }
+
+    let fixture = tempfile::tempdir().expect("isolated Git config fixture");
+    let hooks = fixture.path().join("hooks");
+    fs::create_dir(&hooks).expect("isolated hooks directory");
+    let config = fixture.path().join("global.gitconfig");
+    fs::write(
+        &config,
+        format!(
+            "[commit]\n\tgpgSign = false\n[core]\n\thooksPath = {}\n",
+            hooks.to_string_lossy().replace('\\', "/")
+        ),
+    )
+    .expect("isolated global config");
+
+    let mut command = Command::new(std::env::current_exe().expect("current test executable"));
+    for (name, _) in std::env::vars_os() {
+        if name
+            .to_string_lossy()
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("GIT_"))
+        {
+            command.env_remove(name);
+        }
+    }
+    let output = command
+        .args(["--exact", test_name, "--nocapture", "--test-threads=1"])
+        .env("GIT_CONFIG_GLOBAL", &config)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env(ISOLATED_GIT_TEST, "1")
+        .output()
+        .expect("run test with isolated Git config");
+    assert!(
+        output.status.success(),
+        "isolated test {test_name} failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
 }
 
 async fn start_git_server(
@@ -837,6 +1651,24 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     assert_eq!(success_value(socket, id).await, expected);
+}
+
+async fn failure_value<S>(socket: &mut WebSocketStream<S>, id: &str) -> Value
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    match next_server_message(socket).await {
+        ServerMessage::Exit {
+            request_id,
+            exit: RpcExit::Failure { cause },
+        } if request_id == RequestId::try_from(id).expect("request id") => {
+            let [CauseItem::Fail { error }] = cause.as_slice() else {
+                panic!("expected a single failure cause for {id}, got {cause:?}");
+            };
+            error.clone()
+        }
+        message => panic!("expected failed response for {id}, got {message:?}"),
+    }
 }
 
 async fn success_value<S>(socket: &mut WebSocketStream<S>, id: &str) -> Value

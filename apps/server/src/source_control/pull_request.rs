@@ -1,12 +1,20 @@
 use std::{ffi::OsString, path::PathBuf, time::Duration};
 
-use reqwest::{Client, RequestBuilder};
+use reqwest::{Client, RequestBuilder, Response};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio_util::sync::CancellationToken;
 
 use crate::git::{OutputPolicy, ProcessRequest, ProcessRunner};
 
 use super::ProviderKind;
+
+const BITBUCKET_MAX_PAGES: usize = 100;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum BitbucketResolutionMode {
+    CurrentBranch,
+    ExplicitReference,
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -71,10 +79,21 @@ impl std::fmt::Display for SourceControlProviderError {
 
 impl std::error::Error for SourceControlProviderError {}
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct PullRequestService {
     runner: ProcessRunner,
     client: Client,
+    bitbucket: BitbucketConfiguration,
+}
+
+impl Default for PullRequestService {
+    fn default() -> Self {
+        Self {
+            runner: ProcessRunner,
+            client: Client::new(),
+            bitbucket: BitbucketConfiguration::default(),
+        }
+    }
 }
 
 impl PullRequestService {
@@ -83,6 +102,11 @@ impl PullRequestService {
         input: ResolvePullRequestInput,
         cancellation: &CancellationToken,
     ) -> Result<ResolvedPullRequest, SourceControlProviderError> {
+        if input.provider == ProviderKind::Bitbucket {
+            return self
+                .resolve_bitbucket(&input, BitbucketResolutionMode::CurrentBranch, cancellation)
+                .await;
+        }
         if input.provider != ProviderKind::AzureDevops {
             return self.resolve(input, cancellation).await;
         }
@@ -237,7 +261,13 @@ impl PullRequestService {
         cancellation: &CancellationToken,
     ) -> Result<ResolvedPullRequest, SourceControlProviderError> {
         if input.provider == ProviderKind::Bitbucket {
-            return self.resolve_bitbucket(&input, cancellation).await;
+            return self
+                .resolve_bitbucket(
+                    &input,
+                    BitbucketResolutionMode::ExplicitReference,
+                    cancellation,
+                )
+                .await;
         }
         let (command, args): (&str, Vec<OsString>) = match input.provider {
             ProviderKind::Github => (
@@ -342,16 +372,18 @@ impl PullRequestService {
     async fn resolve_bitbucket(
         &self,
         input: &ResolvePullRequestInput,
+        mode: BitbucketResolutionMode,
         cancellation: &CancellationToken,
     ) -> Result<ResolvedPullRequest, SourceControlProviderError> {
         let locator = self.bitbucket_locator(&input.cwd, cancellation).await?;
-        let base = bitbucket_api_base_url();
+        let base = &self.bitbucket.api_base_url;
         let repository_url = format!(
             "{base}/repositories/{}/{}",
             locator.workspace, locator.repository
         );
-        if normalize_pull_request_number(&input.reference).is_some() {
-            let number = normalize_pull_request_number(&input.reference).unwrap_or_default();
+        if mode == BitbucketResolutionMode::ExplicitReference
+            && let Some(number) = normalize_pull_request_number(&input.reference)
+        {
             let pull_request: BitbucketPullRequest = self
                 .send_bitbucket(
                     self.client
@@ -373,6 +405,16 @@ impl PullRequestService {
                 )
             });
         }
+        let api_base_url = reqwest::Url::parse(base).map_err(|error| {
+            operation_error(
+                ProviderKind::Bitbucket,
+                &input.cwd,
+                "resolveCurrentPullRequest",
+                None,
+                Some(&input.reference),
+                &error.to_string(),
+            )
+        })?;
         let escaped = input.reference.replace('"', "\\\"");
         let query = format!("source.branch.name = \"{escaped}\" AND state = \"OPEN\"");
         let mut list_url =
@@ -390,29 +432,67 @@ impl PullRequestService {
             .query_pairs_mut()
             .append_pair("q", &query)
             .append_pair("pagelen", "1");
-        let list: BitbucketPullRequestList = self
-            .send_bitbucket(
-                self.client.get(list_url),
-                &input.cwd,
-                "resolveCurrentPullRequest",
-                Some(&input.reference),
-                cancellation,
-            )
-            .await?;
-        list.values
-            .into_iter()
-            .next()
-            .and_then(normalize_bitbucket_pull_request)
-            .ok_or_else(|| {
-                operation_error(
-                    ProviderKind::Bitbucket,
+        let mut next_url = Some(list_url);
+        for _ in 0..BITBUCKET_MAX_PAGES {
+            let Some(page_url) = next_url.take() else {
+                break;
+            };
+            let list: BitbucketPullRequestList = self
+                .send_bitbucket(
+                    self.client.get(page_url),
                     &input.cwd,
                     "resolveCurrentPullRequest",
-                    None,
                     Some(&input.reference),
-                    "No open Bitbucket pull request was found for the current branch.",
+                    cancellation,
                 )
-            })
+                .await?;
+            if let Some(pull_request) = list
+                .values
+                .into_iter()
+                .find_map(normalize_bitbucket_pull_request)
+            {
+                return Ok(pull_request);
+            }
+            next_url = list
+                .next
+                .map(|url| {
+                    let next_url = reqwest::Url::parse(&url).map_err(|error| {
+                        operation_error(
+                            ProviderKind::Bitbucket,
+                            &input.cwd,
+                            "resolveCurrentPullRequest",
+                            None,
+                            Some(&input.reference),
+                            &format!("Bitbucket returned an invalid pagination URL: {error}"),
+                        )
+                    })?;
+                    if !urls_have_same_origin(&api_base_url, &next_url) {
+                        return Err(operation_error(
+                            ProviderKind::Bitbucket,
+                            &input.cwd,
+                            "resolveCurrentPullRequest",
+                            None,
+                            Some(&input.reference),
+                            "Bitbucket pagination URL must use the configured API origin.",
+                        ));
+                    }
+                    Ok(next_url)
+                })
+                .transpose()?;
+        }
+        let detail = if next_url.is_some() {
+            "Bitbucket pull-request pagination exceeded the safety limit."
+        } else {
+            "No open Bitbucket pull request was found for the current branch."
+        };
+        Err(operation_error(
+            ProviderKind::Bitbucket,
+            &input.cwd,
+            "resolveCurrentPullRequest",
+            None,
+            Some(&input.reference),
+            detail,
+        ))
     }
 
     async fn create_bitbucket(
@@ -421,7 +501,7 @@ impl PullRequestService {
         cancellation: &CancellationToken,
     ) -> Result<ResolvedPullRequest, SourceControlProviderError> {
         let locator = self.bitbucket_locator(&input.cwd, cancellation).await?;
-        let base = bitbucket_api_base_url();
+        let base = &self.bitbucket.api_base_url;
         let pull_request: BitbucketPullRequest = self
             .send_bitbucket(
                 self.client
@@ -510,7 +590,10 @@ impl PullRequestService {
         reference: Option<&str>,
         cancellation: &CancellationToken,
     ) -> Result<T, SourceControlProviderError> {
-        let request = bitbucket_credentials()
+        let request = self
+            .bitbucket
+            .credentials
+            .clone()
             .map(|credentials| credentials.apply(request))
             .ok_or_else(|| {
                 operation_error(
@@ -545,8 +628,34 @@ impl PullRequestService {
                 &error.to_string(),
             )
         })?;
+        self.decode_bitbucket_response(response, cwd, operation, reference, cancellation)
+            .await
+    }
+
+    async fn decode_bitbucket_response<T: DeserializeOwned>(
+        &self,
+        response: Response,
+        cwd: &std::path::Path,
+        operation: &str,
+        reference: Option<&str>,
+        cancellation: &CancellationToken,
+    ) -> Result<T, SourceControlProviderError> {
         let status = response.status();
-        let body = response.text().await.map_err(|error| {
+        let body = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                return Err(operation_error(
+                    ProviderKind::Bitbucket,
+                    cwd,
+                    operation,
+                    None,
+                    reference,
+                    "Bitbucket request was cancelled.",
+                ));
+            }
+            body = response.text() => body,
+        }
+        .map_err(|error| {
             operation_error(
                 ProviderKind::Bitbucket,
                 cwd,
@@ -715,6 +824,7 @@ struct AzureRepository {
 struct BitbucketPullRequestList {
     #[serde(default)]
     values: Vec<BitbucketPullRequest>,
+    next: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -752,9 +862,25 @@ struct BitbucketRepositoryLocator {
     repository: String,
 }
 
+#[derive(Clone, Debug)]
 enum BitbucketCredentials {
     Bearer(String),
     Basic { email: String, token: String },
+}
+
+#[derive(Clone, Debug)]
+struct BitbucketConfiguration {
+    api_base_url: String,
+    credentials: Option<BitbucketCredentials>,
+}
+
+impl Default for BitbucketConfiguration {
+    fn default() -> Self {
+        Self {
+            api_base_url: bitbucket_api_base_url(),
+            credentials: bitbucket_credentials(),
+        }
+    }
 }
 
 impl BitbucketCredentials {
@@ -837,28 +963,25 @@ fn parse_bitbucket_repository(remote: &str) -> Option<BitbucketRepositoryLocator
         .trim_end_matches('/')
         .trim_end_matches(".git")
         .replace('\\', "/");
-    let path = normalized
-        .split_once("://")
-        .map_or(normalized.as_str(), |(_, rest)| rest)
+    let (authority, path) = if let Some((_, rest)) = normalized.split_once("://") {
+        rest.split_once('/')?
+    } else {
+        normalized.split_once(':')?
+    };
+    let host_with_port = authority.rsplit('@').next()?;
+    let host = host_with_port
         .split_once(':')
-        .map_or_else(
-            || {
-                normalized
-                    .split_once("://")
-                    .map_or(normalized.as_str(), |(_, rest)| rest)
-            },
-            |(_, path)| path,
-        );
+        .map_or(host_with_port, |(host, _)| host);
+    if !host.eq_ignore_ascii_case("bitbucket.org") {
+        return None;
+    }
     let parts = path
         .split('/')
         .filter(|part| !part.trim().is_empty())
         .collect::<Vec<_>>();
     let repository = parts.last()?.trim();
     let workspace = parts.get(parts.len().checked_sub(2)?)?.trim();
-    if workspace.eq_ignore_ascii_case("bitbucket.org")
-        || workspace.is_empty()
-        || repository.is_empty()
-    {
+    if workspace.is_empty() || repository.is_empty() {
         return None;
     }
     Some(BitbucketRepositoryLocator {
@@ -876,6 +999,12 @@ fn normalize_pull_request_number(reference: &str) -> Option<u64> {
             .next()
             .and_then(|value| value.parse().ok())
     })
+}
+
+fn urls_have_same_origin(configured: &reqwest::Url, candidate: &reqwest::Url) -> bool {
+    configured.scheme() == candidate.scheme()
+        && configured.host_str() == candidate.host_str()
+        && configured.port_or_known_default() == candidate.port_or_known_default()
 }
 
 fn bitbucket_api_base_url() -> String {
@@ -962,7 +1091,224 @@ fn operation_error(
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
+
+    use base64::Engine;
+    use tempfile::TempDir;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        sync::oneshot,
+        task::JoinHandle,
+    };
+
     use super::*;
+
+    struct FakeHttpServer {
+        base_url: String,
+        requests: tokio::sync::mpsc::Receiver<String>,
+        task: JoinHandle<()>,
+    }
+
+    struct StalledBodyServer {
+        base_url: String,
+        headers_sent: oneshot::Receiver<()>,
+        connection_closed: oneshot::Receiver<()>,
+        task: JoinHandle<()>,
+    }
+
+    fn http_request_is_complete(request: &[u8]) -> bool {
+        let Some(header_end) = request
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|position| position + 4)
+        else {
+            return false;
+        };
+        let headers = String::from_utf8_lossy(&request[..header_end]);
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or_default();
+        request.len() >= header_end + content_length
+    }
+
+    async fn spawn_http_server(responses: Vec<(u16, String)>) -> FakeHttpServer {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake Bitbucket server");
+        let address = listener.local_addr().expect("fake server address");
+        let base_url = format!("http://{address}/2.0");
+        let responses = responses
+            .into_iter()
+            .map(|(status, body)| (status, body.replace("$BASE_URL", &base_url)))
+            .collect::<Vec<_>>();
+        let (request_tx, requests) = tokio::sync::mpsc::channel(responses.len().max(1));
+        let task = tokio::spawn(async move {
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().await.expect("accept request");
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                loop {
+                    let read = stream.read(&mut buffer).await.expect("read request");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    if http_request_is_complete(&request) {
+                        break;
+                    }
+                }
+                request_tx
+                    .send(String::from_utf8_lossy(&request).into_owned())
+                    .await
+                    .expect("record request");
+                let reason = if status == 200 { "OK" } else { "Error" };
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write response");
+            }
+        });
+        FakeHttpServer {
+            base_url,
+            requests,
+            task,
+        }
+    }
+
+    async fn spawn_stalled_http_server() -> FakeHttpServer {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind stalled Bitbucket server");
+        let address = listener.local_addr().expect("stalled server address");
+        let (request_tx, requests) = tokio::sync::mpsc::channel(1);
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept stalled request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let read = stream
+                    .read(&mut buffer)
+                    .await
+                    .expect("read stalled request");
+                if read == 0 {
+                    return;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if http_request_is_complete(&request) {
+                    break;
+                }
+            }
+            request_tx
+                .send(String::from_utf8_lossy(&request).into_owned())
+                .await
+                .expect("record stalled request");
+            std::future::pending::<()>().await;
+        });
+        FakeHttpServer {
+            base_url: format!("http://{address}/2.0"),
+            requests,
+            task,
+        }
+    }
+
+    async fn spawn_stalled_body_server() -> StalledBodyServer {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind stalled-body Bitbucket server");
+        let address = listener.local_addr().expect("stalled-body server address");
+        let (headers_tx, headers_sent) = oneshot::channel();
+        let (closed_tx, connection_closed) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener
+                .accept()
+                .await
+                .expect("accept stalled-body request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let read = stream
+                    .read(&mut buffer)
+                    .await
+                    .expect("read stalled-body request");
+                if read == 0 {
+                    return;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if http_request_is_complete(&request) {
+                    break;
+                }
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 128\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .expect("write stalled-body headers");
+            headers_tx.send(()).expect("signal response headers");
+            loop {
+                let read = stream
+                    .read(&mut buffer)
+                    .await
+                    .expect("observe stalled-body connection");
+                if read == 0 {
+                    break;
+                }
+            }
+            closed_tx.send(()).expect("signal client disconnect");
+        });
+        StalledBodyServer {
+            base_url: format!("http://{address}/2.0"),
+            headers_sent,
+            connection_closed,
+            task,
+        }
+    }
+
+    fn bitbucket_service(
+        api_base_url: &str,
+        credentials: Option<BitbucketCredentials>,
+    ) -> PullRequestService {
+        PullRequestService {
+            runner: ProcessRunner,
+            client: Client::new(),
+            bitbucket: BitbucketConfiguration {
+                api_base_url: api_base_url.into(),
+                credentials,
+            },
+        }
+    }
+
+    fn bitbucket_repository() -> TempDir {
+        let repository = tempfile::tempdir().expect("temporary repository");
+        for args in [
+            vec!["init"],
+            vec![
+                "remote",
+                "add",
+                "origin",
+                "https://bitbucket.org/example/native-source-control.git",
+            ],
+        ] {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(repository.path())
+                .output()
+                .expect("run git fixture command");
+            assert!(output.status.success(), "git fixture command failed");
+        }
+        repository
+    }
 
     #[test]
     fn parses_azure_ref_prefixes() {
@@ -1016,6 +1362,495 @@ mod tests {
             assert_eq!(parsed.workspace, "example");
             assert_eq!(parsed.repository, "native-source-control");
         }
+    }
+
+    #[test]
+    fn rejects_non_bitbucket_repository_remotes() {
+        assert!(
+            parse_bitbucket_repository("https://github.com/example/native-source-control.git")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn bitbucket_branch_resolution_follows_pagination() {
+        let repository = bitbucket_repository();
+        let mut server = spawn_http_server(vec![
+            (
+                200,
+                r#"{"values":[],"next":"$BASE_URL/repositories/example/native-source-control/pullrequests?page=2"}"#.to_owned(),
+            ),
+            (
+                200,
+                r#"{"values":[{"id":19,"title":"Native source control","state":"OPEN","links":{"html":{"href":"https://bitbucket.org/example/native-source-control/pull-requests/19"}},"source":{"branch":{"name":"feature/native"}},"destination":{"branch":{"name":"main"}}}]}"#.to_owned(),
+            ),
+        ])
+        .await;
+        let service = bitbucket_service(
+            &server.base_url,
+            Some(BitbucketCredentials::Bearer("test-token".into())),
+        );
+
+        let pull_request = service
+            .resolve(
+                ResolvePullRequestInput {
+                    cwd: repository.path().to_path_buf(),
+                    provider: ProviderKind::Bitbucket,
+                    reference: "feature/native".into(),
+                },
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("resolve paginated Bitbucket pull request");
+
+        assert_eq!(pull_request.number, 19);
+        let first_request = server.requests.recv().await.expect("first request");
+        let second_request = server.requests.recv().await.expect("second request");
+        assert!(
+            first_request
+                .starts_with("GET /2.0/repositories/example/native-source-control/pullrequests?")
+        );
+        assert!(second_request.starts_with(
+            "GET /2.0/repositories/example/native-source-control/pullrequests?page=2 "
+        ));
+        assert!(second_request.contains("authorization: Bearer test-token\r\n"));
+        server.task.await.expect("fake server task");
+    }
+
+    #[tokio::test]
+    async fn bitbucket_pagination_rejects_a_different_origin_before_sending_credentials() {
+        let repository = bitbucket_repository();
+        let mut second_server = spawn_http_server(vec![(
+            200,
+            r#"{"values":[{"id":20,"title":"Leaked request","state":"OPEN","links":{"html":{"href":"https://bitbucket.org/example/native-source-control/pull-requests/20"}},"source":{"branch":{"name":"feature/native"}},"destination":{"branch":{"name":"main"}}}]}"#.to_owned(),
+        )])
+        .await;
+        let first_server = spawn_http_server(vec![(
+            200,
+            format!(
+                r#"{{"values":[],"next":"{}/pullrequests?page=2"}}"#,
+                second_server.base_url
+            ),
+        )])
+        .await;
+        let service = bitbucket_service(
+            &first_server.base_url,
+            Some(BitbucketCredentials::Bearer("must-not-leak".into())),
+        );
+
+        let error = service
+            .resolve_current(
+                ResolvePullRequestInput {
+                    cwd: repository.path().to_path_buf(),
+                    provider: ProviderKind::Bitbucket,
+                    reference: "feature/native".into(),
+                },
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("cross-origin pagination URL");
+
+        assert_eq!(error.operation.as_ref(), "resolveCurrentPullRequest");
+        assert_eq!(error.reference.as_deref(), Some("feature/native"));
+        assert_eq!(
+            error.detail.as_ref(),
+            "Bitbucket pagination URL must use the configured API origin."
+        );
+        first_server.task.await.expect("first server task");
+        assert!(second_server.requests.try_recv().is_err());
+        second_server.task.abort();
+        let _ = second_server.task.await;
+    }
+
+    #[tokio::test]
+    async fn bitbucket_pagination_maps_a_malformed_next_url_to_a_structured_error() {
+        let repository = bitbucket_repository();
+        let server = spawn_http_server(vec![(
+            200,
+            r#"{"values":[],"next":"not a URL"}"#.to_owned(),
+        )])
+        .await;
+        let service = bitbucket_service(
+            &server.base_url,
+            Some(BitbucketCredentials::Bearer("test-token".into())),
+        );
+
+        let error = service
+            .resolve_current(
+                ResolvePullRequestInput {
+                    cwd: repository.path().to_path_buf(),
+                    provider: ProviderKind::Bitbucket,
+                    reference: "feature/native".into(),
+                },
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("malformed pagination URL");
+
+        assert_eq!(error.operation.as_ref(), "resolveCurrentPullRequest");
+        assert_eq!(error.reference.as_deref(), Some("feature/native"));
+        assert!(
+            error
+                .detail
+                .starts_with("Bitbucket returned an invalid pagination URL:")
+        );
+        server.task.await.expect("malformed URL server task");
+    }
+
+    #[test]
+    fn bitbucket_pagination_origin_rejects_host_port_and_https_downgrade() {
+        let configured =
+            reqwest::Url::parse("https://api.bitbucket.test:443/2.0").expect("configured API URL");
+        let same_origin =
+            reqwest::Url::parse("https://api.bitbucket.test/2.0/page/2").expect("same-origin URL");
+        assert!(urls_have_same_origin(&configured, &same_origin));
+
+        for candidate in [
+            "https://other.bitbucket.test/2.0/page/2",
+            "https://api.bitbucket.test:444/2.0/page/2",
+            "http://api.bitbucket.test/2.0/page/2",
+        ] {
+            let candidate = reqwest::Url::parse(candidate).expect("candidate URL");
+            assert!(!urls_have_same_origin(&configured, &candidate));
+        }
+    }
+
+    #[tokio::test]
+    async fn bitbucket_explicit_references_use_the_direct_endpoint_and_bearer_auth() {
+        let repository = bitbucket_repository();
+        let response = r#"{"id":42,"title":"Merged work","state":"MERGED","links":{"html":{"href":"https://bitbucket.org/example/native-source-control/pull-requests/42"}},"source":{"branch":{"name":"feature/merged"}},"destination":{"branch":{"name":"main"}}}"#.to_owned();
+        let mut server = spawn_http_server(vec![
+            (200, response.clone()),
+            (200, response.clone()),
+            (200, response),
+        ])
+        .await;
+        let service = bitbucket_service(
+            &server.base_url,
+            Some(BitbucketCredentials::Bearer("bearer-secret".into())),
+        );
+
+        for reference in [
+            "42",
+            "#42",
+            "https://bitbucket.org/example/native-source-control/pull-requests/42/",
+        ] {
+            let pull_request = service
+                .resolve(
+                    ResolvePullRequestInput {
+                        cwd: repository.path().to_path_buf(),
+                        provider: ProviderKind::Bitbucket,
+                        reference: reference.into(),
+                    },
+                    &CancellationToken::new(),
+                )
+                .await
+                .expect("resolve explicit Bitbucket pull request");
+
+            assert_eq!(pull_request.number, 42);
+            assert_eq!(pull_request.state, ChangeRequestState::Merged);
+            let request = server.requests.recv().await.expect("direct request");
+            assert!(request.starts_with(
+                "GET /2.0/repositories/example/native-source-control/pullrequests/42 HTTP/1.1"
+            ));
+            assert!(request.contains("authorization: Bearer bearer-secret\r\n"));
+        }
+        server.task.await.expect("fake server task");
+    }
+
+    #[tokio::test]
+    async fn bitbucket_current_branch_preserves_numeric_path_segments_in_the_list_query() {
+        let repository = bitbucket_repository();
+        let mut server = spawn_http_server(vec![
+            (
+                200,
+                r#"{"values":[{"id":61,"title":"Feature branch","state":"OPEN","links":{"html":{"href":"https://bitbucket.org/example/native-source-control/pull-requests/61"}},"source":{"branch":{"name":"feature/123"}},"destination":{"branch":{"name":"main"}}}]}"#.to_owned(),
+            ),
+            (
+                200,
+                r#"{"values":[{"id":62,"title":"Release branch","state":"OPEN","links":{"html":{"href":"https://bitbucket.org/example/native-source-control/pull-requests/62"}},"source":{"branch":{"name":"release/2026"}},"destination":{"branch":{"name":"main"}}}]}"#.to_owned(),
+            ),
+        ])
+        .await;
+        let service = bitbucket_service(
+            &server.base_url,
+            Some(BitbucketCredentials::Bearer("test-token".into())),
+        );
+
+        for (branch, number) in [("feature/123", 61), ("release/2026", 62)] {
+            let pull_request = service
+                .resolve_current(
+                    ResolvePullRequestInput {
+                        cwd: repository.path().to_path_buf(),
+                        provider: ProviderKind::Bitbucket,
+                        reference: branch.into(),
+                    },
+                    &CancellationToken::new(),
+                )
+                .await
+                .expect("resolve numeric-suffixed branch");
+            assert_eq!(pull_request.number, number);
+
+            let request = server.requests.recv().await.expect("branch list request");
+            let target = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .expect("request target");
+            let target = reqwest::Url::parse(&format!("http://loopback{target}"))
+                .expect("request target URL");
+            assert!(target.path().ends_with("/pullrequests"));
+            assert_eq!(
+                target
+                    .query_pairs()
+                    .find(|(name, _)| name == "q")
+                    .map(|(_, value)| value.into_owned()),
+                Some(format!(
+                    "source.branch.name = \"{branch}\" AND state = \"OPEN\""
+                ))
+            );
+        }
+        server.task.await.expect("branch server task");
+    }
+
+    #[tokio::test]
+    async fn bitbucket_creation_sends_branch_payload_with_basic_auth() {
+        let repository = bitbucket_repository();
+        let mut server = spawn_http_server(vec![(
+            200,
+            r#"{"id":51,"title":"Create native flow","state":"OPEN","links":{"html":{"href":"https://bitbucket.org/example/native-source-control/pull-requests/51"}},"source":{"branch":{"name":"feature/create"}},"destination":{"branch":{"name":"release"}}}"#.to_owned(),
+        )])
+        .await;
+        let service = bitbucket_service(
+            &server.base_url,
+            Some(BitbucketCredentials::Basic {
+                email: "user@example.test".into(),
+                token: "api-token".into(),
+            }),
+        );
+
+        let pull_request = service
+            .create(
+                CreatePullRequestInput {
+                    cwd: repository.path().to_path_buf(),
+                    provider: ProviderKind::Bitbucket,
+                    base_branch: "release".into(),
+                    head_branch: "feature/create".into(),
+                    title: "Create native flow".into(),
+                    body: "A deterministic body".into(),
+                },
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("create Bitbucket pull request");
+
+        assert_eq!(pull_request.number, 51);
+        let request = server.requests.recv().await.expect("create request");
+        assert!(request.starts_with(
+            "POST /2.0/repositories/example/native-source-control/pullrequests HTTP/1.1"
+        ));
+        let credentials =
+            base64::engine::general_purpose::STANDARD.encode("user@example.test:api-token");
+        assert!(request.contains(&format!("authorization: Basic {credentials}\r\n")));
+        let body = request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .expect("request body");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(body).expect("JSON request body"),
+            serde_json::json!({
+                "title": "Create native flow",
+                "description": "A deterministic body",
+                "source": { "branch": { "name": "feature/create" } },
+                "destination": { "branch": { "name": "release" } },
+            })
+        );
+        server.task.await.expect("fake server task");
+    }
+
+    #[tokio::test]
+    async fn bitbucket_cancellation_stops_an_in_flight_request() {
+        let repository = bitbucket_repository();
+        let mut server = spawn_stalled_http_server().await;
+        let service = bitbucket_service(
+            &server.base_url,
+            Some(BitbucketCredentials::Bearer("test-token".into())),
+        );
+        let cancellation = CancellationToken::new();
+        let request_cancellation = cancellation.clone();
+        let cwd = repository.path().to_path_buf();
+        let request_task = tokio::spawn(async move {
+            service
+                .resolve(
+                    ResolvePullRequestInput {
+                        cwd,
+                        provider: ProviderKind::Bitbucket,
+                        reference: "73".into(),
+                    },
+                    &request_cancellation,
+                )
+                .await
+        });
+
+        server.requests.recv().await.expect("in-flight request");
+        cancellation.cancel();
+        let error = request_task
+            .await
+            .expect("resolution task")
+            .expect_err("cancelled Bitbucket request");
+
+        assert_eq!(error.operation.as_ref(), "resolvePullRequest");
+        assert_eq!(error.reference.as_deref(), Some("73"));
+        assert_eq!(error.detail.as_ref(), "Bitbucket request was cancelled.");
+        server.task.abort();
+        let _ = server.task.await;
+    }
+
+    #[tokio::test]
+    async fn bitbucket_cancellation_stops_a_stalled_response_body_read() {
+        let server = spawn_stalled_body_server().await;
+        let service = bitbucket_service(
+            &server.base_url,
+            Some(BitbucketCredentials::Bearer("test-token".into())),
+        );
+        let response = service
+            .client
+            .get(format!("{}/stalled-body", server.base_url))
+            .send()
+            .await
+            .expect("receive stalled response headers");
+        server.headers_sent.await.expect("response headers sent");
+        let cancellation = CancellationToken::new();
+        let request_cancellation = cancellation.clone();
+        let cwd = PathBuf::from("stalled-body-repository");
+        let request_task = tokio::spawn(async move {
+            service
+                .decode_bitbucket_response::<BitbucketPullRequest>(
+                    response,
+                    &cwd,
+                    "resolvePullRequest",
+                    Some("74"),
+                    &request_cancellation,
+                )
+                .await
+        });
+
+        cancellation.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(5), request_task)
+            .await
+            .expect("body cancellation completes promptly")
+            .expect("resolution task");
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("stalled Bitbucket body read was not cancelled"),
+        };
+
+        assert_eq!(error.operation.as_ref(), "resolvePullRequest");
+        assert_eq!(error.reference.as_deref(), Some("74"));
+        assert_eq!(error.detail.as_ref(), "Bitbucket request was cancelled.");
+        tokio::time::timeout(Duration::from_secs(5), server.connection_closed)
+            .await
+            .expect("client closes stalled response promptly")
+            .expect("client disconnect signal");
+        server.task.await.expect("stalled-body server task");
+    }
+
+    #[tokio::test]
+    async fn bitbucket_errors_map_credentials_http_status_and_invalid_json() {
+        let repository = bitbucket_repository();
+        let cancellation = CancellationToken::new();
+        let error = bitbucket_service("http://127.0.0.1:1/2.0", None)
+            .resolve(
+                ResolvePullRequestInput {
+                    cwd: repository.path().to_path_buf(),
+                    provider: ProviderKind::Bitbucket,
+                    reference: "5".into(),
+                },
+                &cancellation,
+            )
+            .await
+            .expect_err("missing Bitbucket credentials");
+        assert!(error.detail.contains("T4CODE_BITBUCKET_ACCESS_TOKEN"));
+
+        let oversized_detail = "x".repeat(2_100);
+        let status_server = spawn_http_server(vec![(503, oversized_detail)]).await;
+        let error = bitbucket_service(
+            &status_server.base_url,
+            Some(BitbucketCredentials::Bearer("test-token".into())),
+        )
+        .resolve(
+            ResolvePullRequestInput {
+                cwd: repository.path().to_path_buf(),
+                provider: ProviderKind::Bitbucket,
+                reference: "6".into(),
+            },
+            &cancellation,
+        )
+        .await
+        .expect_err("Bitbucket HTTP status error");
+        assert!(error.detail.starts_with("Bitbucket returned HTTP 503"));
+        assert_eq!(error.detail.matches('x').count(), 2_000);
+        status_server.task.await.expect("status server task");
+
+        let invalid_json_server = spawn_http_server(vec![(200, "not-json".into())]).await;
+        let error = bitbucket_service(
+            &invalid_json_server.base_url,
+            Some(BitbucketCredentials::Bearer("test-token".into())),
+        )
+        .resolve(
+            ResolvePullRequestInput {
+                cwd: repository.path().to_path_buf(),
+                provider: ProviderKind::Bitbucket,
+                reference: "7".into(),
+            },
+            &cancellation,
+        )
+        .await
+        .expect_err("Bitbucket invalid JSON error");
+        assert!(error.detail.starts_with("Bitbucket returned invalid JSON:"));
+        invalid_json_server.task.await.expect("JSON server task");
+    }
+
+    #[tokio::test]
+    async fn unknown_provider_rejects_resolution_and_creation_with_structured_errors() {
+        let service = PullRequestService::default();
+        let cancellation = CancellationToken::new();
+        let cwd = PathBuf::from("unknown-provider-repository");
+        let resolve_error = service
+            .resolve(
+                ResolvePullRequestInput {
+                    cwd: cwd.clone(),
+                    provider: ProviderKind::Unknown,
+                    reference: "change-9".into(),
+                },
+                &cancellation,
+            )
+            .await
+            .expect_err("unsupported resolution");
+        assert_eq!(resolve_error.command, None);
+        assert_eq!(resolve_error.reference.as_deref(), Some("change-9"));
+        assert!(resolve_error.to_string().contains("resolvePullRequest"));
+
+        let create_error = service
+            .create(
+                CreatePullRequestInput {
+                    cwd,
+                    provider: ProviderKind::Unknown,
+                    base_branch: "main".into(),
+                    head_branch: "feature/unknown".into(),
+                    title: "Unknown provider".into(),
+                    body: String::new(),
+                },
+                &cancellation,
+            )
+            .await
+            .expect_err("unsupported creation");
+        assert_eq!(create_error.operation.as_ref(), "createPullRequest");
+        assert_eq!(create_error.reference.as_deref(), Some("feature/unknown"));
+        assert_eq!(
+            serde_json::to_value(&create_error).expect("serialize provider error")["_tag"],
+            "SourceControlProviderError"
+        );
     }
 
     #[test]

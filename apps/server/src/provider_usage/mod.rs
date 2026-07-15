@@ -592,4 +592,89 @@ mod tests {
             Some("app-server")
         );
     }
+
+    #[test]
+    fn maps_claude_optional_windows_and_reset_formats() {
+        let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
+        let snapshot = map_claude_usage(
+            &json!({
+                "five_hour": {
+                    "utilization": -4.4,
+                    "resets_at": "1900000000000"
+                },
+                "seven_day": {
+                    "utilization": 99.6,
+                    "resets_at": "2030-03-17T17:46:40Z"
+                }
+            }),
+            now,
+        );
+
+        assert_eq!(snapshot.status, ProviderUsageStatus::Ok);
+        let session = snapshot.session.expect("session");
+        assert_eq!(session.used_percent, 0);
+        assert_eq!(
+            session
+                .resets_at
+                .expect("milliseconds reset")
+                .unix_timestamp(),
+            1_900_000_000
+        );
+        let weekly = snapshot.weekly.expect("weekly");
+        assert_eq!(weekly.used_percent, 100);
+        assert_eq!(
+            weekly.resets_at.expect("RFC3339 reset").unix_timestamp(),
+            1_900_000_000
+        );
+        assert_eq!(
+            snapshot
+                .metadata
+                .get("credentialSource")
+                .map(String::as_str),
+            Some("credentials-file")
+        );
+    }
+
+    #[test]
+    fn rejects_claude_payload_without_valid_windows() {
+        let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
+        let snapshot = map_claude_usage(
+            &json!({
+                "five_hour": {"utilization": "invalid"},
+                "seven_day": null
+            }),
+            now,
+        );
+
+        assert_eq!(snapshot.status, ProviderUsageStatus::Unavailable);
+        assert_eq!(
+            snapshot.error.as_deref(),
+            Some("Claude did not report usage windows.")
+        );
+        assert!(snapshot.session.is_none());
+        assert!(snapshot.weekly.is_none());
+        assert!(snapshot.metadata.is_empty());
+    }
+
+    #[test]
+    fn maps_codex_payload_with_only_one_window() {
+        let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
+        let snapshot = map_codex_usage(
+            &json!({
+                "rateLimits": {
+                    "primary": {
+                        "used_percentage": 42,
+                        "resetsAt": "not-a-time"
+                    }
+                }
+            }),
+            now,
+        );
+
+        assert_eq!(snapshot.status, ProviderUsageStatus::Ok);
+        let session = snapshot.session.expect("session");
+        assert_eq!(session.used_percent, 42);
+        assert!(session.resets_at.is_none());
+        assert!(snapshot.weekly.is_none());
+    }
 }

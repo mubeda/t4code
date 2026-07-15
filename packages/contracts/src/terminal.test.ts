@@ -4,15 +4,31 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   DEFAULT_TERMINAL_ID,
   TerminalAttachInput,
+  TerminalAttachStreamEvent,
   TerminalClearInput,
   TerminalCloseInput,
+  TerminalCwdNotDirectoryError,
+  TerminalCwdNotFoundError,
+  TerminalCwdStatError,
+  TerminalError,
   TerminalEvent,
+  TerminalHistoryError,
+  TerminalNotRunningError,
   TerminalOpenInput,
+  TerminalResizeError,
   TerminalResizeInput,
+  TerminalRestartInput,
   TerminalSessionSnapshot,
+  TerminalSessionLookupError,
   TerminalThreadInput,
+  TerminalWriteError,
   TerminalWriteInput,
 } from "./terminal.ts";
+import {
+  expectDecodeFailure,
+  expectEncodeFailure,
+  makeInvalidClassInstance,
+} from "./test/schemaAssertions.ts";
 
 function decodeSync<S extends Schema.Top>(schema: S, input: unknown): Schema.Schema.Type<S> {
   return Schema.decodeUnknownSync(schema as never)(input) as Schema.Schema.Type<S>;
@@ -26,6 +42,10 @@ function decodes<S extends Schema.Top>(schema: S, input: unknown): boolean {
     return false;
   }
 }
+
+const encodeTerminalRestartInput = Schema.encodeSync(TerminalRestartInput);
+const decodeTerminalError = Schema.decodeUnknownSync(TerminalError);
+const encodeTerminalError = Schema.encodeUnknownSync(TerminalError);
 
 describe("TerminalOpenInput", () => {
   it("accepts valid open input", () => {
@@ -52,27 +72,31 @@ describe("TerminalOpenInput", () => {
     ).toBe(true);
   });
 
-  it("rejects invalid bounds", () => {
-    expect(
-      decodes(TerminalOpenInput, {
+  it("reports invalid row bounds at the rows path", () => {
+    expectDecodeFailure(
+      TerminalOpenInput,
+      {
         threadId: "thread-1",
         terminalId: DEFAULT_TERMINAL_ID,
         cwd: "/tmp/project",
         cols: 10,
         rows: 0,
-      }),
-    ).toBe(false);
+      },
+      { rootTag: "Composite", paths: [["rows"]], containsTag: "InvalidValue" },
+    );
   });
 
-  it("requires terminalId — the client must always pick an id", () => {
-    expect(
-      decodes(TerminalOpenInput, {
+  it("reports a missing client-selected terminalId", () => {
+    expectDecodeFailure(
+      TerminalOpenInput,
+      {
         threadId: "thread-1",
         cwd: "/tmp/project",
         cols: 100,
         rows: 24,
-      }),
-    ).toBe(false);
+      },
+      { rootTag: "Composite", paths: [["terminalId"]], containsTag: "MissingKey" },
+    );
   });
 
   it("accepts optional env overrides", () => {
@@ -95,18 +119,25 @@ describe("TerminalOpenInput", () => {
     expect(parsed.worktreePath).toBe("/tmp/project/.t4code/worktrees/feature-a");
   });
 
-  it("rejects invalid env keys", () => {
-    expect(
-      decodes(TerminalOpenInput, {
+  it("reports invalid environment keys at the complete nested path", () => {
+    expectDecodeFailure(
+      TerminalOpenInput,
+      {
         threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
         cwd: "/tmp/project",
         cols: 100,
         rows: 24,
         env: {
           "bad-key": "1",
         },
-      }),
-    ).toBe(false);
+      },
+      {
+        rootTag: "Composite",
+        paths: [["env", "bad-key"]],
+        containsTag: "InvalidValue",
+      },
+    );
   });
 });
 
@@ -134,23 +165,24 @@ describe("TerminalWriteInput", () => {
     ).toBe(true);
   });
 
-  it("rejects empty data", () => {
-    expect(
-      decodes(TerminalWriteInput, {
+  it("reports empty data at the data path", () => {
+    expectDecodeFailure(
+      TerminalWriteInput,
+      {
         threadId: "thread-1",
         terminalId: DEFAULT_TERMINAL_ID,
         data: "",
-      }),
-    ).toBe(false);
+      },
+      { rootTag: "Composite", paths: [["data"]], containsTag: "InvalidValue" },
+    );
   });
 
-  it("rejects missing terminalId", () => {
-    expect(
-      decodes(TerminalWriteInput, {
-        threadId: "thread-1",
-        data: "echo hello\n",
-      }),
-    ).toBe(false);
+  it("reports a missing terminalId at its key path", () => {
+    expectDecodeFailure(
+      TerminalWriteInput,
+      { threadId: "thread-1", data: "echo hello\n" },
+      { rootTag: "Composite", paths: [["terminalId"]], containsTag: "MissingKey" },
+    );
   });
 });
 
@@ -173,20 +205,22 @@ describe("TerminalResizeInput", () => {
     ).toBe(true);
   });
 
-  it("rejects missing terminalId", () => {
-    expect(
-      decodes(TerminalResizeInput, {
-        threadId: "thread-1",
-        cols: 80,
-        rows: 24,
-      }),
-    ).toBe(false);
+  it("reports a missing terminalId at its key path", () => {
+    expectDecodeFailure(
+      TerminalResizeInput,
+      { threadId: "thread-1", cols: 80, rows: 24 },
+      { rootTag: "Composite", paths: [["terminalId"]], containsTag: "MissingKey" },
+    );
   });
 });
 
 describe("TerminalClearInput", () => {
-  it("requires terminalId", () => {
-    expect(decodes(TerminalClearInput, { threadId: "thread-1" })).toBe(false);
+  it("reports a missing terminalId at its key path", () => {
+    expectDecodeFailure(
+      TerminalClearInput,
+      { threadId: "thread-1" },
+      { rootTag: "Composite", paths: [["terminalId"]], containsTag: "MissingKey" },
+    );
   });
 
   it("accepts an explicit terminalId", () => {
@@ -300,5 +334,162 @@ describe("TerminalEvent", () => {
         },
       }),
     ).toBe(true);
+  });
+
+  it("accepts error, cleared, and restarted union alternatives", () => {
+    const base = { threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID };
+    expect(
+      decodeSync(TerminalEvent, { ...base, type: "error", message: "shell failed" }).type,
+    ).toBe("error");
+    expect(decodeSync(TerminalEvent, { ...base, type: "cleared" }).type).toBe("cleared");
+    expect(
+      decodeSync(TerminalEvent, {
+        ...base,
+        type: "restarted",
+        snapshot: {
+          ...base,
+          cwd: "/tmp/project",
+          worktreePath: null,
+          status: "running",
+          pid: 1234,
+          history: "",
+          exitCode: null,
+          exitSignal: null,
+          label: "Primary",
+          updatedAt: isoTimestamp,
+        },
+      }).type,
+    ).toBe("restarted");
+  });
+
+  it("decodes attach snapshot and output stream alternatives", () => {
+    expect(
+      decodeSync(TerminalAttachStreamEvent, {
+        type: "snapshot",
+        snapshot: {
+          threadId: "thread-1",
+          terminalId: DEFAULT_TERMINAL_ID,
+          cwd: "/tmp/project",
+          worktreePath: null,
+          status: "running",
+          pid: 1234,
+          history: "",
+          exitCode: null,
+          exitSignal: null,
+          label: "Primary",
+          updatedAt: isoTimestamp,
+        },
+      }).type,
+    ).toBe("snapshot");
+    expect(
+      decodeSync(TerminalAttachStreamEvent, {
+        type: "output",
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        data: "ready\n",
+      }).type,
+    ).toBe("output");
+  });
+});
+
+describe("terminal boundary schemas", () => {
+  it("round-trips restart input with optional metadata", () => {
+    const input = {
+      threadId: "thread-1",
+      terminalId: DEFAULT_TERMINAL_ID,
+      cwd: "/tmp/project",
+      worktreePath: null,
+      cols: 120,
+      rows: 40,
+      env: { TERM: "xterm-256color" },
+    };
+    const decoded = decodeSync(TerminalRestartInput, input);
+    expect(encodeTerminalRestartInput(decoded)).toEqual(input);
+  });
+
+  it("reports invalid dimensions on decode and encode", () => {
+    const invalid = {
+      threadId: "thread-1",
+      terminalId: DEFAULT_TERMINAL_ID,
+      cols: 0,
+      rows: 24,
+    };
+    const expected = {
+      rootTag: "Composite" as const,
+      paths: [["cols"]],
+      containsTag: "InvalidValue" as const,
+    };
+    expectDecodeFailure(TerminalResizeInput, invalid, expected);
+    expectEncodeFailure(TerminalResizeInput, invalid, expected);
+  });
+});
+
+describe("terminal errors", () => {
+  const errors = [
+    new TerminalCwdNotFoundError({ cwd: "/missing" }),
+    new TerminalCwdNotDirectoryError({ cwd: "/file.txt" }),
+    new TerminalCwdStatError({ cwd: "/denied", cause: "permission denied" }),
+    new TerminalHistoryError({
+      operation: "migrate",
+      threadId: "thread-1",
+      terminalId: DEFAULT_TERMINAL_ID,
+    }),
+    new TerminalSessionLookupError({ threadId: "thread-1", terminalId: "term-9" }),
+    new TerminalNotRunningError({ threadId: "thread-1", terminalId: "term-2" }),
+    new TerminalWriteError({
+      threadId: "thread-1",
+      terminalId: DEFAULT_TERMINAL_ID,
+      terminalPid: 1234,
+      cause: "broken pipe",
+    }),
+    new TerminalResizeError({
+      threadId: "thread-1",
+      terminalId: DEFAULT_TERMINAL_ID,
+      terminalPid: 1234,
+      cols: 120,
+      rows: 40,
+      cause: "resize failed",
+    }),
+  ] as const;
+
+  it("constructs every tagged error with operation context", () => {
+    expect(errors.map((error) => error.message)).toEqual([
+      "Terminal cwd does not exist: /missing",
+      "Terminal cwd is not a directory: /file.txt",
+      "Failed to access terminal cwd: /denied",
+      "Failed to migrate terminal history for thread: thread-1, terminal: term-1",
+      "Unknown terminal thread: thread-1, terminal: term-9",
+      "Terminal is not running for thread: thread-1, terminal: term-2",
+      "Failed to write to terminal for thread: thread-1, terminal: term-1, PID: 1234",
+      "Failed to resize terminal for thread: thread-1, terminal: term-1, PID: 1234 to 120x40",
+    ]);
+  });
+
+  it("round-trips every terminal error union alternative", () => {
+    for (const error of errors) {
+      const encoded = encodeTerminalError(error);
+      const decoded = decodeTerminalError(encoded);
+      expect(decoded._tag).toBe(error._tag);
+    }
+  });
+
+  it("reports invalid history operation paths on decode and encode", () => {
+    const invalid = {
+      _tag: "TerminalHistoryError",
+      operation: "delete",
+      threadId: "thread-1",
+      terminalId: DEFAULT_TERMINAL_ID,
+    };
+    const expected = {
+      rootTag: "AnyOf" as const,
+      paths: [["operation"]],
+      containsTag: "AnyOf" as const,
+    };
+    expectDecodeFailure(TerminalError, invalid, expected);
+    expectEncodeFailure(
+      TerminalError,
+      makeInvalidClassInstance(TerminalHistoryError.prototype, invalid),
+      expected,
+    );
   });
 });

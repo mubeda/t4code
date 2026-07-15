@@ -18,6 +18,9 @@ import { DEFAULT_SERVER_SETTINGS } from "../src/settings.ts";
 
 const StreamSchemaTypeId = "~effect/rpc/RpcSchema/StreamSchema";
 const requestId = "900719925474099312345";
+const compileUnknownEncoder = (
+  codec: Schema.Codec<unknown, unknown, never, never>,
+): ((value: unknown) => unknown) => Schema.encodeUnknownSync(codec);
 
 const request = {
   _tag: "Request",
@@ -89,7 +92,7 @@ const fixtures = {
   "exit-stream-success": {
     _tag: "Exit",
     requestId,
-    exit: { _tag: "Success", value: undefined },
+    exit: { _tag: "Success", value: null },
   } satisfies RpcMessage.ResponseExitEncoded,
   "exit-success": {
     _tag: "Exit",
@@ -277,8 +280,9 @@ const encodeSchemaSample = (
   manualValue?: unknown,
 ): unknown => {
   const codec = Schema.make(ast) as Schema.Codec<unknown, unknown, never, never>;
+  const encode = compileUnknownEncoder(codec);
   const encodeAndValidate = (value: unknown): unknown => {
-    const encoded = Schema.encodeUnknownSync(codec)(value);
+    const encoded = encode(value);
     const jsonRoundTrip = JSON.parse(
       JSON.stringify(encoded, (_key, item: unknown) => {
         if (typeof item === "number" && !Number.isFinite(item)) return 0;

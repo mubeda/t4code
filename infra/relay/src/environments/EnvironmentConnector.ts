@@ -185,15 +185,12 @@ function environmentHealthRequestFailureReason(cause: unknown): string {
   if (HttpClientError.isHttpClientError(cause)) {
     return cause.reason._tag;
   }
-  if (Schema.isSchemaError(cause)) {
-    return "SchemaError";
-  }
-  return cause instanceof Error && cause.name ? cause.name : "Unknown";
+  return "SchemaError";
 }
 
 const currentTraceId = Effect.currentSpan.pipe(
+  Effect.orDie,
   Effect.map((span) => span.traceId),
-  Effect.orElseSucceed(() => "unavailable"),
 );
 
 const withoutRedirects = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -375,9 +372,8 @@ const make = Effect.gen(function* () {
       const endpoint = ManagedEndpointAllocations.resolveReadyManagedEndpoint({
         allocation: input.allocation,
         baseDomain: settings.managedEndpointBaseDomain,
-      });
+      })!;
       if (
-        endpoint === null ||
         endpoint.httpBaseUrl !== input.link.endpoint.httpBaseUrl ||
         endpoint.wsBaseUrl !== input.link.endpoint.wsBaseUrl
       ) {
@@ -385,12 +381,8 @@ const make = Effect.gen(function* () {
           ...allocationAttributes,
           "relay.authorization.linked_http_base_url": input.link.endpoint.httpBaseUrl,
           "relay.authorization.linked_ws_base_url": input.link.endpoint.wsBaseUrl,
-          ...(endpoint
-            ? {
-                "relay.authorization.resolved_http_base_url": endpoint.httpBaseUrl,
-                "relay.authorization.resolved_ws_base_url": endpoint.wsBaseUrl,
-              }
-            : {}),
+          "relay.authorization.resolved_http_base_url": endpoint.httpBaseUrl,
+          "relay.authorization.resolved_ws_base_url": endpoint.wsBaseUrl,
         });
         return yield* new EnvironmentConnectNotAuthorized({
           environmentId: input.link.environmentId,

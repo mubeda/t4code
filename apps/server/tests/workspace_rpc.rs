@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use assets::{AssetAccess, AssetIssueRequest, AssetResource, ResolvedAsset};
 use project::ProjectFaviconResolver;
-use review::{ReviewBackend, ReviewDiffPreviewInput, ReviewService};
+use review::{ReviewBackend, ReviewDiffPreviewInput, ReviewError, ReviewService};
 use serde_json::json;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
@@ -292,11 +292,308 @@ async fn mutations_create_move_duplicate_and_delete_entries() {
 }
 
 #[tokio::test]
+async fn service_mutation_edge_cases_return_specific_errors_without_partial_changes() {
+    let root = TempDir::new().expect("root");
+    let service = WorkspaceService::new(0);
+    write(root.path(), "parent-file", b"occupied").await;
+    write(root.path(), "source.txt", b"source").await;
+    write(root.path(), "destination.txt", b"destination").await;
+    tokio::fs::create_dir(root.path().join("directory"))
+        .await
+        .expect("directory");
+
+    assert!(matches!(
+        service
+            .write_file(root.path(), "parent-file/child.txt", "content")
+            .await,
+        Err(WorkspaceError::Operation { .. })
+    ));
+    assert!(matches!(
+        service
+            .create_entry(root.path(), "parent-file/child", EntryKind::Directory)
+            .await,
+        Err(WorkspaceError::Operation { .. })
+    ));
+    assert!(matches!(
+        service
+            .create_entry(root.path(), "parent-file/child.txt", EntryKind::File)
+            .await,
+        Err(WorkspaceError::Operation { .. })
+    ));
+    assert!(matches!(
+        service
+            .rename_entry(root.path(), "source.txt", "parent-file/moved.txt")
+            .await,
+        Err(WorkspaceError::Operation { .. })
+    ));
+    assert!(root.path().join("source.txt").is_file());
+
+    assert!(matches!(
+        service
+            .create_entry(root.path(), "source.txt", EntryKind::File)
+            .await,
+        Err(WorkspaceError::AlreadyExists { .. })
+    ));
+    assert!(matches!(
+        service
+            .rename_entry(root.path(), "missing.txt", "renamed.txt")
+            .await,
+        Err(WorkspaceError::NotFound { .. })
+    ));
+    assert!(matches!(
+        service
+            .rename_entry(root.path(), "source.txt", "destination.txt")
+            .await,
+        Err(WorkspaceError::AlreadyExists { .. })
+    ));
+    assert!(matches!(
+        service.delete_entry(root.path(), "missing.txt").await,
+        Err(WorkspaceError::NotFound { .. })
+    ));
+    assert!(matches!(
+        service.duplicate_entry(root.path(), "missing.txt").await,
+        Err(WorkspaceError::NotFound { .. })
+    ));
+    assert!(matches!(
+        service.duplicate_entry(root.path(), "directory").await,
+        Err(WorkspaceError::NotFile { .. })
+    ));
+    assert!(matches!(
+        service.read_file(root.path(), "directory").await,
+        Err(WorkspaceError::NotFile { .. })
+    ));
+
+    let deleted = service
+        .delete_entry(root.path(), "destination.txt")
+        .await
+        .expect("delete file");
+    assert_eq!(deleted, "destination.txt");
+    assert!(!root.path().join("destination.txt").exists());
+}
+
+#[tokio::test]
+async fn workspace_rpc_reports_typed_index_browse_and_read_results() {
+    let root = TempDir::new().expect("root");
+    let missing = root.path().join("missing-root");
+    let root_file = root.path().join("not-a-directory");
+    tokio::fs::write(&root_file, "file")
+        .await
+        .expect("root file");
+    write(root.path(), "readable.txt", b"hello workspace").await;
+    let rpc = WorkspaceRpc::new(WorkspaceService::default());
+
+    let read = rpc
+        .handle(
+            "projects.readFile",
+            json!({
+                "cwd": path_string(root.path()),
+                "relativePath": "readable.txt"
+            }),
+        )
+        .await
+        .expect("read result");
+    assert_eq!(read["relativePath"], "readable.txt");
+    assert_eq!(read["contents"], "hello workspace");
+    assert_eq!(read["byteLength"], 15);
+    assert_eq!(read["truncated"], false);
+
+    let missing_list = rpc
+        .handle(
+            "projects.listEntries",
+            json!({ "cwd": path_string(&missing) }),
+        )
+        .await
+        .expect_err("missing root");
+    assert_eq!(missing_list["_tag"], "ProjectListEntriesError");
+    assert_eq!(missing_list["failure"], "workspace_root_not_found");
+
+    let file_search = rpc
+        .handle(
+            "projects.searchEntries",
+            json!({ "cwd": path_string(&root_file), "query": "x", "limit": 10 }),
+        )
+        .await
+        .expect_err("root file");
+    assert_eq!(file_search["_tag"], "ProjectSearchEntriesError");
+    assert_eq!(file_search["failure"], "workspace_root_not_directory");
+
+    let browse = rpc
+        .handle(
+            "filesystem.browse",
+            json!({ "partialPath": "./relative", "cwd": null }),
+        )
+        .await
+        .expect_err("relative browse needs cwd");
+    assert_eq!(browse["_tag"], "FilesystemBrowseError");
+    assert_eq!(browse["failure"], "current_project_required");
+}
+
+#[tokio::test]
+async fn workspace_rpc_rejects_every_malformed_input_shape_and_unknown_methods() {
+    let rpc = WorkspaceRpc::new(WorkspaceService::default());
+    for method in [
+        "projects.readFile",
+        "projects.writeFile",
+        "projects.createEntry",
+        "projects.renameEntry",
+        "projects.deleteEntry",
+        "projects.duplicateEntry",
+        "projects.listEntries",
+        "projects.searchEntries",
+        "filesystem.browse",
+        "assets.createUrl",
+        "review.getDiffPreview",
+    ] {
+        let error = rpc
+            .handle(method, json!({}))
+            .await
+            .expect_err("missing required input");
+        assert_eq!(error["_tag"], "InvalidRequest", "method {method}");
+        assert!(
+            error["message"]
+                .as_str()
+                .is_some_and(|message| !message.is_empty()),
+            "method {method}"
+        );
+    }
+
+    let unsupported = rpc
+        .handle("projects.unsupported", json!({}))
+        .await
+        .expect_err("unsupported method");
+    assert_eq!(unsupported["_tag"], "Defect");
+    assert!(
+        unsupported["message"]
+            .as_str()
+            .expect("message")
+            .contains("projects.unsupported")
+    );
+}
+
+#[tokio::test]
+async fn workspace_rpc_surfaces_optional_dependency_and_backend_failures() {
+    let root = TempDir::new().expect("root");
+    let plain = WorkspaceRpc::new(WorkspaceService::default());
+
+    let asset_not_configured = plain
+        .handle(
+            "assets.createUrl",
+            json!({
+                "resource": {
+                    "_tag": "workspace-file",
+                    "threadId": "thread-1",
+                    "path": "missing.html"
+                }
+            }),
+        )
+        .await
+        .expect_err("asset dependency");
+    assert_eq!(asset_not_configured["_tag"], "Defect");
+
+    let review_not_configured = plain
+        .handle(
+            "review.getDiffPreview",
+            json!({ "cwd": path_string(root.path()), "baseRef": null }),
+        )
+        .await
+        .expect_err("review dependency");
+    assert_eq!(review_not_configured["_tag"], "Defect");
+
+    let access = AssetAccess::new(vec![7; 32], root.path().join("attachments"));
+    let asset_rpc = WorkspaceRpc::with_dependencies(
+        WorkspaceService::default(),
+        WorkspaceRpcDependencies {
+            asset_access: Some(access),
+            asset_context_resolver: Some(Arc::new(StaticAssetContextResolver {
+                roots: std::collections::HashMap::from([(
+                    "thread-1".to_owned(),
+                    root.path().to_path_buf(),
+                )]),
+                failing_thread_id: None,
+            })),
+            review_service: None,
+        },
+    );
+    let missing_asset = asset_rpc
+        .handle(
+            "assets.createUrl",
+            json!({
+                "resource": {
+                    "_tag": "workspace-file",
+                    "threadId": "thread-1",
+                    "path": "missing.html"
+                }
+            }),
+        )
+        .await
+        .expect_err("missing asset");
+    assert_eq!(missing_asset["_tag"], "AssetWorkspaceAssetInspectionError");
+
+    let review_rpc = WorkspaceRpc::with_dependencies(
+        WorkspaceService::default(),
+        WorkspaceRpcDependencies {
+            asset_access: None,
+            asset_context_resolver: None,
+            review_service: Some(ReviewService::new(Arc::new(FailingReviewBackend))),
+        },
+    );
+    let backend_failure = review_rpc
+        .handle(
+            "review.getDiffPreview",
+            json!({ "cwd": path_string(root.path()), "baseRef": null }),
+        )
+        .await
+        .expect_err("backend failure");
+    assert_eq!(backend_failure["_tag"], "Defect");
+    assert!(
+        backend_failure["message"]
+            .as_str()
+            .expect("message")
+            .contains("review backend failed")
+    );
+}
+
+#[tokio::test]
+async fn explicit_index_refresh_replaces_a_cached_snapshot() {
+    let root = TempDir::new().expect("root");
+    write(root.path(), "before.txt", b"").await;
+    let rpc = WorkspaceRpc::new(WorkspaceService::default());
+    let noncanonical_root = root.path().join(".");
+    let cwd = path_string(&noncanonical_root);
+
+    let initial = rpc
+        .handle("projects.listEntries", json!({ "cwd": cwd }))
+        .await
+        .expect("initial list");
+    assert!(
+        initial["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .any(|entry| entry["path"] == "before.txt")
+    );
+
+    write(root.path(), "after.txt", b"").await;
+    rpc.refresh_index(&noncanonical_root).await;
+    let refreshed = rpc
+        .handle("projects.listEntries", json!({ "cwd": cwd }))
+        .await
+        .expect("refreshed list");
+    assert!(
+        refreshed["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .any(|entry| entry["path"] == "after.txt")
+    );
+}
+#[tokio::test]
 async fn workspace_rpc_invalidates_cached_indexes_after_mutations() {
     let root = TempDir::new().expect("root");
     write(root.path(), "src/existing.ts", b"export {};\n").await;
     let rpc = WorkspaceRpc::new(WorkspaceService::default());
-    let cwd = path_string(root.path());
+    let noncanonical_root = root.path().join(".");
+    let cwd = path_string(&noncanonical_root);
 
     let initial = rpc
         .handle("projects.listEntries", json!({ "cwd": cwd }))
@@ -628,6 +925,16 @@ async fn favicon_resolution_stays_within_the_project_and_reads_icon_metadata() {
     );
 }
 
+struct FailingReviewBackend;
+
+impl ReviewBackend for FailingReviewBackend {
+    fn get_diff_preview<'a>(
+        &'a self,
+        _input: &'a ReviewDiffPreviewInput,
+    ) -> review::ReviewFuture<'a> {
+        Box::pin(async { Err(ReviewError::Backend("fixture failure".to_owned())) })
+    }
+}
 struct EmptyReviewBackend;
 
 impl ReviewBackend for EmptyReviewBackend {

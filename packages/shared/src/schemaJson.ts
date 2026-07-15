@@ -18,6 +18,11 @@ interface SchemaDiagnosticIssue {
   readonly path: ReadonlyArray<PropertyKey>;
 }
 
+type TerminalSchemaDiagnosticIssue = Exclude<
+  SchemaIssue.Issue,
+  SchemaIssue.Encoding | SchemaIssue.Pointer | SchemaIssue.Composite
+>;
+
 // Schema's default formatter includes actual values. These diagnostics cross
 // process and UI boundaries, so retain only issue kinds and bounded paths.
 
@@ -48,16 +53,13 @@ function formatDiagnosticIssue(issue: SchemaDiagnosticIssue): string {
   return `${issue.message}\n  at ${path}${suffix}`;
 }
 
-function schemaDiagnosticMessage(issue: SchemaIssue.Issue): string {
+function schemaDiagnosticMessage(issue: TerminalSchemaDiagnosticIssue): string {
   switch (issue._tag) {
     case "InvalidType":
       return "Invalid type";
     case "InvalidValue":
     case "Filter":
     case "AnyOf":
-    case "Encoding":
-    case "Pointer":
-    case "Composite":
       return "Invalid value";
     case "MissingKey":
       return "Missing key";
@@ -143,9 +145,7 @@ export const formatSchemaError = (cause: Cause.Cause<Schema.SchemaError>) => {
     switch (reason._tag) {
       case "Fail":
         failureCount += 1;
-        if (Schema.isSchemaError(reason.error)) {
-          issueCount += collectSchemaDiagnosticIssues(reason.error.issue, [], issues);
-        }
+        issueCount += collectSchemaDiagnosticIssues(reason.error.issue, [], issues);
         break;
       case "Die":
         defectCount += 1;

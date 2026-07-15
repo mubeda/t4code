@@ -20,9 +20,18 @@ const isErrnoExceptionWithCode = (
   Predicate.hasProperty(cause, "code") &&
   Predicate.isString(cause.code);
 
-const closeServer = (server: NodeNet.Server) => {
+const makeCloseServerOnce = (server: NodeNet.Server) => {
+  let closeRequested = false;
+  return (callback?: () => void) => {
+    if (closeRequested) return;
+    closeRequested = true;
+    server.close(callback);
+  };
+};
+
+const closeServer = (close: () => void) => {
   try {
-    server.close();
+    close();
   } catch {
     // Ignore close failures during cleanup.
   }
@@ -66,6 +75,7 @@ export const make = () => {
   const canListenOnHost = (port: number, host: string): Effect.Effect<boolean> =>
     Effect.callback<boolean>((resume) => {
       const server = NodeNet.createServer();
+      const closeOnce = makeCloseServerOnce(server);
       let settled = false;
 
       const settle = (value: boolean) => {
@@ -85,7 +95,8 @@ export const make = () => {
       });
 
       server.once("listening", () => {
-        server.close(() => {
+        if (settled) return;
+        closeOnce(() => {
           settle(true);
         });
       });
@@ -93,7 +104,8 @@ export const make = () => {
       server.listen({ host, port });
 
       return Effect.sync(() => {
-        closeServer(server);
+        settled = true;
+        closeServer(closeOnce);
       });
     });
 
@@ -122,6 +134,7 @@ export const make = () => {
       });
 
       return Effect.sync(() => {
+        settled = true;
         socket.destroy();
       });
     });
@@ -151,6 +164,7 @@ export const make = () => {
   const reserveLoopbackPort = (host = "127.0.0.1"): Effect.Effect<number, NetError> =>
     Effect.callback<number, NetError>((resume) => {
       const probe = NodeNet.createServer();
+      const closeOnce = makeCloseServerOnce(probe);
       let settled = false;
 
       const settle = (effect: Effect.Effect<number, NetError>) => {
@@ -164,9 +178,10 @@ export const make = () => {
       });
 
       probe.listen(0, host, () => {
+        if (settled) return;
         const address = probe.address();
         const port = typeof address === "object" && address !== null ? address.port : 0;
-        probe.close(() => {
+        closeOnce(() => {
           if (port > 0) {
             settle(Effect.succeed(port));
             return;
@@ -176,7 +191,8 @@ export const make = () => {
       });
 
       return Effect.sync(() => {
-        closeServer(probe);
+        settled = true;
+        closeServer(closeOnce);
       });
     });
 

@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+use super::paths::normalize_root;
 use super::{EntryKind, SearchLimits, WorkspaceError, WorkspaceSearchIndex, WorkspaceService};
 
 pub const TASK_SIX_RPC_METHODS: [&str; 11] = [
@@ -216,13 +217,14 @@ impl WorkspaceRpc {
     }
 
     pub async fn refresh_index(&self, cwd: &Path) {
-        self.indexes.lock().await.remove(cwd);
+        let Ok(canonical) = normalize_root(cwd, false).await else {
+            return;
+        };
+        self.indexes.lock().await.remove(&canonical);
     }
 
     async fn index(&self, cwd: &str) -> Result<WorkspaceSearchIndex, WorkspaceError> {
-        let canonical = tokio::fs::canonicalize(cwd)
-            .await
-            .map_err(|error| WorkspaceError::operation("realpath-workspace-root", cwd, error))?;
+        let canonical = normalize_root(Path::new(cwd), false).await?;
         if let Some(index) = self.indexes.lock().await.get(&canonical).cloned() {
             return Ok(index);
         }

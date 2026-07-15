@@ -1,5 +1,7 @@
-import type { ReactElement, ReactNode } from "react";
+import { act, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { createRoot, type Root } from "react-dom/client";
+import { Window } from "happy-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
@@ -25,6 +27,14 @@ interface CapturedControl {
   readonly label: string;
   readonly props: AnyProps;
 }
+
+interface MountedTree {
+  readonly container: HTMLDivElement;
+  readonly root: Root;
+}
+
+const mountedTrees: MountedTree[] = [];
+let domWindow: Window | null = null;
 
 const h = vi.hoisted(() => {
   const textOf = (node: unknown): string => {
@@ -138,17 +148,17 @@ const h = vi.hoisted(() => {
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
   const useState = (initial: unknown) => {
-    const [value] = (actual.useState as (input: unknown) => [unknown, (next: unknown) => void])(
-      initial,
-    );
-    const resolved =
-      typeof initial !== "function" && h.stateOverrides.has(initial)
-        ? h.stateOverrides.get(initial)
-        : value;
+    const [value, actualSetState] = (
+      actual.useState as (input: unknown) => [unknown, (next: unknown) => void]
+    )(initial);
+    const isOverridden = typeof initial !== "function" && h.stateOverrides.has(initial);
+    const resolved = isOverridden ? h.stateOverrides.get(initial) : value;
     const setState = (next: unknown) => {
-      if (typeof next === "function") {
+      if (isOverridden && typeof next === "function") {
         (next as (previous: unknown) => unknown)(resolved);
+        return;
       }
+      if (!isOverridden) actualSetState(next);
     };
     return [resolved, setState];
   };
@@ -575,6 +585,20 @@ function render(node: ReactElement = <ConnectionsSettings />): string {
   return renderToStaticMarkup(node);
 }
 
+async function mountConnections(): Promise<HTMLDivElement> {
+  clearRegistries();
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  mountedTrees.push({ container, root });
+  await act(async () => root.render(<ConnectionsSettings />));
+  return container;
+}
+
+async function click(element: HTMLElement): Promise<void> {
+  await act(async () => element.click());
+}
+
 function findControls(kind: string, label: string): CapturedControl[] {
   const exact = h.controls.filter((entry) => entry.kind === kind && entry.label === label);
   if (exact.length > 0) return exact;
@@ -646,7 +670,7 @@ interface DesktopBridgeStub {
   setWslOnly: ReturnType<typeof vi.fn>;
 }
 
-function stubDesktopWindow(): DesktopBridgeStub {
+function createDesktopBridgeStub(): DesktopBridgeStub {
   const wslState: DesktopWslState = {
     enabled: true,
     distro: "Ubuntu",
@@ -658,13 +682,17 @@ function stubDesktopWindow(): DesktopBridgeStub {
     ],
     preflightError: null,
   };
-  const bridge: DesktopBridgeStub = {
+  return {
     setServerExposureMode: vi.fn(async () => ({})),
     setTailscaleServeEnabled: vi.fn(async () => ({})),
     setWslBackendEnabled: vi.fn(async () => wslState),
     setWslDistro: vi.fn(async () => wslState),
     setWslOnly: vi.fn(async () => wslState),
   };
+}
+
+function stubDesktopWindow(): DesktopBridgeStub {
+  const bridge = createDesktopBridgeStub();
   vi.stubGlobal("window", {
     desktopBridge: bridge,
     isSecureContext: true,
@@ -676,6 +704,15 @@ function stubDesktopWindow(): DesktopBridgeStub {
     },
   });
   vi.stubGlobal("navigator", { clipboard: { writeText: vi.fn(async () => {}) } });
+  return bridge;
+}
+
+function installMountedDesktopWindow(): DesktopBridgeStub {
+  const bridge = createDesktopBridgeStub();
+  Object.defineProperty(window, "desktopBridge", {
+    configurable: true,
+    value: bridge,
+  });
   return bridge;
 }
 
@@ -826,6 +863,25 @@ let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   vi.unstubAllGlobals();
+  domWindow = new Window({ url: "https://t4code.test/" });
+  vi.stubGlobal("window", domWindow);
+  vi.stubGlobal("document", domWindow.document);
+  vi.stubGlobal("navigator", domWindow.navigator);
+  vi.stubGlobal("localStorage", domWindow.localStorage);
+  vi.stubGlobal("Node", domWindow.Node);
+  vi.stubGlobal("Element", domWindow.Element);
+  vi.stubGlobal("HTMLElement", domWindow.HTMLElement);
+  vi.stubGlobal("Event", domWindow.Event);
+  vi.stubGlobal("MouseEvent", domWindow.MouseEvent);
+  vi.stubGlobal("KeyboardEvent", domWindow.KeyboardEvent);
+  vi.stubGlobal("CustomEvent", domWindow.CustomEvent);
+  vi.stubGlobal("customElements", domWindow.customElements);
+  vi.stubGlobal("MutationObserver", domWindow.MutationObserver);
+  vi.stubGlobal("ResizeObserver", domWindow.ResizeObserver);
+  vi.stubGlobal("getComputedStyle", domWindow.getComputedStyle.bind(domWindow));
+  vi.stubGlobal("requestAnimationFrame", domWindow.requestAnimationFrame.bind(domWindow));
+  vi.stubGlobal("cancelAnimationFrame", domWindow.cancelAnimationFrame.bind(domWindow));
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   clearRegistries();
   h.stateOverrides.clear();
   h.copyBehavior = "copy";
@@ -873,8 +929,16 @@ beforeEach(() => {
   consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
-afterEach(() => {
+afterEach(async () => {
+  for (const { root, container } of mountedTrees.splice(0)) {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+  document.body.replaceChildren();
   consoleErrorSpy.mockRestore();
+  domWindow?.close();
+  domWindow = null;
+  vi.unstubAllGlobals();
 });
 
 describe("ConnectionsSettings", () => {
@@ -974,6 +1038,11 @@ describe("ConnectionsSettings", () => {
     h.accessChangesQuery.data = accessSnapshot({
       pairingLinks: [
         pairingLink({ id: "pl-live", label: "Living room iPad" }),
+        pairingLink({
+          id: "pl-read-only",
+          label: "Read-only tablet",
+          scopes: [AuthOrchestrationReadScope],
+        }),
         pairingLink({ id: "pl-anonymous" }),
         pairingLink({ id: "pl-expired", expiresAt: PAST }),
       ],
@@ -1006,6 +1075,7 @@ describe("ConnectionsSettings", () => {
 
     expect(markup).toContain("Authorized clients");
     expect(markup).toContain("Living room iPad");
+    expect(markup).toContain("1 scope");
     expect(markup).toContain("Pairing link");
     expect(markup).not.toContain("credential-pl-expired");
     expect(markup).toContain("This device");
@@ -1018,6 +1088,15 @@ describe("ConnectionsSettings", () => {
     expect(h.toastAdd).toHaveBeenCalledWith(
       expect.objectContaining({ title: "Pairing URL copied" }),
     );
+
+    // Secure-context URL failures distinguish full URLs from raw codes.
+    h.toastAdd.mockClear();
+    h.copyBehavior = "error";
+    invoke(control("button", "Copy pairing URL for: URL"), "onClick");
+    expect(h.toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Could not copy pairing URL" }),
+    );
+    h.copyBehavior = "copy";
 
     // Copy the raw pairing code from the grouped menu.
     h.toastAdd.mockClear();
@@ -1256,6 +1335,14 @@ describe("ConnectionsSettings", () => {
     invoke(control("menu-item", "LAN"), "onClick");
     invoke(control("menu-item", "Loopback"), "onClick");
     invoke(control("menu-item", "Odd Custom"), "onClick");
+
+    h.toastAdd.mockClear();
+    h.copyBehavior = "error";
+    invoke(control("menu-item", "Tailscale IP"), "onClick");
+    expect(h.toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Could not copy hosted app link" }),
+    );
+    h.copyBehavior = "copy";
 
     // Network exposure switch stages a confirmation.
     invoke(control("switch", "Enable network access"), "onCheckedChange", false);
@@ -1814,6 +1901,21 @@ describe("ConnectionsSettings", () => {
     expect(h.toastAdd).toHaveBeenCalledWith(
       expect.objectContaining({ title: "Could not update T4 Connect" }),
     );
+
+    // Interrupted refreshes stay silent, and unlinking permits a missing Clerk token.
+    h.toastAdd.mockClear();
+    h.commands.relayRefresh.mockResolvedValueOnce(failure(new Error("interrupted"), true));
+    invoke(linkSwitch, "onCheckedChange", true);
+    await flush();
+    expect(h.toastAdd).not.toHaveBeenCalled();
+
+    h.clerkAuth.getToken.mockResolvedValueOnce(null);
+    invoke(linkSwitch, "onCheckedChange", false);
+    await flush();
+    expect(h.commands.unlink).toHaveBeenLastCalledWith({
+      target: h.cloudLinkState.target,
+      clerkToken: null,
+    });
   });
 
   it("reports a missing local environment when toggling T4 Connect too early", async () => {
@@ -1942,6 +2044,135 @@ describe("ConnectionsSettings", () => {
     invoke(findControls("button", "Connect")[0]!, "onClick");
     await flush();
     expect(h.toastAdd).not.toHaveBeenCalled();
+  });
+
+  it("renders saved-backend boundary states and management restrictions", () => {
+    stubBrowserWindow();
+    h.hasCloudConfig = true;
+    h.primarySessionState = {
+      data: {
+        authenticated: true,
+        scopes: [...STANDARD_SCOPES, AuthAccessReadScope, AuthAccessWriteScope],
+        auth: { policy: "remote-reachable" },
+      },
+    };
+    h.environments = [
+      environment({
+        id: "environment-connecting",
+        label: "Connecting backend",
+        connection: { phase: "connecting" },
+      }),
+      environment({
+        id: "environment-reconnecting",
+        label: "Reconnecting backend",
+        connection: { phase: "reconnecting" },
+      }),
+      environment({
+        id: "environment-error-no-trace",
+        label: "Errored backend",
+        connection: { phase: "error", error: new Error("transport failed"), traceId: null },
+      }),
+      environment({
+        id: "environment-ssh-minimal",
+        label: "Minimal SSH",
+        targetTag: "SshConnectionTarget",
+        sshTarget: {
+          alias: "build-host",
+          hostname: "build-host.internal",
+          username: null,
+          port: null,
+        },
+      }),
+      environment({
+        id: "environment-relay-idle",
+        label: "Relay managed",
+        relayManaged: true,
+      }),
+    ];
+
+    const markup = render();
+
+    expect(markup.match(/Connecting…/gu)).toHaveLength(2);
+    expect(markup).toContain("status:error");
+    expect(markup).not.toContain("Copy trace ID");
+    expect(markup).toContain("SSH build-host.internal");
+    expect(markup).toContain("T4 Connect");
+    expect(control("switch", "Enable T4 Connect").props.disabled).toBe(true);
+  });
+
+  it("renders each network reachability fallback and toggles endpoint details", async () => {
+    installMountedDesktopWindow();
+    const exposureState = {
+      mode: "network-accessible",
+      endpointUrl: "https://desktop.example.com" as string | null,
+      advertisedHost: null as string | null,
+      tailscaleServeEnabled: false,
+      tailscaleServePort: 443,
+    };
+    h.networkAccessQuery.data = {
+      serverExposureState: exposureState,
+      advertisedEndpoints: [],
+    };
+
+    let markup = render();
+    expect(markup).toContain("Reachable at https://desktop.example.com");
+
+    h.networkAccessQuery.data = {
+      serverExposureState: {
+        ...exposureState,
+        endpointUrl: null,
+        advertisedHost: "desktop.lan",
+      },
+      advertisedEndpoints: [],
+    };
+    markup = render();
+    expect(markup).toContain("Pairing links use desktop.lan");
+
+    h.networkAccessQuery.data = {
+      serverExposureState: {
+        ...exposureState,
+        endpointUrl: null,
+        advertisedHost: null,
+      },
+      advertisedEndpoints: [],
+    };
+    markup = render();
+    expect(markup).toContain("Exposed on all interfaces.");
+
+    h.networkAccessQuery.data = {
+      serverExposureState: exposureState,
+      advertisedEndpoints: [
+        endpoint({
+          id: "desktop-lan:primary",
+          label: "Primary LAN",
+          httpBaseUrl: "http://192.168.1.20:5133",
+          isDefault: true,
+        }),
+        endpoint({
+          id: "desktop-lan:secondary",
+          label: "Secondary LAN",
+          httpBaseUrl: "http://192.168.1.21:5133",
+        }),
+      ],
+    };
+    const container = await mountConnections();
+    const detailsToggle = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("+1") === true,
+    );
+    expect(detailsToggle).toBeDefined();
+    expect(detailsToggle?.getAttribute("aria-expanded")).toBe("false");
+    expect(container.textContent).toContain("http://192.168.1.20:5133");
+    expect(container.textContent).not.toContain("http://192.168.1.21:5133");
+
+    await click(detailsToggle!);
+    expect(detailsToggle?.getAttribute("aria-expanded")).toBe("true");
+    expect(detailsToggle?.textContent).toContain("Hide");
+    expect(container.textContent).toContain("http://192.168.1.21:5133");
+
+    await click(detailsToggle!);
+    expect(detailsToggle?.getAttribute("aria-expanded")).toBe("false");
+    expect(detailsToggle?.textContent).toContain("+1");
+    expect(container.textContent).not.toContain("http://192.168.1.21:5133");
   });
 
   it("shows a skeleton while the first relay refresh is in flight", () => {

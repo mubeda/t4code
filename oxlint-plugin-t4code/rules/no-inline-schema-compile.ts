@@ -2,7 +2,12 @@ import { defineRule } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { getPropertyName, isIdentifier, unwrapExpression } from "../utils.ts";
+import {
+  getReferenceBinding,
+  resolveReferenceOrigin,
+  type ReferenceBinding,
+  unwrapExpression,
+} from "../utils.ts";
 
 // Effect Schema decoder/encoder APIs allocate compiled functions. Keep them
 // outside function bodies so hot paths do not rebuild compilers per call.
@@ -36,64 +41,84 @@ const COMPILER_METHODS = new Set<keyof typeof Schema>([
   "encodeUnknownSync",
 ]);
 
-const getSchemaCompilerMethod = (callee: unknown): Option.Option<string> => {
-  const expression = unwrapExpression(callee);
-  if (Option.isNone(expression) || expression.value.type !== "MemberExpression") {
-    return Option.none();
-  }
-
-  const object = unwrapExpression(expression.value.object);
-  if (!isIdentifier(object, "Schema")) return Option.none();
-
-  return Option.filter(getPropertyName(expression.value.property), (method) =>
-    COMPILER_METHODS.has(method as keyof typeof Schema),
+const getSchemaApiMethod = (
+  context: Parameters<typeof resolveReferenceOrigin>[0],
+  callee: unknown,
+): Option.Option<string> => {
+  return resolveReferenceOrigin(context, callee).pipe(
+    Option.flatMap((origin) => {
+      if (origin.kind !== "module") return Option.none();
+      if (origin.source === "effect/Schema" && origin.path.length === 1) {
+        return Option.some(origin.path[0]!);
+      }
+      if (origin.source === "effect" && origin.path.length === 2 && origin.path[0] === "Schema") {
+        return Option.some(origin.path[1]!);
+      }
+      return Option.none();
+    }),
   );
 };
 
-const isStaticSchemaReference = (node: unknown): boolean => {
+const getSchemaCompilerMethod = (
+  context: Parameters<typeof resolveReferenceOrigin>[0],
+  callee: unknown,
+): Option.Option<string> =>
+  getSchemaApiMethod(context, callee).pipe(
+    Option.filter((method) => COMPILER_METHODS.has(method as keyof typeof Schema)),
+  );
+
+const isStaticSchemaReference = (
+  context: Parameters<typeof resolveReferenceOrigin>[0],
+  node: unknown,
+  resolving: ReadonlySet<ReferenceBinding["variable"]> = new Set(),
+): boolean => {
   const expression = unwrapExpression(node);
   if (Option.isNone(expression)) return false;
 
-  if (expression.value.type === "Identifier") {
-    const [firstChar] = expression.value.name;
-    return firstChar !== undefined && firstChar.toUpperCase() === firstChar;
+  if (expression.value.type === "CallExpression") {
+    return isNestedStaticSchemaCall(context, expression.value, resolving);
   }
 
-  return expression.value.type === "MemberExpression";
+  if (
+    resolveReferenceOrigin(context, expression.value).pipe(
+      Option.exists((origin) => origin.kind === "module"),
+    )
+  ) {
+    return true;
+  }
+
+  if (expression.value.type === "MemberExpression") {
+    return isStaticSchemaReference(context, expression.value.object, resolving);
+  }
+
+  if (expression.value.type !== "Identifier") return false;
+  const binding = getReferenceBinding(context, expression.value);
+  if (Option.isNone(binding) || resolving.has(binding.value.variable)) return false;
+  if (binding.value.moduleLifetime) return true;
+  if (binding.value.initializer === null) return false;
+  return isStaticSchemaReference(
+    context,
+    binding.value.initializer,
+    new Set(resolving).add(binding.value.variable),
+  );
 };
 
-const isNestedStaticSchemaCall = (node: unknown): boolean => {
+const isNestedStaticSchemaCall = (
+  context: Parameters<typeof resolveReferenceOrigin>[0],
+  node: unknown,
+  resolving: ReadonlySet<ReferenceBinding["variable"]> = new Set(),
+): boolean => {
   const expression = unwrapExpression(node);
   if (Option.isNone(expression) || expression.value.type !== "CallExpression") return false;
 
-  const callee = unwrapExpression(expression.value.callee);
-  if (Option.isNone(callee) || callee.value.type !== "MemberExpression") return false;
-
-  const object = unwrapExpression(callee.value.object);
-  if (!isIdentifier(object, "Schema")) return false;
-
-  const method = getPropertyName(callee.value.property);
-  if (Option.isSome(method) && method.value === "fromJsonString") {
+  const method = getSchemaApiMethod(context, expression.value.callee);
+  if (Option.isNone(method)) return false;
+  if (method.value === "fromJsonString") {
     const firstArg = expression.value.arguments[0];
-    return isStaticSchemaReference(firstArg) || isNestedStaticSchemaCall(firstArg);
+    return isStaticSchemaReference(context, firstArg, resolving);
   }
 
   return true;
-};
-
-const isImmediatelyInvoked = (node: unknown): boolean => {
-  const expression = unwrapExpression(node);
-  if (Option.isNone(expression)) return false;
-
-  const parent =
-    "parent" in expression.value ? unwrapExpression(expression.value.parent) : Option.none();
-  return (
-    Option.isSome(parent) &&
-    parent.value.type === "CallExpression" &&
-    unwrapExpression(parent.value.callee).pipe(
-      Option.exists((callee) => callee === expression.value),
-    )
-  );
 };
 
 const messageHigh = (method: string) =>
@@ -136,13 +161,12 @@ export default defineRule({
       CallExpression(node) {
         if (functionDepth === 0) return;
 
-        const method = getSchemaCompilerMethod(node.callee);
+        const method = getSchemaCompilerMethod(context, node.callee);
         if (Option.isNone(method)) return;
-        if (!isImmediatelyInvoked(node)) return;
 
         const firstArg = node.arguments[0];
-        const high = firstArg && isNestedStaticSchemaCall(firstArg);
-        if (!high && !isStaticSchemaReference(firstArg)) return;
+        const high = firstArg && isNestedStaticSchemaCall(context, firstArg);
+        if (!high && !isStaticSchemaReference(context, firstArg)) return;
 
         context.report({
           node: node.callee,

@@ -129,6 +129,29 @@ async fn next_event(stream: &mut t4code_server::production::server_terminal::Jso
         .expect("non-empty event batch")
 }
 
+async fn next_event_of_type(
+    stream: &mut t4code_server::production::server_terminal::JsonStream,
+    expected_type: &str,
+) -> Value {
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let events = stream
+                .recv()
+                .await
+                .expect("stream remains open")
+                .expect("stream event succeeds");
+            if let Some(event) = events
+                .into_iter()
+                .find(|event| event["type"] == expected_type)
+            {
+                return event;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("stream event {expected_type} timeout"))
+}
+
 #[tokio::test]
 async fn config_and_settings_match_the_typescript_contract_without_faking_provider_authentication()
 {
@@ -214,8 +237,7 @@ async fn settings_update_persists_atomically_redacts_secrets_and_emits_stream_ev
         true
     );
 
-    let event = next_event(&mut stream).await;
-    assert_eq!(event["type"], "settingsUpdated");
+    let event = next_event_of_type(&mut stream, "settingsUpdated").await;
     assert_eq!(event["payload"]["settings"], updated);
 
     let persisted: Value = serde_json::from_slice(
@@ -258,7 +280,7 @@ async fn keybinding_upsert_replace_and_remove_are_resolved_persisted_and_streame
     assert_eq!(binding["shortcut"]["ctrlKey"], true);
     assert_eq!(binding["shortcut"]["shiftKey"], true);
     assert_eq!(binding["shortcut"]["modKey"], true);
-    assert_eq!(next_event(&mut stream).await["type"], "keybindingsUpdated");
+    let _add_event = next_event_of_type(&mut stream, "keybindingsUpdated").await;
 
     let replaced = call(
         &control,
@@ -277,7 +299,7 @@ async fn keybinding_upsert_replace_and_remove_are_resolved_persisted_and_streame
             .iter()
             .any(|row| { row["command"] == "terminal.toggle" && row["shortcut"]["key"] == "j" })
     );
-    let _replace_event = next_event(&mut stream).await;
+    let _replace_event = next_event_of_type(&mut stream, "keybindingsUpdated").await;
 
     let removed = call(
         &control,

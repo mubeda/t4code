@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use serde_json::{Value, json};
@@ -6,24 +6,11 @@ use tempfile::TempDir;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-mod production {
-    pub mod http_routes {
-        pub use t4code_server::production::http_routes::*;
-    }
-
-    pub mod connect_mcp {
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/production/connect_mcp.rs"
-        ));
-    }
-}
-
-use production::connect_mcp::{
+use t4code_server::production::connect_mcp::{
     ConnectMcpConfig, ConnectMcpService, DecodedCloudProof, EndpointRuntime, JwtCodec,
     PairingCredential, PairingIssuer, PreviewInvoker, PreviewScope,
 };
-use production::http_routes::{JsonOperation, RouteContext};
+use t4code_server::production::http_routes::{JsonOperation, RouteContext};
 
 fn context(headers: HeaderMap) -> RouteContext {
     RouteContext {
@@ -382,7 +369,7 @@ async fn mcp_requires_provider_credential_and_terminates_bounded_sessions() {
 #[tokio::test]
 async fn cancellation_stops_preview_tool_invocation() {
     let temp = TempDir::new().unwrap();
-    let (service, _) = setup_service(&temp).await;
+    let (service, calls) = setup_service(&temp).await;
     let issued = service
         .issue_mcp_credential("thread", "provider")
         .await
@@ -407,10 +394,34 @@ async fn cancellation_stops_preview_tool_invocation() {
     );
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let response = service.mcp(Method::POST, serde_json::to_vec(&json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"preview_status","arguments":{}}})).unwrap(), RouteContext { headers, uri: Uri::from_static("http://127.0.0.1/mcp"), cancellation }).await.unwrap();
+    let response = service
+        .mcp(
+            Method::POST,
+            serde_json::to_vec(&json!({
+                "jsonrpc":"2.0",
+                "id":2,
+                "method":"tools/call",
+                "params":{"name":"preview_status","arguments":{}}
+            }))
+            .unwrap(),
+            RouteContext {
+                headers,
+                uri: Uri::from_static("http://127.0.0.1/mcp"),
+                cancellation,
+            },
+        )
+        .await
+        .unwrap();
     let body: Value = serde_json::from_slice(&response.body).unwrap();
     assert_eq!(body["result"]["isError"], true);
-    tokio::time::sleep(Duration::from_millis(1)).await;
+    assert_eq!(
+        body["result"]["structuredContent"]["error"],
+        json!({
+            "_tag":"PreviewAutomationExecutionError",
+            "message":"cancelled"
+        })
+    );
+    assert!(calls.lock().await.is_empty());
 }
 
 #[tokio::test]
@@ -441,22 +452,44 @@ async fn http_route_adapters_and_provider_revocation_are_ready_for_central_wirin
     service
         .revoke_mcp_provider_session(&first.provider_session_id)
         .await;
+    let mut revoked_headers = HeaderMap::new();
+    revoked_headers.insert(
+        "authorization",
+        HeaderValue::from_str(&first.authorization_header).unwrap(),
+    );
+    let revoked = service
+        .mcp(
+            Method::POST,
+            serde_json::to_vec(&json!({"jsonrpc":"2.0","id":1,"method":"initialize"})).unwrap(),
+            context(revoked_headers),
+        )
+        .await;
+    let revoked = match revoked {
+        Ok(_) => panic!("revoked MCP credential was accepted"),
+        Err(error) => error,
+    };
+    assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
     let second = service
         .issue_mcp_credential("thread-2", "provider-2")
         .await
         .unwrap();
     assert_ne!(first.authorization_header, second.authorization_header);
     service.revoke_all_mcp_credentials().await;
-}
-
-#[test]
-fn response_headers_are_deterministic() {
-    let headers = BTreeMap::from([
-        ("cache-control".to_owned(), "no-store".to_owned()),
-        ("pragma".to_owned(), "no-cache".to_owned()),
-    ]);
-    assert_eq!(
-        headers.keys().cloned().collect::<Vec<_>>(),
-        ["cache-control", "pragma"]
+    let mut revoked_headers = HeaderMap::new();
+    revoked_headers.insert(
+        "authorization",
+        HeaderValue::from_str(&second.authorization_header).unwrap(),
     );
+    let revoked = service
+        .mcp(
+            Method::POST,
+            serde_json::to_vec(&json!({"jsonrpc":"2.0","id":2,"method":"initialize"})).unwrap(),
+            context(revoked_headers),
+        )
+        .await;
+    let revoked = match revoked {
+        Ok(_) => panic!("globally revoked MCP credential was accepted"),
+        Err(error) => error,
+    };
+    assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
 }

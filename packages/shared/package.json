@@ -147,10 +147,6 @@
       "types": "./src/terminalLabels.ts",
       "import": "./src/terminalLabels.ts"
     },
-    "./relayClient": {
-      "types": "./src/relayClient.ts",
-      "import": "./src/relayClient.ts"
-    },
     "./relayTracing": {
       "types": "./src/relayTracing.ts",
       "import": "./src/relayTracing.ts"

@@ -502,29 +502,23 @@ function resolveCommandCandidates(
 const isExecutableFile = Effect.fn("shell.isExecutableFile")(function* (
   filePath: string,
   platform: NodeJS.Platform,
-  windowsPathExtensions: ReadonlyArray<string>,
-): Effect.fn.Return<boolean, never, FileSystem.FileSystem | Path.Path> {
+): Effect.fn.Return<boolean, never, FileSystem.FileSystem> {
   const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
   const stat = yield* fileSystem.stat(filePath).pipe(Effect.orElseSucceed(() => null));
   if (stat === null || stat.type !== "File") return false;
 
-  if (platform === "win32") {
-    const extension = path.extname(filePath);
-    if (extension.length === 0) return false;
-    return windowsPathExtensions.includes(extension.toUpperCase());
-  }
+  if (platform === "win32") return true;
 
   return canExecuteFile(filePath);
 });
 
 const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlatform")(function* (
   command: string,
-  options: CommandAvailabilityOptions & { readonly platform: NodeJS.Platform },
+  options: { readonly env: NodeJS.ProcessEnv; readonly platform: NodeJS.Platform },
 ): Effect.fn.Return<string, CommandResolutionError, FileSystem.FileSystem | Path.Path> {
   const path = yield* Path.Path;
   const platform = options.platform;
-  const env = options.env ?? process.env;
+  const env = options.env;
   const windowsPathExtensions = platform === "win32" ? resolveWindowsPathExtensions(env) : [];
   const commandCandidates = resolveCommandCandidates(
     command,
@@ -535,7 +529,7 @@ const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlat
 
   if (command.includes("/") || command.includes("\\")) {
     for (const candidate of commandCandidates) {
-      if (yield* isExecutableFile(candidate, platform, windowsPathExtensions)) {
+      if (yield* isExecutableFile(candidate, platform)) {
         return candidate;
       }
     }
@@ -557,7 +551,7 @@ const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlat
   for (const pathEntry of pathEntries) {
     for (const candidate of commandCandidates) {
       const candidatePath = path.join(pathEntry, candidate);
-      if (yield* isExecutableFile(candidatePath, platform, windowsPathExtensions)) {
+      if (yield* isExecutableFile(candidatePath, platform)) {
         return candidatePath;
       }
     }
@@ -639,13 +633,11 @@ function readWindowsEnvironmentSafely(
 
 function mergeWindowsEnv(
   currentEnv: NodeJS.ProcessEnv,
-  patch: Partial<Record<string, string>>,
+  patch: Readonly<Record<string, string>>,
 ): NodeJS.ProcessEnv {
   const nextEnv: NodeJS.ProcessEnv = { ...currentEnv };
   for (const [key, value] of Object.entries(patch)) {
-    if (value !== undefined) {
-      nextEnv[key] = value;
-    }
+    nextEnv[key] = value;
   }
   return nextEnv;
 }
@@ -662,7 +654,7 @@ export const resolveWindowsEnvironment = Effect.fn("shell.resolveWindowsEnvironm
   const mergedPath = mergePathValues(shellPath, inheritedPath, "win32");
   const knownCliPath = resolveKnownWindowsCliDirs(env).join(WINDOWS_PATH_DELIMITER);
   const baselinePath = mergePathValues(knownCliPath, mergedPath, "win32");
-  const baselinePatch: Partial<NodeJS.ProcessEnv> = baselinePath ? { PATH: baselinePath } : {};
+  const baselinePatch: Record<string, string> = baselinePath ? { PATH: baselinePath } : {};
   const baselineEnv = mergeWindowsEnv(env, baselinePatch);
 
   if (yield* commandAvailable("node", { env: baselineEnv })) {

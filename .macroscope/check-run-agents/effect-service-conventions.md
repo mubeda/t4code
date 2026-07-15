@@ -40,7 +40,7 @@ Review changed TypeScript and directly affected call sites for the conventions b
 - Export a real `make` when the module owns construction. Do not create `make = Effect.succeed(...)` solely to force `Layer.effect`.
 - Export the canonical layer as `export const layer = Layer...`. `Layer.effect` is not required: use `Layer.succeed`, `Layer.scoped`, or another appropriate constructor when that matches the implementation.
 - In a concrete implementation module already named for the implementation, use plain `make` and `layer` (for example `BunPtyAdapter.ts` and `NodePtyAdapter.ts`).
-- Keep implementation-specific names when an abstract port module contains one of several possible implementations, for example `makeCloudflaredRelayClient` and `layerCloudflared` in `RelayClient.ts`.
+- Keep implementation-specific names when an abstract port module contains one of several possible implementations, for example `makeNative` and `layerNative` in an abstract adapter module.
 - `infra/relay/src/db.ts` is an intentional exception: an inline `Layer.succeed(RelayDb, db)` is acceptable without generic `make`/`layer` exports.
 
 ## Errors and predicates
