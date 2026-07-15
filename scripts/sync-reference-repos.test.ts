@@ -4,14 +4,19 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import { Command } from "effect/unstable/cli";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { referenceRepos } from "./lib/reference-repos.ts";
 import {
   planReferenceRepoSync,
   resolveReferenceRepoRef,
+  runSyncReferenceReposMain,
+  isReferenceRepoSyncError,
+  syncReferenceReposCommand,
   syncReferenceRepos,
 } from "./sync-reference-repos.ts";
 
@@ -24,17 +29,26 @@ function mockHandle(
     readonly exitCode?: number;
     readonly stdout?: string;
     readonly stderr?: string;
+    readonly stdoutError?: PlatformError.PlatformError;
+    readonly stderrError?: PlatformError.PlatformError;
+    readonly exitError?: PlatformError.PlatformError;
   } = {},
 ) {
   return ChildProcessSpawner.makeHandle({
     pid: ChildProcessSpawner.ProcessId(1),
-    exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(options.exitCode ?? 0)),
+    exitCode: options.exitError
+      ? Effect.fail(options.exitError)
+      : Effect.succeed(ChildProcessSpawner.ExitCode(options.exitCode ?? 0)),
     isRunning: Effect.succeed(false),
     kill: () => Effect.void,
     unref: Effect.succeed(Effect.void),
     stdin: Sink.drain,
-    stdout: Stream.make(encoder.encode(options.stdout ?? "done\n")),
-    stderr: Stream.make(encoder.encode(options.stderr ?? "")),
+    stdout: options.stdoutError
+      ? Stream.fail(options.stdoutError)
+      : Stream.make(encoder.encode(options.stdout ?? "done\n")),
+    stderr: options.stderrError
+      ? Stream.fail(options.stderrError)
+      : Stream.make(encoder.encode(options.stderr ?? "")),
     all: Stream.empty,
     getInputFd: () => Sink.drain,
     getOutputFd: () => Stream.empty,
@@ -158,6 +172,11 @@ it.layer(NodeServices.layer)("sync-reference-repos", (it) => {
       assert.equal(error.sourcePath, sourcePath);
       assert.deepStrictEqual(error.packageVersionPath, ["dependencies", "alchemy"]);
       assert.ok(!("cause" in error));
+      assert.equal(
+        error.message,
+        `No version was found for reference repo "${alchemyEffect.id}" at ${sourcePath}:dependencies.alchemy.`,
+      );
+      assert.isTrue(isReferenceRepoSyncError(error));
     }),
   );
 
@@ -203,6 +222,138 @@ it.layer(NodeServices.layer)("sync-reference-repos", (it) => {
 
       yield* fs.makeDirectory(path.join(rootDir, effectSmol.prefix), { recursive: true });
       assert.equal((yield* planReferenceRepoSync(effectSmol, rootDir, false)).action, "pull");
+    }),
+  );
+
+  it.effect("rejects unsafe prefixes and prune paths before filesystem planning", () =>
+    Effect.gen(function* () {
+      const invalidPrefixes = [
+        "",
+        ".repos",
+        ".repos/",
+        ".repos//escape",
+        ".repos/./escape",
+        ".repos/../escape",
+        "/absolute",
+        "C:/absolute",
+        "//server/share",
+        ".repos\\escape",
+        ".repos/CON",
+        ".repos/prn.txt",
+        ".repos/AuX.log",
+        ".repos/NUL",
+        ".repos/com1.json",
+        ".repos/COM9",
+        ".repos/lpt1.cache",
+        ".repos/LPT9",
+        ".repos/trailing.",
+        ".repos/trailing ",
+        ".repos/data:stream",
+        ".repos/control\u0001name",
+        ".repos/delete\u007fname",
+        ".repos/less<than",
+        ".repos/greater>than",
+        '.repos/double"quote',
+        ".repos/pipe|name",
+        ".repos/question?mark",
+        ".repos/star*name",
+      ];
+      const invalidPrunePaths = [
+        "",
+        ".",
+        "..",
+        "nested/../escape",
+        "nested//escape",
+        "nested/./escape",
+        "nested/",
+        "/absolute",
+        "C:/absolute",
+        "//server/share",
+        "nested\\escape",
+        ".repos/another-subtree",
+        "CON",
+        "nested/prn.txt",
+        "AuX.log",
+        "NUL",
+        "com1.json",
+        "COM9",
+        "lpt1.cache",
+        "LPT9",
+        "nested/trailing.",
+        "nested/trailing ",
+        "nested/data:stream",
+        "nested/control\u0001name",
+        "nested/delete\u007fname",
+        "nested/less<than",
+        "nested/greater>than",
+        'nested/double"quote',
+        "nested/pipe|name",
+        "nested/question?mark",
+        "nested/star*name",
+      ];
+      let existsCalled = false;
+      const rejectingFileSystem = FileSystem.makeNoop({
+        exists: () => {
+          existsCalled = true;
+          return Effect.succeed(false);
+        },
+      });
+
+      for (const prefix of invalidPrefixes) {
+        const error = yield* planReferenceRepoSync({ ...effectSmol, prefix }, "/repo", true).pipe(
+          Effect.provideService(FileSystem.FileSystem, rejectingFileSystem),
+          Effect.flip,
+        );
+        if (error._tag !== "ReferenceRepoPathValidationError") {
+          assert.fail(`Expected ReferenceRepoPathValidationError, got ${error._tag}`);
+        }
+        assert.equal(error.field, "prefix");
+        assert.equal(error.value, prefix);
+        assert.include(error.message, `unsafe prefix path "${prefix}"`);
+      }
+
+      for (const prunePath of invalidPrunePaths) {
+        const error = yield* planReferenceRepoSync(
+          { ...effectSmol, prunePaths: [prunePath] },
+          "/repo",
+          true,
+        ).pipe(Effect.provideService(FileSystem.FileSystem, rejectingFileSystem), Effect.flip);
+        if (error._tag !== "ReferenceRepoPathValidationError") {
+          assert.fail(`Expected ReferenceRepoPathValidationError, got ${error._tag}`);
+        }
+        assert.equal(error.field, "prunePath");
+        assert.equal(error.value, prunePath);
+      }
+
+      assert.isFalse(existsCalled);
+    }),
+  );
+
+  it.effect("accepts normalized dotted and hyphenated subtree paths", () =>
+    Effect.gen(function* () {
+      const plan = yield* planReferenceRepoSync(
+        {
+          ...effectSmol,
+          prefix: ".repos/effect-smol.v2",
+          prunePaths: ["docs.v2/read-me", "packages/effect-core"],
+        },
+        "/repo",
+        true,
+      ).pipe(
+        Effect.provideService(
+          FileSystem.FileSystem,
+          FileSystem.makeNoop({ exists: () => Effect.succeed(false) }),
+        ),
+      );
+
+      assert.deepStrictEqual(plan.args, [
+        "subtree",
+        "add",
+        "--prefix=.repos/effect-smol.v2",
+        effectSmol.repository,
+        effectSmol.latestRef,
+        "--squash",
+      ]);
     }),
   );
 
@@ -297,6 +448,11 @@ it.layer(NodeServices.layer)("sync-reference-repos", (it) => {
       assert.equal(error.repoId, "missing");
       assert.deepStrictEqual(error.expectedRepoIds, ["effect-smol", "alchemy-effect"]);
       assert.ok(!("cause" in error));
+      assert.equal(
+        error.message,
+        'Unknown reference repo "missing". Expected one of: effect-smol, alchemy-effect.',
+      );
+      assert.isTrue(isReferenceRepoSyncError(error));
     }),
   );
 
@@ -341,6 +497,153 @@ it.layer(NodeServices.layer)("sync-reference-repos", (it) => {
       assert.notProperty(error, "stderr");
       assert.notInclude(error.message, "secret-token-value");
       assert.ok(!("cause" in error));
+      assert.equal(
+        error.message,
+        'Git subtree add for reference repo "effect-smol" failed during "exit".',
+      );
     });
   });
+
+  it.effect("dry-runs every configured repository from latest refs without spawning git", () => {
+    let spawned = false;
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const rootDir = yield* fs.makeTempDirectoryScoped({ prefix: "sync-all-dry-" });
+      const plans = yield* syncReferenceRepos({ rootDir, latest: true, dryRun: true }).pipe(
+        Effect.provide(
+          Layer.succeed(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make(() => {
+              spawned = true;
+              return Effect.die("dry run spawned git");
+            }),
+          ),
+        ),
+      );
+
+      assert.isFalse(spawned);
+      assert.deepStrictEqual(
+        plans.map(({ repo, ref }) => [repo.id, ref]),
+        [
+          ["effect-smol", "main"],
+          ["alchemy-effect", "main"],
+        ],
+      );
+    });
+  });
+
+  it.effect("maps public CLI flags into a dry-run sync plan", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const rootDir = yield* fs.makeTempDirectoryScoped({ prefix: "sync-cli-" });
+      yield* Command.runWith(syncReferenceReposCommand, { version: "0.0.0" })([
+        "--repo",
+        "effect-smol",
+        "--latest",
+        "--root",
+        rootDir,
+        "--dry-run",
+      ]);
+      assert.isFalse(yield* fs.exists(path.join(rootDir, effectSmol.prefix)));
+    }),
+  );
+
+  it.effect("uses process.cwd defaults and suppresses empty git stdout", () => {
+    const commands: Array<{ readonly command: string; readonly args: ReadonlyArray<string> }> = [];
+    return Effect.gen(function* () {
+      const plans = yield* syncReferenceRepos({ repoId: "effect-smol", latest: true }).pipe(
+        Effect.provide(mockSpawnerLayer(commands, mockHandle({ stdout: "   \n" }))),
+      );
+      assert.lengthOf(plans, 1);
+      assert.equal(commands[0]?.command, "git");
+    });
+  });
+
+  it.effect("maps git spawn and communication failures with safe context", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const rootDir = yield* fs.makeTempDirectoryScoped({ prefix: "sync-errors-" });
+      const cause = PlatformError.systemError({
+        _tag: "Unknown",
+        module: "ChildProcess",
+        method: "spawn",
+      });
+      const spawnError = yield* syncReferenceRepos({
+        rootDir,
+        repoId: "effect-smol",
+        latest: true,
+      }).pipe(
+        Effect.provide(
+          Layer.succeed(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make(() => Effect.fail(cause)),
+          ),
+        ),
+        Effect.flip,
+      );
+      assert.equal(spawnError._tag, "ReferenceRepoGitSubtreeError");
+      if (spawnError._tag !== "ReferenceRepoGitSubtreeError") {
+        return assert.fail(`Unexpected error: ${spawnError._tag}`);
+      }
+      assert.equal(spawnError.operation, "spawn");
+      assert.strictEqual(spawnError.cause, cause);
+
+      for (const handle of [
+        mockHandle({ stdoutError: cause }),
+        mockHandle({ stderrError: cause }),
+        mockHandle({ exitError: cause }),
+      ]) {
+        const communicateError = yield* syncReferenceRepos({
+          rootDir,
+          repoId: "effect-smol",
+          latest: true,
+        }).pipe(Effect.provide(mockSpawnerLayer([], handle)), Effect.flip);
+        assert.equal(communicateError._tag, "ReferenceRepoGitSubtreeError");
+        if (communicateError._tag !== "ReferenceRepoGitSubtreeError") {
+          return assert.fail(`Unexpected error: ${communicateError._tag}`);
+        }
+        assert.equal(communicateError.operation, "communicate");
+        assert.strictEqual(communicateError.cause, cause);
+      }
+    }),
+  );
+
+  it.effect("rejects missing, null, non-string, and empty nested package versions", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const rootDir = yield* fs.makeTempDirectoryScoped({ prefix: "sync-version-shapes-" });
+      const repo = {
+        ...alchemyEffect,
+        versionSourcePath: "version.json",
+        packageVersionPath: ["outer", "version"],
+      };
+      const sourcePath = path.join(rootDir, repo.versionSourcePath);
+
+      for (const source of [
+        "{}",
+        '{"outer":null}',
+        '{"outer":{"version":7}}',
+        '{"outer":{"version":""}}',
+      ]) {
+        yield* fs.writeFileString(sourcePath, source);
+        const error = yield* resolveReferenceRepoRef(repo, rootDir, false).pipe(Effect.flip);
+        assert.equal(error._tag, "ReferenceRepoVersionResolutionError");
+        assert.equal(
+          error.message,
+          `No version was found for reference repo "${repo.id}" at ${sourcePath}:outer.version.`,
+        );
+        assert.isTrue(isReferenceRepoSyncError(error));
+      }
+    }),
+  );
+});
+
+it("does not launch on import and launches once for direct execution", () => {
+  const programs: Array<object> = [];
+  const launch = <E, A>(program: Effect.Effect<A, E, never>) => programs.push(program);
+  assert.isFalse(runSyncReferenceReposMain(false, launch));
+  assert.isTrue(runSyncReferenceReposMain(true, launch));
+  assert.lengthOf(programs, 1);
 });

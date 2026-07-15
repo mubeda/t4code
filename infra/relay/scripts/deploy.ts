@@ -19,11 +19,15 @@ import { PlatformServices } from "alchemy/Util/PlatformServices";
 import * as Config from "effect/Config";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Console from "effect/Console";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
+import { constant } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { Command, Flag, Prompt } from "effect/unstable/cli";
@@ -76,6 +80,17 @@ export class RelayDeployPublicConfigUnavailableError extends Schema.TaggedErrorC
   }
 }
 
+export class RelayDeployEnvFilePathError extends Schema.TaggedErrorClass<RelayDeployEnvFilePathError>()(
+  "RelayDeployEnvFilePathError",
+  {
+    path: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Relay env file path must stay within the relay root and use a safe relative file name: '${this.path}'.`;
+  }
+}
+
 export interface RelayDeployOptions {
   readonly dryRun: boolean;
   readonly force: boolean;
@@ -95,6 +110,12 @@ export interface RelayPublicConfig {
   readonly clientTracingToken: string;
 }
 
+const assertSingleLineEnvironmentValue = (value: string, errorMessage: string) => {
+  if (/[\r\n]/u.test(value)) {
+    throw new Error(errorMessage);
+  }
+};
+
 const publicConfigEnvEntries = (config: RelayPublicConfig) =>
   ({
     T4CODE_RELAY_URL: config.relayUrl,
@@ -104,21 +125,42 @@ const publicConfigEnvEntries = (config: RelayPublicConfig) =>
   }) as const;
 
 export function reconcileRootEnvPublicConfig(contents: string, config: RelayPublicConfig): string {
-  let next = contents;
-  for (const [name, value] of Object.entries(publicConfigEnvEntries(config))) {
-    const entry = `${name}=${value}`;
-    const pattern = new RegExp(`^${name}=.*$`, "mu");
-    if (pattern.test(next)) {
-      next = next.replace(pattern, entry);
-      continue;
-    }
-    if (!next) {
-      next = `${entry}\n`;
-      continue;
-    }
-    next = `${next}${next.endsWith("\n") ? "" : "\n"}${entry}\n`;
+  const entries = Object.entries(publicConfigEnvEntries(config));
+  for (const [, value] of entries) {
+    assertSingleLineEnvironmentValue(
+      value,
+      "Relay deployment environment values cannot contain line breaks.",
+    );
   }
-  return next;
+  const values = new Map(entries);
+  const assignment = new RegExp(
+    `^\\s*(?:export\\s+)?(${entries.map(([name]) => name).join("|")})\\s*(?:=|:)`,
+    "u",
+  );
+  const lines = contents.length === 0 ? [] : contents.split(/\r?\n/u);
+  if (/\r?\n$/u.test(contents)) {
+    lines.pop();
+  }
+  const seen = new Set<string>();
+  const next: Array<string> = [];
+  for (const line of lines) {
+    const match = assignment.exec(line);
+    if (match === null) {
+      next.push(line);
+      continue;
+    }
+    const name = match[1]!;
+    if (!seen.has(name)) {
+      next.push(`${name}=${values.get(name)}`);
+      seen.add(name);
+    }
+  }
+  for (const [name, value] of entries) {
+    if (!seen.has(name)) {
+      next.push(`${name}=${value}`);
+    }
+  }
+  return `${next.join("\n")}\n`;
 }
 
 export function reconcileRootEnvRelayUrl(contents: string, relayUrl: string): string {
@@ -149,9 +191,40 @@ export interface RelayDeployOutcome {
   readonly publicConfig: Option.Option<RelayPublicConfig>;
 }
 
+export interface RelayProvisioningRequirements {
+  readonly adopt: boolean;
+  readonly configProvider: ConfigProvider.ConfigProvider;
+  readonly dryRun: boolean;
+  readonly force: boolean;
+  readonly stage: string;
+  readonly yes: boolean;
+}
+
+export class RelayDeployOperations extends Context.Service<
+  RelayDeployOperations,
+  {
+    readonly apply: typeof Apply.apply;
+    readonly cli: Effect.Effect<Cli["Service"], never, Cli>;
+    readonly confirm: typeof Prompt.confirm;
+    readonly makePlan: typeof Plan.make;
+    readonly runPrompt: typeof Prompt.run;
+    readonly stack: (requirements: RelayProvisioningRequirements) => typeof RelayStack;
+    readonly state: typeof Cloudflare.state;
+  }
+>()("t4code-relay/scripts/deploy/RelayDeployOperations") {}
+
 export function serializeGithubOutput(entries: Readonly<Record<string, string | boolean>>): string {
   return Object.entries(entries)
-    .map(([key, value]) => `${key}=${value}\n`)
+    .map(([key, value]) => {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key)) {
+        throw new Error("GitHub output keys must be portable environment identifiers.");
+      }
+      assertSingleLineEnvironmentValue(
+        String(value),
+        "GitHub output values cannot contain line breaks.",
+      );
+      return `${key}=${value}\n`;
+    })
     .join("");
 }
 
@@ -173,15 +246,49 @@ const repoRoot = Effect.service(Path.Path).pipe(
 const loadDeployConfigProvider = Effect.fn("relay.deploy.loadConfigProvider")(function* (
   envFileOverride: Option.Option<string>,
 ) {
+  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const root = yield* relayRoot;
 
   if (Option.isSome(envFileOverride)) {
-    return yield* ConfigProvider.fromDotEnv({ path: path.resolve(root, envFileOverride.value) });
+    const envFile = envFileOverride.value;
+    const segments = envFile.split(/[\\/]/u);
+    const hasUnsafeSyntax =
+      envFile.length === 0 ||
+      envFile.includes("\0") ||
+      envFile.includes(":") ||
+      path.isAbsolute(envFile) ||
+      /^[\\/]/u.test(envFile) ||
+      segments.some(
+        (segment) =>
+          segment === "" ||
+          segment === "." ||
+          segment === ".." ||
+          /[. ]$/u.test(segment) ||
+          /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(segment),
+      );
+    if (hasUnsafeSyntax) {
+      return yield* new RelayDeployEnvFilePathError({ path: envFile });
+    }
+    const canonicalRoot = yield* fs.realPath(root);
+    const canonicalEnvFile = yield* fs.realPath(path.resolve(root, envFile));
+    const relative = path.relative(canonicalRoot, canonicalEnvFile);
+    if (
+      relative === "" ||
+      relative === ".." ||
+      path.isAbsolute(relative) ||
+      relative.startsWith(`..${path.sep}`)
+    ) {
+      return yield* new RelayDeployEnvFilePathError({ path: envFile });
+    }
+    return yield* ConfigProvider.fromDotEnv({ path: canonicalEnvFile });
   }
 
   return yield* ConfigProvider.fromDotEnv({ path: path.join(root, ".env") }).pipe(
-    Effect.orElseSucceed(() => ConfigProvider.fromEnv()),
+    Effect.catchIf(
+      (error) => error instanceof PlatformError.PlatformError && error.reason._tag === "NotFound",
+      () => Effect.succeed(ConfigProvider.fromEnv()),
+    ),
   );
 });
 
@@ -192,27 +299,46 @@ const relayDeployStage = Config.nonEmptyString("stage").pipe(
   ),
 );
 
-const reconcileRootEnv = Effect.fn("relay.deploy.reconcileRootEnv")(function* (
+interface ReplaceFileMutation {
+  readonly _tag: "Replace";
+  readonly contents: string;
+  readonly original: Option.Option<string>;
+  readonly path: string;
+}
+
+const readOptionalFile = Effect.fn("relay.deploy.readOptionalFile")(function* (path: string) {
+  const fs = yield* FileSystem.FileSystem;
+  return (yield* fs.exists(path)) ? Option.some(yield* fs.readFileString(path)) : Option.none();
+});
+
+const prepareRootEnv = Effect.fn("relay.deploy.prepareRootEnv")(function* (
   config: RelayPublicConfig,
 ) {
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const root = yield* repoRoot;
   const rootEnvPath = path.join(root, ".env");
-  const contents = (yield* fs.exists(rootEnvPath)) ? yield* fs.readFileString(rootEnvPath) : "";
-
-  yield* fs.writeFileString(rootEnvPath, reconcileRootEnvPublicConfig(contents, config));
-  yield* Console.log(`Updated ${rootEnvPath} with relay public client configuration`);
+  const original = yield* readOptionalFile(rootEnvPath);
+  return {
+    _tag: "Replace",
+    contents: reconcileRootEnvPublicConfig(
+      Option.getOrElse(original, () => ""),
+      config,
+    ),
+    original,
+    path: rootEnvPath,
+  } satisfies ReplaceFileMutation;
 });
 
-const writeGithubOutput = Effect.fn("relay.deploy.writeGithubOutput")(function* (
+const prepareGithubOutput = Effect.fn("relay.deploy.prepareGithubOutput")(function* (
   outcome: RelayDeployOutcome,
 ) {
-  const fs = yield* FileSystem.FileSystem;
   const githubOutputPath = yield* Config.nonEmptyString("GITHUB_OUTPUT");
-  yield* fs.writeFileString(
-    githubOutputPath,
-    serializeGithubOutput({
+  const original = yield* readOptionalFile(githubOutputPath);
+  const existing = Option.getOrElse(original, () => "");
+  const separator = existing.length > 0 && !/\r?\n$/u.test(existing) ? "\n" : "";
+  return {
+    _tag: "Replace",
+    contents: `${existing}${separator}${serializeGithubOutput({
       changed: outcome.changed,
       result: outcome.result,
       ...(Option.isSome(outcome.publicConfig)
@@ -220,12 +346,13 @@ const writeGithubOutput = Effect.fn("relay.deploy.writeGithubOutput")(function* 
             relay_url: outcome.publicConfig.value.relayUrl,
           }
         : {}),
-    }),
-    { flag: "a" },
-  );
+    })}`,
+    original,
+    path: githubOutputPath,
+  } satisfies ReplaceFileMutation;
 });
 
-const writeGithubEnvFile = Effect.fn("relay.deploy.writeGithubEnvFile")(function* (
+const prepareGithubEnvFile = Effect.fn("relay.deploy.prepareGithubEnvFile")(function* (
   outcome: RelayDeployOutcome,
   outputPath: string,
   stage: string,
@@ -237,12 +364,76 @@ const writeGithubEnvFile = Effect.fn("relay.deploy.writeGithubEnvFile")(function
       outputPath,
     });
   }
+  return {
+    _tag: "Replace",
+    contents: serializeRelayClientTracingEnvironment(outcome.publicConfig.value),
+    original: yield* readOptionalFile(outputPath),
+    path: outputPath,
+  } satisfies ReplaceFileMutation;
+});
+
+interface StagedFileMutation {
+  readonly backupPath: Option.Option<string>;
+  readonly mutation: ReplaceFileMutation;
+  readonly stagedPath: string;
+}
+
+const commitFileTransaction = Effect.fn("relay.deploy.commitFileTransaction")(function* (
+  mutations: ReadonlyArray<ReplaceFileMutation>,
+) {
   const fs = yield* FileSystem.FileSystem;
-  yield* Console.log(`::add-mask::${outcome.publicConfig.value.clientTracingToken}`);
-  yield* fs.writeFileString(
-    outputPath,
-    serializeRelayClientTracingEnvironment(outcome.publicConfig.value),
+  const path = yield* Path.Path;
+  const temporaryPaths: Array<string> = [];
+  const staged: Array<StagedFileMutation> = [];
+  const committed: Array<StagedFileMutation> = [];
+  const cleanup = Effect.forEach(
+    temporaryPaths,
+    (temporaryPath) => fs.remove(temporaryPath, { force: true }).pipe(Effect.ignore),
+    { discard: true },
   );
+
+  const transaction = Effect.gen(function* () {
+    for (const mutation of mutations) {
+      const stagedPath = yield* fs.makeTempFile({
+        directory: path.dirname(mutation.path),
+        prefix: `.${path.basename(mutation.path)}.relay-deploy-`,
+      });
+      temporaryPaths.push(stagedPath);
+      yield* fs.writeFileString(stagedPath, mutation.contents);
+      let backupPath = Option.none<string>();
+      if (Option.isSome(mutation.original)) {
+        const backup = yield* fs.makeTempFile({
+          directory: path.dirname(mutation.path),
+          prefix: `.${path.basename(mutation.path)}.relay-backup-`,
+        });
+        temporaryPaths.push(backup);
+        yield* fs.writeFileString(backup, mutation.original.value);
+        backupPath = Option.some(backup);
+      }
+      staged.push({ backupPath, mutation, stagedPath });
+    }
+
+    const commit = Effect.gen(function* () {
+      for (const entry of staged) {
+        committed.push(entry);
+        yield* fs.rename(entry.stagedPath, entry.mutation.path);
+      }
+    });
+
+    const commitExit = yield* Effect.exit(Effect.uninterruptible(commit));
+    if (Exit.isFailure(commitExit)) {
+      for (const entry of committed.toReversed()) {
+        if (Option.isSome(entry.backupPath)) {
+          yield* fs.rename(entry.backupPath.value, entry.mutation.path);
+        } else {
+          yield* fs.remove(entry.mutation.path, { force: true });
+        }
+      }
+      return yield* Effect.failCause(commitExit.cause);
+    }
+  });
+
+  yield* transaction.pipe(Effect.ensuring(cleanup));
 });
 
 const deployBaseServices = Layer.mergeAll(
@@ -254,8 +445,6 @@ const deployBaseServices = Layer.mergeAll(
   TelemetryLive,
   LoggingCli,
 );
-const deployServices = deployBaseServices;
-
 function relayPublicConfigValues(
   output: unknown,
 ): Readonly<Record<RelayDeployOutputField, string | undefined>> {
@@ -336,14 +525,22 @@ const readRelayPublicConfig = Effect.fn("relay.deploy.readState")(function* (sta
 const runRelayDeploy = Effect.fn("relay.deploy.run")(
   function* (
     options: RelayDeployOptions,
-    _configProvider: ConfigProvider.ConfigProvider,
+    configProvider: ConfigProvider.ConfigProvider,
     stage: string,
+    operations: RelayDeployOperations["Service"],
   ) {
-    const stack = yield* RelayStack;
-    const cli = yield* Cli;
-    const plan = yield* Plan.make(stack, { force: options.force }).pipe(
-      Effect.provide(stack.services),
-    );
+    const stack = yield* operations.stack({
+      adopt: options.adopt,
+      configProvider,
+      dryRun: options.dryRun,
+      force: options.force,
+      stage,
+      yes: options.yes,
+    });
+    const cli = yield* operations.cli;
+    const plan = yield* operations
+      .makePlan(stack, { force: options.force })
+      .pipe(Effect.provide(stack.services));
     const changed = hasDeployChanges(plan);
     if (options.dryRun) {
       yield* cli.displayPlan(plan);
@@ -355,13 +552,12 @@ const runRelayDeploy = Effect.fn("relay.deploy.run")(
     }
     if (!options.yes && changed) {
       yield* cli.displayPlan(plan);
-      const approved = yield* Prompt.run(
-        Prompt.confirm({
+      const approved = yield* operations.runPrompt(
+        operations.confirm({
           message: "Apply this relay deployment?",
         }),
       );
       if (!approved) {
-        yield* Console.log("Deployment cancelled.");
         return {
           result: "cancelled",
           changed,
@@ -369,7 +565,7 @@ const runRelayDeploy = Effect.fn("relay.deploy.run")(
         } satisfies RelayDeployOutcome;
       }
     }
-    const output = yield* Apply.apply(plan).pipe(Effect.provide(stack.services));
+    const output = yield* operations.apply(plan).pipe(Effect.provide(stack.services));
     const publicConfig = publicConfigFromOutput(output);
     if (publicConfig === null) {
       return yield* new RelayDeployError({
@@ -384,7 +580,7 @@ const runRelayDeploy = Effect.fn("relay.deploy.run")(
       publicConfig: Option.some(publicConfig),
     } satisfies RelayDeployOutcome;
   },
-  (effect, options, configProvider, stage) =>
+  (effect, options, configProvider, stage, _operations) =>
     effect.pipe(
       Effect.provide(
         Layer.mergeAll(
@@ -402,23 +598,60 @@ const runRelayDeploy = Effect.fn("relay.deploy.run")(
     ),
 );
 
+const relayDeployOperationsLive = Layer.succeed(
+  RelayDeployOperations,
+  RelayDeployOperations.of({
+    apply: Apply.apply,
+    cli: Cli,
+    confirm: Prompt.confirm,
+    makePlan: Plan.make,
+    runPrompt: Prompt.run,
+    stack: constant(RelayStack),
+    state: Cloudflare.state,
+  }),
+);
+
+const deployServices = Layer.merge(deployBaseServices, relayDeployOperationsLive);
+
 export const deploy = Effect.fn("relay.deploy")(function* (options: RelayDeployOptions) {
   const configProvider = yield* loadDeployConfigProvider(options.envFile);
   const configuredStage = yield* relayDeployStage.pipe(
     Effect.provide(ConfigProvider.layer(configProvider)),
   );
   const stage = Option.getOrElse(options.stage, () => configuredStage);
+  const operations = yield* RelayDeployOperations;
   const outcome = options.readState
-    ? yield* readRelayPublicConfig(stage).pipe(Effect.provide(Cloudflare.state()))
-    : yield* runRelayDeploy(options, configProvider, stage);
+    ? yield* readRelayPublicConfig(stage).pipe(
+        Effect.provide(
+          operations.state().pipe(Layer.provideMerge(ConfigProvider.layer(configProvider))),
+        ),
+      )
+    : yield* runRelayDeploy(options, configProvider, stage, operations);
+  if (outcome.result === "cancelled") {
+    yield* Console.log("Deployment cancelled.");
+  }
+  const mutations: Array<ReplaceFileMutation> = [];
+  let githubEnvMutation = Option.none<ReplaceFileMutation>();
+  if (Option.isSome(options.githubEnvFile)) {
+    const mutation = yield* prepareGithubEnvFile(outcome, options.githubEnvFile.value, stage);
+    githubEnvMutation = Option.some(mutation);
+    mutations.push(mutation);
+  }
+  let rootMutation = Option.none<ReplaceFileMutation>();
   if (Option.isSome(outcome.publicConfig)) {
-    yield* reconcileRootEnv(outcome.publicConfig.value);
+    const mutation = yield* prepareRootEnv(outcome.publicConfig.value);
+    rootMutation = Option.some(mutation);
+    mutations.push(mutation);
   }
   if (options.githubOutput) {
-    yield* writeGithubOutput(outcome);
+    mutations.push(yield* prepareGithubOutput(outcome));
   }
-  if (Option.isSome(options.githubEnvFile)) {
-    yield* writeGithubEnvFile(outcome, options.githubEnvFile.value, stage);
+  yield* commitFileTransaction(mutations);
+  if (Option.isSome(rootMutation)) {
+    yield* Console.log(`Updated ${rootMutation.value.path} with relay public client configuration`);
+  }
+  if (Option.isSome(githubEnvMutation) && Option.isSome(outcome.publicConfig)) {
+    yield* Console.log(`::add-mask::${outcome.publicConfig.value.clientTracingToken}`);
   }
 });
 

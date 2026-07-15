@@ -76,7 +76,6 @@ export function parseKeybindingShortcut(value: string): KeybindingShortcut | nul
   if (tokens.some((token) => token.length === 0)) {
     return null;
   }
-  if (tokens.length === 0) return null;
 
   let key: string | null = null;
   let metaKey = false;
@@ -128,8 +127,7 @@ function tokenizeWhenExpression(expression: string): WhenToken[] | null {
   let index = 0;
 
   while (index < expression.length) {
-    const current = expression[index];
-    if (!current) break;
+    const current = expression[index]!;
 
     if (/\s/.test(current)) {
       index += 1;

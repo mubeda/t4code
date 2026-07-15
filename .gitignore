@@ -29,6 +29,7 @@ apps/web/.playwright
 apps/web/playwright-report
 apps/web/src/components/__screenshots__
 .vitest-*
+coverage/
 __screenshots__/
 .tanstack
 squashfs-root/
@@ -68,3 +69,4 @@ node_modules/
 output/
 /.plans
 docs/superpowers/
+.tmp/

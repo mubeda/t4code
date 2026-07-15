@@ -88,6 +88,14 @@ interface RouteManifest {
 }
 
 type RuntimeSchema = Schema.Codec<unknown, unknown, never, never>;
+type RuntimeRoundTrip = (value: unknown) => unknown;
+
+const roundTripCompilers = new WeakMap<Schema.Top, RuntimeRoundTrip>();
+const compileRoundTrip = (codec: RuntimeSchema): RuntimeRoundTrip => {
+  const decode = Schema.decodeUnknownSync(codec);
+  const encode = Schema.encodeUnknownSync(codec);
+  return (value) => encode(decode(value));
+};
 
 const fingerprintAst = (ast: SchemaAST.AST): string =>
   NodeCrypto.createHash("sha256").update(JSON.stringify(ast)).digest("hex");
@@ -221,8 +229,13 @@ const errors = stableErrors.map(([schema, fixture]) => ({
 }));
 
 const roundTripEncoded = (schema: Schema.Top, value: unknown): unknown => {
-  const codec = Schema.toCodecJson(schema as RuntimeSchema) as RuntimeSchema;
-  return Schema.encodeUnknownSync(codec)(Schema.decodeUnknownSync(codec)(value));
+  let roundTrip = roundTripCompilers.get(schema);
+  if (roundTrip === undefined) {
+    const codec = Schema.toCodecJson(schema as RuntimeSchema) as RuntimeSchema;
+    roundTrip = compileRoundTrip(codec);
+    roundTripCompilers.set(schema, roundTrip);
+  }
+  return roundTrip(value);
 };
 
 const jsonFixtures = new Map<string, unknown>();

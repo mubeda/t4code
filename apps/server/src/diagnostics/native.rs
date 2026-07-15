@@ -97,7 +97,7 @@ fn collect_rows(system: &Arc<Mutex<System>>) -> Result<Vec<ProcessRow>, Sampling
         .iter()
         .filter_map(|(pid, process)| {
             let pid = pid.as_u32();
-            (pid != 0).then(|| {
+            (pid != 0 && process.thread_kind().is_none()).then(|| {
                 let raw_cpu = process.cpu_usage().max(0.0);
                 ProcessRow {
                     pid,
@@ -185,4 +185,29 @@ pub enum SignalError {
     Rejected(u32),
     #[error("failed to read process state: {0}")]
     Read(String),
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn native_sampler_excludes_linux_threads_from_process_rows() {
+        let sampler = NativeProcessSampler::default();
+        let rows = sampler.sample().await.expect("processes should sample");
+        let thread_pids = sampler
+            .system
+            .lock()
+            .expect("system should lock")
+            .processes()
+            .iter()
+            .filter_map(|(pid, process)| process.thread_kind().map(|_| pid.as_u32()))
+            .collect::<Vec<_>>();
+
+        assert!(!thread_pids.is_empty(), "test process should expose threads");
+        assert!(
+            rows.iter().all(|row| !thread_pids.contains(&row.pid)),
+            "sampled process rows must not contain Linux threads"
+        );
+    }
 }

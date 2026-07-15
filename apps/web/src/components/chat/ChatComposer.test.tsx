@@ -424,7 +424,10 @@ function flushQueuedEffects(): void {
 /** Re-run every executed effect: simulates a controlled re-render pass. */
 function reflushExecutedEffects(): void {
   for (const effect of Array.from(h.executed)) {
-    effect();
+    const cleanup = effect();
+    if (typeof cleanup === "function") {
+      h.cleanups.push(cleanup as () => void);
+    }
   }
 }
 
@@ -1064,6 +1067,17 @@ describe("ChatComposer rendering", () => {
     const { markup } = renderComposer({ isPreparingWorktree: true });
     expect(markup).toContain("Preparing worktree...");
   });
+
+  it("forwards interrupt and plan implementation primary actions", () => {
+    const { spies } = renderComposer({ phase: "running", showPlanFollowUpPrompt: true });
+    const actions = lastCapture("ComposerPrimaryActions");
+
+    (actions["onInterrupt"] as () => void)();
+    (actions["onImplementPlanInNewThread"] as () => void)();
+
+    expect(spies.onInterrupt).toHaveBeenCalledOnce();
+    expect(spies.onImplementPlanInNewThread).toHaveBeenCalledOnce();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1173,6 +1187,32 @@ describe("ChatComposer attachments", () => {
     (annotationCards["onRemove"] as (id: string) => void)("ann-1");
     // Removing the last annotation empties the draft, which the store drops.
     expect(draftOf(threadRef)?.previewAnnotations ?? []).toEqual([]);
+  });
+
+  it("expands the image attached to a preview annotation", () => {
+    draftStore().addImages(threadRef, [makeImage({ id: "ann-image" })]);
+    draftStore().setPreviewAnnotations(threadRef, [
+      {
+        id: "ann-image",
+        pageUrl: "http://localhost:3000/",
+        pageTitle: "Preview",
+        comment: "Inspect this",
+        elements: [],
+        regions: [],
+        strokes: [],
+        styleChanges: [],
+        screenshot: null,
+        createdAt: now,
+      },
+    ]);
+
+    const { spies } = renderComposer();
+    const annotationCards = findCapture("ComposerPreviewAnnotationCards");
+    (annotationCards["onExpandImage"] as (id: string) => void)("ann-image");
+
+    expect(spies.onExpandImage).toHaveBeenCalledWith(
+      expect.objectContaining({ index: 0, images: expect.any(Array) }),
+    );
   });
 });
 
@@ -1575,9 +1615,33 @@ describe("ChatComposer prompt changes", () => {
     onChange(`${INLINE_TERMINAL_CONTEXT_PLACEHOLDER} tai`, 4, 4, false, ["ctx-1"]);
     expect(draftOf(threadRef)?.terminalContexts.map((entry) => entry.id)).toEqual(["ctx-1"]);
 
+    // Unknown editor ids are discarded while known contexts retain editor order.
+    onChange(`${INLINE_TERMINAL_CONTEXT_PLACEHOLDER} tai`, 4, 4, false, ["missing", "ctx-1"]);
+    expect(draftOf(threadRef)?.terminalContexts.map((entry) => entry.id)).toEqual(["ctx-1"]);
+
     // Editor dropped the placeholder: the store follows.
     onChange("tail", 4, 4, false, []);
     expect(draftOf(threadRef)?.terminalContexts).toEqual([]);
+  });
+
+  it("removes terminal chips by id and ignores stale removal requests", () => {
+    const first = makeTerminalContext("ctx-first");
+    const second = { ...makeTerminalContext("ctx-second"), terminalId: "term-2" };
+    draftStore().setTerminalContexts(threadRef, [first, second]);
+    seedPrompt(
+      `${INLINE_TERMINAL_CONTEXT_PLACEHOLDER} ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER} tail`,
+    );
+    renderComposer();
+    const remove = editorProps()["onRemoveTerminalContext"] as (id: string) => void;
+
+    remove("missing");
+    expect(draftOf(threadRef)?.terminalContexts.map((entry) => entry.id)).toEqual([
+      "ctx-first",
+      "ctx-second",
+    ]);
+
+    remove("ctx-second");
+    expect(draftOf(threadRef)?.terminalContexts.map((entry) => entry.id)).toEqual(["ctx-first"]);
   });
 
   it("routes edits to the pending input callback while a question is active", () => {

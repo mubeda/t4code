@@ -19,12 +19,38 @@ export interface NightlyReleaseMetadata {
   readonly shortSha: string;
 }
 
-const DateSchema = Schema.String.check(Schema.isPattern(/^\d{8}$/));
+export const isValidNightlyDate = (date: string): boolean => {
+  const match = /^(\d{4})(\d{2})(\d{2})$/.exec(date);
+  if (!match) return false;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (year < 1 || month < 1 || month > 12 || day < 1) return false;
+
+  const isLeapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, isLeapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day <= daysInMonth[month - 1]!;
+};
+
+const DateSchema = Schema.String.check(
+  Schema.makeFilter(
+    (date: string) =>
+      isValidNightlyDate(date) || "Expected a real calendar date in YYYYMMDD format.",
+  ),
+);
 const RunNumberSchema = Schema.FiniteFromString.check(
   Schema.isInt(),
   Schema.isGreaterThanOrEqualTo(1),
 );
 const ShaSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{7,40}$/i));
+const SEMVER_NUMERIC_IDENTIFIER = "(?:0|[1-9]\\d*)";
+const SEMVER_PRERELEASE_IDENTIFIER = "(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)";
+const DESKTOP_VERSION_PATTERN = new RegExp(
+  `^(${SEMVER_NUMERIC_IDENTIFIER})\\.(${SEMVER_NUMERIC_IDENTIFIER})\\.(${SEMVER_NUMERIC_IDENTIFIER})` +
+    `(?:-${SEMVER_PRERELEASE_IDENTIFIER}(?:\\.${SEMVER_PRERELEASE_IDENTIFIER})*)?` +
+    "(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+);
 const DesktopPackageJsonSchema = Schema.Struct({
   version: Schema.NonEmptyString,
 });
@@ -86,14 +112,13 @@ const decodeDesktopPackageJson = Schema.decodeUnknownEffect(
 export const resolveNightlyBaseVersion = (version: string) => version.replace(/[-+].*$/, "");
 
 export const resolveNightlyTargetVersion = (version: string) => {
-  const stableCore = resolveNightlyBaseVersion(version);
-  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(stableCore);
+  const match = DESKTOP_VERSION_PATTERN.exec(version);
   if (!match) {
     return Effect.fail(new InvalidDesktopPackageVersionError({ version }));
   }
 
   const [, major, minor, patch] = match;
-  return Effect.succeed(`${major}.${minor}.${Number(patch) + 1}`);
+  return Effect.succeed(`${major}.${minor}.${BigInt(patch!) + 1n}`);
 };
 
 export const resolveNightlyReleaseMetadata = (
@@ -183,7 +208,7 @@ export const writeNightlyReleaseOutput = Effect.fn("writeNightlyReleaseOutput")(
   }
 });
 
-const command = Command.make(
+export const resolveNightlyReleaseCommand = Command.make(
   "resolve-nightly-release",
   {
     date: Flag.string("date").pipe(
@@ -214,9 +239,20 @@ const command = Command.make(
     ),
 ).pipe(Command.withDescription("Resolve nightly release version metadata."));
 
-if (import.meta.main) {
-  Command.run(command, { version: "0.0.0" }).pipe(
-    Effect.provide(NodeServices.layer),
-    NodeRuntime.runMain,
+type MainLauncher = <E, A>(effect: Effect.Effect<A, E, never>) => void;
+
+export const runResolveNightlyReleaseMain = (
+  isMain: boolean,
+  launch: MainLauncher = NodeRuntime.runMain,
+) => {
+  if (!isMain) return false;
+
+  launch(
+    Command.run(resolveNightlyReleaseCommand, { version: "0.0.0" }).pipe(
+      Effect.provide(NodeServices.layer),
+    ),
   );
-}
+  return true;
+};
+
+runResolveNightlyReleaseMain(import.meta.main);

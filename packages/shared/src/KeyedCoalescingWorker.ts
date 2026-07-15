@@ -18,7 +18,7 @@ export interface KeyedCoalescingWorker<K, V> {
 }
 
 interface KeyedCoalescingWorkerState<K, V> {
-  readonly latestByKey: Map<K, V>;
+  readonly latestByKey: Map<K, { readonly value: V }>;
   readonly queuedKeys: Set<K>;
   readonly activeKeys: Set<K>;
 }
@@ -36,11 +36,11 @@ export const makeKeyedCoalescingWorker = <K, V, E, R>(options: {
     });
 
     const processKey = (key: K, value: V): Effect.Effect<void, E, R> =>
-      options.process(key, value).pipe(
+      Effect.suspend(() => options.process(key, value)).pipe(
         Effect.flatMap(() =>
           TxRef.modify(stateRef, (state) => {
-            const nextValue = state.latestByKey.get(key);
-            if (nextValue === undefined) {
+            const next = state.latestByKey.get(key);
+            if (next === undefined) {
               const activeKeys = new Set(state.activeKeys);
               activeKeys.delete(key);
               return [null, { ...state, activeKeys }] as const;
@@ -48,12 +48,10 @@ export const makeKeyedCoalescingWorker = <K, V, E, R>(options: {
 
             const latestByKey = new Map(state.latestByKey);
             latestByKey.delete(key);
-            return [nextValue, { ...state, latestByKey }] as const;
+            return [next, { ...state, latestByKey }] as const;
           }).pipe(Effect.tx),
         ),
-        Effect.flatMap((nextValue) =>
-          nextValue === null ? Effect.void : processKey(key, nextValue),
-        ),
+        Effect.flatMap((next) => (next === null ? Effect.void : processKey(key, next.value))),
       );
 
     const cleanupFailedKey = (key: K): Effect.Effect<void> =>
@@ -81,10 +79,8 @@ export const makeKeyedCoalescingWorker = <K, V, E, R>(options: {
           const queuedKeys = new Set(state.queuedKeys);
           queuedKeys.delete(key);
 
-          const value = state.latestByKey.get(key);
-          if (value === undefined) {
-            return [null, { ...state, queuedKeys }] as const;
-          }
+          // Every offer requires a pending value, and public operations never remove it.
+          const pending = state.latestByKey.get(key)!;
 
           const latestByKey = new Map(state.latestByKey);
           latestByKey.delete(key);
@@ -92,17 +88,13 @@ export const makeKeyedCoalescingWorker = <K, V, E, R>(options: {
           activeKeys.add(key);
 
           return [
-            { key, value } as const,
+            { key, value: pending.value } as const,
             { ...state, latestByKey, queuedKeys, activeKeys },
           ] as const;
         }).pipe(Effect.tx),
       ),
       Effect.flatMap((item) =>
-        item === null
-          ? Effect.void
-          : processKey(item.key, item.value).pipe(
-              Effect.catchCause(() => cleanupFailedKey(item.key)),
-            ),
+        processKey(item.key, item.value).pipe(Effect.catchCause(() => cleanupFailedKey(item.key))),
       ),
       Effect.forever,
       Effect.forkScoped,
@@ -112,7 +104,9 @@ export const makeKeyedCoalescingWorker = <K, V, E, R>(options: {
       TxRef.modify(stateRef, (state) => {
         const latestByKey = new Map(state.latestByKey);
         const existing = latestByKey.get(key);
-        latestByKey.set(key, existing === undefined ? value : options.merge(existing, value));
+        latestByKey.set(key, {
+          value: existing === undefined ? value : options.merge(existing.value, value),
+        });
 
         if (state.queuedKeys.has(key) || state.activeKeys.has(key)) {
           return [false, { ...state, latestByKey }] as const;

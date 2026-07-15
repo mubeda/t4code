@@ -144,7 +144,7 @@ const make = Effect.gen(function* () {
       Effect.map((claims) => {
         if (
           claims.sub !== input.userId ||
-          (input.request.managedTunnelsEnabled && claims.managedTunnelsEnabled !== true)
+          claims.managedTunnelsEnabled !== input.request.managedTunnelsEnabled
         ) {
           return null;
         }

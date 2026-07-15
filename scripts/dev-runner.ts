@@ -20,8 +20,6 @@ import { ChildProcess } from "effect/unstable/process";
 
 import { loadRepoEnv } from "./lib/public-config.ts";
 
-Object.assign(process.env, loadRepoEnv());
-
 const BASE_SERVER_PORT = 13773;
 const BASE_WEB_PORT = 5733;
 const MAX_HASH_OFFSET = 3000;
@@ -136,26 +134,17 @@ export const DevRunnerError = Schema.Union([
 export type DevRunnerError = typeof DevRunnerError.Type;
 export const isDevRunnerError = Schema.is(DevRunnerError);
 
+const optionToUndefined = <A>(value: Option.Option<A>): A | undefined =>
+  Option.getOrUndefined(value);
+
 const optionalStringConfig = (name: string): Config.Config<string | undefined> =>
-  Config.string(name).pipe(
-    Config.option,
-    Config.map((value) => Option.getOrUndefined(value)),
-  );
+  Config.string(name).pipe(Config.option, Config.map(optionToUndefined));
 const optionalBooleanConfig = (name: string): Config.Config<boolean | undefined> =>
-  Config.boolean(name).pipe(
-    Config.option,
-    Config.map((value) => Option.getOrUndefined(value)),
-  );
+  Config.boolean(name).pipe(Config.option, Config.map(optionToUndefined));
 const optionalPortConfig = (name: string): Config.Config<number | undefined> =>
-  Config.port(name).pipe(
-    Config.option,
-    Config.map((value) => Option.getOrUndefined(value)),
-  );
+  Config.port(name).pipe(Config.option, Config.map(optionToUndefined));
 const optionalIntegerConfig = (name: string): Config.Config<number | undefined> =>
-  Config.int(name).pipe(
-    Config.option,
-    Config.map((value) => Option.getOrUndefined(value)),
-  );
+  Config.int(name).pipe(Config.option, Config.map(optionToUndefined));
 const OffsetConfig = Config.all({
   portOffset: optionalIntegerConfig("T4CODE_PORT_OFFSET"),
   devInstance: optionalStringConfig("T4CODE_DEV_INSTANCE"),
@@ -542,6 +531,7 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
     );
 
     const exitCode = yield* child.exitCode.pipe(
+      Effect.onInterrupt(() => child.kill().pipe(Effect.ignore)),
       Effect.mapError(
         (cause) =>
           new DevRunnerProcessError({
@@ -610,7 +600,7 @@ const devRunnerCli = Command.make("dev-runner", {
   ),
 }).pipe(
   Command.withDescription("Run monorepo development modes with deterministic port/env wiring."),
-  Command.withHandler((input) => runDevRunnerWithInput(input)),
+  Command.withHandler(runDevRunnerWithInput),
 );
 
 const cliRuntimeLayer = Layer.mergeAll(
@@ -619,10 +609,27 @@ const cliRuntimeLayer = Layer.mergeAll(
   NetService.layer,
 );
 
-if (import.meta.main) {
-  Command.run(devRunnerCli, { version: "0.0.0" }).pipe(
-    Effect.scoped,
-    Effect.provide(cliRuntimeLayer),
-    NodeRuntime.runMain,
-  );
+type MainLauncher = <E, A>(effect: Effect.Effect<A, E, never>) => void;
+
+export function applyDevRunnerRepoEnv(env: Readonly<Record<string, string | undefined>>): void {
+  Object.assign(process.env, env);
 }
+
+export function runDevRunnerMain(
+  isMain: boolean,
+  launch: MainLauncher = NodeRuntime.runMain,
+  repoEnv: Readonly<Record<string, string | undefined>> = loadRepoEnv(),
+  applyEnv: (env: Readonly<Record<string, string | undefined>>) => void = applyDevRunnerRepoEnv,
+): boolean {
+  if (!isMain) return false;
+  applyEnv(repoEnv);
+  launch(
+    Command.run(devRunnerCli, { version: "0.0.0" }).pipe(
+      Effect.scoped,
+      Effect.provide(cliRuntimeLayer),
+    ),
+  );
+  return true;
+}
+
+runDevRunnerMain(import.meta.main);

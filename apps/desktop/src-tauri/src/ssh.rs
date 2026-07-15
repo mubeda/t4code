@@ -1246,20 +1246,64 @@ impl DiscoveredSshHost {
     }
 }
 
-fn strip_inline_comment(line: &str) -> &str {
-    line.split_once('#')
-        .map_or(line, |(without_comment, _)| without_comment)
-        .trim()
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SshConfigLineParseError {
+    InvalidQuotes,
 }
 
-fn split_directive_args(value: &str) -> Vec<String> {
-    value
-        .replace('=', " ")
-        .split_whitespace()
-        .map(str::trim)
-        .filter(|entry| !entry.is_empty())
-        .map(str::to_string)
-        .collect()
+fn split_directive_args(value: &str) -> Result<Vec<String>, SshConfigLineParseError> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut characters = value.chars().peekable();
+
+    while let Some(character) = characters.next() {
+        if let Some(delimiter) = quote {
+            match character {
+                '\\' if characters.peek().is_some_and(|next| *next == delimiter) => {
+                    current.push(delimiter);
+                    characters.next();
+                }
+                value if value == delimiter => quote = None,
+                value => current.push(value),
+            }
+            continue;
+        }
+
+        match character {
+            '\\' if characters
+                .peek()
+                .is_some_and(|next| next.is_whitespace() || *next == '#') =>
+            {
+                current.push(
+                    characters
+                        .next()
+                        .expect("peeked escaped value should exist"),
+                );
+            }
+            '\'' | '"' => quote = Some(character),
+            '#' if current.is_empty() => break,
+            '#' => current.push(character),
+            '=' if args.is_empty() && !current.is_empty() => {
+                args.push(std::mem::take(&mut current));
+            }
+            '=' if args.len() == 1 && current.is_empty() => {}
+            value if value.is_whitespace() => {
+                if !current.is_empty() {
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            value => current.push(value),
+        }
+    }
+
+    if quote.is_some() {
+        return Err(SshConfigLineParseError::InvalidQuotes);
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    Ok(args)
 }
 
 fn has_ssh_pattern(value: &str) -> bool {
@@ -1356,12 +1400,10 @@ fn collect_ssh_config_aliases_from_file(
     let mut aliases = BTreeSet::new();
     let raw = fs::read_to_string(&resolved_path)?;
     for line in raw.lines() {
-        let stripped = strip_inline_comment(line);
-        if stripped.is_empty() {
+        let Ok(parsed_args) = split_directive_args(line) else {
             continue;
-        }
-
-        let mut args = split_directive_args(stripped).into_iter();
+        };
+        let mut args = parsed_args.into_iter();
         let directive = args.next().unwrap_or_default().to_ascii_lowercase();
         if directive == "include" {
             for include_pattern in args {
@@ -1613,6 +1655,269 @@ mod tests {
     }
 
     #[test]
+    fn discovers_ssh_config_hosts_from_quoted_include_paths() {
+        let home_dir = unique_temp_home();
+        let ssh_dir = home_dir.join(".ssh");
+        let include_dir = ssh_dir.join("config dir");
+        fs::create_dir_all(&include_dir).expect("quoted include dir should create");
+        fs::write(ssh_dir.join("config"), "Include \"config dir/team.conf\"\n")
+            .expect("ssh config should write");
+        fs::write(include_dir.join("team.conf"), "Host quoted-include\n")
+            .expect("included ssh config should write");
+
+        let hosts = discover_ssh_hosts(Some(home_dir.clone())).expect("hosts should discover");
+
+        assert_eq!(
+            hosts,
+            vec![DiscoveredSshHost {
+                alias: "quoted-include".to_string(),
+                hostname: "quoted-include".to_string(),
+                username: None,
+                port: None,
+                source: "ssh-config",
+            }]
+        );
+
+        let _ = fs::remove_dir_all(home_dir);
+    }
+
+    #[test]
+    fn preserves_hashes_inside_quoted_ssh_include_paths() {
+        let home_dir = unique_temp_home();
+        let ssh_dir = home_dir.join(".ssh");
+        let include_dir = ssh_dir.join("config #archive");
+        fs::create_dir_all(&include_dir).expect("quoted include dir should create");
+        fs::write(
+            ssh_dir.join("config"),
+            "Include \"config #archive/team.conf\" # trailing comment\n",
+        )
+        .expect("ssh config should write");
+        fs::write(include_dir.join("team.conf"), "Host hash-include\n")
+            .expect("included ssh config should write");
+
+        let hosts = discover_ssh_hosts(Some(home_dir.clone())).expect("hosts should discover");
+
+        assert_eq!(
+            hosts,
+            vec![DiscoveredSshHost {
+                alias: "hash-include".to_string(),
+                hostname: "hash-include".to_string(),
+                username: None,
+                port: None,
+                source: "ssh-config",
+            }]
+        );
+
+        let _ = fs::remove_dir_all(home_dir);
+    }
+
+    #[test]
+    fn preserves_windows_backslashes_in_quoted_include_paths() {
+        assert_eq!(
+            split_directive_args(
+                r#"Include "C:\Users\mauro\.ssh\config dir\team.conf" # trailing comment"#,
+            ),
+            Ok(vec![
+                "Include".to_string(),
+                r"C:\Users\mauro\.ssh\config dir\team.conf".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn unquoted_backslash_escaped_whitespace_stays_in_one_include_token() {
+        assert_eq!(
+            split_directive_args(r"Include config\ dir/*.conf"),
+            Ok(vec!["Include".to_string(), "config dir/*.conf".to_string(),])
+        );
+    }
+
+    #[test]
+    fn escaped_hash_stays_inside_an_unquoted_include_path() {
+        assert_eq!(
+            split_directive_args(r"Include config\#archive\team.conf"),
+            Ok(vec![
+                "Include".to_string(),
+                r"config#archive\team.conf".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn hash_starts_comments_only_at_token_boundaries() {
+        assert_eq!(split_directive_args("# full-line comment"), Ok(Vec::new()));
+        assert_eq!(
+            split_directive_args("Include # token-leading comment"),
+            Ok(vec!["Include".to_string()])
+        );
+        assert_eq!(
+            split_directive_args("Include config#archive.conf # trailing comment"),
+            Ok(vec![
+                "Include".to_string(),
+                "config#archive.conf".to_string(),
+            ])
+        );
+        assert_eq!(
+            split_directive_args(r"Include \#literal.conf # trailing comment"),
+            Ok(vec!["Include".to_string(), "#literal.conf".to_string()])
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn discovers_unquoted_escaped_windows_include_globs_before_trailing_comments() {
+        let home_dir = unique_temp_home();
+        let ssh_dir = home_dir.join(".ssh");
+        let include_dir = ssh_dir.join("config dir");
+        fs::create_dir_all(&include_dir).expect("include directory should create");
+        fs::write(
+            ssh_dir.join("config"),
+            r"  Include config\ dir\config\#*.conf # trailing comment",
+        )
+        .expect("ssh config should write");
+        fs::write(
+            include_dir.join("config#team.conf"),
+            "Host escaped-windows-glob\n",
+        )
+        .expect("included config should write");
+        fs::write(include_dir.join("config-team.conf"), "Host ignored\n")
+            .expect("non-matching config should write");
+
+        let hosts = discover_ssh_hosts(Some(home_dir.clone())).expect("hosts should discover");
+
+        assert_eq!(
+            hosts,
+            vec![DiscoveredSshHost {
+                alias: "escaped-windows-glob".to_string(),
+                hostname: "escaped-windows-glob".to_string(),
+                username: None,
+                port: None,
+                source: "ssh-config",
+            }]
+        );
+        let _ = fs::remove_dir_all(home_dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn discovers_windows_style_include_globs_with_whitespace_and_comments() {
+        let home_dir = unique_temp_home();
+        let ssh_dir = home_dir.join(".ssh");
+        let include_dir = ssh_dir.join("config dir");
+        fs::create_dir_all(&include_dir).expect("include directory should create");
+        fs::write(
+            ssh_dir.join("config"),
+            "  Include   \"config dir\\*.conf\"   # trailing comment\n",
+        )
+        .expect("ssh config should write");
+        fs::write(include_dir.join("alpha.conf"), "Host windows-alpha\n")
+            .expect("alpha config should write");
+        fs::write(include_dir.join("beta.txt"), "Host ignored\n")
+            .expect("non-matching config should write");
+
+        let hosts = discover_ssh_hosts(Some(home_dir.clone())).expect("hosts should discover");
+
+        assert_eq!(
+            hosts,
+            vec![DiscoveredSshHost {
+                alias: "windows-alpha".to_string(),
+                hostname: "windows-alpha".to_string(),
+                username: None,
+                port: None,
+                source: "ssh-config",
+            }]
+        );
+        let _ = fs::remove_dir_all(home_dir);
+    }
+
+    #[test]
+    fn preserves_equals_inside_include_filenames() {
+        assert_eq!(
+            split_directive_args("  Include   config=name.conf   # comment"),
+            Ok(vec!["Include".to_string(), "config=name.conf".to_string(),])
+        );
+        assert_eq!(
+            split_directive_args("Include=config=name.conf # comment"),
+            Ok(vec!["Include".to_string(), "config=name.conf".to_string(),])
+        );
+    }
+
+    #[test]
+    fn discovers_include_globs_with_equals_in_filenames() {
+        let home_dir = unique_temp_home();
+        let ssh_dir = home_dir.join(".ssh");
+        fs::create_dir_all(&ssh_dir).expect("ssh directory should create");
+        fs::write(
+            ssh_dir.join("config"),
+            "  Include   config=*.conf   # trailing comment\n",
+        )
+        .expect("ssh config should write");
+        fs::write(ssh_dir.join("config=team.conf"), "Host equals-glob\n")
+            .expect("included config should write");
+
+        let hosts = discover_ssh_hosts(Some(home_dir.clone())).expect("hosts should discover");
+
+        assert_eq!(
+            hosts,
+            vec![DiscoveredSshHost {
+                alias: "equals-glob".to_string(),
+                hostname: "equals-glob".to_string(),
+                username: None,
+                port: None,
+                source: "ssh-config",
+            }]
+        );
+        let _ = fs::remove_dir_all(home_dir);
+    }
+
+    #[test]
+    fn rejects_unterminated_ssh_config_quotes() {
+        assert_eq!(
+            split_directive_args(r#"Include "config dir/*.conf"#),
+            Err(SshConfigLineParseError::InvalidQuotes)
+        );
+        assert_eq!(
+            split_directive_args("Host 'unterminated"),
+            Err(SshConfigLineParseError::InvalidQuotes)
+        );
+    }
+
+    #[test]
+    fn ignores_entire_include_line_when_any_quote_is_unterminated() {
+        let home_dir = unique_temp_home();
+        let ssh_dir = home_dir.join(".ssh");
+        let include_dir = ssh_dir.join("config.d");
+        fs::create_dir_all(&include_dir).expect("include directory should create");
+        fs::write(
+            ssh_dir.join("config"),
+            [
+                "# keep comments independent from malformed directives",
+                "  Include config.d/*.conf \"unterminated#still-quoted",
+                "Host direct-host",
+                "",
+            ]
+            .join("\n"),
+        )
+        .expect("ssh config should write");
+        fs::write(include_dir.join("leaked.conf"), "Host must-not-leak\n")
+            .expect("included config should write");
+
+        let hosts = discover_ssh_hosts(Some(home_dir.clone())).expect("hosts should discover");
+
+        assert_eq!(
+            hosts,
+            vec![DiscoveredSshHost {
+                alias: "direct-host".to_string(),
+                hostname: "direct-host".to_string(),
+                username: None,
+                port: None,
+                source: "ssh-config",
+            }]
+        );
+        let _ = fs::remove_dir_all(home_dir);
+    }
+
+    #[test]
     fn parses_known_hosts_entries_without_hashed_hosts() {
         assert_eq!(
             parse_known_hosts_hostnames(
@@ -1729,7 +2034,7 @@ mod tests {
             .expect("launch plan should build");
 
         assert_eq!(plan.key, "devbox\u{0}devbox.internal\u{0}alice\u{0}2222");
-        assert_eq!(plan.program, "ssh.exe");
+        assert_eq!(plan.program, ssh_command());
         assert_eq!(
             plan.args,
             vec![
@@ -1944,5 +2249,454 @@ mod tests {
             Ok("pairing-token".to_string())
         );
         assert!(parse_remote_pairing_credential("{\"credential\":\"\"}\n").is_err());
+    }
+
+    #[test]
+    fn normalizes_targets_and_builds_managed_password_launch_plans() {
+        let hostname_only = normalize_ssh_environment_target(SshEnvironmentTarget {
+            alias: "  ".to_string(),
+            hostname: " host.internal ".to_string(),
+            username: Some("  ".to_string()),
+            port: None,
+        })
+        .expect("hostname-only target should normalize");
+        assert_eq!(hostname_only.alias, "host.internal");
+        assert_eq!(hostname_only.hostname, "host.internal");
+        assert_eq!(hostname_only.username, None);
+
+        let alias_only = normalize_ssh_environment_target(SshEnvironmentTarget {
+            alias: " alias ".to_string(),
+            hostname: String::new(),
+            username: Some(" alice ".to_string()),
+            port: None,
+        })
+        .expect("alias-only target should normalize");
+        assert_eq!(alias_only.hostname, "alias");
+        assert_eq!(alias_only.username.as_deref(), Some("alice"));
+        assert!(
+            normalize_ssh_environment_target(SshEnvironmentTarget {
+                alias: " ".to_string(),
+                hostname: " ".to_string(),
+                username: None,
+                port: None,
+            })
+            .is_err()
+        );
+
+        let plan = SshEnvironmentLaunchPlan::forward_with_auth(
+            alias_only,
+            41000,
+            RemoteLaunchResult {
+                remote_port: 42000,
+                server_kind: "unexpected".to_string(),
+            },
+            &SshAuthOptions::with_secret("secret".to_string()),
+        )
+        .expect("managed password plan should build");
+        assert_eq!(plan.remote_server_kind, "managed");
+        assert_eq!(plan.remote_port, 42000);
+        assert_eq!(plan.args[1], "BatchMode=no");
+        assert!(!plan.args.iter().any(|argument| argument == "-p"));
+        assert_eq!(plan.args.last().map(String::as_str), Some("alice@alias"));
+    }
+
+    #[test]
+    fn remote_output_parsers_cover_defaults_and_error_context() {
+        assert_eq!(last_non_empty_line(" \n first \n\n"), Some("first"));
+        assert_eq!(last_non_empty_line(" \n\t"), None);
+        assert!(
+            parse_remote_pairing_credential("")
+                .unwrap_err()
+                .contains("credential")
+        );
+        assert!(
+            parse_remote_pairing_credential("not-json")
+                .unwrap_err()
+                .contains("unparseable")
+        );
+        assert!(
+            parse_remote_pairing_credential("{\"credential\":42}")
+                .unwrap_err()
+                .contains("invalid credential")
+        );
+        assert_eq!(
+            parse_remote_pairing_credential("{\"credential\":\" token \"}"),
+            Ok("token".to_string())
+        );
+
+        assert!(
+            parse_remote_launch_result("")
+                .unwrap_err()
+                .contains("remote port")
+        );
+        assert!(
+            parse_remote_launch_result("not-json")
+                .unwrap_err()
+                .contains("unparseable")
+        );
+        assert!(
+            parse_remote_launch_result("{\"remotePort\":65536}")
+                .unwrap_err()
+                .contains("65536")
+        );
+        assert_eq!(
+            parse_remote_launch_result("{\"remotePort\":3773}")
+                .expect("missing kind should default"),
+            RemoteLaunchResult {
+                remote_port: 3773,
+                server_kind: "managed".to_string(),
+            }
+        );
+
+        let script = build_remote_launch_script();
+        assert!(!script.contains("@@"));
+        assert!(script.contains(&DEFAULT_REMOTE_PORT.to_string()));
+        assert!(script.contains(&REMOTE_PORT_SCAN_WINDOW.to_string()));
+    }
+
+    #[test]
+    fn auth_helpers_cover_noninteractive_and_permission_denied_variants() {
+        assert!(
+            build_ssh_child_environment(&SshAuthOptions::batch(), Path::new("unused")).is_empty()
+        );
+        for mechanism in [
+            "password",
+            "keyboard-interactive",
+            "publickey",
+            "hostbased",
+            "gssapi-with-mic",
+        ] {
+            assert!(is_ssh_auth_failure(&format!(
+                "PERMISSION DENIED ({mechanism})"
+            )));
+        }
+        assert!(!is_ssh_auth_failure("Permission denied (certificate)"));
+        assert!(!is_ssh_auth_failure("Permission denied"));
+    }
+
+    #[test]
+    fn askpass_file_writes_are_idempotent_and_report_invalid_parents() {
+        let directory = unique_temp_home();
+        fs::create_dir_all(&directory).expect("temp directory should create");
+        let helper = directory.join("askpass.cmd");
+        write_askpass_file(&helper, "first", None).expect("helper should write");
+        write_askpass_file(&helper, "first", None).expect("matching helper should be reused");
+        assert_eq!(
+            fs::read_to_string(&helper).expect("helper should read"),
+            "first"
+        );
+        write_askpass_file(&helper, "second", None).expect("changed helper should rewrite");
+        assert_eq!(
+            fs::read_to_string(&helper).expect("helper should read"),
+            "second"
+        );
+
+        let blocking_parent = directory.join("not-a-directory");
+        fs::write(&blocking_parent, "file").expect("blocking file should write");
+        assert!(
+            write_askpass_file(&blocking_parent.join("child"), "value", None)
+                .unwrap_err()
+                .contains("Failed to write SSH askpass helper")
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[tokio::test]
+    async fn password_prompt_reports_presentation_cancellation_and_service_stop() {
+        let request = || SshPasswordRequest {
+            destination: "host".to_string(),
+            username: None,
+            prompt: "Password".to_string(),
+        };
+
+        let manager = SshPasswordPromptManager::with_timeout(Duration::from_secs(30));
+        let presentation = manager
+            .request_password_with(
+                "emit-failure".to_string(),
+                request(),
+                UNIX_EPOCH,
+                |_payload| Err("renderer unavailable".to_string()),
+            )
+            .await;
+        assert!(matches!(
+            presentation,
+            Err(SshPasswordPromptRequestError::Presentation {
+                operation: "send-prompt-request",
+                ..
+            })
+        ));
+        assert!(manager.remove_pending("emit-failure").is_none());
+
+        let resolver = manager.clone();
+        let cancellation = tokio::spawn(async move {
+            manager
+                .request_password_with("cancel".to_string(), request(), UNIX_EPOCH, |_| Ok(()))
+                .await
+        });
+        tokio::task::yield_now().await;
+        resolver
+            .resolve(SshPasswordPromptResolution {
+                request_id: " cancel ".to_string(),
+                password: None,
+            })
+            .expect("prompt should cancel");
+        assert!(matches!(
+            cancellation.await.expect("cancellation task"),
+            Err(SshPasswordPromptRequestError::Cancelled { request_id, .. }) if request_id == "cancel"
+        ));
+
+        let manager = SshPasswordPromptManager::with_timeout(Duration::from_secs(30));
+        let dropper = manager.clone();
+        let stopped = manager
+            .request_password_with(
+                "stopped".to_string(),
+                request(),
+                UNIX_EPOCH,
+                move |payload| {
+                    drop(dropper.remove_pending(&payload.request_id));
+                    Ok(())
+                },
+            )
+            .await;
+        assert!(matches!(
+            stopped,
+            Err(SshPasswordPromptRequestError::ServiceStopped { request_id, .. }) if request_id == "stopped"
+        ));
+    }
+
+    #[test]
+    fn prompt_errors_and_time_formatting_keep_stable_messages() {
+        let presentation = SshPasswordPromptRequestError::Presentation {
+            request_id: "id".to_string(),
+            destination: "host".to_string(),
+            operation: "emit",
+            message: "closed".to_string(),
+        };
+        assert_eq!(
+            presentation.to_string(),
+            "Failed to present SSH password prompt for host during emit: closed"
+        );
+        assert_eq!(
+            SshPasswordPromptRequestError::TimedOut {
+                request_id: "id".to_string(),
+                destination: "host".to_string(),
+            }
+            .to_string(),
+            "SSH authentication timed out for host."
+        );
+        assert_eq!(
+            SshPasswordPromptRequestError::Cancelled {
+                request_id: "id".to_string(),
+                destination: "host".to_string(),
+            }
+            .to_string(),
+            "SSH authentication cancelled for host."
+        );
+        assert_eq!(
+            SshPasswordPromptRequestError::ServiceStopped {
+                request_id: "id".to_string(),
+                destination: "host".to_string(),
+            }
+            .to_string(),
+            "SSH password prompt service stopped."
+        );
+        assert_eq!(
+            SshPasswordPromptResolveError::InvalidRequestId.to_string(),
+            "Invalid SSH password prompt id."
+        );
+        assert_eq!(
+            SshPasswordPromptResolveError::Expired {
+                request_id: "id".to_string(),
+            }
+            .to_string(),
+            "SSH password prompt expired. Try connecting again."
+        );
+        assert_eq!(format_system_time(UNIX_EPOCH), "1970-01-01T00:00:00Z");
+        assert_eq!(
+            format_system_time(UNIX_EPOCH - Duration::from_secs(1)),
+            "1970-01-01T00:00:00Z"
+        );
+    }
+
+    #[test]
+    fn ssh_config_helpers_cover_quotes_assignments_paths_and_wildcards() {
+        assert_eq!(
+            split_directive_args(" Host foo # comment "),
+            Ok(vec!["Host".to_string(), "foo".to_string()])
+        );
+        assert_eq!(
+            split_directive_args("Include \"config #archive/file\" # comment"),
+            Ok(vec![
+                "Include".to_string(),
+                "config #archive/file".to_string(),
+            ])
+        );
+        assert_eq!(
+            split_directive_args("Include=\"dir with spaces/file=name\""),
+            Ok(vec![
+                "Include".to_string(),
+                "dir with spaces/file=name".to_string(),
+            ])
+        );
+        assert_eq!(
+            split_directive_args("Host 'one' two\\ three"),
+            Ok(vec![
+                "Host".to_string(),
+                "one".to_string(),
+                "two three".to_string(),
+            ])
+        );
+        assert_eq!(
+            split_directive_args("Host trailing\\"),
+            Ok(vec!["Host".to_string(), "trailing\\".to_string()])
+        );
+        assert_eq!(
+            split_directive_args(r#"Host "quoted\"alias""#),
+            Ok(vec!["Host".to_string(), "quoted\"alias".to_string()])
+        );
+        assert!(
+            split_directive_args("  ")
+                .expect("blank directive should parse")
+                .is_empty()
+        );
+
+        assert!(has_ssh_pattern("*.example.com"));
+        assert!(has_ssh_pattern("host?"));
+        assert!(has_ssh_pattern("!blocked"));
+        assert!(!has_ssh_pattern("host"));
+        assert!(wildcard_matches("*.conf", "team.conf"));
+        assert!(wildcard_matches("host?", "host1"));
+        assert!(!wildcard_matches("host?", "host"));
+        assert!(!wildcard_matches("*.conf", "team.txt"));
+
+        let home = unique_temp_home();
+        assert_eq!(expand_home_path("~", &home), home);
+        assert_eq!(expand_home_path("~/config", &home), home.join("config"));
+        assert_eq!(expand_home_path("~\\config", &home), home.join("config"));
+        assert_eq!(expand_home_path("plain", &home), PathBuf::from("plain"));
+        assert_eq!(
+            resolve_ssh_config_include_pattern("relative.conf", &home),
+            home.join(".ssh").join("relative.conf")
+        );
+        let absolute = home.join("absolute.conf");
+        assert_eq!(
+            resolve_ssh_config_include_pattern(absolute.to_str().expect("utf-8 path"), &home),
+            absolute
+        );
+    }
+
+    #[test]
+    fn config_globs_and_include_cycles_are_deterministic() {
+        let home = unique_temp_home();
+        let ssh_dir = home.join(".ssh");
+        let include_dir = ssh_dir.join("config.d");
+        fs::create_dir_all(&include_dir).expect("include directory should create");
+        let alpha = include_dir.join("a.conf");
+        let beta = include_dir.join("b.conf");
+        fs::write(&alpha, "Host alpha\nInclude ../config\n").expect("alpha should write");
+        fs::write(&beta, "Host beta\n").expect("beta should write");
+        fs::write(ssh_dir.join("config"), "Include config.d/*.conf\n")
+            .expect("config should write");
+
+        assert_eq!(
+            expand_glob(&alpha).expect("exact glob should resolve"),
+            vec![alpha.clone()]
+        );
+        assert!(
+            expand_glob(&include_dir.join("missing.conf"))
+                .expect("missing exact path should resolve")
+                .is_empty()
+        );
+        assert!(
+            expand_glob(&ssh_dir.join("missing").join("*.conf"))
+                .expect("missing glob directory should resolve")
+                .is_empty()
+        );
+        assert_eq!(
+            expand_glob(&include_dir.join("*.conf")).expect("glob should resolve"),
+            vec![alpha, beta]
+        );
+        assert_eq!(
+            collect_ssh_config_aliases_from_file(
+                &ssh_dir.join("config"),
+                &home,
+                &mut BTreeSet::new(),
+            )
+            .expect("cyclic config should terminate"),
+            BTreeSet::from(["alpha".to_string(), "beta".to_string()])
+        );
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn discovery_handles_empty_inputs_precedence_values_and_io_errors() {
+        assert_eq!(discover_ssh_hosts(None), Ok(Vec::new()));
+        assert_eq!(discover_ssh_hosts(Some(PathBuf::new())), Ok(Vec::new()));
+
+        let home = unique_temp_home();
+        assert_eq!(discover_ssh_hosts(Some(home.clone())), Ok(Vec::new()));
+        let ssh_dir = home.join(".ssh");
+        fs::create_dir_all(&ssh_dir).expect("ssh directory should create");
+        fs::write(ssh_dir.join("config"), "Host duplicate\n").expect("config should write");
+        fs::write(
+            ssh_dir.join("known_hosts"),
+            "duplicate ssh-ed25519 AAAA\nknown ssh-ed25519 BBBB\n",
+        )
+        .expect("known hosts should write");
+        let hosts = discover_ssh_hosts(Some(home.clone())).expect("hosts should discover");
+        assert_eq!(hosts.len(), 2);
+        assert_eq!(hosts[0].alias, "duplicate");
+        assert_eq!(hosts[0].source, "ssh-config");
+        assert_eq!(
+            hosts[0].to_value(),
+            json!({
+                "alias": "duplicate",
+                "hostname": "duplicate",
+                "username": null,
+                "port": null,
+                "source": "ssh-config",
+            })
+        );
+        let _ = fs::remove_dir_all(&home);
+
+        let config_error_home = unique_temp_home();
+        fs::create_dir_all(config_error_home.join(".ssh").join("config"))
+            .expect("config directory should create");
+        assert!(
+            discover_ssh_hosts(Some(config_error_home.clone()))
+                .unwrap_err()
+                .contains("Failed to read SSH config hosts")
+        );
+        let _ = fs::remove_dir_all(config_error_home);
+
+        let known_hosts_error_home = unique_temp_home();
+        let ssh_dir = known_hosts_error_home.join(".ssh");
+        fs::create_dir_all(ssh_dir.join("known_hosts"))
+            .expect("known hosts directory should create");
+        assert!(
+            discover_ssh_hosts(Some(known_hosts_error_home.clone()))
+                .unwrap_err()
+                .contains("Failed to read known SSH hosts")
+        );
+        let _ = fs::remove_dir_all(known_hosts_error_home);
+    }
+
+    #[test]
+    fn known_hosts_parser_covers_markers_patterns_and_host_normalization() {
+        assert_eq!(normalize_known_hosts_hostname("[host]:2222"), "host");
+        assert_eq!(normalize_known_hosts_hostname("host:22"), "host");
+        assert_eq!(normalize_known_hosts_hostname("2001:db8::1"), "2001:db8::1");
+        assert_eq!(normalize_known_hosts_hostname("[incomplete"), "[incomplete");
+        assert_eq!(
+            parse_known_hosts_hostnames(
+                "# comment\n@revoked revoked.example ssh-ed25519 AAAA\n*.wild ssh-ed25519 BBBB\n!blocked ssh-ed25519 CCCC\n@marker\n"
+            ),
+            BTreeSet::from(["revoked.example".to_string()])
+        );
+        let missing = unique_temp_home().join("known_hosts");
+        assert_eq!(
+            read_known_hosts_hostnames(&missing).expect("missing known hosts should be empty"),
+            BTreeSet::new()
+        );
     }
 }

@@ -424,37 +424,72 @@ pub async fn reconcile_abandoned_provider_sessions(
         .list_provider_session_runtimes()
         .await
         .map_err(|error| ProviderRuntimeError::Persistence(error.to_string()))?;
-    for mut runtime in runtimes
+    for runtime in runtimes
         .into_iter()
-        .filter(|runtime| matches!(runtime.status.as_str(), "connecting" | "running"))
+        .filter(|runtime| matches!(runtime.status.as_str(), "connecting" | "ready" | "running"))
     {
-        runtime.status = "error".to_owned();
-        runtime.last_seen_at = now();
-        repositories
-            .upsert_provider_session_runtime(runtime.clone())
-            .await
-            .map_err(|error| ProviderRuntimeError::Persistence(error.to_string()))?;
-        let created_at = now();
+        let thread_id = runtime.thread_id.clone();
+        if let Err(error) =
+            reconcile_abandoned_provider_session(engine, &repositories, runtime, RESTART_ERROR)
+                .await
+        {
+            tracing::warn!(
+                thread_id,
+                %error,
+                "abandoned provider session remains eligible for startup reconciliation retry"
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn reconcile_abandoned_provider_session(
+    engine: &OrchestrationEngine,
+    repositories: &Repositories,
+    mut runtime: ProviderSessionRuntime,
+    restart_error: &str,
+) -> Result<(), ProviderRuntimeError> {
+    let projected_at = runtime.last_seen_at.clone();
+    let projection_is_complete = repositories
+        .get_thread_session(runtime.thread_id.clone())
+        .await
+        .map_err(|error| ProviderRuntimeError::Persistence(error.to_string()))?
+        .is_some_and(|session| {
+            session.status == "error"
+                && session.provider_name.as_deref() == Some(runtime.provider_name.as_str())
+                && session.provider_instance_id == runtime.provider_instance_id
+                && session.runtime_mode == runtime.runtime_mode
+                && session.active_turn_id.is_none()
+                && session.last_error.as_deref() == Some(restart_error)
+                && session.updated_at == projected_at
+        });
+    if !projection_is_complete {
         engine
             .dispatch(OrchestrationCommand::ThreadSessionSet {
                 command_id: format!("provider-restart-reconcile:{}", Uuid::new_v4()),
                 thread_id: runtime.thread_id.clone(),
                 session: SessionInput {
-                    thread_id: runtime.thread_id,
+                    thread_id: runtime.thread_id.clone(),
                     status: "error".to_owned(),
-                    provider_name: Some(runtime.provider_name),
-                    provider_instance_id: runtime.provider_instance_id,
-                    runtime_mode: runtime.runtime_mode,
+                    provider_name: Some(runtime.provider_name.clone()),
+                    provider_instance_id: runtime.provider_instance_id.clone(),
+                    runtime_mode: runtime.runtime_mode.clone(),
                     active_turn_id: None,
-                    last_error: Some(RESTART_ERROR.to_owned()),
-                    updated_at: created_at.clone(),
+                    last_error: Some(restart_error.to_owned()),
+                    updated_at: projected_at.clone(),
                 },
-                created_at,
+                created_at: projected_at,
             })
             .await
             .map_err(|error| ProviderRuntimeError::Orchestration(error.to_string()))?;
     }
-    Ok(())
+
+    runtime.status = "error".to_owned();
+    runtime.last_seen_at = now();
+    repositories
+        .upsert_provider_session_runtime(runtime)
+        .await
+        .map_err(|error| ProviderRuntimeError::Persistence(error.to_string()))
 }
 
 async fn launch_request_for_command(
@@ -1405,11 +1440,7 @@ pub(crate) fn resolve_provider_executable(input: &str) -> Option<PathBuf> {
     if path.components().count() > 1 {
         return None;
     }
-    let extensions: &[&str] = if cfg!(windows) {
-        WINDOWS_PROVIDER_EXECUTABLE_EXTENSIONS
-    } else {
-        &[""]
-    };
+    let extensions = provider_executable_extensions();
     std::env::var_os("PATH")
         .into_iter()
         .flat_map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
@@ -1427,6 +1458,16 @@ pub(crate) fn resolve_provider_executable(input: &str) -> Option<PathBuf> {
 
 #[cfg(windows)]
 const WINDOWS_PROVIDER_EXECUTABLE_EXTENSIONS: &[&str] = &["exe", "com", "cmd", "bat", "ps1"];
+
+#[cfg(windows)]
+fn provider_executable_extensions() -> &'static [&'static str] {
+    WINDOWS_PROVIDER_EXECUTABLE_EXTENSIONS
+}
+
+#[cfg(not(windows))]
+fn provider_executable_extensions() -> &'static [&'static str] {
+    &[""]
+}
 
 pub(crate) fn provider_launch_program(executable: &Path) -> (PathBuf, Vec<String>) {
     let extension = executable
@@ -2774,6 +2815,245 @@ mod tests {
             super::selection_string_option(&selection, "serviceTier"),
             Some("fast".to_owned())
         );
+        assert_eq!(
+            super::selection_string_option(
+                &json!({"options":[{"id":"serviceTier","value":"  "}]}),
+                "serviceTier"
+            ),
+            None
+        );
+        assert_eq!(
+            super::selection_string_option(
+                &json!({"options":[{"id":"serviceTier","value":42}]}),
+                "serviceTier"
+            ),
+            None
+        );
+        assert_eq!(
+            super::selection_string_option(&json!({"options":[]}), "serviceTier"),
+            None
+        );
+        assert_eq!(
+            super::selection_string_option(&json!({"options":{}}), "serviceTier"),
+            None
+        );
+    }
+
+    #[test]
+    fn provider_commands_are_parsed_without_stealing_plain_or_malformed_text() {
+        assert_eq!(super::parse_provider_command("hello"), None);
+        assert_eq!(super::parse_provider_command("/"), None);
+        assert_eq!(super::parse_provider_command("/ bad"), None);
+        assert_eq!(super::parse_provider_command("/bad! command"), None);
+        assert_eq!(
+            super::parse_provider_command("/goal  ship the feature  "),
+            Some(("goal", "ship the feature"))
+        );
+        assert_eq!(
+            super::parse_provider_command("/mcp:reload_now.v2"),
+            Some(("mcp:reload_now.v2", ""))
+        );
+        assert_eq!(
+            super::parse_provider_command("/review\t staged changes"),
+            Some(("review", "staged changes"))
+        );
+    }
+
+    #[test]
+    fn provider_projection_helpers_preserve_contract_fallbacks() {
+        let event = |payload, turn_id: Option<&str>| super::ProviderEvent {
+            event_type: "provider.event".to_owned(),
+            thread_id: "thread-1".to_owned(),
+            turn_id: turn_id.map(str::to_owned),
+            request_id: None,
+            payload,
+        };
+        assert_eq!(
+            super::assistant_message_id(&event(json!({"messageId":"message-1"}), Some("turn-1"))),
+            "message-1"
+        );
+        assert_eq!(
+            super::assistant_message_id(&event(json!({}), Some("turn-1"))),
+            "assistant:turn-1"
+        );
+        assert_eq!(
+            super::assistant_message_id(&event(json!({}), None)),
+            "assistant:thread-1"
+        );
+
+        assert_eq!(
+            super::provider_completion_error(&json!({"error":{"message":"nested"}})),
+            "nested"
+        );
+        assert_eq!(
+            super::provider_completion_error(&json!({"error":"flat"})),
+            "flat"
+        );
+        assert_eq!(
+            super::provider_completion_error(&json!({"message":"top-level"})),
+            "top-level"
+        );
+        assert_eq!(
+            super::provider_completion_error(&json!({"error":{}})),
+            "Provider turn failed."
+        );
+
+        for (event_type, expected) in [
+            ("request.opened", ("approval", "approval.requested")),
+            ("request.resolved", ("approval", "approval.resolved")),
+            ("user-input.requested", ("approval", "user-input.requested")),
+            ("user-input.resolved", ("approval", "user-input.resolved")),
+            ("provider.failed", ("error", "provider.error")),
+            ("provider.error", ("error", "provider.error")),
+            ("turn.started", ("info", "provider.turn")),
+            ("session.ready", ("info", "provider.session")),
+            ("tool.started", ("tool", "provider.event")),
+        ] {
+            assert_eq!(super::event_activity_shape(event_type), expected);
+        }
+    }
+
+    #[test]
+    fn provider_runtime_metadata_maps_every_native_adapter_and_resume_shape() {
+        for (provider, adapter) in [
+            ("codex", "codex-app-server"),
+            ("claude", "claude-stream-json"),
+            ("claudeAgent", "claude-stream-json"),
+            ("cursor", "cursor-acp"),
+            ("grok", "grok-acp"),
+            ("opencode", "opencode-http"),
+            ("future-provider", "native-provider"),
+        ] {
+            assert_eq!(super::native_adapter_key(provider), adapter);
+        }
+
+        assert_eq!(
+            super::resume_string(&json!("plain-session")),
+            Some("plain-session".to_owned())
+        );
+        assert_eq!(
+            super::resume_string(&json!({"threadId":"thread-session"})),
+            Some("thread-session".to_owned())
+        );
+        assert_eq!(
+            super::resume_string(&json!({"sessionId":"provider-session"})),
+            Some("provider-session".to_owned())
+        );
+        assert_eq!(super::resume_string(&json!({"sessionId":7})), None);
+
+        assert!(matches!(
+            super::runtime_mode("approval-required"),
+            crate::provider::codex::CodexRuntimeMode::ApprovalRequired
+        ));
+        assert!(matches!(
+            super::runtime_mode("auto-accept-edits"),
+            crate::provider::codex::CodexRuntimeMode::AutoAcceptEdits
+        ));
+        assert!(matches!(
+            super::runtime_mode("full-access"),
+            crate::provider::codex::CodexRuntimeMode::FullAccess
+        ));
+
+        for (runtime_mode, interaction_mode, permission) in [
+            ("full-access", "default", "bypassPermissions"),
+            ("approval-required", "default", "default"),
+            ("auto-accept-edits", "default", "acceptEdits"),
+            ("full-access", "plan", "plan"),
+        ] {
+            assert_eq!(
+                super::claude_permission_arg(super::claude_mode(runtime_mode, interaction_mode)),
+                permission
+            );
+        }
+    }
+
+    #[test]
+    fn provider_mcp_configuration_matches_the_acp_wire_contract() {
+        assert!(super::acp_mcp_servers(None).is_empty());
+        assert_eq!(
+            super::acp_mcp_servers(Some(&super::ProviderMcpConfig {
+                endpoint: "http://127.0.0.1:7777/mcp".to_owned(),
+                authorization_header: "Bearer secret".to_owned(),
+                provider_session_id: "session-1".to_owned(),
+            })),
+            [json!({
+                "type":"http",
+                "name":"t4code",
+                "url":"http://127.0.0.1:7777/mcp",
+                "headers":[{"name":"Authorization","value":"Bearer secret"}],
+            })]
+        );
+    }
+
+    #[test]
+    fn executable_resolution_accepts_an_explicit_file_and_rejects_a_missing_path() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let executable = directory.path().join("provider-fixture.exe");
+        std::fs::write(&executable, b"fixture").unwrap();
+        assert_eq!(
+            super::resolve_provider_executable(&executable.to_string_lossy()),
+            Some(executable.clone())
+        );
+        assert_eq!(
+            super::resolve_provider_executable(
+                &directory.path().join("missing/provider").to_string_lossy()
+            ),
+            None
+        );
+        assert_eq!(
+            super::provider_launch_program(&executable),
+            (executable, Vec::new())
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_launch_program_wraps_shell_scripts_without_profiles() {
+        let (program, args) = super::provider_launch_program(std::path::Path::new("provider.ps1"));
+        assert_eq!(program, std::path::PathBuf::from("powershell.exe"));
+        assert_eq!(
+            args,
+            [
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "provider.ps1",
+            ]
+        );
+
+        let (program, args) = super::provider_launch_program(std::path::Path::new("provider.cmd"));
+        assert_eq!(
+            program,
+            std::env::var_os("ComSpec")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::path::PathBuf::from("cmd.exe"))
+        );
+        assert_eq!(args, ["/d", "/s", "/c", "provider.cmd"]);
+    }
+
+    #[tokio::test]
+    async fn unsupported_capabilities_and_provider_errors_keep_actionable_context() {
+        let error = super::unsupported::<()>("cursor", "checkpoint rollback")
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            super::ProviderRuntimeError::UnsupportedCapability {
+                provider,
+                capability: "checkpoint rollback"
+            } if provider == "cursor"
+        ));
+        assert_eq!(
+            super::pipe_error("claude", "stderr").to_string(),
+            "failed to spawn claude provider process: child did not expose stderr"
+        );
+        assert_eq!(
+            super::provider_error("grok")("protocol closed").to_string(),
+            "grok provider operation failed: protocol closed"
+        );
     }
 
     #[test]
@@ -2807,6 +3087,12 @@ mod tests {
         assert!(resolved.enabled);
         assert_eq!(resolved.binary_path, "cursor-agent");
         assert_eq!(resolved.server_url, "http://127.0.0.1:3210");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn non_windows_executable_resolution_uses_exact_name() {
+        assert_eq!(super::provider_executable_extensions(), &[""]);
     }
 
     #[cfg(windows)]

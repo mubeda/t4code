@@ -29,9 +29,9 @@ function collectMentionTokens(text: string): ComposerInlineToken[] {
 
   for (const match of text.matchAll(FILE_LINK_TOKEN_REGEX)) {
     const fullMatch = match[0];
-    const prefix = match[1] ?? "";
-    const label = (match[2] ?? "").replace(/\\(.)/g, "$1");
-    const encodedPath = match[3] ?? "";
+    const prefix = match[1]!;
+    const label = match[2]!.replace(/\\(.)/g, "$1");
+    const encodedPath = match[3]!;
     let path = encodedPath;
     try {
       path = decodeURIComponent(encodedPath);
@@ -44,7 +44,7 @@ function collectMentionTokens(text: string): ComposerInlineToken[] {
     if (!path || hasExternalScheme || label !== basename) {
       continue;
     }
-    const start = (match.index ?? 0) + prefix.length;
+    const start = match.index! + prefix.length;
     const end = start + fullMatch.length - prefix.length;
     matches.push({
       type: "mention",
@@ -57,13 +57,13 @@ function collectMentionTokens(text: string): ComposerInlineToken[] {
 
   for (const match of text.matchAll(MENTION_TOKEN_REGEX)) {
     const fullMatch = match[0];
-    const prefix = match[1] ?? "";
+    const prefix = match[1]!;
     const quotedPath = match[2];
-    const path = quotedPath !== undefined ? quotedPath.replace(/\\(.)/g, "$1") : (match[3] ?? "");
+    const path = quotedPath !== undefined ? quotedPath.replace(/\\(.)/g, "$1") : match[3]!;
     if (!path) {
       continue;
     }
-    const start = (match.index ?? 0) + prefix.length;
+    const start = match.index! + prefix.length;
     const end = start + fullMatch.length - prefix.length;
     matches.push({
       type: "mention",
@@ -85,12 +85,9 @@ export function collectComposerInlineTokens(
 
   for (const match of text.matchAll(SKILL_TOKEN_REGEX)) {
     const fullMatch = match[0];
-    const prefix = match[1] ?? "";
-    const value = match[2] ?? "";
-    if (!value) {
-      continue;
-    }
-    const start = (match.index ?? 0) + prefix.length;
+    const prefix = match[1]!;
+    const value = match[2]!;
+    const start = match.index! + prefix.length;
     const end = start + fullMatch.length - prefix.length;
     matches.push({
       type: "skill",

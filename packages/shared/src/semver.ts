@@ -8,9 +8,11 @@ interface ParsedSemver {
 const SEMVER_NUMBER_SEGMENT = /^\d+$/;
 
 export function normalizeSemverVersion(version: string): string {
-  const [main, prerelease] = version.trim().split("-", 2);
+  const parts = version.trim().split("-", 2);
+  const main = parts[0] as string;
+  const prerelease = parts[1];
   const segments: string[] = [];
-  for (const segment of (main ?? "").split(".")) {
+  for (const segment of main.split(".")) {
     const trimmed = segment.trim();
     if (trimmed.length > 0) {
       segments.push(trimmed);
@@ -32,10 +34,9 @@ export function parseSemver(value: string): ParsedSemver | null {
     return null;
   }
 
-  const [majorSegment, minorSegment, patchSegment] = segments;
-  if (majorSegment === undefined || minorSegment === undefined || patchSegment === undefined) {
-    return null;
-  }
+  const majorSegment = segments[0] as string;
+  const minorSegment = segments[1] as string;
+  const patchSegment = segments[2] as string;
   if (
     !SEMVER_NUMBER_SEGMENT.test(majorSegment) ||
     !SEMVER_NUMBER_SEGMENT.test(minorSegment) ||
@@ -160,6 +161,9 @@ export const satisfiesSemverRange: (rawVersion: string, range: string) => boolea
       minor: Number(versionMatch[2] || 0),
       patch: Number(versionMatch[3] || 0),
     };
+    if (![version.major, version.minor, version.patch].every(Number.isSafeInteger)) {
+      return false;
+    }
 
     return range.split("||").some((group) => {
       const comparators = group.trim().split(/\s+/).filter(Boolean);
@@ -171,18 +175,11 @@ export const satisfiesSemverRange: (rawVersion: string, range: string) => boolea
         if (!match) {
           return false;
         }
-        const targetVersion = match[2];
-        if (targetVersion === undefined) {
-          return false;
-        }
-        const targetMatch = targetVersion.match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?$/);
-        if (!targetMatch) {
-          return false;
-        }
+        const targetSegments = (match[2] as string).split(".");
         const target = {
-          major: Number(targetMatch[1]),
-          minor: Number(targetMatch[2] || 0),
-          patch: Number(targetMatch[3] || 0),
+          major: Number(targetSegments[0]),
+          minor: Number(targetSegments[1] || 0),
+          patch: Number(targetSegments[2] || 0),
         };
         const compared =
           version.major !== target.major
@@ -219,10 +216,8 @@ export const satisfiesSemverRange: (rawVersion: string, range: string) => boolea
             return compared <= 0;
           case "<":
             return compared < 0;
-          case "=":
-            return compared === 0;
           default:
-            return false;
+            return compared === 0;
         }
       });
     });

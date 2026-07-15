@@ -742,7 +742,8 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
         };
-        git(&["init", "--quiet", "--initial-branch=main"]);
+        git(&["init", "--quiet"]);
+        git(&["checkout", "--quiet", "-b", "main"]);
         git(&["config", "user.email", "test@t4code.local"]);
         git(&["config", "user.name", "T4Code Test"]);
         std::fs::write(repository.path().join("tracked.txt"), "base\n").expect("write base");

@@ -97,6 +97,12 @@ fn bridge_error(context: &str, error: impl std::fmt::Display) -> String {
 fn environment_endpoint_url(http_base_url: &str, pathname: &str) -> Result<url::Url, String> {
     let mut url = url::Url::parse(http_base_url)
         .map_err(|error| bridge_error("Could not parse the environment base URL", error))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(format!(
+            "Environment base URL must use HTTP or HTTPS. Received {}:",
+            url.scheme()
+        ));
+    }
     url.set_path(pathname);
     url.set_query(None);
     url.set_fragment(None);
@@ -1312,7 +1318,11 @@ mod tests {
         String::from_utf8(bytes).expect("request should be valid utf-8")
     }
 
-    fn spawn_json_test_server(body: &'static str) -> (String, mpsc::Receiver<String>) {
+    fn spawn_http_test_server(
+        status: u16,
+        reason: &'static str,
+        body: &'static str,
+    ) -> (String, mpsc::Receiver<String>) {
         let listener =
             TcpListener::bind(("127.0.0.1", 0)).expect("test server should bind loopback");
         let address = listener
@@ -1325,7 +1335,7 @@ mod tests {
             let request = read_test_http_request(&mut stream);
             sender.send(request).expect("request should be observed");
             let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
                 body.len(),
                 body
             );
@@ -1335,6 +1345,27 @@ mod tests {
         });
 
         (format!("http://{address}"), receiver)
+    }
+
+    fn spawn_json_test_server(body: &'static str) -> (String, mpsc::Receiver<String>) {
+        spawn_http_test_server(200, "OK", body)
+    }
+
+    fn test_run_config() -> BackendRunConfig {
+        BackendRunConfig {
+            environment_id: "primary".to_string(),
+            label: "Local".to_string(),
+            running_distro: None,
+            port: 13773,
+            bind_host: "127.0.0.1".to_string(),
+            local_host: "127.0.0.1".to_string(),
+            desktop_bootstrap_token: "desktop-token".to_string(),
+            server_exposure_mode: "local-only".to_string(),
+            endpoint_url: None,
+            advertised_host: None,
+            tailscale_serve_enabled: false,
+            tailscale_serve_port: 443,
+        }
     }
 
     fn unique_test_path(name: &str) -> PathBuf {
@@ -1396,6 +1427,36 @@ mod tests {
     }
 
     #[test]
+    fn environment_endpoint_urls_reject_non_http_schemes() {
+        let error = environment_endpoint_url("file:///tmp/t4code", "/api/auth/session")
+            .expect_err("file URLs must not reach the remote API client");
+
+        assert_eq!(
+            error,
+            "Environment base URL must use HTTP or HTTPS. Received file:"
+        );
+    }
+
+    #[test]
+    fn environment_endpoint_urls_replace_untrusted_base_components() {
+        let endpoint = environment_endpoint_url(
+            "https://example.test:8443/stale/path?token=secret#fragment",
+            "/api/auth/session",
+        )
+        .expect("HTTPS environment URL should normalize");
+
+        assert_eq!(
+            endpoint.as_str(),
+            "https://example.test:8443/api/auth/session"
+        );
+        assert!(
+            environment_endpoint_url("not a URL", "/api/auth/session")
+                .expect_err("malformed URLs should fail")
+                .starts_with("Could not parse the environment base URL:")
+        );
+    }
+
+    #[test]
     fn normalizes_connection_catalog_documents() {
         assert_eq!(
             normalize_connection_catalog_document(serde_json::json!({
@@ -1418,6 +1479,53 @@ mod tests {
             .expect("unsupported protected document should not be imported"),
             None
         );
+    }
+
+    #[test]
+    fn rejects_unsupported_connection_catalog_documents() {
+        assert_eq!(
+            normalize_connection_catalog_document(Value::Null).expect("null is an empty catalog"),
+            None
+        );
+
+        let version_error = normalize_connection_catalog_document(json!({
+            "version": 2,
+            "catalog": "{}"
+        }))
+        .expect_err("unknown versions must fail closed");
+        assert_eq!(
+            version_error,
+            "Unsupported Tauri connection catalog document version: 2"
+        );
+
+        let protection_error = normalize_connection_catalog_document(json!({
+            "version": 1,
+            "encryptedCatalog": "ciphertext",
+            "protection": "unknown"
+        }))
+        .expect_err("unknown protection must fail closed");
+        assert_eq!(
+            protection_error,
+            "Unsupported Tauri connection catalog protection: unknown"
+        );
+
+        assert!(
+            normalize_connection_catalog_document(json!([]))
+                .expect_err("non-document values must fail")
+                .starts_with("Could not decode the Tauri connection catalog document:")
+        );
+    }
+
+    #[test]
+    fn clearing_connection_catalogs_is_idempotent_and_maps_io_errors() {
+        let directory = tempfile::tempdir().expect("temporary directory should create");
+        let missing = directory.path().join("missing.json");
+        clear_connection_catalog_document(&missing)
+            .expect("missing catalog should already be clear");
+
+        let error = clear_connection_catalog_document(directory.path())
+            .expect_err("directories cannot be cleared as catalog files");
+        assert!(error.starts_with(&format!("Could not remove {}:", directory.path().display())));
     }
 
     #[cfg(target_os = "windows")]
@@ -1514,6 +1622,120 @@ mod tests {
     }
 
     #[test]
+    fn desktop_settings_defaults_and_serialization_are_stable() {
+        let settings = default_desktop_settings();
+
+        assert_eq!(
+            desktop_settings_to_value(&settings),
+            json!({
+                "serverExposureMode": "local-only",
+                "tailscaleServeEnabled": false,
+                "tailscaleServePort": 443,
+                "updateChannel": "latest",
+                "updateChannelConfiguredByUser": false,
+                "wslBackendEnabled": false,
+                "wslDistro": null,
+                "wslOnly": false,
+            })
+        );
+        assert_eq!(normalize_tailscale_serve_port(Some(1)), 1);
+        assert_eq!(
+            normalize_tailscale_serve_port(Some(u16::MAX as u64)),
+            u16::MAX
+        );
+        assert_eq!(normalize_tailscale_serve_port(Some(0)), 443);
+        assert_eq!(normalize_tailscale_serve_port(None), 443);
+        assert_eq!(normalize_server_exposure_mode(None), "local-only");
+        assert_eq!(normalize_update_channel(None), "latest");
+    }
+
+    #[test]
+    fn server_exposure_state_prefers_runtime_state_when_available() {
+        let mut settings = default_desktop_settings();
+        settings.tailscale_serve_enabled = true;
+        settings.tailscale_serve_port = 8443;
+
+        assert_eq!(
+            server_exposure_state(&settings, None),
+            json!({
+                "mode": "local-only",
+                "endpointUrl": null,
+                "advertisedHost": null,
+                "tailscaleServeEnabled": true,
+                "tailscaleServePort": 8443,
+            })
+        );
+
+        let mut config = test_run_config();
+        config.server_exposure_mode = "network-accessible".to_string();
+        config.endpoint_url = Some("http://192.168.1.20:13773".to_string());
+        config.advertised_host = Some("192.168.1.20".to_string());
+        assert_eq!(
+            server_exposure_state(&settings, Some(&config)),
+            json!({
+                "mode": "network-accessible",
+                "endpointUrl": "http://192.168.1.20:13773",
+                "advertisedHost": "192.168.1.20",
+                "tailscaleServeEnabled": false,
+                "tailscaleServePort": 443,
+            })
+        );
+    }
+
+    #[test]
+    fn advertised_endpoint_urls_normalize_supported_schemes() {
+        assert_eq!(
+            normalize_http_base_url("ws://example.test:13773/path?q=1#fragment")
+                .expect("WebSocket URL should normalize"),
+            "http://example.test:13773/"
+        );
+        assert_eq!(
+            normalize_http_base_url("wss://example.test/path")
+                .expect("secure WebSocket URL should normalize"),
+            "https://example.test/"
+        );
+        assert_eq!(
+            derive_ws_base_url("http://example.test/").expect("HTTP should derive WS"),
+            "ws://example.test/"
+        );
+        assert_eq!(
+            derive_ws_base_url("https://example.test/").expect("HTTPS should derive WSS"),
+            "wss://example.test/"
+        );
+        assert_eq!(
+            hosted_https_compatibility("http://example.test/").expect("HTTP should inspect"),
+            "mixed-content-blocked"
+        );
+        assert_eq!(
+            hosted_https_compatibility("https://example.test/").expect("HTTPS should inspect"),
+            "unknown"
+        );
+        assert!(normalize_http_base_url("ssh://example.test").is_err());
+        assert!(derive_ws_base_url("ssh://example.test/").is_err());
+        assert!(hosted_https_compatibility("not a URL").is_err());
+    }
+
+    #[test]
+    fn advertised_endpoints_serialize_loopback_and_lan_routes() {
+        let config = test_run_config();
+        let loopback =
+            advertised_endpoints_for_config(&config).expect("loopback endpoint should build");
+        assert_eq!(loopback.len(), 1);
+        assert_eq!(loopback[0]["id"], "desktop-loopback:13773");
+        assert!(loopback[0].get("isDefault").is_none());
+
+        let mut network_config = config;
+        network_config.endpoint_url = Some("http://192.168.1.20:13773/path".to_string());
+        let endpoints =
+            advertised_endpoints_for_config(&network_config).expect("LAN endpoint should build");
+        assert_eq!(endpoints.len(), 2);
+        assert_eq!(endpoints[1]["httpBaseUrl"], "http://192.168.1.20:13773/");
+        assert_eq!(endpoints[1]["wsBaseUrl"], "ws://192.168.1.20:13773/");
+        assert_eq!(endpoints[1]["isDefault"], true);
+        assert_eq!(endpoints[1]["reachability"], "lan");
+    }
+
+    #[test]
     fn parses_utf8_wsl_distro_list() {
         let output = b"  NAME                   STATE           VERSION\r\n* Ubuntu-24.04           Running         2\r\n  Debian Test            Stopped         1\r\n";
 
@@ -1549,6 +1771,33 @@ mod tests {
                 version: 2,
             }]
         );
+    }
+
+    #[test]
+    fn wsl_parsers_ignore_malformed_rows_and_validate_distro_names() {
+        let output =
+            b"NAME STATE VERSION\n\nUbuntu Running 3\nMissingFields 2\nValid_Name Stopped 1\n";
+        assert_eq!(
+            parse_wsl_distro_list(output),
+            vec![WslDistro {
+                name: "Valid_Name".to_string(),
+                is_default: false,
+                version: 1,
+            }]
+        );
+
+        let utf16_without_bom = "NAME STATE VERSION\nUbuntu Running 2\n"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        assert_eq!(parse_wsl_distro_list(&utf16_without_bom)[0].name, "Ubuntu");
+
+        assert!(is_valid_distro_name("Ubuntu 24.04-LTS"));
+        assert!(!is_valid_distro_name(""));
+        assert!(!is_valid_distro_name("-Ubuntu"));
+        assert!(!is_valid_distro_name("Ubuntu!"));
+        assert_eq!(extract_wsl_distro_from_environment_id("primary"), None);
+        assert_eq!(extract_wsl_distro_from_environment_id("wsl:bad!name"), None);
     }
 
     #[test]
@@ -1593,6 +1842,50 @@ mod tests {
             )
             .map(|path| path.to_string_lossy().into_owned()),
             Some("\\\\wsl.localhost\\Ubuntu\\home\\josh".to_string())
+        );
+    }
+
+    #[test]
+    fn resolves_wsl_picker_fallback_and_home_paths() {
+        let distros = vec![WslDistro {
+            name: "Debian".to_string(),
+            is_default: true,
+            version: 2,
+        }];
+
+        assert_eq!(
+            resolve_wsl_pick_folder_default_path(
+                Some(&json!({ "initialPath": "~" })),
+                None,
+                &distros,
+                Some("/home/mauro"),
+            )
+            .map(|path| path.to_string_lossy().into_owned()),
+            Some("\\\\wsl.localhost\\Debian\\home\\mauro".to_string())
+        );
+        assert_eq!(
+            resolve_wsl_pick_folder_default_path(
+                Some(&json!({ "initialPath": "relative/project" })),
+                None,
+                &distros,
+                None,
+            )
+            .map(|path| path.to_string_lossy().into_owned()),
+            Some("\\\\wsl.localhost\\Debian\\home".to_string())
+        );
+        assert_eq!(
+            resolve_wsl_pick_folder_default_path(
+                Some(&json!({ "initialPath": "/home/project" })),
+                Some("Ubuntu"),
+                &[],
+                None,
+            )
+            .map(|path| path.to_string_lossy().into_owned()),
+            Some("\\\\wsl.localhost\\Ubuntu\\home\\project".to_string())
+        );
+        assert_eq!(
+            resolve_wsl_pick_folder_default_path(None, None, &[], None),
+            None
         );
     }
 
@@ -1768,6 +2061,49 @@ mod tests {
         );
         let request = requests.recv().expect("request should be captured");
         assert!(request.starts_with("GET /.well-known/t4code/environment HTTP/1.1"));
+    }
+
+    #[tokio::test]
+    async fn remote_environment_requests_map_status_and_json_errors() {
+        let (base_url, requests) =
+            spawn_http_test_server(503, "Unavailable", r#"{"error":"down"}"#);
+        let error = desktop_bridge_fetch_environment_descriptor(base_url)
+            .await
+            .expect_err("non-success status should fail");
+        assert_eq!(
+            error,
+            "[ssh_http:503] SSH remote API request failed during fetch-environment-descriptor."
+        );
+        assert!(
+            requests
+                .recv()
+                .expect("failed request should be captured")
+                .starts_with("GET /.well-known/t4code/environment HTTP/1.1")
+        );
+
+        let (base_url, requests) = spawn_json_test_server("not-json");
+        let error = desktop_bridge_fetch_environment_descriptor(base_url)
+            .await
+            .expect_err("malformed JSON should fail");
+        assert!(error.starts_with("Could not decode the environment API response:"));
+        requests
+            .recv()
+            .expect("malformed response request should be captured");
+    }
+
+    #[tokio::test]
+    async fn fetch_ssh_session_state_routes_with_bearer_authorization() {
+        let (base_url, requests) = spawn_json_test_server(r#"{"status":"authenticated"}"#);
+
+        let state =
+            desktop_bridge_fetch_ssh_session_state(base_url, "session-bearer-token".to_string())
+                .await
+                .expect("session state should load");
+
+        assert_eq!(state, json!({ "status": "authenticated" }));
+        let request = requests.recv().expect("request should be captured");
+        assert!(request.starts_with("GET /api/auth/session HTTP/1.1"));
+        assert!(request.contains("authorization: Bearer session-bearer-token"));
     }
 
     #[tokio::test]

@@ -149,19 +149,13 @@ export function parseGitHubRepositoryNameWithOwnerFromRemoteUrl(url: string | nu
 
 function deriveLocalBranchNameCandidatesFromRemoteRef(
   branchName: string,
-  remoteName?: string,
+  remoteName: string,
 ): ReadonlyArray<string> {
-  const candidates = new Set<string>();
-  const firstSlashCandidate = deriveLocalBranchNameFromRemoteRef(branchName);
-  if (firstSlashCandidate.length > 0) {
-    candidates.add(firstSlashCandidate);
-  }
+  const candidates = new Set<string>([deriveLocalBranchNameFromRemoteRef(branchName)]);
 
-  if (remoteName) {
-    const remotePrefix = `${remoteName}/`;
-    if (branchName.startsWith(remotePrefix) && branchName.length > remotePrefix.length) {
-      candidates.add(branchName.slice(remotePrefix.length));
-    }
+  const remotePrefix = `${remoteName}/`;
+  if (branchName.startsWith(remotePrefix) && branchName.length > remotePrefix.length) {
+    candidates.add(branchName.slice(remotePrefix.length));
   }
 
   return [...candidates];

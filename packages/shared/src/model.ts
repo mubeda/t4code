@@ -277,10 +277,6 @@ export function resolveSelectableModel(
   }
 
   const normalized = normalizeModelSlug(trimmed, provider);
-  if (!normalized) {
-    return null;
-  }
-
   const resolved = options.find((option) => option.slug === normalized);
   return resolved ? resolved.slug : null;
 }

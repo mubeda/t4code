@@ -259,7 +259,11 @@ mod tests {
 
     #[test]
     fn resolves_direct_and_overlay_homes() {
-        let user_home = Path::new("C:/Users/tester");
+        let user_home = if cfg!(windows) {
+            Path::new("C:/Users/tester")
+        } else {
+            Path::new("/home/tester")
+        };
         let direct = resolve_codex_home_layout(None, None, user_home);
         assert_eq!(direct.shared_home_path, user_home.join(".codex"));
         assert_eq!(direct.effective_home_path, None);

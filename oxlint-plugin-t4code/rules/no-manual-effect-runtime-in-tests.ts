@@ -1,7 +1,7 @@
 import { defineRule } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
-import { getPropertyName, isIdentifier, unwrapExpression } from "../utils.ts";
+import { resolveReferenceOrigin } from "../utils.ts";
 
 const TEST_FILE_PATTERN = /\.(?:test|spec)\.[cm]?[jt]sx?$/u;
 const EFFECT_RUNTIME_METHODS = new Set([
@@ -37,25 +37,34 @@ const baselineFor = (filename: string): number => {
   return 0;
 };
 
-const manualRunnerName = (callee: unknown): Option.Option<string> => {
-  const expression = unwrapExpression(callee);
-  if (Option.isNone(expression) || expression.value.type !== "MemberExpression") {
-    return Option.none();
-  }
+const manualRunnerName = (
+  context: Parameters<typeof resolveReferenceOrigin>[0],
+  callee: unknown,
+): Option.Option<string> => {
+  return resolveReferenceOrigin(context, callee).pipe(
+    Option.flatMap((origin) => {
+      if (origin.kind !== "module") return Option.none();
+      const effectMethod =
+        origin.source === "effect/Effect" && origin.path.length === 1
+          ? origin.path[0]
+          : origin.source === "effect" && origin.path.length === 2 && origin.path[0] === "Effect"
+            ? origin.path[1]
+            : undefined;
+      if (effectMethod !== undefined && EFFECT_RUNTIME_METHODS.has(effectMethod)) {
+        return Option.some(`Effect.${effectMethod}`);
+      }
 
-  const object = unwrapExpression(expression.value.object);
-  const property = getPropertyName(expression.value.property);
-  if (Option.isNone(property)) return Option.none();
-
-  if (isIdentifier(object, "Effect") && EFFECT_RUNTIME_METHODS.has(property.value)) {
-    return Option.some(`Effect.${property.value}`);
-  }
-
-  if (isIdentifier(object, "ManagedRuntime") && property.value === "make") {
-    return Option.some("ManagedRuntime.make");
-  }
-
-  return Option.none();
+      const managedRuntime =
+        (origin.source === "effect/ManagedRuntime" &&
+          origin.path.length === 1 &&
+          origin.path[0] === "make") ||
+        (origin.source === "effect" &&
+          origin.path.length === 2 &&
+          origin.path[0] === "ManagedRuntime" &&
+          origin.path[1] === "make");
+      return managedRuntime ? Option.some("ManagedRuntime.make") : Option.none();
+    }),
+  );
 };
 
 export default defineRule({
@@ -74,7 +83,7 @@ export default defineRule({
 
     return {
       CallExpression(node) {
-        const runner = manualRunnerName(node.callee);
+        const runner = manualRunnerName(context, node.callee);
         if (Option.isNone(runner)) return;
 
         occurrenceCount++;

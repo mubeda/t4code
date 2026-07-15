@@ -106,6 +106,36 @@ describe("loadRepoEnv", () => {
       VITE_RELAY_OTLP_TRACES_TOKEN: "relay-client-token",
     });
   });
+
+  it("trims values, skips empty aliases, and preserves unrelated environment entries", () => {
+    expect(
+      loadRepoEnv({
+        baseEnv: {
+          UNRELATED: "kept",
+          T4CODE_CLERK_PUBLISHABLE_KEY: "   ",
+          VITE_CLERK_PUBLISHABLE_KEY: " pk_trimmed ",
+          VITE_RELAY_OTLP_TRACES_URL: " https://traces.example.test ",
+          VITE_RELAY_OTLP_TRACES_DATASET: " dataset ",
+          VITE_RELAY_OTLP_TRACES_TOKEN: " token ",
+        },
+        repoRoot: makeTemporaryDirectory(),
+      }),
+    ).toMatchObject({
+      UNRELATED: "kept",
+      T4CODE_CLERK_PUBLISHABLE_KEY: "pk_trimmed",
+      VITE_CLERK_PUBLISHABLE_KEY: "pk_trimmed",
+      T4CODE_RELAY_CLIENT_OTLP_TRACES_URL: "https://traces.example.test",
+      T4CODE_RELAY_CLIENT_OTLP_TRACES_DATASET: "dataset",
+      T4CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN: "token",
+    });
+  });
+
+  it("surfaces environment file read errors", () => {
+    const repoRoot = makeTemporaryDirectory();
+    NodeFS.mkdirSync(NodePath.join(repoRoot, ".env"));
+
+    expect(() => loadRepoEnv({ baseEnv: {}, repoRoot })).toThrow();
+  });
 });
 
 function makeTemporaryDirectory() {

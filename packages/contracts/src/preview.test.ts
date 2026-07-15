@@ -4,7 +4,9 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   DiscoveredLocalServer,
   PreviewEvent,
+  PreviewInvalidUrlError,
   PreviewNavStatus,
+  PreviewSessionLookupError,
   PreviewSessionSnapshot,
   PreviewViewportSetting,
 } from "./preview.ts";
@@ -322,5 +324,34 @@ describe("DiscoveredLocalServer", () => {
         terminal: null,
       }),
     ).toThrow();
+  });
+});
+
+describe("preview errors", () => {
+  it("identifies an unknown session without exposing a cause", () => {
+    const error = new PreviewSessionLookupError({ threadId: "thread-1", tabId: "tab-1" });
+
+    expect(error.message).toBe("Unknown preview session: thread=thread-1, tab=tab-1");
+  });
+
+  it("formats invalid URLs with and without protocol context", () => {
+    const cause = new Error("sensitive parser detail");
+    const parseError = new PreviewInvalidUrlError({
+      inputLength: 3,
+      reason: "parse",
+      cause,
+    });
+    const protocolError = new PreviewInvalidUrlError({
+      inputLength: 12,
+      reason: "unsupported-protocol",
+      protocol: "file:",
+      cause,
+    });
+
+    expect(parseError.message).toBe("Invalid preview URL (parse; input length 3).");
+    expect(protocolError.message).toBe(
+      "Invalid preview URL (unsupported-protocol: file:; input length 12).",
+    );
+    expect(protocolError.message).not.toContain(cause.message);
   });
 });

@@ -13,6 +13,18 @@ function moduleMatrix(qr: QrCode): string {
   return rows.join("\n");
 }
 
+function callRuntimeMethod(
+  target: object,
+  methodName: string,
+  ...args: ReadonlyArray<unknown>
+): unknown {
+  const method: unknown = Reflect.get(target, methodName);
+  if (typeof method !== "function") {
+    throw new Error(`Expected runtime method ${methodName}`);
+  }
+  return Reflect.apply(method, target, args);
+}
+
 describe("QrCode.encodeText", () => {
   it("encodes short text as a version 1 symbol with size = version * 4 + 17", () => {
     const qr = QrCode.encodeText("HELLO", QrCode.Ecc.LOW);
@@ -217,6 +229,80 @@ describe("QrCode low-level constructor", () => {
           0,
         ),
     ).toThrow(RangeError);
+  });
+});
+
+describe("QrCode runtime private guards", () => {
+  const makeQr = () => QrCode.encodeText("GUARD", QrCode.Ecc.LOW);
+
+  it("rejects a codeword sequence with the wrong raw length", () => {
+    let error: unknown;
+    try {
+      callRuntimeMethod(makeQr(), "drawCodewords", []);
+    } catch (cause) {
+      error = cause;
+    }
+    expect(error).toBeInstanceOf(RangeError);
+    expect(error).toMatchObject({ message: "Invalid argument" });
+  });
+
+  it("rejects out-of-range and non-numeric mask patterns", () => {
+    expect(() => callRuntimeMethod(makeQr(), "applyMask", -1)).toThrowError(RangeError);
+    expect(() => callRuntimeMethod(makeQr(), "applyMask", -1)).toThrow("Mask value out of range");
+    expect(() => callRuntimeMethod(makeQr(), "applyMask", 8)).toThrow("Mask value out of range");
+    expect(() => callRuntimeMethod(makeQr(), "applyMask", Number.NaN)).toThrow("Unreachable");
+  });
+
+  it("rejects raw-module calculations outside QR versions 1 through 40", () => {
+    expect(() => callRuntimeMethod(QrCode, "getNumRawDataModules", 0)).toThrowError(RangeError);
+    expect(() => callRuntimeMethod(QrCode, "getNumRawDataModules", 0)).toThrow(
+      "Version number out of range",
+    );
+    expect(() => callRuntimeMethod(QrCode, "getNumRawDataModules", 41)).toThrow(
+      "Version number out of range",
+    );
+  });
+
+  it("rejects invalid Reed-Solomon degrees and byte operands", () => {
+    expect(() => callRuntimeMethod(QrCode, "reedSolomonComputeDivisor", 0)).toThrowError(
+      RangeError,
+    );
+    expect(() => callRuntimeMethod(QrCode, "reedSolomonComputeDivisor", 0)).toThrow(
+      "Degree out of range",
+    );
+    expect(() => callRuntimeMethod(QrCode, "reedSolomonComputeDivisor", 256)).toThrow(
+      "Degree out of range",
+    );
+    expect(() => callRuntimeMethod(QrCode, "reedSolomonMultiply", 256, 1)).toThrow(
+      "Byte out of range",
+    );
+    expect(() => callRuntimeMethod(QrCode, "reedSolomonMultiply", 1, 256)).toThrow(
+      "Byte out of range",
+    );
+  });
+
+  it("rejects a finder-pattern run longer than the runtime matrix bound", () => {
+    const qr = makeQr();
+    const invalidRunHistory = [0, qr.size * 3 + 1, 0, 0, 0, 0, 0];
+    expect(() => callRuntimeMethod(qr, "finderPenaltyCountPatterns", invalidRunHistory)).toThrow(
+      "Assertion error",
+    );
+  });
+
+  it("rejects structurally supplied segment bits outside the mode field width", () => {
+    const invalidSegment = {
+      mode: {
+        modeBits: 16,
+        numCharCountBits: () => 0,
+      },
+      numChars: 0,
+      bitData: [],
+      getData: () => [],
+    };
+
+    expect(() =>
+      Reflect.apply(QrCode.encodeSegments, QrCode, [[invalidSegment], QrCode.Ecc.LOW]),
+    ).toThrow("Value out of range");
   });
 });
 

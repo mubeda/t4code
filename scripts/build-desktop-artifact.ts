@@ -9,6 +9,9 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
+import * as Stream from "effect/Stream";
+import * as NodeCrypto from "node:crypto";
 import * as NodeUtil from "node:util";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
@@ -127,9 +130,99 @@ export class TauriDesktopBuildNoArtifactsProducedError extends Error {
   }
 }
 
+export class TauriDesktopBuildUnsafePathError extends Error {
+  override readonly name = "TauriDesktopBuildUnsafePathError";
+  readonly bundleDir: string;
+  readonly outputDir: string;
+
+  constructor(bundleDir: string, outputDir: string) {
+    super(
+      `Tauri bundle source and artifact output must be separate, non-overlapping directories: ${bundleDir} -> ${outputDir}.`,
+    );
+    this.bundleDir = bundleDir;
+    this.outputDir = outputDir;
+  }
+}
+
+export interface TauriDesktopBuildRollbackFailure {
+  readonly operation:
+    | "inspect-output"
+    | "quarantine-output"
+    | "remove-output"
+    | "restore-output"
+    | "remove-staging"
+    | "cleanup-backup";
+  readonly path: string;
+  readonly cause: unknown;
+}
+
+export interface TauriDesktopBuildRecoveryPath {
+  readonly kind: "backup" | "quarantine" | "staging";
+  readonly path: string;
+}
+
+export class TauriDesktopBuildPublicationError extends Error {
+  override readonly name = "TauriDesktopBuildPublicationError";
+  readonly operation: "copy" | "validate-staging" | "swap";
+  readonly outputDir: string;
+  override readonly cause: unknown;
+  readonly rollbackFailures: Array<TauriDesktopBuildRollbackFailure>;
+  readonly recoveryPaths: Array<TauriDesktopBuildRecoveryPath>;
+
+  constructor(
+    operation: "copy" | "validate-staging" | "swap",
+    outputDir: string,
+    cause: unknown,
+    rollbackFailures: Array<TauriDesktopBuildRollbackFailure>,
+    recoveryPaths: Array<TauriDesktopBuildRecoveryPath>,
+  ) {
+    const baseMessage = `Failed to ${operation.replace("-", " ")} Tauri artifacts at ${outputDir}.`;
+    super(baseMessage);
+    this.operation = operation;
+    this.outputDir = outputDir;
+    this.cause = cause;
+    this.rollbackFailures = rollbackFailures;
+    this.recoveryPaths = recoveryPaths;
+    Object.defineProperty(this, "message", {
+      configurable: true,
+      enumerable: false,
+      get: () =>
+        this.recoveryPaths.length === 0
+          ? baseMessage
+          : `${baseMessage} Recovery artifacts retained at: ${this.recoveryPaths
+              .map((recovery) => `${recovery.kind}=${recovery.path}`)
+              .join(", ")}.`,
+    });
+  }
+}
+
+export interface TauriArtifactPublicationOptions {
+  readonly transactionId?: (() => string) | undefined;
+  readonly ownershipToken?: (() => string) | undefined;
+  readonly copy?: FileSystem.FileSystem["copy"] | undefined;
+  readonly exists?: FileSystem.FileSystem["exists"] | undefined;
+  readonly makeDirectory?: FileSystem.FileSystem["makeDirectory"] | undefined;
+  readonly move?: FileSystem.FileSystem["rename"] | undefined;
+  readonly readFileString?: FileSystem.FileSystem["readFileString"] | undefined;
+  readonly readDirectory?: FileSystem.FileSystem["readDirectory"] | undefined;
+  readonly realPath?: FileSystem.FileSystem["realPath"] | undefined;
+  readonly remove?: FileSystem.FileSystem["remove"] | undefined;
+  readonly stat?: FileSystem.FileSystem["stat"] | undefined;
+  readonly stream?: FileSystem.FileSystem["stream"] | undefined;
+  readonly writeFileString?: FileSystem.FileSystem["writeFileString"] | undefined;
+}
+
+const TAURI_ARTIFACT_OWNER_FILE = ".t4code-publication-owner";
+
 const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("..", import.meta.url))),
 );
+
+const tryBuildConfiguration = <A>(evaluate: () => A) =>
+  Effect.try({
+    try: evaluate,
+    catch: (cause) => cause as TauriDesktopBuildConfigurationError,
+  });
 
 function compactEnv(env: Readonly<Record<string, string | undefined>>): Record<string, string> {
   return Object.fromEntries(
@@ -214,13 +307,8 @@ const resolveDefaultArch = Effect.fn("resolveDefaultTauriArch")(function* (
   const arch = yield* getDefaultBuildArch(platform, TAURI_PLATFORM_CONFIG[platform]).pipe(
     withHostRuntime(host, env),
   );
-  const parsedArch = parseTauriBuildArch(arch);
-  if (!parsedArch) {
-    return yield* Effect.fail(
-      new TauriDesktopBuildConfigurationError("Could not resolve a default Tauri build arch."),
-    );
-  }
-  return parsedArch;
+  const parsedArch = yield* tryBuildConfiguration(() => parseTauriBuildArch(arch));
+  return parsedArch as TauriBuildArch;
 });
 
 export const resolveTauriBuildPlan = Effect.fn("resolveTauriBuildPlan")(function* (
@@ -236,8 +324,9 @@ export const resolveTauriBuildPlan = Effect.fn("resolveTauriBuildPlan")(function
     arch: yield* HostProcessArchitecture,
   };
   const platform =
-    parseTauriBuildPlatform(input.platform ?? env.T4CODE_TAURI_DESKTOP_PLATFORM) ??
-    detectHostTauriBuildPlatform(host.platform);
+    (yield* tryBuildConfiguration(() =>
+      parseTauriBuildPlatform(input.platform ?? env.T4CODE_TAURI_DESKTOP_PLATFORM),
+    )) ?? detectHostTauriBuildPlatform(host.platform);
   if (!platform) {
     return yield* Effect.fail(
       new TauriDesktopBuildConfigurationError(
@@ -247,17 +336,22 @@ export const resolveTauriBuildPlan = Effect.fn("resolveTauriBuildPlan")(function
   }
 
   const arch =
-    parseTauriBuildArch(input.arch ?? env.T4CODE_TAURI_DESKTOP_ARCH) ??
-    (yield* resolveDefaultArch(platform, host, env));
-  const target = normalizeTauriBundleTarget(
-    platform,
-    input.target ??
-      env.T4CODE_TAURI_DESKTOP_TARGET ??
-      TAURI_PLATFORM_CONFIG[platform].defaultTarget,
+    (yield* tryBuildConfiguration(() =>
+      parseTauriBuildArch(input.arch ?? env.T4CODE_TAURI_DESKTOP_ARCH),
+    )) ?? (yield* resolveDefaultArch(platform, host, env));
+  const target = yield* tryBuildConfiguration(() =>
+    normalizeTauriBundleTarget(
+      platform,
+      input.target ??
+        env.T4CODE_TAURI_DESKTOP_TARGET ??
+        TAURI_PLATFORM_CONFIG[platform].defaultTarget,
+    ),
   );
   const allowCrossPlatform =
     input.allowCrossPlatform ??
-    envBoolean(env, "T4CODE_TAURI_DESKTOP_ALLOW_CROSS_PLATFORM") ??
+    (yield* tryBuildConfiguration(() =>
+      envBoolean(env, "T4CODE_TAURI_DESKTOP_ALLOW_CROSS_PLATFORM"),
+    )) ??
     false;
   if (!allowCrossPlatform && host.platform !== TAURI_PLATFORM_CONFIG[platform].hostPlatform) {
     return yield* Effect.fail(new TauriDesktopBuildHostMismatchError(platform, host.platform));
@@ -291,8 +385,14 @@ export const resolveTauriBuildPlan = Effect.fn("resolveTauriBuildPlan")(function
     rustTarget,
     outputDir,
     bundleDir,
-    skipBuild: input.skipBuild ?? envBoolean(env, "T4CODE_TAURI_DESKTOP_SKIP_BUILD") ?? false,
-    verbose: input.verbose ?? envBoolean(env, "T4CODE_TAURI_DESKTOP_VERBOSE") ?? false,
+    skipBuild:
+      input.skipBuild ??
+      (yield* tryBuildConfiguration(() => envBoolean(env, "T4CODE_TAURI_DESKTOP_SKIP_BUILD"))) ??
+      false,
+    verbose:
+      input.verbose ??
+      (yield* tryBuildConfiguration(() => envBoolean(env, "T4CODE_TAURI_DESKTOP_VERBOSE"))) ??
+      false,
     buildCommand: {
       command: "vp",
       args: [
@@ -359,51 +459,425 @@ const runSpawnPlan = Effect.fn("runTauriSpawnPlan")(function* (
   }
 });
 
+interface ArtifactManifestEntry {
+  readonly checksum: string;
+  readonly path: string;
+  readonly type: string;
+  readonly size: number;
+}
+
+const pathContains = (path: Path.Path, parent: string, child: string): boolean => {
+  const relative = path.relative(parent, child);
+  return (
+    relative === "" ||
+    (relative !== ".." &&
+      !relative.startsWith("../") &&
+      !relative.startsWith("..\\") &&
+      !path.isAbsolute(relative))
+  );
+};
+
+const collectArtifactManifest = (
+  root: string,
+  readDirectory: FileSystem.FileSystem["readDirectory"],
+  stat: FileSystem.FileSystem["stat"],
+  stream: FileSystem.FileSystem["stream"],
+  path: Path.Path,
+): Effect.Effect<ReadonlyArray<ArtifactManifestEntry>, PlatformError.PlatformError> => {
+  const visit = (
+    relativeDir: string,
+  ): Effect.Effect<Array<ArtifactManifestEntry>, PlatformError.PlatformError> =>
+    Effect.gen(function* () {
+      const directory = relativeDir === "" ? root : path.join(root, relativeDir);
+      const entries = (yield* readDirectory(directory)).toSorted();
+      const manifest: Array<ArtifactManifestEntry> = [];
+      for (const entry of entries) {
+        const relativePath = relativeDir === "" ? entry : path.join(relativeDir, entry);
+        const info = yield* stat(path.join(root, relativePath));
+        const checksum =
+          info.type === "File"
+            ? yield* stream(path.join(root, relativePath)).pipe(
+                Stream.runFold(
+                  () => NodeCrypto.createHash("sha256"),
+                  (hash, chunk) => hash.update(chunk),
+                ),
+                Effect.map((hash) => hash.digest("hex")),
+              )
+            : "";
+        manifest.push({
+          checksum,
+          path: relativePath,
+          type: info.type,
+          size: info.type === "File" ? Number(info.size) : 0,
+        });
+        if (info.type === "Directory") {
+          manifest.push(...(yield* visit(relativePath)));
+        }
+      }
+      return manifest;
+    });
+  return visit("");
+};
+
+const manifestsMatch = (
+  source: ReadonlyArray<ArtifactManifestEntry>,
+  staged: ReadonlyArray<ArtifactManifestEntry>,
+): boolean =>
+  source.length === staged.length &&
+  source.every((entry, index) => {
+    const other = staged[index];
+    return (
+      other?.path === entry.path &&
+      other.type === entry.type &&
+      other.size === entry.size &&
+      other.checksum === entry.checksum
+    );
+  });
+
 export const copyTauriBundleArtifacts = Effect.fn("copyTauriBundleArtifacts")(function* (
   plan: Pick<TauriBuildPlan, "bundleDir" | "outputDir">,
+  options: TauriArtifactPublicationOptions = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const bundleExists = yield* fs.exists(plan.bundleDir);
+  const copy = options.copy ?? fs.copy;
+  const exists = options.exists ?? fs.exists;
+  const makeDirectory = options.makeDirectory ?? fs.makeDirectory;
+  const move = options.move ?? fs.rename;
+  const readFileString = options.readFileString ?? fs.readFileString;
+  const readDirectory = options.readDirectory ?? fs.readDirectory;
+  const realPath = options.realPath ?? fs.realPath;
+  const remove = options.remove ?? fs.remove;
+  const stat = options.stat ?? fs.stat;
+  const stream = options.stream ?? fs.stream;
+  const writeFileString = options.writeFileString ?? fs.writeFileString;
+  const bundleDir = path.resolve(plan.bundleDir);
+  const outputDir = path.resolve(plan.outputDir);
+  const bundleExists = yield* exists(bundleDir);
   if (!bundleExists) {
-    return yield* Effect.fail(new TauriDesktopBuildDirectoryMissingError(plan.bundleDir));
+    return yield* Effect.fail(new TauriDesktopBuildDirectoryMissingError(bundleDir));
   }
 
-  const entries = yield* fs.readDirectory(plan.bundleDir);
+  const outputExists = yield* exists(outputDir);
+  const canonicalBundleDir = yield* realPath(bundleDir);
+  const canonicalOutputDir = outputExists ? yield* realPath(outputDir) : outputDir;
+  if (
+    pathContains(path, canonicalBundleDir, canonicalOutputDir) ||
+    pathContains(path, canonicalOutputDir, canonicalBundleDir)
+  ) {
+    return yield* Effect.fail(new TauriDesktopBuildUnsafePathError(bundleDir, outputDir));
+  }
+
+  const entries = (yield* readDirectory(bundleDir)).toSorted();
   if (entries.length === 0) {
-    return yield* Effect.fail(new TauriDesktopBuildNoArtifactsProducedError(plan.bundleDir));
+    return yield* Effect.fail(new TauriDesktopBuildNoArtifactsProducedError(bundleDir));
   }
 
-  yield* fs.makeDirectory(plan.outputDir, { recursive: true });
-  const copiedArtifacts: Array<string> = [];
-  for (const entry of entries) {
-    const from = path.join(plan.bundleDir, entry);
-    const to = path.join(plan.outputDir, entry);
-    yield* fs.remove(to, { recursive: true, force: true }).pipe(Effect.ignore);
-    yield* fs.copy(from, to);
-    copiedArtifacts.push(to);
-  }
+  const transactionId = options.transactionId?.() ?? NodeCrypto.randomUUID();
+  const ownershipToken = options.ownershipToken?.() ?? NodeCrypto.randomUUID();
+  const outputParent = path.dirname(outputDir);
+  const outputName = path.basename(outputDir);
+  const stagingDir = path.join(outputParent, `.${outputName}.t4code-${transactionId}.stage`);
+  const backupDir = path.join(outputParent, `.${outputName}.t4code-${transactionId}.backup`);
+  const quarantineDir = path.join(
+    outputParent,
+    `.${outputName}.t4code-${transactionId}.quarantine`,
+  );
+  const ownerMarker = (directory: string) => path.join(directory, TAURI_ARTIFACT_OWNER_FILE);
+  const rollbackFailures: Array<TauriDesktopBuildRollbackFailure> = [];
+  const recoveryPaths: Array<TauriDesktopBuildRecoveryPath> = [];
+  const state = {
+    committed: false,
+    stagingAttempted: false,
+    backupReady: false,
+    replacementAttempted: false,
+  };
 
-  return copiedArtifacts;
+  const recordCleanup = (
+    operation: TauriDesktopBuildRollbackFailure["operation"],
+    target: string,
+    effect: Effect.Effect<void, PlatformError.PlatformError>,
+  ) =>
+    effect.pipe(
+      Effect.catch((cause) =>
+        Effect.sync(() => {
+          rollbackFailures.push({ operation, path: target, cause });
+        }),
+      ),
+    );
+
+  const isOwnedQuarantine = readFileString(ownerMarker(quarantineDir)).pipe(
+    Effect.match({
+      onFailure: () => false,
+      onSuccess: (owner) => owner === ownershipToken,
+    }),
+  );
+
+  const reportRecoveryPath = (kind: TauriDesktopBuildRecoveryPath["kind"], target: string) =>
+    exists(target).pipe(
+      Effect.match({
+        onFailure: () => true,
+        onSuccess: (present) => present,
+      }),
+      Effect.tap((present) =>
+        Effect.sync(() => {
+          if (present && !recoveryPaths.some((recovery) => recovery.path === target)) {
+            recoveryPaths.push({ kind, path: target });
+          }
+        }),
+      ),
+      Effect.asVoid,
+    );
+
+  const auditRecoveryPaths = Effect.gen(function* () {
+    yield* reportRecoveryPath("backup", backupDir);
+    yield* reportRecoveryPath("quarantine", quarantineDir);
+    yield* reportRecoveryPath("staging", stagingDir);
+  });
+
+  const inspectOutput = (assumePresent: boolean) =>
+    exists(outputDir).pipe(
+      Effect.match({
+        onFailure: (cause) => {
+          rollbackFailures.push({ operation: "inspect-output", path: outputDir, cause });
+          return assumePresent;
+        },
+        onSuccess: (present) => present,
+      }),
+    );
+
+  return yield* Effect.acquireUseRelease(
+    Effect.void,
+    () =>
+      Effect.gen(function* () {
+        yield* makeDirectory(outputParent, { recursive: true });
+        yield* makeDirectory(stagingDir).pipe(
+          Effect.mapError(
+            (cause) =>
+              new TauriDesktopBuildPublicationError(
+                "copy",
+                outputDir,
+                cause,
+                rollbackFailures,
+                recoveryPaths,
+              ),
+          ),
+        );
+        state.stagingAttempted = true;
+
+        for (const entry of entries) {
+          yield* copy(path.join(bundleDir, entry), path.join(stagingDir, entry)).pipe(
+            Effect.mapError(
+              (cause) =>
+                new TauriDesktopBuildPublicationError(
+                  "copy",
+                  outputDir,
+                  cause,
+                  rollbackFailures,
+                  recoveryPaths,
+                ),
+            ),
+          );
+        }
+
+        const sourceManifest = yield* collectArtifactManifest(
+          bundleDir,
+          readDirectory,
+          stat,
+          stream,
+          path,
+        ).pipe(
+          Effect.mapError(
+            (cause) =>
+              new TauriDesktopBuildPublicationError(
+                "validate-staging",
+                outputDir,
+                cause,
+                rollbackFailures,
+                recoveryPaths,
+              ),
+          ),
+        );
+        const stagedManifest = yield* collectArtifactManifest(
+          stagingDir,
+          readDirectory,
+          stat,
+          stream,
+          path,
+        ).pipe(
+          Effect.mapError(
+            (cause) =>
+              new TauriDesktopBuildPublicationError(
+                "validate-staging",
+                outputDir,
+                cause,
+                rollbackFailures,
+                recoveryPaths,
+              ),
+          ),
+        );
+        if (!manifestsMatch(sourceManifest, stagedManifest)) {
+          return yield* Effect.fail(
+            new TauriDesktopBuildPublicationError(
+              "validate-staging",
+              outputDir,
+              new Error("Staged artifact manifest does not match the source bundle."),
+              rollbackFailures,
+              recoveryPaths,
+            ),
+          );
+        }
+
+        yield* writeFileString(ownerMarker(stagingDir), ownershipToken).pipe(
+          Effect.mapError(
+            (cause) =>
+              new TauriDesktopBuildPublicationError(
+                "swap",
+                outputDir,
+                cause,
+                rollbackFailures,
+                recoveryPaths,
+              ),
+          ),
+        );
+
+        if (outputExists) {
+          yield* move(outputDir, backupDir).pipe(
+            Effect.mapError(
+              (cause) =>
+                new TauriDesktopBuildPublicationError(
+                  "swap",
+                  outputDir,
+                  cause,
+                  rollbackFailures,
+                  recoveryPaths,
+                ),
+            ),
+          );
+          state.backupReady = true;
+        }
+        state.replacementAttempted = true;
+        yield* move(stagingDir, outputDir).pipe(
+          Effect.mapError(
+            (cause) =>
+              new TauriDesktopBuildPublicationError(
+                "swap",
+                outputDir,
+                cause,
+                rollbackFailures,
+                recoveryPaths,
+              ),
+          ),
+        );
+        state.stagingAttempted = false;
+        state.committed = true;
+        return entries.map((entry) => path.join(outputDir, entry));
+      }),
+    () =>
+      Effect.gen(function* () {
+        let committedBackupCleanupFailure: { readonly cause: unknown } | undefined;
+        if (!state.committed && state.replacementAttempted) {
+          if (yield* inspectOutput(false)) {
+            const quarantineSucceeded = yield* move(outputDir, quarantineDir).pipe(
+              Effect.match({
+                onFailure: (cause) => {
+                  rollbackFailures.push({
+                    operation: "quarantine-output",
+                    path: outputDir,
+                    cause,
+                  });
+                  return false;
+                },
+                onSuccess: () => true,
+              }),
+            );
+            if (quarantineSucceeded) {
+              if (yield* isOwnedQuarantine) {
+                yield* recordCleanup(
+                  "remove-output",
+                  quarantineDir,
+                  remove(quarantineDir, { recursive: true, force: true }),
+                );
+              } else if (!(yield* inspectOutput(true))) {
+                yield* recordCleanup("restore-output", outputDir, move(quarantineDir, outputDir));
+              }
+            }
+          }
+          if (state.backupReady && !(yield* inspectOutput(true))) {
+            yield* move(backupDir, outputDir).pipe(
+              Effect.match({
+                onFailure: (cause) => {
+                  rollbackFailures.push({
+                    operation: "restore-output",
+                    path: outputDir,
+                    cause,
+                  });
+                },
+                onSuccess: () => {
+                  state.backupReady = false;
+                },
+              }),
+            );
+          }
+        }
+        if (state.stagingAttempted) {
+          yield* recordCleanup(
+            "remove-staging",
+            stagingDir,
+            remove(stagingDir, { recursive: true, force: true }),
+          );
+        }
+        if (state.backupReady && state.committed) {
+          yield* remove(backupDir, { recursive: true, force: true }).pipe(
+            Effect.match({
+              onFailure: (cause) => {
+                rollbackFailures.push({ operation: "cleanup-backup", path: backupDir, cause });
+                committedBackupCleanupFailure = { cause };
+              },
+              onSuccess: () => {
+                state.backupReady = false;
+              },
+            }),
+          );
+        }
+        if (committedBackupCleanupFailure) {
+          return yield* Effect.fail(
+            new TauriDesktopBuildPublicationError(
+              "swap",
+              outputDir,
+              committedBackupCleanupFailure.cause,
+              rollbackFailures,
+              recoveryPaths,
+            ),
+          );
+        }
+      }).pipe(Effect.ensuring(auditRecoveryPaths)),
+  );
 });
 
 export const buildTauriDesktopArtifact = Effect.fn("buildTauriDesktopArtifact")(function* (
   input: TauriBuildCliInput,
   env: NodeJS.ProcessEnv = process.env,
+  options: {
+    readonly write?: (text: string) => void;
+    readonly host?: TauriBuildHost;
+    readonly repoRoot?: string;
+  } = {},
 ) {
-  const plan = yield* resolveTauriBuildPlan(input, env);
+  const write = options.write ?? ((text: string) => process.stdout.write(text));
+  const plan = yield* resolveTauriBuildPlan(input, env, options.host, options.repoRoot);
   if (!plan.skipBuild) {
-    process.stdout.write(
+    write(
       `[desktop-artifact] Building ${plan.platform}/${plan.target} (${plan.arch}, ${plan.rustTarget})...\n`,
     );
     yield* runSpawnPlan(plan.buildCommand, env);
   }
 
   const artifacts = yield* copyTauriBundleArtifacts(plan);
-  process.stdout.write(`[desktop-artifact] Artifacts copied to ${plan.outputDir}\n`);
+  write(`[desktop-artifact] Artifacts copied to ${plan.outputDir}\n`);
   if (plan.verbose) {
     for (const artifact of artifacts) {
-      process.stdout.write(` - ${artifact}\n`);
+      write(` - ${artifact}\n`);
     }
   }
   return artifacts;
@@ -411,10 +885,21 @@ export const buildTauriDesktopArtifact = Effect.fn("buildTauriDesktopArtifact")(
 
 const cliRuntimeLayer = Layer.mergeAll(NodeServices.layer);
 
-if (import.meta.main) {
-  buildTauriDesktopArtifact(parseTauriArtifactCliArgs(process.argv.slice(2))).pipe(
-    Effect.scoped,
-    Effect.provide(cliRuntimeLayer),
-    NodeRuntime.runMain,
+type MainLauncher = <E, A>(effect: Effect.Effect<A, E, never>) => void;
+
+export function runBuildTauriDesktopArtifactMain(
+  isMain: boolean,
+  argv: ReadonlyArray<string> = process.argv.slice(2),
+  launch: MainLauncher = NodeRuntime.runMain,
+): boolean {
+  if (!isMain) return false;
+  launch(
+    buildTauriDesktopArtifact(parseTauriArtifactCliArgs(argv)).pipe(
+      Effect.scoped,
+      Effect.provide(cliRuntimeLayer),
+    ),
   );
+  return true;
 }
+
+runBuildTauriDesktopArtifactMain(import.meta.main);

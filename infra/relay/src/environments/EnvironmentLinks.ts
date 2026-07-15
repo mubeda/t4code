@@ -16,6 +16,7 @@ import { relayEnvironmentLinks } from "../persistence/schema.ts";
 
 export interface RelayLinkedEnvironmentRecord extends RelayClientEnvironmentRecord {
   readonly environmentPublicKey: string;
+  readonly managedTunnelsEnabled: boolean;
 }
 
 export class EnvironmentLinkUpsertPersistenceError extends Schema.TaggedErrorClass<EnvironmentLinkUpsertPersistenceError>()(
@@ -119,6 +120,10 @@ export class EnvironmentLinks extends Context.Service<
       readonly userId: string;
       readonly environmentId: string;
     }) => Effect.Effect<RelayLinkedEnvironmentRecord | null, EnvironmentLinkLookupPersistenceError>;
+    readonly restoreForUser: (input: {
+      readonly userId: string;
+      readonly record: RelayLinkedEnvironmentRecord;
+    }) => Effect.Effect<void, EnvironmentLinkUpsertPersistenceError>;
     readonly revokeForUser: (input: {
       readonly userId: string;
       readonly environmentId: string;
@@ -239,6 +244,7 @@ const make = Effect.gen(function* () {
           endpointHttpBaseUrl: relayEnvironmentLinks.endpointHttpBaseUrl,
           endpointWsBaseUrl: relayEnvironmentLinks.endpointWsBaseUrl,
           endpointProviderKind: relayEnvironmentLinks.endpointProviderKind,
+          managedTunnelsEnabled: relayEnvironmentLinks.managedTunnelsEnabled,
           createdAt: relayEnvironmentLinks.createdAt,
         })
         .from(relayEnvironmentLinks)
@@ -285,6 +291,7 @@ const make = Effect.gen(function* () {
           endpointHttpBaseUrl: relayEnvironmentLinks.endpointHttpBaseUrl,
           endpointWsBaseUrl: relayEnvironmentLinks.endpointWsBaseUrl,
           endpointProviderKind: relayEnvironmentLinks.endpointProviderKind,
+          managedTunnelsEnabled: relayEnvironmentLinks.managedTunnelsEnabled,
           createdAt: relayEnvironmentLinks.createdAt,
         })
         .from(relayEnvironmentLinks)
@@ -313,6 +320,7 @@ const make = Effect.gen(function* () {
                       row.endpointProviderKind as RelayClientEnvironmentRecord["endpoint"]["providerKind"],
                   },
                   environmentPublicKey: row.environmentPublicKey,
+                  managedTunnelsEnabled: row.managedTunnelsEnabled,
                   linkedAt: row.createdAt,
                 }
               : null;
@@ -322,6 +330,43 @@ const make = Effect.gen(function* () {
               new EnvironmentLinkLookupPersistenceError({
                 userId: input.userId,
                 environmentId: input.environmentId,
+                cause,
+              }),
+          ),
+        );
+    }),
+
+    restoreForUser: Effect.fn("relay.environment_links.restore_for_user")(function* (input) {
+      const { record } = input;
+      const now = DateTime.formatIso(yield* DateTime.now);
+      const values = {
+        environmentLabel: record.label,
+        environmentPublicKey: record.environmentPublicKey,
+        endpointHttpBaseUrl: record.endpoint.httpBaseUrl,
+        endpointWsBaseUrl: record.endpoint.wsBaseUrl,
+        endpointProviderKind: record.endpoint.providerKind,
+        managedTunnelsEnabled: record.managedTunnelsEnabled,
+        revokedAt: null,
+        updatedAt: now,
+      } as const;
+      yield* db
+        .insert(relayEnvironmentLinks)
+        .values({
+          userId: input.userId,
+          environmentId: record.environmentId,
+          ...values,
+          createdAt: record.linkedAt,
+        })
+        .onConflictDoUpdate({
+          target: [relayEnvironmentLinks.userId, relayEnvironmentLinks.environmentId],
+          set: values,
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new EnvironmentLinkUpsertPersistenceError({
+                userId: input.userId,
+                environmentId: record.environmentId,
                 cause,
               }),
           ),
