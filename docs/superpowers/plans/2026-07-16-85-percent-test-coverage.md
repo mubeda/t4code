@@ -113,53 +113,24 @@ git commit -m "test: cover query state behavior"
 
 ---
 
-### Task 3: Make Fixture Exporters Deterministic and Directly Testable
+### Task 3: Cover the Deterministic Fixture Exporters
 
 **Files:**
 
-- Create: `packages/contracts/scripts/rustFixtureExporter.ts`
-- Modify: `packages/contracts/scripts/export-rust-rpc-fixtures.ts`
-- Modify: `packages/contracts/scripts/export-rust-auth-fixtures.ts`
+- Test unchanged: `packages/contracts/scripts/export-rust-rpc-fixtures.ts`
+- Test unchanged: `packages/contracts/scripts/export-rust-auth-fixtures.ts`
 - Create: `packages/contracts/scripts/export-rust-rpc-fixtures.test.ts`
 - Create: `packages/contracts/scripts/export-rust-auth-fixtures.test.ts`
 - Verify generated fixtures: `packages/contracts/fixtures/rpc-wire/**`
 - Verify generated fixtures: `packages/contracts/fixtures/auth-http/**`
 
-**Production seam:**
+**Test seam:**
 
-Extract only filesystem/formatter orchestration into a shared helper. Schema construction, fingerprints, fixture values, method counts, and route reflection remain in their current scripts.
+Import each existing top-level exporter through Vitest after mocking only `node:fs/promises` and `node:child_process`. This executes the real schema reflection, deterministic FastCheck sampling, fingerprints, validation counts, serialization, path ordering, and manifest construction without writing the repository or adding a production abstraction.
 
-```ts
-export interface FixtureExporterServices {
-  readonly removeDirectory: (path: string) => Promise<void>;
-  readonly makeDirectory: (path: string) => Promise<void>;
-  readonly writeText: (path: string, value: string) => Promise<void>;
-  readonly formatDirectory: (path: string) => number | null;
-}
-
-export function writeFixtureTree(
-  outputDirectory: string,
-  files: ReadonlyMap<string, string>,
-  services?: Partial<FixtureExporterServices>,
-): Promise<void>;
-
-export function exportRpcFixtures(options?: {
-  readonly outputDirectory?: string;
-  readonly services?: Partial<FixtureExporterServices>;
-}): Promise<void>;
-
-export function exportAuthFixtures(options?: {
-  readonly outputDirectory?: string;
-  readonly services?: Partial<FixtureExporterServices>;
-}): Promise<void>;
-```
-
-- [ ] Add failing unit tests for `writeFixtureTree`: deterministic lexical write order, nested-directory creation, trailing-newline preservation, formatter success, formatter nonzero status, and formatter `null` status.
-- [ ] Implement the helper with Node defaults and injected test services. Keep `NodeChildProcess.spawnSync` configured with `shell: false` and repository-root `cwd`.
-- [ ] Refactor each exporter to build its complete `ReadonlyMap<string, string>` and call its exported entry function. Guard the CLI invocation with `if (import.meta.main)`. Do not change file names, manifests, schema samples, seeds, expected method/shape counts, or fingerprints.
-- [ ] Test the RPC exporter through a temporary output directory. Assert 80 methods, 14 stream methods, 54 stream-shape fixtures, 122 typed-failure fixtures, 22 orchestration event shapes, the three known stale method identifiers, sorted fixture paths, and byte-for-byte stable output across two runs.
-- [ ] Test the auth exporter through a temporary output directory. Assert the ten route manifests in declared order, unique response/error shapes, stable SHA-256 fingerprints, all request/response/error samples, sorted fixture paths, and byte-for-byte stable output across two runs.
-- [ ] Add negative tests by injecting a failed formatter and a rejected write. Assert the surfaced error retains the original cause or exit status.
+- [ ] Test the RPC exporter in memory. Assert 80 methods, 14 stream methods, 54 stream-shape fixtures, 122 typed-failure fixtures, 22 orchestration event shapes, the three known stale method identifiers, all 190 sorted fixture paths, parseable newline-terminated JSON, and byte-for-byte stable output across two fresh module runs.
+- [ ] Test the auth exporter in memory. Assert the ten route manifests in declared order, unique response/error shapes, 24 stable schema fingerprints, all 21 sorted request/response/error fixtures, token-form fields, and byte-for-byte stable output across two fresh module runs.
+- [ ] Add formatter failure tests for a numeric exit status and a `null` status. Assert the error retains the exit status and that the manifest was produced before formatting.
 - [ ] Run focused tests and then regenerate the committed fixtures:
 
 ```bash
