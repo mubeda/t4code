@@ -620,4 +620,106 @@ describe("ChatMarkdown", () => {
       expect(markup).not.toContain("chat-markdown-codeblock");
     });
   });
+
+  describe("mounted interaction edge cases", () => {
+    it("ignores a task checkbox when its source marker metadata is missing", async () => {
+      const onTaskListChange = vi.fn();
+      const container = await mountMarkdown("- [ ] alpha", { onTaskListChange });
+      const item = container.querySelector("li");
+      const checkbox = container.querySelector<HTMLInputElement>('input[aria-label="Toggle task"]');
+      item?.removeAttribute("data-task-marker-offset");
+
+      await click(checkbox!);
+
+      expect(onTaskListChange).not.toHaveBeenCalled();
+    });
+
+    it("expands collapsed tables and measures every header column", async () => {
+      __setClientSettingsForTests({ ...DEFAULT_CLIENT_SETTINGS, wordWrap: false });
+      const container = await mountMarkdown(["| A | B |", "| - | - |", "| one | two |"].join("\n"));
+      const cells = [...container.querySelectorAll<HTMLElement>("th, td")];
+      const headerCells = [...container.querySelectorAll<HTMLElement>("th")];
+      const table = container.querySelector<HTMLTableElement>("table")!;
+      Object.defineProperty(table, "tHead", {
+        configurable: true,
+        value: { rows: [{ cells: headerCells }] },
+      });
+      cells.forEach((cell, index) => {
+        vi.spyOn(cell, "getBoundingClientRect").mockReturnValue({
+          width: 20 + index,
+        } as DOMRect);
+      });
+
+      await click(
+        container.querySelector<HTMLButtonElement>('button[aria-label="Expand table cells"]')!,
+      );
+
+      expect(
+        container.querySelector(".chat-markdown-table-container")?.getAttribute("data-expanded"),
+      ).toBe("true");
+      expect(container.querySelectorAll("th")[0]?.style.minWidth).not.toBe("");
+    });
+
+    it("toggles details content through the rendered summary", async () => {
+      const container = await mountMarkdown(
+        ["<details>", "<summary>More</summary>", "", "Body", "", "</details>"].join("\n"),
+      );
+      const details = container.querySelector<HTMLElement>("[data-markdown-details]");
+      expect(details?.dataset.markdownDetailsOpen).toBe("false");
+
+      await click(container.querySelector<HTMLElement>("[data-markdown-details-summary]")!);
+
+      expect(details?.dataset.markdownDetailsOpen).toBe("true");
+    });
+
+    it("navigates valid fragment links and preserves modified clicks", async () => {
+      const container = await mountMarkdown("# Target\n\n[Jump](#target)");
+      const target = document.createElement("div");
+      target.id = "target";
+      document.body.append(target);
+      const anchor = container.querySelector<HTMLAnchorElement>('a[href="#target"]');
+      const scrollIntoView = vi.fn();
+      Object.defineProperty(target, "scrollIntoView", {
+        configurable: true,
+        value: scrollIntoView,
+      });
+
+      await act(async () =>
+        anchor!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })),
+      );
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
+      expect(window.location.hash).toBe("#target");
+
+      scrollIntoView.mockClear();
+      await act(async () =>
+        anchor!.dispatchEvent(
+          new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true }),
+        ),
+      );
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    });
+
+    it("reports code clipboard failure and ignores an unavailable clipboard", async () => {
+      const container = await mountMarkdown(
+        ["```ts title=sample.ts", "const x = 1;", "```"].join("\n"),
+      );
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+      await click(container.querySelector<HTMLButtonElement>('button[aria-label="Copy code"]')!);
+
+      const failure = new Error("copy failed");
+      installClipboard(vi.fn(async () => Promise.reject(failure)));
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      await click(container.querySelector<HTMLButtonElement>('button[aria-label="Copy code"]')!);
+      await act(async () => Promise.resolve());
+      expect(consoleError).toHaveBeenCalledWith(
+        "[chat-markdown] action failed",
+        {
+          operation: "copy-code-block",
+          language: "ts",
+          fenceTitle: "sample.ts",
+        },
+        failure,
+      );
+    });
+  });
 });
