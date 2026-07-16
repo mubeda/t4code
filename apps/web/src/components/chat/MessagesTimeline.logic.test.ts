@@ -5,7 +5,70 @@ import {
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  resolveTimelineIsAtEnd,
+  resolveTimelineMinimapHasPersistentGutter,
+  resolveTimelineMinimapHeightStyle,
+  resolveTimelineMinimapIndexFromPointer,
+  resolveTimelineMinimapTopPercent,
+  type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
+
+describe("timeline minimap geometry", () => {
+  it("resolves legacy and near-end state values", () => {
+    expect(resolveTimelineIsAtEnd(undefined)).toBeUndefined();
+    expect(resolveTimelineIsAtEnd({ isAtEnd: true })).toBe(true);
+    expect(resolveTimelineIsAtEnd({ isAtEnd: true, isNearEnd: false })).toBe(false);
+  });
+
+  it("clamps minimap height and marker positions", () => {
+    expect(resolveTimelineMinimapHeightStyle(0)).toContain("1px");
+    expect(resolveTimelineMinimapTopPercent(1, 1)).toBe(0);
+    expect(resolveTimelineMinimapTopPercent(-2, 3)).toBe(0);
+    expect(resolveTimelineMinimapTopPercent(9, 3)).toBe(100);
+  });
+
+  it("rejects unusable pointer geometry and rounds valid pointers", () => {
+    expect(
+      resolveTimelineMinimapIndexFromPointer({
+        itemCount: 0,
+        railTop: 10,
+        railHeight: 100,
+        pointerY: 20,
+      }),
+    ).toBeNull();
+    expect(
+      resolveTimelineMinimapIndexFromPointer({
+        itemCount: 2,
+        railTop: 10,
+        railHeight: 0,
+        pointerY: 20,
+      }),
+    ).toBeNull();
+    expect(
+      resolveTimelineMinimapIndexFromPointer({
+        itemCount: 1,
+        railTop: 10,
+        railHeight: 100,
+        pointerY: 80,
+      }),
+    ).toBe(0);
+    expect(
+      resolveTimelineMinimapIndexFromPointer({
+        itemCount: 5,
+        railTop: 10,
+        railHeight: 100,
+        pointerY: 58,
+      }),
+    ).toBe(2);
+  });
+
+  it("requires a finite viewport with enough side gutter", () => {
+    expect(resolveTimelineMinimapHasPersistentGutter(Number.NaN)).toBe(false);
+    expect(resolveTimelineMinimapHasPersistentGutter(0)).toBe(false);
+    expect(resolveTimelineMinimapHasPersistentGutter(800)).toBe(false);
+    expect(resolveTimelineMinimapHasPersistentGutter(900)).toBe(true);
+  });
+});
 
 describe("computeMessageDurationStart", () => {
   it("returns message createdAt when there is no preceding user message", () => {
@@ -1011,9 +1074,275 @@ describe("deriveMessagesTimelineRows", () => {
       expanded: true,
     });
   });
+
+  it("keeps system messages while excluding neutral in-progress tool rows", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "system-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:00Z",
+          message: {
+            id: "system" as never,
+            role: "system",
+            text: "System note",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "work-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "work",
+            createdAt: "2026-01-01T00:00:01Z",
+            label: "running",
+            detail: "Still running",
+            tone: "tool",
+            toolLifecycleStatus: "inProgress",
+          },
+        },
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ kind: "message", id: "system-entry" });
+  });
+
+  it("does not fold a settled group containing a streaming message", () => {
+    const assistant = (id: string, streaming: boolean, offset: number) => ({
+      id: `${id}-entry`,
+      kind: "message" as const,
+      createdAt: `2026-01-01T00:00:0${offset}Z`,
+      message: {
+        id: id as never,
+        role: "assistant" as const,
+        text: id,
+        turnId: "streamed-turn" as never,
+        createdAt: `2026-01-01T00:00:0${offset}Z`,
+        updatedAt: `2026-01-01T00:00:0${offset}Z`,
+        streaming,
+      },
+    });
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [assistant("partial", true, 1), assistant("final", false, 2)],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.some((row) => row.kind === "turn-fold")).toBe(false);
+  });
+
+  it("renders unkeyed assistant messages and proposed plans", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "assistant-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:00Z",
+          message: {
+            id: "assistant" as never,
+            role: "assistant",
+            text: "Done",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:01Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "plan-entry",
+          kind: "proposed-plan",
+          createdAt: "2026-01-01T00:00:02Z",
+          proposedPlan: { steps: [] } as never,
+        },
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.map((row) => row.kind)).toEqual(["message", "proposed-plan"]);
+  });
+
+  it("uses fallback fold labels when timestamps are invalid", () => {
+    const turnId = "invalid-turn" as never;
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "work-entry",
+          kind: "work",
+          createdAt: "invalid",
+          entry: {
+            id: "work",
+            turnId,
+            createdAt: "invalid",
+            label: "thinking",
+            detail: "Working",
+            tone: "thinking",
+          },
+        },
+      ],
+      latestTurn: {
+        turnId,
+        state: "interrupted",
+        startedAt: "invalid",
+        completedAt: "2026-01-01T00:00:01Z",
+      },
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.find((row) => row.kind === "turn-fold")).toMatchObject({
+      label: "You stopped this response",
+    });
+  });
+
+  it("keeps a valid terminal timestamp when trailing work has an invalid timestamp", () => {
+    const turnId = "trailing-work-turn" as never;
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "assistant-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:00Z",
+          message: {
+            id: "assistant" as never,
+            role: "assistant",
+            text: "Done",
+            turnId,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:01Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "work-entry",
+          kind: "work",
+          createdAt: "invalid",
+          entry: {
+            id: "work",
+            turnId,
+            createdAt: "invalid",
+            label: "thinking",
+            detail: "Trailing work",
+            tone: "thinking",
+          },
+        },
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.find((row) => row.kind === "turn-fold")).toMatchObject({
+      label: "Worked for 1.0s",
+    });
+  });
 });
 
 describe("computeStableMessagesTimelineRows", () => {
+  it("stabilizes working and proposed-plan rows by their variant fields", () => {
+    const working: MessagesTimelineRow = { kind: "working", id: "working", createdAt: null };
+    const plan = { steps: [] } as never;
+    const proposed: MessagesTimelineRow = {
+      kind: "proposed-plan",
+      id: "plan",
+      createdAt: "2026-01-01T00:00:00Z",
+      proposedPlan: plan,
+    };
+    const initial = computeStableMessagesTimelineRows([working, proposed], {
+      byId: new Map(),
+      result: [],
+    });
+
+    expect(
+      computeStableMessagesTimelineRows(
+        [
+          { ...working },
+          { ...proposed },
+        ],
+        initial,
+      ),
+    ).toBe(initial);
+    expect(
+      computeStableMessagesTimelineRows(
+        [
+          { ...working, createdAt: "2026-01-01T00:00:01Z" },
+          { ...proposed, proposedPlan: { steps: [] } as never },
+        ],
+        initial,
+      ),
+    ).not.toBe(initial);
+  });
+
+  it("detects row-kind and final work-toggle field changes", () => {
+    const createdAt = "2026-01-01T00:00:00Z";
+    const toggle: MessagesTimelineRow = {
+      kind: "work-toggle",
+      id: "shared",
+      createdAt,
+      groupId: "group",
+      hiddenCount: 2,
+      expanded: false,
+      onlyToolEntries: true,
+    };
+    const initial = computeStableMessagesTimelineRows([toggle], {
+      byId: new Map(),
+      result: [],
+    });
+    expect(
+      computeStableMessagesTimelineRows([{ ...toggle, onlyToolEntries: false }], initial),
+    ).not.toBe(initial);
+    expect(
+      computeStableMessagesTimelineRows(
+        [{ kind: "working", id: "shared", createdAt }],
+        initial,
+      ),
+    ).not.toBe(initial);
+  });
+
+  it("checks every turn-fold stability field", () => {
+    const fold: MessagesTimelineRow = {
+      kind: "turn-fold",
+      id: "fold",
+      createdAt: "2026-01-01T00:00:00Z",
+      turnId: "turn" as never,
+      label: "Worked for 1s",
+      expanded: false,
+    };
+    const initial = computeStableMessagesTimelineRows([fold], {
+      byId: new Map(),
+      result: [],
+    });
+    expect(computeStableMessagesTimelineRows([{ ...fold }], initial)).toBe(initial);
+    expect(
+      computeStableMessagesTimelineRows(
+        [{ ...fold, createdAt: "2026-01-01T00:00:01Z" }],
+        initial,
+      ),
+    ).not.toBe(initial);
+    expect(
+      computeStableMessagesTimelineRows([{ ...fold, label: "Worked" }], initial),
+    ).not.toBe(initial);
+    expect(
+      computeStableMessagesTimelineRows([{ ...fold, expanded: true }], initial),
+    ).not.toBe(initial);
+  });
+
   it("returns the previous result when row order and content are unchanged", () => {
     const firstUserMessage = {
       id: "user-1" as never,
