@@ -463,4 +463,28 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn manager_state_helpers_clone_metadata_without_runtime_updates() {
+        let manager = DesktopUpdateManager::new();
+        let snapshot = manager.replace_inner(|inner| {
+            inner.available_version = Some("2.0.0".to_string());
+            inner.downloaded_version = Some("1.9.0".to_string());
+            inner.status = Some(STATUS_AVAILABLE.to_string());
+            inner.download_percent = Some(25.0);
+            inner.checked_at = Some(now_rfc3339());
+        });
+
+        assert_eq!(snapshot.available_version.as_deref(), Some("2.0.0"));
+        assert_eq!(snapshot.downloaded_version.as_deref(), Some("1.9.0"));
+        assert_eq!(snapshot.status.as_deref(), Some(STATUS_AVAILABLE));
+        assert_eq!(snapshot.download_percent, Some(25.0));
+        assert!(
+            snapshot
+                .checked_at
+                .as_deref()
+                .is_some_and(|value| value.contains('T'))
+        );
+        assert!(is_updater_disabled(&UpdaterError::EmptyEndpoints));
+    }
 }

@@ -131,6 +131,33 @@ fn format_candidate(candidate: &ShellCandidate) -> String {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn candidate_constructor_and_platform_paths_cover_runtime_inputs() {
+        assert_eq!(
+            ShellCandidate::new("shell", ["--login"]),
+            ShellCandidate {
+                command: "shell".to_owned(),
+                args: vec!["--login".to_owned()],
+            }
+        );
+        let env = BTreeMap::from([
+            ("SystemRoot".to_owned(), "C:\\Windows".to_owned()),
+            ("ComSpec".to_owned(), "C:\\Windows\\cmd.exe".to_owned()),
+        ]);
+        assert!(windows_powershell_path(&env).contains("powershell.exe"));
+        assert_eq!(windows_cmd_path(&env), "C:\\Windows\\System32\\cmd.exe");
+        assert_eq!(windows_system_root(&env), "C:\\Windows");
+        assert_eq!(
+            join_windows_path("C:\\Windows", &["System32"]),
+            "C:\\Windows\\System32"
+        );
+    }
+}
+
 fn windows_system_root(env: &BTreeMap<String, String>) -> String {
     env.get("SystemRoot")
         .or_else(|| env.get("windir"))

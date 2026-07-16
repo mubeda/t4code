@@ -872,6 +872,12 @@ mod tests {
             .with_search_path(OsString::new())
             .with_release_asset(None)
             .with_download_timeout(Duration::from_secs(5));
+        let direct_override = RelayClientOptions::new(temp.path(), "linux", "x64")
+            .with_executable_override(executable.clone());
+        assert_eq!(
+            direct_override.executable_override,
+            Some(executable.clone())
+        );
         let override_client = NativeRelayClient::new(override_options).expect("override client");
         assert!(matches!(
             override_client.resolve().await,

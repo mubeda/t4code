@@ -206,3 +206,28 @@ fn split_condition<'a>(input: &'a str, operator: &str) -> Option<(&'a str, &'a s
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn condition_parser_respects_nested_precedence_negation_and_balance() {
+        assert_eq!(
+            parse_when("editorFocus && !terminalFocus || modalOpen"),
+            Some(json!({
+                "type":"or",
+                "left":{
+                    "type":"and",
+                    "left":{"type":"identifier","name":"editorFocus"},
+                    "right":{"type":"not","node":{"type":"identifier","name":"terminalFocus"}}
+                },
+                "right":{"type":"identifier","name":"modalOpen"}
+            }))
+        );
+        assert_eq!(parse_when("(editorFocus"), None);
+        assert_eq!(parse_when("editorFocus)"), None);
+        assert_eq!(parse_when(""), None);
+        assert_eq!(split_condition("(left || right) && tail", "||"), None);
+    }
+}
