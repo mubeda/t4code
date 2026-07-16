@@ -1834,4 +1834,21 @@ mod tests {
         assert!(vcs_error("operation", &repository, "detail").is_object());
         assert!(source_control_error("unknown", "lookup", "detail").is_object());
     }
+
+    #[tokio::test]
+    async fn every_unary_method_rejects_malformed_payloads_through_its_typed_decoder() {
+        let services = GitVcsRpcServices::default();
+        for method in GIT_VCS_UNARY_METHODS {
+            let result = services
+                .handle_unary(
+                    rpc_request(method, json!("not-an-object")),
+                    CancellationToken::new(),
+                )
+                .await;
+            assert!(
+                result.is_err(),
+                "{method} unexpectedly accepted a string payload"
+            );
+        }
+    }
 }

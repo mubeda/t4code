@@ -102,6 +102,80 @@ async fn opencode_runtime_registers_the_t4code_mcp_server() {
 }
 
 #[tokio::test]
+async fn opencode_runtime_failure_boundaries_reject_invalid_sessions_and_http_statuses() {
+    let state = Arc::new(TestServerState::default());
+    let app = Router::new()
+        .route("/session", post(invalid_session))
+        .route("/session/{session_id}", get(resume_session))
+        .route("/event", get(subscribe_permission_events))
+        .route("/mcp", post(reject_request))
+        .route("/session/{session_id}/prompt_async", post(reject_request))
+        .route("/session/{session_id}/command", post(reject_request))
+        .route("/session/{session_id}/abort", post(reject_request))
+        .route("/permission/{request_id}/reply", post(reject_request))
+        .with_state(state);
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address: SocketAddr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+    let runtime = OpenCodeSessionRuntime::new(
+        &format!("http://{address}"),
+        "opencode-failure-thread",
+        "/tmp/project",
+        Some("openai/gpt-5.4"),
+    );
+
+    assert!(runtime.start().await.is_err());
+    assert!(runtime.resume(" ").await.is_err());
+    assert!(runtime.resume("bad").await.is_err());
+    assert_eq!(runtime.resume("session-1").await.unwrap(), "session-1");
+    assert!(
+        runtime
+            .add_mcp_server("t4code", "http://localhost/mcp", "Bearer token")
+            .await
+            .is_err()
+    );
+    assert!(runtime.set_model("missing-slash").await.is_err());
+    assert!(runtime.send_command("/", "").await.is_err());
+    assert!(runtime.send_turn(Some("hello"), Vec::new()).await.is_err());
+    assert!(runtime.send_command("test", "args").await.is_err());
+    assert!(
+        runtime
+            .respond_to_user_input("missing", json!({}))
+            .await
+            .is_err()
+    );
+    assert!(
+        runtime
+            .respond_to_permission("missing", "accept")
+            .await
+            .is_err()
+    );
+
+    let events = timeout(Duration::from_secs(2), runtime.collect_events(5))
+        .await
+        .expect("permission event");
+    assert!(
+        events
+            .iter()
+            .any(|event| event.request_id.as_deref() == Some("permission-1"))
+    );
+    assert!(
+        runtime
+            .respond_to_permission("permission-1", "accept")
+            .await
+            .is_err()
+    );
+    runtime
+        .interrupt_turn()
+        .await
+        .expect("abort request writes");
+    runtime.stop().await.expect("runtime stops");
+    server.abort();
+}
+
+#[tokio::test]
 async fn opencode_runtime_surfaces_and_resolves_permission_requests() {
     let state = Arc::new(TestServerState::default());
     let app = Router::new()
@@ -406,6 +480,22 @@ struct TestServerState {
 
 async fn create_session(State(_state): State<Arc<TestServerState>>) -> Json<Value> {
     Json(json!({ "id": "session-1" }))
+}
+
+async fn invalid_session() -> Json<Value> {
+    Json(json!({}))
+}
+
+async fn resume_session(Path(session_id): Path<String>) -> StatusCode {
+    if session_id == "bad" {
+        StatusCode::BAD_GATEWAY
+    } else {
+        StatusCode::OK
+    }
+}
+
+async fn reject_request() -> StatusCode {
+    StatusCode::BAD_GATEWAY
 }
 
 async fn register_mcp(

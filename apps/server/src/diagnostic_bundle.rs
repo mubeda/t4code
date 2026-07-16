@@ -69,10 +69,8 @@ fn build_bundle(
     generated_at: OffsetDateTime,
 ) -> Result<DiagnosticBundle, DiagnosticBundleError> {
     let server_log = collect_server_logs(logs_dir)?;
-    let server_trace = collect_retained_logs(
-        &logs_dir.join(SERVER_TRACE_ENTRY),
-        EMPTY_SERVER_TRACE,
-    )?;
+    let server_trace =
+        collect_retained_logs(&logs_dir.join(SERVER_TRACE_ENTRY), EMPTY_SERVER_TRACE)?;
     let mut frontend_log = if frontend_log.trim().is_empty() {
         EMPTY_FRONTEND_LOG.to_owned()
     } else {

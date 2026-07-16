@@ -595,7 +595,7 @@ fn trim_newline(bytes: Vec<u8>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::{AsyncBufReadExt, BufReader, duplex};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, duplex};
 
     #[tokio::test]
     async fn outbound_notifications_responses_and_close_use_json_rpc_wire_shapes() {
@@ -686,5 +686,143 @@ mod tests {
             Err(ProtocolError::Closed { reason }) if reason == "closed by runtime"
         ));
         connection.close().await;
+    }
+
+    #[tokio::test]
+    async fn inbound_routing_and_stream_bounds_cover_json_rpc_failure_contracts() {
+        let (writer, _writer_rx) = mpsc::unbounded_channel();
+        let inner = Arc::new(Inner {
+            writer,
+            pending: Mutex::new(HashMap::new()),
+            closed: AtomicBool::new(false),
+            close_reason: Mutex::new(None),
+            next_request_id: AtomicU64::new(1),
+            _tasks: Mutex::new(Vec::new()),
+        });
+        let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel();
+
+        route_stdout_message(
+            json!({"method":"thread/update","params":{"ready":true}}),
+            &inner,
+            &incoming_tx,
+        )
+        .await
+        .expect("notification should route");
+        assert!(matches!(
+            incoming_rx.recv().await,
+            Some(IncomingEvent::Notification { method, params })
+                if method == "thread/update" && params == json!({"ready":true})
+        ));
+
+        route_stdout_message(
+            json!({"id":"request-1","method":"approve"}),
+            &inner,
+            &incoming_tx,
+        )
+        .await
+        .expect("request should route");
+        assert!(matches!(
+            incoming_rx.recv().await,
+            Some(IncomingEvent::Request { correlation_id, wire_id, method, params })
+                if correlation_id == "request-1"
+                    && wire_id == json!("request-1")
+                    && method == "approve"
+                    && params == Value::Null
+        ));
+
+        let (success_tx, success_rx) = oneshot::channel();
+        inner.pending.lock().await.insert(
+            "2".to_owned(),
+            PendingRequest {
+                method: "success".to_owned(),
+                responder: success_tx,
+            },
+        );
+        route_stdout_message(json!({"id":2,"result":{"ok":true}}), &inner, &incoming_tx)
+            .await
+            .expect("success response should route");
+        assert_eq!(success_rx.await.unwrap().unwrap(), json!({"ok":true}));
+
+        let (error_tx, error_rx) = oneshot::channel();
+        inner.pending.lock().await.insert(
+            "3".to_owned(),
+            PendingRequest {
+                method: "failure".to_owned(),
+                responder: error_tx,
+            },
+        );
+        route_stdout_message(
+            json!({"id":3,"error":{"code":-1,"message":"denied","data":{"retry":false}}}),
+            &inner,
+            &incoming_tx,
+        )
+        .await
+        .expect("remote error should route");
+        assert!(matches!(
+            error_rx.await.unwrap(),
+            Err(ProtocolError::RemoteRequest { method, request_id, code: -1, message, data })
+                if method == "failure"
+                    && request_id == "3"
+                    && message == "denied"
+                    && data == Some(json!({"retry":false}))
+        ));
+
+        assert!(matches!(
+            route_stdout_message(json!({"id":404}), &inner, &incoming_tx).await,
+            Err(ProtocolError::UnknownResponse { request_id }) if request_id == "404"
+        ));
+        assert!(matches!(
+            route_stdout_message(json!({"id":true,"method":"invalid"}), &inner, &incoming_tx).await,
+            Err(ProtocolError::InvalidMessage { .. })
+        ));
+        assert!(matches!(
+            route_stdout_message(json!({"unexpected":true}), &inner, &incoming_tx).await,
+            Err(ProtocolError::InvalidMessage { .. })
+        ));
+        assert!(matches!(
+            route_stdout_message(json!(["not-an-object"]), &inner, &incoming_tx).await,
+            Err(ProtocolError::InvalidMessage { .. })
+        ));
+
+        drop(incoming_rx);
+        assert!(matches!(
+            route_stdout_message(json!({"method":"dropped"}), &inner, &incoming_tx).await,
+            Err(ProtocolError::Closed { reason }) if reason == "incoming receiver dropped"
+        ));
+
+        let (reader, mut peer) = duplex(64);
+        peer.write_all(b"abcd\r\n").await.unwrap();
+        peer.shutdown().await.unwrap();
+        let mut reader = BufReader::new(reader);
+        assert_eq!(
+            read_bounded_line(&mut reader, 8, "stdout").await.unwrap(),
+            Some("abcd".to_owned())
+        );
+        assert_eq!(
+            read_bounded_line(&mut reader, 8, "stdout").await.unwrap(),
+            None
+        );
+
+        let (reader, mut peer) = duplex(64);
+        peer.write_all(b"abcdef\n").await.unwrap();
+        peer.shutdown().await.unwrap();
+        let mut reader = BufReader::new(reader);
+        assert_eq!(
+            read_bounded_or_truncated_line(&mut reader, 3)
+                .await
+                .unwrap(),
+            Some("abc [truncated]".to_owned())
+        );
+
+        let (reader, mut peer) = duplex(64);
+        peer.write_all(b"toolong\n").await.unwrap();
+        let mut reader = BufReader::new(reader);
+        assert!(matches!(
+            read_bounded_line(&mut reader, 3, "stdout").await,
+            Err(ProtocolError::LineTooLong {
+                stream: "stdout",
+                maximum: 3
+            })
+        ));
     }
 }
