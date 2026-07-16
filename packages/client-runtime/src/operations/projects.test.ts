@@ -8,6 +8,9 @@ import {
 import * as Option from "effect/Option";
 
 import {
+  addProjectRemoteSourceLabel,
+  addProjectRemoteSourcePathHint,
+  addProjectRemoteSourceProvider,
   buildAddProjectRemoteSourceReadiness,
   buildProjectCreateCommand,
   findExistingAddProject,
@@ -18,8 +21,27 @@ import {
 import type { EnvironmentProject } from "../state/models.ts";
 
 describe("add project shared logic", () => {
+  it("describes every remote source", () => {
+    expect(
+      ["github", "gitlab", "bitbucket", "azure-devops", "url"].map((source) => [
+        addProjectRemoteSourceLabel(source as never),
+        addProjectRemoteSourcePathHint(source as never),
+      ]),
+    ).toEqual([
+      ["GitHub", "owner/repo"],
+      ["GitLab", "group/project"],
+      ["Bitbucket", "workspace/repository"],
+      ["Azure DevOps", "project/repository"],
+      ["Git URL", "URL"],
+    ]);
+    expect(addProjectRemoteSourceProvider("url")).toBeNull();
+    expect(addProjectRemoteSourceProvider("github")).toBe("github");
+  });
+
   it("resolves initial browse paths from settings", () => {
     expect(getAddProjectInitialQuery("")).toBe("~/");
+    expect(getAddProjectInitialQuery(undefined)).toBe("~/");
+    expect(getAddProjectInitialQuery("   ")).toBe("~/");
     expect(getAddProjectInitialQuery("/work")).toBe("/work/");
     expect(getAddProjectInitialQuery("C:\\work")).toBe("C:\\work\\");
   });
@@ -34,6 +56,14 @@ describe("add project shared logic", () => {
     ).toEqual({
       ok: false,
       error: "Windows-style paths are only supported on Windows environments.",
+    });
+    expect(resolveAddProjectPath({ rawPath: "   ", platform: "Linux" })).toEqual({
+      ok: false,
+      error: "Enter a project path.",
+    });
+    expect(resolveAddProjectPath({ rawPath: "../next", platform: "Linux" })).toEqual({
+      ok: false,
+      error: "Relative paths require an active project in this environment.",
     });
   });
 
@@ -89,6 +119,48 @@ describe("add project shared logic", () => {
     expect(sortAddProjectProviderSources(readiness)[0]).toBe("github");
   });
 
+  it("explains unavailable, missing, and unauthenticated providers", () => {
+    expect(buildAddProjectRemoteSourceReadiness(null).github.ready).toBe(false);
+    const discovery: SourceControlDiscoveryResult = {
+      versionControlSystems: [],
+      sourceControlProviders: [
+        {
+          kind: "github",
+          label: "GitHub",
+          status: "unavailable",
+          installHint: "Install gh",
+          version: Option.none(),
+          detail: Option.none(),
+          auth: {
+            status: "unknown",
+            account: Option.none(),
+            host: Option.none(),
+            detail: Option.none(),
+          },
+        },
+        {
+          kind: "bitbucket",
+          label: "Bitbucket",
+          status: "available",
+          installHint: "Install Bitbucket CLI",
+          version: Option.some("1.0.0"),
+          detail: Option.none(),
+          auth: {
+            status: "unauthenticated",
+            account: Option.none(),
+            host: Option.none(),
+            detail: Option.none(),
+          },
+        },
+      ],
+    };
+
+    const readiness = buildAddProjectRemoteSourceReadiness(discovery);
+    expect(readiness.github).toEqual({ ready: false, hint: "Install gh" });
+    expect(readiness.gitlab.ready).toBe(false);
+    expect(readiness.bitbucket.hint).toContain("Bitbucket is not authenticated");
+  });
+
   it("finds existing projects by normalized path in the target environment", () => {
     const env = EnvironmentId.make("env");
     const other = EnvironmentId.make("other");
@@ -120,6 +192,7 @@ describe("add project shared logic", () => {
     expect(findExistingAddProject({ projects, environmentId: env, path: "/repo" })?.id).toBe(
       "project",
     );
+    expect(findExistingAddProject({ projects, environmentId: env, path: "/missing" })).toBeNull();
   });
 
   it("builds the existing project.create command shape", () => {

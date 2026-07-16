@@ -55,6 +55,12 @@ function status(
   };
 }
 
+function relayToken(subject: string): string {
+  return `${Buffer.from("{}").toString("base64url")}.${Buffer.from(
+    JSON.stringify({ sub: subject }),
+  ).toString("base64url")}.signature`;
+}
+
 const makeHarness = Effect.fn("RelayDiscoveryTest.makeHarness")(function* () {
   const networkStatus = yield* SubscriptionRef.make<NetworkStatus>("online");
   const listCalls = yield* Ref.make(0);
@@ -261,6 +267,70 @@ describe("RelayEnvironmentDiscovery", () => {
           "offline",
         );
         expect(complete.refreshing).toBe(false);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("deduplicates offline reports, clears them on recovery, and tracks account changes", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* Ref.set(harness.clerkToken, relayToken("user-1"));
+      yield* Effect.gen(function* () {
+        const discovery = yield* RelayEnvironmentDiscovery.RelayEnvironmentDiscovery;
+        const requests = yield* Ref.get(harness.statusRequests);
+        yield* Deferred.succeed(
+          requests.get(environments[0]!.environmentId)!,
+          status(environments[0]!, "offline"),
+        );
+        yield* Deferred.succeed(
+          requests.get(environments[1]!.environmentId)!,
+          status(environments[1]!, "online"),
+        );
+
+        yield* discovery.refresh;
+        yield* discovery.refresh;
+
+        yield* Ref.set(harness.clerkToken, relayToken("user-2"));
+        yield* discovery.refresh;
+
+        const recovered = yield* Deferred.make<
+          RelayEnvironmentStatusResponse,
+          ManagedRelay.ManagedRelayClientError
+        >();
+        yield* Deferred.succeed(recovered, status(environments[0]!, "online"));
+        yield* Ref.update(harness.statusRequests, (current) =>
+          new Map(current).set(environments[0]!.environmentId, recovered),
+        );
+        yield* discovery.refresh;
+
+        expect(
+          (yield* SubscriptionRef.get(discovery.state)).environments.get(
+            environments[0]!.environmentId,
+          )?.availability,
+        ).toBe("online");
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("stays offline and ignores wakeups before the first refresh", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* SubscriptionRef.set(harness.networkStatus, "offline");
+      yield* Effect.gen(function* () {
+        const discovery = yield* RelayEnvironmentDiscovery.RelayEnvironmentDiscovery;
+        yield* harness.wake("application-active");
+        yield* harness.wake("credentials-changed");
+        for (let index = 0; index < 10; index += 1) {
+          yield* Effect.yieldNow;
+        }
+        expect(yield* Ref.get(harness.listCalls)).toBe(0);
+
+        yield* discovery.refresh;
+        expect(yield* SubscriptionRef.get(discovery.state)).toMatchObject({
+          offline: true,
+          refreshing: false,
+        });
+        expect(yield* Ref.get(harness.listCalls)).toBe(0);
       }).pipe(Effect.provide(harness.layer));
     }),
   );
