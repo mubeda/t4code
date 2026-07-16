@@ -3,7 +3,12 @@ import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t4code/contract
 import { describe, expect, it } from "vite-plus/test";
 import { deriveProviderInstanceEntries } from "./providerInstances";
 import {
+  getAppModelOptions,
   getAppModelOptionsForInstance,
+  getCustomModelOptionsByInstance,
+  MAX_CUSTOM_MODEL_LENGTH,
+  normalizeCustomModelSlugs,
+  resolveAppModelSelection,
   resolveAppModelSelectionForInstance,
   resolveAppModelSelectionState,
 } from "./modelSelection";
@@ -268,6 +273,157 @@ describe("instance-scoped model selection", () => {
     expect(resolveAppModelSelectionState(settings, providers)).toEqual({
       instanceId: ProviderInstanceId.make("claude_openrouter"),
       model: "openai/gpt-5.5",
+    });
+  });
+
+  it("normalizes, de-duplicates, bounds, and filters custom model slugs", () => {
+    const tooLong = "x".repeat(MAX_CUSTOM_MODEL_LENGTH + 1);
+    const candidates = [
+      null,
+      undefined,
+      " ",
+      "custom-one",
+      " custom-one ",
+      "built-in",
+      tooLong,
+      ...Array.from({ length: 40 }, (_, index) => `custom-${index + 2}`),
+    ];
+
+    const result = normalizeCustomModelSlugs(candidates, new Set(["built-in"]));
+
+    expect(result).toHaveLength(32);
+    expect(result[0]).toBe("custom-one");
+    expect(result).not.toContain("built-in");
+    expect(result).not.toContain(tooLong);
+  });
+
+  it("builds default-instance options from legacy settings and model metadata", () => {
+    const providers = [
+      {
+        ...provider({ instanceId: "codex", models: [] }),
+        models: [
+          {
+            slug: "built-in",
+            name: "Built in",
+            shortName: "Built",
+            subProvider: "openai",
+            isCustom: false,
+            capabilities: {},
+          },
+          {
+            slug: "server-custom",
+            name: "Server custom",
+            isCustom: true,
+            capabilities: {},
+          },
+        ],
+      },
+    ];
+    const settings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      providerInstances: {},
+      providers: {
+        ...DEFAULT_UNIFIED_SETTINGS.providers,
+        codex: { ...DEFAULT_UNIFIED_SETTINGS.providers.codex, customModels: ["local-custom"] },
+      },
+    };
+
+    expect(getAppModelOptions(settings, providers, ProviderDriverKind.make("codex"))).toEqual([
+      {
+        slug: "built-in",
+        name: "Built in",
+        shortName: "Built",
+        subProvider: "openai",
+        isCustom: false,
+      },
+      { slug: "server-custom", name: "Server custom", isCustom: true },
+      { slug: "local-custom", name: "local-custom", isCustom: true },
+    ]);
+    expect(
+      resolveAppModelSelection(
+        ProviderDriverKind.make("codex"),
+        settings,
+        providers,
+        "local-custom",
+      ),
+    ).toBe("local-custom");
+  });
+
+  it("ignores malformed instance custom-model config and legacy models on custom slots", () => {
+    const providers = [
+      provider({ instanceId: "claudeAgent", models: ["claude-sonnet-4-6"] }),
+      provider({ instanceId: "claude_custom", models: ["claude-sonnet-4-6"] }),
+    ];
+    const entries = deriveProviderInstanceEntries(providers);
+    const stock = entries.find((entry) => entry.instanceId === "claudeAgent")!;
+    const custom = entries.find((entry) => entry.instanceId === "claude_custom")!;
+    const settings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      providerInstances: {
+        [ProviderInstanceId.make("claudeAgent")]: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          config: null,
+        },
+        [ProviderInstanceId.make("claude_custom")]: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          config: { customModels: "not-an-array" },
+        },
+      },
+      providers: {
+        ...DEFAULT_UNIFIED_SETTINGS.providers,
+        claudeAgent: {
+          ...DEFAULT_UNIFIED_SETTINGS.providers.claudeAgent,
+          customModels: ["openai/gpt-legacy"],
+        },
+      },
+    } as UnifiedSettings;
+
+    expect(getAppModelOptionsForInstance(settings, stock).map((option) => option.slug)).toEqual([
+      "claude-sonnet-4-6",
+    ]);
+    expect(
+      getAppModelOptionsForInstance(settings, custom).map((option) => option.slug),
+    ).not.toContain("openai/gpt-legacy");
+  });
+
+  it("returns null for missing instances and maps options for every present instance", () => {
+    const providers = [
+      provider({ instanceId: "codex", models: ["gpt-test"] }),
+      provider({ instanceId: "claudeAgent", models: ["claude-test"] }),
+    ];
+
+    expect(
+      resolveAppModelSelectionForInstance(
+        ProviderInstanceId.make("missing"),
+        DEFAULT_UNIFIED_SETTINGS,
+        providers,
+        null,
+      ),
+    ).toBeNull();
+    expect(getCustomModelOptionsByInstance(DEFAULT_UNIFIED_SETTINGS, providers).size).toBe(2);
+  });
+
+  it("falls back from unavailable selected instances and legacy empty provider lists", () => {
+    const unavailable = {
+      ...provider({ instanceId: "codex", models: ["gpt-selected"] }),
+      enabled: false,
+    };
+    const fallback = provider({ instanceId: "claudeAgent", models: ["claude-fallback"] });
+    const settings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      textGenerationModelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-selected",
+        options: [{ id: "fast", value: true }],
+      },
+    };
+
+    expect(resolveAppModelSelectionState(settings, [unavailable, fallback])).toMatchObject({
+      instanceId: "claudeAgent",
+      model: "claude-fallback",
+    });
+    expect(resolveAppModelSelectionState(DEFAULT_UNIFIED_SETTINGS, [])).toMatchObject({
+      instanceId: "codex",
     });
   });
 });
