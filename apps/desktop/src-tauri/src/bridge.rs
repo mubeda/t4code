@@ -1605,6 +1605,48 @@ mod tests {
         assert!(error.starts_with(&format!("Could not remove {}:", directory.path().display())));
     }
 
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn connection_catalog_storage_fails_closed_without_platform_protection() {
+        let directory = tempfile::tempdir().expect("temporary directory should create");
+        let path = directory.path().join("catalog.json");
+
+        assert!(
+            connection_catalog_to_value("{\"connections\":[]}")
+                .expect_err("catalog protection should be unavailable")
+                .contains("not implemented")
+        );
+        assert!(
+            write_connection_catalog_document(&path, "{\"connections\":[]}")
+                .expect_err("unprotected catalog should not write")
+                .contains("not implemented")
+        );
+        assert_eq!(
+            read_connection_catalog_document(&path).expect("missing catalog should read"),
+            None,
+        );
+    }
+
+    #[tokio::test]
+    async fn platform_state_helpers_cover_non_wsl_and_disabled_tailscale_paths() {
+        let settings = default_desktop_settings();
+        let state = wsl_state(&settings);
+        if !cfg!(target_os = "windows") {
+            assert_eq!(state["available"], false);
+            assert_eq!(state["distros"], json!([]));
+        }
+
+        let mut config = test_run_config();
+        config.server_exposure_mode = "local-only".to_string();
+        config.tailscale_serve_enabled = false;
+        assert!(
+            tailscale_advertised_endpoints_for_config(&config)
+                .await
+                .expect("disabled Tailscale discovery should succeed")
+                .is_empty()
+        );
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn protects_connection_catalog_documents() {

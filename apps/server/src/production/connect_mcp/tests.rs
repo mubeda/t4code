@@ -1573,3 +1573,22 @@ fn json_rpc_helpers_preserve_ids_headers_and_errors() {
     assert_eq!(error.headers[header::WWW_AUTHENTICATE.as_str()], "Bearer");
     let _http = error.into_http();
 }
+
+#[tokio::test]
+async fn owned_credential_scope_inputs_issue_and_replace_thread_credentials() {
+    let harness = harness(2, 2).await;
+    let first = harness
+        .service
+        .issue_mcp_credential("thread-owned".to_string(), "provider-owned".to_string())
+        .await
+        .expect("owned credential inputs should issue");
+    let replacement = harness
+        .service
+        .issue_mcp_credential("thread-owned".to_string(), "provider-next".to_string())
+        .await
+        .expect("same thread credential should replace");
+
+    assert_ne!(first.authorization_header, replacement.authorization_header);
+    assert_eq!(replacement.thread_id, "thread-owned");
+    assert_eq!(replacement.provider_instance_id, "provider-next");
+}

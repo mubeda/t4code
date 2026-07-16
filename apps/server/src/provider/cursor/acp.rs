@@ -557,3 +557,86 @@ fn trim_newline(bytes: Vec<u8>) -> String {
     }
     text
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, BufReader, duplex};
+
+    #[tokio::test]
+    async fn outbound_notifications_and_responses_use_acp_json_rpc_shapes() {
+        let (stdout, stdout_peer) = duplex(4096);
+        let (stdin_peer, stdin) = duplex(4096);
+        let (stderr, _stderr_peer) = duplex(4096);
+        let (connection, mut incoming) =
+            AcpJsonRpcConnection::spawn(stdout, stdin, stderr, AcpConnectionConfig::default());
+        let mut output = BufReader::new(stdin_peer).lines();
+
+        connection
+            .notify("session/update", json!({"status":"ready"}))
+            .await
+            .expect("notification should write");
+        assert_eq!(
+            serde_json::from_str::<Value>(
+                &output
+                    .next_line()
+                    .await
+                    .unwrap()
+                    .expect("notification line"),
+            )
+            .unwrap(),
+            json!({
+                "jsonrpc":"2.0",
+                "method":"session/update",
+                "params":{"status":"ready"}
+            }),
+        );
+
+        connection
+            .respond(json!("request-1"), json!({"accepted":true}))
+            .await
+            .expect("response should write");
+        assert_eq!(
+            serde_json::from_str::<Value>(
+                &output.next_line().await.unwrap().expect("response line"),
+            )
+            .unwrap(),
+            json!({"jsonrpc":"2.0","id":"request-1","result":{"accepted":true}}),
+        );
+
+        connection
+            .respond_error(
+                json!(2),
+                JsonRpcErrorShape {
+                    code: -32000,
+                    message: "denied".to_owned(),
+                    data: Some(json!({"retry":false})),
+                },
+            )
+            .await
+            .expect("error response should write");
+        assert_eq!(
+            serde_json::from_str::<Value>(
+                &output
+                    .next_line()
+                    .await
+                    .unwrap()
+                    .expect("error response line"),
+            )
+            .unwrap(),
+            json!({
+                "jsonrpc":"2.0",
+                "id":2,
+                "error":{"code":-32000,"message":"denied","data":{"retry":false}}
+            }),
+        );
+
+        drop(stdout_peer);
+        let closed = incoming.recv().await.expect("closed event");
+        assert!(matches!(closed, IncomingEvent::Closed { .. }));
+        assert!(matches!(
+            connection.notify("after-close", Value::Null).await,
+            Err(AcpProtocolError::Closed { reason }) if reason.contains("stdout ended")
+        ));
+    }
+}

@@ -1574,6 +1574,27 @@ mod tests {
     }
 
     #[test]
+    fn environment_manager_caches_clears_and_misses_auth_and_tunnels() {
+        let manager = SshEnvironmentManager::default();
+        assert_eq!(manager.cached_auth_secret("target"), None);
+        manager
+            .remember_auth_secret("target", "secret".to_string())
+            .expect("authentication secret should cache");
+        assert_eq!(
+            manager.cached_auth_secret("target").as_deref(),
+            Some("secret")
+        );
+        manager.clear_auth_secret("target");
+        assert_eq!(manager.cached_auth_secret("target"), None);
+        assert_eq!(
+            manager
+                .take_existing_bootstrap_if_running("missing-target")
+                .expect("missing tunnel should be inspectable"),
+            None,
+        );
+    }
+
+    #[test]
     fn discovers_ssh_config_hosts_across_included_files() {
         let home_dir = unique_temp_home();
         let ssh_dir = home_dir.join(".ssh");

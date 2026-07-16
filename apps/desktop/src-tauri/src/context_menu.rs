@@ -335,6 +335,14 @@ mod tests {
                 .any(|id| id == "copy-link")
         );
         assert!(request.native_to_original.values().any(|id| id == "delete"));
+        assert!(context_menu_request_has_selectable_items(&request));
+        assert!(!context_menu_request_has_selectable_items(
+            &context_menu_request_from_values(vec![json!({
+                "id":"header",
+                "label":"Header",
+                "header":true
+            })])
+        ));
     }
 
     #[test]

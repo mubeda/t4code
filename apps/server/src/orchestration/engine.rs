@@ -3345,6 +3345,32 @@ mod tests {
         let command =
             |value| serde_json::from_value::<OrchestrationCommand>(value).expect("command decodes");
 
+        let helper_command = command(json!({
+            "type":"project.delete",
+            "commandId":"helper-command",
+            "projectId":"missing-project"
+        }));
+        let missing = OptionalNullable::<Value>::Missing;
+        assert!(missing.is_missing());
+        assert!(optional_nullable_is_missing(&missing));
+        assert_eq!(
+            required_command_string(&helper_command, &json!({"key":"value"}), "key").unwrap(),
+            "value"
+        );
+        assert!(required_command_string(&helper_command, &json!({}), "key").is_err());
+        assert!(invariant::<()>(&helper_command, "injected".to_owned()).is_err());
+        let json_error = serde_json::from_str::<Value>("{").unwrap_err();
+        assert!(matches!(
+            to_corrupt_error(json_error),
+            PersistenceError::Corrupt(_)
+        ));
+        let json_error = serde_json::from_str::<Value>("{").unwrap_err();
+        assert!(matches!(
+            to_sql_error(json_error),
+            rusqlite::Error::FromSqlConversionFailure(..)
+        ));
+        TestHooks::default().fail_next_projector("projection.threads".to_owned(), None);
+
         let project = json!({
             "type":"project.create",
             "commandId":"project",

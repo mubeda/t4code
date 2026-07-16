@@ -153,3 +153,32 @@ fn sha256_hex(value: &str) -> String {
     digest.update(value.as_bytes());
     format!("{:x}", digest.finalize())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn owned_identity_paths_and_direct_delivery_cover_unit_runtime_instantiations() {
+        let temp = TempDir::new().expect("telemetry directory");
+        let identity = TelemetryIdentity::for_home(
+            temp.path().to_path_buf(),
+            temp.path().join("state/anonymous-id"),
+        )
+        .await
+        .expect("anonymous identity should persist");
+        assert_eq!(identity.len(), 64);
+
+        let service = AnalyticsService::new("identity".to_owned(), 1, 2, |envelope| {
+            Box::pin(async move {
+                assert_eq!(envelope.distinct_id, "identity");
+                assert_eq!(envelope.batch.len(), 1);
+                Ok(())
+            })
+        });
+        service.record("runtime", Value::Null).await;
+        service.flush().await.expect("telemetry should flush");
+        assert_eq!(service.buffer_len().await, 0);
+    }
+}

@@ -2227,6 +2227,54 @@ mod tests {
         assert_eq!(resolve_wsl_distro(&settings), Ok("Debian".to_string()));
     }
 
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unavailable_wsl_commands_fail_through_native_resolution_helpers() {
+        let settings = BackendDesktopSettings {
+            server_exposure_mode: "local-only".to_string(),
+            tailscale_serve_enabled: false,
+            tailscale_serve_port: 443,
+            wsl_backend_enabled: true,
+            wsl_only: true,
+            wsl_distro: Some("Missing".to_string()),
+        };
+
+        assert!(
+            list_wsl_distros()
+                .unwrap_err()
+                .contains("Could not list WSL")
+        );
+        assert!(
+            resolve_wsl_path("Missing", Path::new("/tmp/repository"))
+                .unwrap_err()
+                .contains("Could not run wsl.exe")
+        );
+        assert_eq!(resolve_wsl_renderer_host("Missing"), None);
+        assert!(resolve_wsl_server_binary("Missing").is_err());
+        assert!(
+            resolve_wsl_launch_plan_for_distro(
+                "Missing".to_string(),
+                3773,
+                "token".to_string(),
+                PathBuf::from("backend.log"),
+                "wsl:Missing".to_string(),
+                "WSL Missing".to_string(),
+            )
+            .is_err()
+        );
+        assert!(
+            resolve_wsl_primary_launch_plan(
+                &settings,
+                3773,
+                "token".to_string(),
+                PathBuf::from("backend.log"),
+            )
+            .is_err()
+        );
+        let _ = select_desktop_backend_port();
+        let _ = resolve_lan_advertised_host();
+    }
+
     #[test]
     fn normalizes_tailscale_ports_and_local_only_exposure() {
         assert_eq!(normalize_tailscale_serve_port(None), 443);

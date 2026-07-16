@@ -183,4 +183,17 @@ mod tests {
             "https://desktop.tail.ts.net:8443/"
         );
     }
+
+    #[tokio::test]
+    async fn command_and_probe_helpers_reject_invalid_endpoints_without_io() {
+        assert_eq!(
+            tailscale_command(),
+            if cfg!(target_os = "windows") {
+                "tailscale.exe"
+            } else {
+                "tailscale"
+            }
+        );
+        assert!(!probe_tailscale_https_endpoint("not a URL").await);
+    }
 }

@@ -385,6 +385,39 @@ async fn pairing_links_and_client_sessions_can_be_listed_and_revoked() {
     .await;
     assert_eq!(revoked_state["authenticated"], false);
 
+    let third_pairing = get_json(
+        client
+            .post(http_url(&handle, "/api/auth/pairing-token"))
+            .bearer_auth(administrator_token)
+            .json(&json!({ "label": "Revoke other client" }))
+            .send()
+            .await
+            .expect("third pairing token request"),
+        StatusCode::OK,
+    )
+    .await;
+    let _third = exchange_token(
+        &client,
+        &handle,
+        third_pairing["credential"]
+            .as_str()
+            .expect("third credential"),
+        None,
+    )
+    .await;
+    let revoked_others = get_json(
+        client
+            .post(http_url(&handle, "/api/auth/clients/revoke-others"))
+            .bearer_auth(administrator_token)
+            .json(&json!({}))
+            .send()
+            .await
+            .expect("revoke other clients request"),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(revoked_others["revokedCount"], 1);
+
     shutdown(handle).await;
 }
 

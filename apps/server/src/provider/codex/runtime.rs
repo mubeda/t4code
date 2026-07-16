@@ -974,3 +974,40 @@ fn normalize_user_input_answers(value: Value) -> Value {
     }
     Value::Object(normalized)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_input_normalization_filters_questions_and_flattens_single_answers() {
+        assert_eq!(
+            normalize_questions(json!([
+                {
+                    "id":"choice",
+                    "header":"Choice",
+                    "question":"Pick one",
+                    "options":[{"label":"A","description":"First"}]
+                },
+                {"id":"missing-fields"}
+            ])),
+            json!([{
+                "id":"choice",
+                "header":"Choice",
+                "question":"Pick one",
+                "options":[{"label":"A","description":"First"}],
+                "multiSelect":false
+            }])
+        );
+        assert_eq!(normalize_questions(Value::Null), json!([]));
+        assert_eq!(
+            normalize_user_input_answers(json!({
+                "choice":{"answers":["A"]},
+                "multiple":{"answers":["A","B"]},
+                "missing":{}
+            })),
+            json!({"choice":"A","multiple":["A","B"],"missing":[]})
+        );
+        assert_eq!(normalize_user_input_answers(Value::Null), json!({}));
+    }
+}

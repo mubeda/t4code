@@ -356,6 +356,18 @@ fn build_buckets(
 mod tests {
     use super::*;
 
+    #[derive(Debug)]
+    struct EmptySampler;
+
+    impl ProcessSampler for EmptySampler {
+        fn sample(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<ProcessRow>, SamplingError>> + Send + '_>>
+        {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
     fn sample(pid: u32, sampled_at_ms: i128, command: &str) -> ProcessSample {
         ProcessSample {
             sampled_at_ms,
@@ -386,5 +398,19 @@ mod tests {
         assert_eq!(summaries[0].pid, 10);
         assert!(summaries[0].is_server_root);
         assert_eq!(summaries[0].sample_count, 2);
+    }
+
+    #[tokio::test]
+    async fn consumer_count_tracks_subscription_and_history_leases() {
+        let monitor = DiagnosticsMonitor::new(Arc::new(EmptySampler), Duration::from_secs(60));
+        assert_eq!(monitor.active_consumers(), 0);
+        let subscription = monitor.subscribe();
+        let history = monitor.retain_history();
+        assert_eq!(monitor.active_consumers(), 2);
+        drop(subscription);
+        assert_eq!(monitor.active_consumers(), 1);
+        drop(history);
+        assert_eq!(monitor.active_consumers(), 0);
+        monitor.shutdown();
     }
 }
