@@ -1,9 +1,16 @@
 mod background;
 mod runner;
 mod shell;
+#[cfg(windows)]
+mod windows_job;
 
-pub(crate) use background::configure_background_command_wrap;
-pub use background::{configure_background_command, configure_background_std_command};
+#[cfg(windows)]
+pub(crate) use windows_job::WindowsJob;
+
+pub use background::{
+    configure_background_command, configure_background_std_command,
+    configure_supervised_background_command_wrap,
+};
 pub use runner::{
     OutputMode, ProcessError, ProcessRunInput, ProcessRunOutput, ProcessRunner, TimeoutBehavior,
 };
