@@ -1071,6 +1071,195 @@ describe("sortProjectsForSidebar", () => {
   });
 });
 
+describe("sidebar logic defensive branch coverage", () => {
+  it("handles jump-controller default timers and repeated lifecycle calls", () => {
+    vi.useFakeTimers();
+    const onVisibilityChange = vi.fn();
+    const controller = createThreadJumpHintVisibilityController({
+      delayMs: 1,
+      onVisibilityChange,
+    });
+
+    controller.dispose();
+    controller.sync(true);
+    controller.sync(true);
+    vi.advanceTimersByTime(1);
+    controller.sync(true);
+    controller.sync(false);
+    controller.sync(false);
+    controller.dispose();
+
+    expect(onVisibilityChange.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it("rejects missing or invalid completion timestamps and detects invalid visit markers", () => {
+    const base = {
+      hasActionableProposedPlan: false,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      interactionMode: "default" as const,
+      session: null,
+    };
+    expect(hasUnseenCompletion({ ...base, latestTurn: null, lastVisitedAt: "invalid" })).toBe(false);
+    expect(
+      hasUnseenCompletion({
+        ...base,
+        latestTurn: makeLatestTurn({ completedAt: "invalid" }),
+        lastVisitedAt: "2026-03-09T10:00:00.000Z",
+      }),
+    ).toBe(false);
+    expect(
+      hasUnseenCompletion({
+        ...base,
+        latestTurn: makeLatestTurn(),
+        lastVisitedAt: "invalid",
+      }),
+    ).toBe(true);
+    expect(shouldClearThreadSelectionOnMouseDown(null)).toBe(true);
+  });
+
+  it("covers seed-context fallbacks and empty preference ordering", () => {
+    expect(
+      resolveSidebarNewThreadSeedContext({
+        projectId: "project-1",
+        defaultEnvMode: "local",
+        activeThread: {
+          projectId: "project-1",
+          branch: null,
+          worktreePath: null,
+        },
+      }),
+    ).toEqual({ branch: null, worktreePath: null, envMode: "local" });
+    expect(
+      resolveSidebarNewThreadSeedContext({
+        projectId: "project-1",
+        defaultEnvMode: "local",
+        activeDraftThread: {
+          projectId: "other-project",
+          branch: "other",
+          worktreePath: null,
+          envMode: "local",
+          startFromOrigin: false,
+        },
+      }),
+    ).toEqual({ envMode: "local" });
+    const items = [{ id: "a" }, { id: "b" }];
+    expect(
+      orderItemsByPreferredIds({ items, preferredIds: [], getId: (item) => item.id }),
+    ).toEqual(items);
+    expect(
+      orderItemsByPreferredIds({
+        items,
+        preferredIds: ["missing", "a"],
+        getId: (item) => item.id,
+        getPreferenceIds: (item) => [item.id, item.id],
+      }),
+    ).toEqual(items);
+  });
+
+  it("returns null at every adjacent traversal boundary", () => {
+    expect(
+      resolveAdjacentThreadId({ threadIds: [], currentThreadId: null, direction: "next" }),
+    ).toBeNull();
+    expect(
+      resolveAdjacentThreadId({
+        threadIds: ["a", "b"],
+        currentThreadId: "missing",
+        direction: "next",
+      }),
+    ).toBeNull();
+    expect(
+      resolveAdjacentThreadId({
+        threadIds: ["a", "b"],
+        currentThreadId: "b",
+        direction: "next",
+      }),
+    ).toBeNull();
+  });
+
+  it("covers folded project lists without a usable active thread", () => {
+    const threads = [
+      { id: ThreadId.make("thread-1") },
+      { id: ThreadId.make("thread-2") },
+      { id: ThreadId.make("thread-3") },
+    ];
+    expect(
+      getVisibleThreadsForProject({
+        threads,
+        activeThreadId: undefined,
+        isThreadListExpanded: false,
+        previewLimit: 2,
+      }).visibleThreads,
+    ).toEqual(threads.slice(0, 2));
+    expect(
+      getVisibleThreadsForProject({
+        threads,
+        activeThreadId: ThreadId.make("thread-1"),
+        isThreadListExpanded: false,
+        previewLimit: 2,
+      }).visibleThreads,
+    ).toEqual(threads.slice(0, 2));
+    expect(
+      getVisibleThreadsForProject({
+        threads,
+        activeThreadId: ThreadId.make("missing"),
+        isThreadListExpanded: false,
+        previewLimit: 2,
+      }).visibleThreads,
+    ).toEqual(threads.slice(0, 2));
+    expect(
+      getVisibleThreadsForProject({
+        threads: threads.slice(0, 2),
+        activeThreadId: undefined,
+        isThreadListExpanded: false,
+        previewLimit: 2,
+      }).hasHiddenThreads,
+    ).toBe(false);
+  });
+
+  it("handles missing deleted threads and projects with invalid timestamps", () => {
+    expect(
+      getFallbackThreadIdAfterDelete({
+        threads: [makeThread()],
+        deletedThreadId: ThreadId.make("missing"),
+        sortOrder: "created_at",
+      }),
+    ).toBeNull();
+    expect(
+      getFallbackThreadIdAfterDelete({
+        threads: [makeThread()],
+        deletedThreadId: ThreadId.make("thread-1"),
+        sortOrder: "created_at",
+      }),
+    ).toBeNull();
+    expect(
+      getProjectSortTimestamp(
+        { id: "project", title: "Project", createdAt: undefined, updatedAt: undefined },
+        [],
+        "created_at",
+      ),
+    ).toBe(Number.NEGATIVE_INFINITY);
+    expect(
+      getProjectSortTimestamp(
+        { id: "project", title: "Project", createdAt: "invalid", updatedAt: undefined },
+        [],
+        "updated_at",
+      ),
+    ).toBe(Number.NEGATIVE_INFINITY);
+  });
+
+  it("clamps negative prewarm limits and invalid session elapsed time", () => {
+    expect(getSidebarThreadIdsToPrewarm(["a", "b"], -1)).toEqual([]);
+    expect(
+      formatSessionDuration({
+        sessionUpdatedAt: "2026-03-09T10:00:00.000Z",
+        now: Date.parse("2026-03-09T09:00:00.000Z"),
+      }),
+    ).toBe("now");
+    expect(formatSessionDuration({ sessionUpdatedAt: "invalid" })).toBeNull();
+  });
+});
+
 describe("findDefaultThread / splitPrimaryAndWorkspaceThreads", () => {
   it("finds the thread whose kind is default", () => {
     const threads = [

@@ -737,6 +737,13 @@ function renderDraftRoute(draftId: ReturnType<typeof newDraftId>): string {
   );
 }
 
+function renderPanelRoute(): string {
+  resetRenderCaptures();
+  return renderToStaticMarkup(
+    <ChatView variant="panel" panelThreadRef={scopeThreadRef(environmentId, threadId)} />,
+  );
+}
+
 function capturedProps<T = Record<string, unknown>>(name: string): T {
   const entry = [...h.capturedList].toReversed().find((candidate) => candidate.name === name);
   expect(entry, `expected captured props for ${name}`).toBeDefined();
@@ -1067,6 +1074,47 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("ChatView center panel variant", () => {
+  it("renders a server-backed sibling without host-only chrome or effects", () => {
+    seedConnectedServerThread();
+    renderPanelRoute();
+
+    expect(h.captured["messagesTimeline"]).toBeDefined();
+    expect(h.captured["chatComposer"]).toBeDefined();
+    expect(h.captured["chatHeader"]).toBeUndefined();
+    runEffects();
+    expect(windowStub.listeners.some((listener) => listener.type === "keydown")).toBe(false);
+  });
+
+  it("mounts an active sibling chat surface from host center-panel state", () => {
+    const siblingId = ThreadId.make("thread-sibling");
+    seedConnectedServerThread();
+    seedServerThread(makeThread({ id: siblingId, title: "Sibling thread" }));
+    useCenterPanelStore.getState().openChatPanel(threadRef, siblingId, "Codex");
+    publishSeededStoreState(useCenterPanelStore);
+
+    renderServerRoute();
+
+    expect(h.capturedList.filter((entry) => entry.name === "messagesTimeline")).toHaveLength(2);
+    expect(h.captured["centerPanelTabs"]).toBeDefined();
+  });
+
+  it("renders the empty center-panel state when every surface was closed", () => {
+    seedConnectedServerThread();
+    useCenterPanelStore.setState({
+      byThreadKey: {
+        [threadKey]: {
+          surfaces: [],
+          activeSurfaceId: null,
+        },
+      },
+    });
+    publishSeededStoreState(useCenterPanelStore);
+
+    expect(renderServerRoute()).toContain("No chat panels open");
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────
