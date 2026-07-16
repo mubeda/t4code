@@ -12,12 +12,12 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use t4code_server::process::{configure_background_command, configure_background_std_command};
 use t4code_server::{
     DESKTOP_SHUTDOWN_PATH as SERVER_BACKEND_SHUTDOWN_PATH,
     DESKTOP_SHUTDOWN_TOKEN_HEADER as SERVER_BACKEND_SHUTDOWN_TOKEN_HEADER, ServerConfig,
     ServerRuntime,
 };
-use t4code_server::process::{configure_background_command, configure_background_std_command};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt as TokioAsyncWriteExt},

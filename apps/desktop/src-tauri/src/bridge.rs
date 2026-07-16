@@ -6,12 +6,12 @@ use std::{
     process::Command,
     time::Duration,
 };
+use t4code_server::process::configure_background_std_command;
 use tauri::AppHandle;
 use tauri::Manager;
 use tauri::State;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_opener::OpenerExt;
-use t4code_server::process::configure_background_std_command;
 
 use crate::backend::{BackendRunConfig, BackendSupervisor};
 use crate::config::{

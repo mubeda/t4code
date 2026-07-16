@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::time::Duration;
-use tokio::process::Command;
 use t4code_server::process::configure_background_command;
+use tokio::process::Command;
 
 const DEFAULT_TAILSCALE_SERVE_PORT: u16 = 443;
 const TAILSCALE_STATUS_TIMEOUT: Duration = Duration::from_millis(1_500);
