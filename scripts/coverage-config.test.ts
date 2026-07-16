@@ -301,15 +301,15 @@ describe("root coverage policy", () => {
     expect(coverage?.exclude).toEqual(EXPECTED_EXCLUDE);
   });
 
-  it("enforces 74% thresholds for every primary TypeScript metric", async () => {
+  it("enforces 85% thresholds for every primary TypeScript metric", async () => {
     const viteModule = await loadRootViteModule();
     const thresholds = viteModule.default.test?.coverage?.thresholds;
 
     expect(thresholds).toMatchObject({
-      lines: 74,
-      statements: 74,
-      functions: 74,
-      branches: 74,
+      lines: 85,
+      statements: 85,
+      functions: 85,
+      branches: 85,
     });
   });
 

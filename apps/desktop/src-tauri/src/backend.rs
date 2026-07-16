@@ -18,7 +18,7 @@ use t4code_server::{
     DESKTOP_SHUTDOWN_TOKEN_HEADER as SERVER_BACKEND_SHUTDOWN_TOKEN_HEADER, ServerConfig,
     ServerRuntime,
 };
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt as TokioAsyncWriteExt},
     process::{Child, Command},
@@ -1289,8 +1289,8 @@ fn resolve_wsl_primary_launch_plan(
     )
 }
 
-fn resolve_wsl_secondary_launch_plan(
-    app: &AppHandle,
+fn resolve_wsl_secondary_launch_plan<R: Runtime>(
+    app: &AppHandle<R>,
     settings: &BackendDesktopSettings,
     primary_port: u16,
 ) -> Result<BackendLaunchPlan, String> {
@@ -1311,7 +1311,7 @@ fn resolve_wsl_secondary_launch_plan(
     )
 }
 
-fn default_launch_plans(app: &AppHandle) -> Result<Vec<BackendLaunchPlan>, String> {
+fn default_launch_plans<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<BackendLaunchPlan>, String> {
     let base_dir = desktop_base_dir(app)?;
     let log_path = primary_backend_log_path(app)?;
     let port = std::env::var("T4CODE_PORT")
@@ -1391,13 +1391,13 @@ fn wsl_server_binary_candidates() -> Result<Vec<PathBuf>, String> {
     Ok(candidates)
 }
 
-fn primary_backend_log_path(app: &AppHandle) -> Result<PathBuf, String> {
+fn primary_backend_log_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(state_dir(app)?
         .join("logs")
         .join(PRIMARY_BACKEND_LOG_FILE_NAME))
 }
 
-fn wsl_backend_log_path(app: &AppHandle, distro: &str) -> Result<PathBuf, String> {
+fn wsl_backend_log_path<R: Runtime>(app: &AppHandle<R>, distro: &str) -> Result<PathBuf, String> {
     let filename = format!(
         "{WSL_BACKEND_LOG_FILE_PREFIX}{}{WSL_BACKEND_LOG_FILE_EXTENSION}",
         sanitize_backend_log_file_segment(distro)
@@ -1525,7 +1525,9 @@ fn normalize_wsl_distro(value: Option<String>) -> Option<String> {
         })
 }
 
-fn read_backend_desktop_settings(app: &AppHandle) -> Result<BackendDesktopSettings, String> {
+fn read_backend_desktop_settings<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<BackendDesktopSettings, String> {
     let path = desktop_base_dir(app)?
         .join(if cfg!(debug_assertions) {
             "dev"
@@ -1566,7 +1568,7 @@ fn decode_backend_desktop_settings(raw: Option<&str>) -> BackendDesktopSettings 
     }
 }
 
-fn desktop_base_dir(app: &AppHandle) -> Result<PathBuf, String> {
+fn desktop_base_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     match std::env::var_os(T4CODE_HOME_ENV) {
         Some(value) if !value.is_empty() => Ok(PathBuf::from(value)),
         _ => app
@@ -2409,6 +2411,28 @@ mod tests {
                 advertised_host: None,
             }
         );
+    }
+
+    #[test]
+    fn mock_runtime_resolves_default_backend_paths_and_launch_plan() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder()
+            .build(mock_context(noop_assets()))
+            .expect("mock Tauri app");
+        let handle = app.handle();
+        assert!(desktop_base_dir(handle).unwrap().is_absolute());
+        assert!(
+            primary_backend_log_path(handle)
+                .unwrap()
+                .ends_with(PRIMARY_BACKEND_LOG_FILE_NAME)
+        );
+        assert!(
+            wsl_backend_log_path(handle, "Ubuntu Test")
+                .unwrap()
+                .ends_with("server-child-wsl-Ubuntu_Test.log")
+        );
+        assert!(!default_launch_plans(handle).unwrap().is_empty());
     }
 
     #[test]

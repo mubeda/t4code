@@ -140,6 +140,7 @@ async fn opencode_runtime_failure_boundaries_reject_invalid_sessions_and_http_st
     assert!(runtime.send_command("/", "").await.is_err());
     assert!(runtime.send_turn(Some("hello"), Vec::new()).await.is_err());
     assert!(runtime.send_command("test", "args").await.is_err());
+    assert!(runtime.rollback_thread(1).await.is_err());
     assert!(
         runtime
             .respond_to_user_input("missing", json!({}))

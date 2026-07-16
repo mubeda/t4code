@@ -1456,6 +1456,13 @@ mod tests {
         assert_eq!(capabilities.slash_commands[1]["name"], "loop");
         assert_eq!(capabilities.agents[0]["name"], "code-reviewer");
         assert_eq!(capabilities.agents[0]["model"], "opus");
+
+        let mut models = vec![json!({"capabilities": {}})];
+        apply_agent_options(&mut models, &[json!({"name":"reviewer"})]);
+        assert_eq!(
+            models[0]["capabilities"]["optionDescriptors"][0]["currentValue"],
+            "reviewer"
+        );
     }
 
     #[test]
@@ -1578,6 +1585,11 @@ mod tests {
         );
         assert_eq!(inventory.agents[0]["name"], "build");
         assert!(inventory.commands.is_empty());
+        assert!(
+            probe_opencode("http://127.0.0.1:1", None, &[])
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]

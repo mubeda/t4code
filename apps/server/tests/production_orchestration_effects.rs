@@ -670,6 +670,20 @@ async fn thread_deletion_attempts_provider_and_terminal_cleanup_independently() 
     let workspace = tempfile::tempdir().unwrap();
     let engine = engine(workspace.path()).await;
     let callbacks = Arc::new(FailingProviderCallbacks(CallbackState::default()));
+    let default_launch_error = callbacks
+        .launch_setup_script(SetupScriptLaunch {
+            thread_id: "t1".to_owned(),
+            terminal_id: "setup-default".to_owned(),
+            script_id: "default".to_owned(),
+            script_name: "Default".to_owned(),
+            command: "true".to_owned(),
+            cwd: workspace.path().to_path_buf(),
+            worktree_path: workspace.path().to_path_buf(),
+            env: Default::default(),
+        })
+        .await
+        .expect_err("default setup callback is unavailable");
+    assert!(default_launch_error.contains("unavailable"));
     let effects = OrchestrationEffects::start(
         engine.clone(),
         callbacks.clone(),

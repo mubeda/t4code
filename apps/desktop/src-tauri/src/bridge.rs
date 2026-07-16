@@ -7,9 +7,7 @@ use std::{
     time::Duration,
 };
 use t4code_server::process::configure_background_std_command;
-use tauri::AppHandle;
-use tauri::Manager;
-use tauri::State;
+use tauri::{AppHandle, Manager, Runtime, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_opener::OpenerExt;
 
@@ -172,15 +170,15 @@ async fn remote_post_json(
     remote_json_response(operation, response).await
 }
 
-fn client_settings_path(app: &AppHandle) -> Result<PathBuf, String> {
+fn client_settings_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(state_dir(app)?.join(CLIENT_SETTINGS_FILE_NAME))
 }
 
-fn connection_catalog_path(app: &AppHandle) -> Result<PathBuf, String> {
+fn connection_catalog_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(state_dir(app)?.join(CONNECTION_CATALOG_FILE_NAME))
 }
 
-fn desktop_settings_path(app: &AppHandle) -> Result<PathBuf, String> {
+fn desktop_settings_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(state_dir(app)?.join(DESKTOP_SETTINGS_FILE_NAME))
 }
 
@@ -2303,6 +2301,23 @@ mod tests {
 
         let metadata = invoke("desktop_bridge_get_bridge_metadata", json!({})).unwrap();
         assert_eq!(metadata["host"], "tauri");
+        let handle = app.handle();
+        assert!(app_branding(handle)["displayName"].is_string());
+        assert!(
+            client_settings_path(handle)
+                .unwrap()
+                .ends_with(CLIENT_SETTINGS_FILE_NAME)
+        );
+        assert!(
+            connection_catalog_path(handle)
+                .unwrap()
+                .ends_with(CONNECTION_CATALOG_FILE_NAME)
+        );
+        assert!(
+            desktop_settings_path(handle)
+                .unwrap()
+                .ends_with(DESKTOP_SETTINGS_FILE_NAME)
+        );
 
         for (command, arguments) in [
             (

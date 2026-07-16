@@ -769,12 +769,41 @@ mod tests {
 
     #[tokio::test]
     async fn set_atomically_replaces_an_existing_secret() {
-        let (_temp_dir, store) = test_store().await;
+        let (temp_dir, store) = test_store().await;
         store.create("replaceable", b"first").await.unwrap();
 
         store.set("replaceable", b"second").await.unwrap();
 
         assert_eq!(store.get("replaceable").await.unwrap().unwrap(), b"second");
+
+        assert!(!should_use_windows_replace(&io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "fixture",
+        )));
+        assert!(
+            replace_existing_secret(
+                "missing",
+                &temp_dir.path().join("missing-temporary"),
+                &temp_dir.path().join("missing-target"),
+            )
+            .await
+            .is_err()
+        );
+        assert!(matches!(
+            persist_error_after_cleanup(
+                "missing",
+                &temp_dir.path().join("missing-cleanup"),
+                "fixture",
+                io::Error::other("fixture"),
+            )
+            .await,
+            SecretStoreError::Persist { .. }
+        ));
+        assert!(
+            remove_published_temporary("missing", &temp_dir.path().join("missing-published"))
+                .await
+                .is_err()
+        );
     }
 
     #[cfg(unix)]
@@ -802,7 +831,7 @@ mod tests {
 
     #[tokio::test]
     async fn unsafe_names_are_rejected() {
-        let (_temp_dir, store) = test_store().await;
+        let (temp_dir, store) = test_store().await;
 
         for name in [
             "",
@@ -820,6 +849,27 @@ mod tests {
                 matches!(error, SecretStoreError::InvalidName { .. }),
                 "unexpected error for {name:?}: {error}"
             );
+        }
+
+        let blocker = temp_dir.path().join("blocker");
+        fs::write(&blocker, "not a directory").await.unwrap();
+        assert!(matches!(
+            SecretStore::new(blocker.join("secrets")).await,
+            Err(SecretStoreError::Initialize { .. })
+        ));
+
+        #[cfg(unix)]
+        {
+            let mut permissions = fs::metadata(&store.root).await.unwrap().permissions();
+            permissions.set_mode(0o500);
+            fs::set_permissions(&store.root, permissions).await.unwrap();
+            assert!(matches!(
+                store.create("blocked", b"value").await,
+                Err(SecretStoreError::Persist { .. })
+            ));
+            let mut permissions = fs::metadata(&store.root).await.unwrap().permissions();
+            permissions.set_mode(0o700);
+            fs::set_permissions(&store.root, permissions).await.unwrap();
         }
     }
 }
