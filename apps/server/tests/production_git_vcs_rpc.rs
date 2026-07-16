@@ -1470,6 +1470,43 @@ async fn source_control_discovery_and_typed_errors_are_deterministic() {
     server.shutdown().await;
 }
 
+#[tokio::test]
+async fn pull_request_rpc_adapters_execute_resolution_and_preparation_paths() {
+    let temp = TempDir::new().expect("temporary server directory");
+    let repository = TempDir::new().expect("temporary repository");
+    initialize_repository(&repository);
+    commit_file(repository.path(), "tracked.txt", "base\n", "initial");
+    let cwd = repository.path().to_string_lossy();
+    let mut server = GitServerHarness::start(&temp).await;
+
+    request(
+        server.socket(),
+        "601",
+        "git.resolvePullRequest",
+        json!({"cwd":cwd,"reference":"current"}),
+    )
+    .await;
+    let resolution = failure_value(server.socket(), "601").await;
+    assert_eq!(resolution["_tag"], "SourceControlProviderError");
+
+    request(
+        server.socket(),
+        "602",
+        "git.preparePullRequestThread",
+        json!({
+            "cwd":cwd,
+            "reference":"current",
+            "mode":"switch",
+            "threadId":"thread-1",
+        }),
+    )
+    .await;
+    let preparation = failure_value(server.socket(), "602").await;
+    assert_eq!(preparation["_tag"], "SourceControlProviderError");
+
+    server.shutdown().await;
+}
+
 fn initialize_repository(repository: &TempDir) {
     initialize_repository_in(repository.path());
 }
