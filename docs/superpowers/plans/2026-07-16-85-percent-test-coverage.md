@@ -295,7 +295,7 @@ git commit -m "test: cover client runtime state failures"
 - Modify: `apps/web/src/components/ChatView.hooks.test.tsx`
 - Modify: `apps/web/src/components/Sidebar.test.tsx`
 - Modify: `apps/web/src/components/ThreadTerminalDrawer.test.tsx`
-- Modify: `apps/web/src/components/ThreadTerminalDrawer.interaction.test.tsx`
+- Modify: `apps/web/src/components/ThreadTerminalDrawer.interactions.test.tsx`
 - Modify: `apps/web/src/components/ChatMarkdown.test.tsx`
 - Modify: `apps/web/src/components/settings/ConnectionsSettings.test.tsx`
 - Modify: `infra/relay/src/http/Api.test.ts`
@@ -324,7 +324,7 @@ PATH="$PWD/node_modules/.bin:$PATH" vp test \
   apps/web/src/components/ChatView.hooks.test.tsx \
   apps/web/src/components/Sidebar.test.tsx \
   apps/web/src/components/ThreadTerminalDrawer.test.tsx \
-  apps/web/src/components/ThreadTerminalDrawer.interaction.test.tsx \
+  apps/web/src/components/ThreadTerminalDrawer.interactions.test.tsx \
   apps/web/src/components/ChatMarkdown.test.tsx \
   apps/web/src/components/settings/ConnectionsSettings.test.tsx \
   infra/relay/src/http/Api.test.ts
