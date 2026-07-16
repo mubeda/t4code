@@ -19,7 +19,10 @@ import {
   consumeVcsActionProgress,
   createVcsActionManager,
   createVcsActionTransportId,
+  EMPTY_VCS_ACTION_ATOM,
   EMPTY_VCS_ACTION_STATE,
+  failVcsActionState,
+  getVcsActionStateAtom,
   getVcsActionTargetKey,
   normalizeVcsActionProgressEvent,
   parseVcsActionTargetKey,
@@ -155,6 +158,52 @@ describe("vcsActionState", () => {
     });
   });
 
+  it("projects action start and successful terminal progress", () => {
+    const initial = beginVcsActionState({
+      operation: "pull",
+      label: "Pulling",
+      actionId,
+    });
+    const started = applyVcsActionProgressEvent(initial, {
+      actionId,
+      action,
+      cwd,
+      kind: "action_started",
+      phases: ["commit", "push"],
+    });
+    const finished = applyVcsActionProgressEvent(started, {
+      actionId,
+      action,
+      cwd,
+      kind: "action_finished",
+      result,
+    });
+
+    expect(started).toMatchObject({
+      isRunning: true,
+      operation: "run_change_request",
+      action,
+    });
+    expect(finished).toMatchObject({
+      isRunning: false,
+      operation: "run_change_request",
+      error: null,
+    });
+  });
+
+  it("creates local action ids and generic failure messages", () => {
+    const first = beginVcsActionState({ operation: "pull", label: "Pulling" });
+    const second = beginVcsActionState({ operation: "pull", label: "Pulling" });
+    expect(first.actionId).toMatch(/^local-vcs-action:/);
+    expect(second.actionId).not.toBe(first.actionId);
+    expect(failVcsActionState("pull", first.actionId, "unknown").error).toBe(
+      "Source control action failed.",
+    );
+    expect(failVcsActionState("pull", first.actionId, new Error("pull failed")).error).toBe(
+      "pull failed",
+    );
+  });
+
   it("retains a terminal action error for presentation", () => {
     const initial = beginVcsActionState({
       operation: "run_change_request",
@@ -218,6 +267,7 @@ describe("vcsActionState", () => {
         cwd: null,
       }),
     ).toBeNull();
+    expect(getVcsActionStateAtom({ environmentId: null, cwd })).toBe(EMPTY_VCS_ACTION_ATOM);
   });
 
   it("normalizes progress only for the matching environment-scoped action", () => {
@@ -424,6 +474,56 @@ describe("vcsActionState", () => {
       expect(error.message).toBe("Source control operation 'pull' is unavailable.");
     }
 
+    registry.dispose();
+  });
+
+  it("fails an unavailable stacked action command without entering running state", async () => {
+    const runtime = Atom.runtime(Layer.empty) as unknown as Atom.AtomRuntime<
+      EnvironmentRegistry,
+      never
+    >;
+    const manager = createVcsActionManager(runtime);
+    const registry = AtomRegistry.make();
+    const command = manager.runStackedAction({ environmentId: null, cwd });
+
+    const commandResult = await command.run(registry, { actionId, action });
+
+    expect(AsyncResult.isFailure(commandResult)).toBe(true);
+    if (AsyncResult.isFailure(commandResult)) {
+      expect(Cause.squash(commandResult.cause)).toBeInstanceOf(VcsActionUnavailableError);
+    }
+    registry.dispose();
+  });
+
+  it("clears successful and interrupted tracked actions and resets matching errors", async () => {
+    const runtime = Atom.runtime(Layer.empty) as unknown as Atom.AtomRuntime<
+      EnvironmentRegistry,
+      never
+    >;
+    const manager = createVcsActionManager(runtime);
+    const registry = AtomRegistry.make();
+    const target = { environmentId, cwd };
+
+    await manager.track(registry, target, { operation: "pull", label: "Pulling" }, async () =>
+      AsyncResult.success(undefined),
+    );
+    expect(registry.get(manager.stateAtom(target))).toBe(EMPTY_VCS_ACTION_STATE);
+
+    await manager.track(registry, target, { operation: "pull", label: "Pulling" }, async () =>
+      AsyncResult.failure(Cause.interrupt(1)),
+    );
+    expect(registry.get(manager.stateAtom(target))).toBe(EMPTY_VCS_ACTION_STATE);
+
+    await manager.track(registry, target, { operation: "pull", label: "Pulling" }, async () =>
+      AsyncResult.failure(Cause.fail(new Error("pull failed"))),
+    );
+    expect(registry.get(manager.stateAtom(target)).error).toBe("pull failed");
+    manager.resetError(registry, target, "switch_ref");
+    expect(registry.get(manager.stateAtom(target)).error).toBe("pull failed");
+    manager.resetError(registry, target, "pull");
+    expect(registry.get(manager.stateAtom(target))).toBe(EMPTY_VCS_ACTION_STATE);
+
+    manager.resetError(registry, { environmentId: null, cwd }, "pull");
     registry.dispose();
   });
 
