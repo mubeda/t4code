@@ -380,5 +380,98 @@ describe("review comment context parsing", () => {
       const full = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts";
       expect(buildReviewCommentRenderablePatch({ ...base, diff: full })).toBe(full);
     });
+
+    it("builds uniform addition and deletion labels through side fallbacks", () => {
+      const additionDiff = parsePatchFiles(
+        [
+          "diff --git a/new.ts b/new.ts",
+          "--- /dev/null",
+          "+++ b/new.ts",
+          "@@ -0,0 +1,2 @@",
+          "+one",
+          "+two",
+        ].join("\n"),
+        "review-additions",
+      )[0]!.files[0]!;
+      const addition = buildDiffReviewComment({
+        id: "add",
+        sectionId: "s",
+        sectionTitle: "S",
+        filePath: "new.ts",
+        fileDiff: additionDiff,
+        range: { start: 1, side: "deletions", end: 2, endSide: "deletions" },
+        text: " additions ",
+      });
+      expect(addition).toMatchObject({ rangeLabel: "+1 to +2", text: "additions" });
+
+      const deletionDiff = parsePatchFiles(
+        [
+          "diff --git a/old.ts b/old.ts",
+          "--- a/old.ts",
+          "+++ /dev/null",
+          "@@ -1,2 +0,0 @@",
+          "-one",
+          "-two",
+        ].join("\n"),
+        "review-deletions",
+      )[0]!.files[0]!;
+      const deletion = buildDiffReviewComment({
+        id: "delete",
+        sectionId: "s",
+        sectionTitle: "S",
+        filePath: "old.ts",
+        fileDiff: deletionDiff,
+        range: { start: 1, side: "additions", end: 2, endSide: "additions" },
+        text: " deletions ",
+      });
+      expect(deletion).toMatchObject({ rangeLabel: "-1 to -2", text: "deletions" });
+    });
+
+    it("rejects unavailable diff rows and restores context-only selections", () => {
+      const contextDiff = parsePatchFiles(
+        [
+          "diff --git a/a.ts b/a.ts",
+          "--- a/a.ts",
+          "+++ b/a.ts",
+          "@@ -4,1 +4,1 @@",
+          " context",
+        ].join("\n"),
+        "review-context",
+      )[0]!.files[0]!;
+      const comment = buildDiffReviewComment({
+        id: "context",
+        sectionId: "s",
+        sectionTitle: "S",
+        filePath: "a.ts",
+        fileDiff: contextDiff,
+        range: { start: 4, side: "additions", end: 4 },
+        text: " context ",
+      });
+      expect(comment).toMatchObject({ rangeLabel: "4", diff: expect.stringContaining(" context") });
+      expect(restoreDiffReviewCommentRange(contextDiff, comment!)).toEqual({
+        start: 4,
+        side: "additions",
+        end: 4,
+        endSide: "additions",
+      });
+      expect(
+        restoreDiffReviewCommentRange(contextDiff, {
+          ...comment!,
+          startIndex: 99,
+          endIndex: 100,
+        }),
+      ).toBeNull();
+      expect(
+        buildDiffReviewComment({
+          id: "missing",
+          sectionId: "s",
+          sectionTitle: "S",
+          filePath: "a.ts",
+          fileDiff: contextDiff,
+          range: { start: 999, side: "additions", end: 1000 },
+          text: "missing",
+        }),
+      ).toBeNull();
+    });
   });
 });

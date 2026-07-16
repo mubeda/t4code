@@ -1,11 +1,24 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { DEFAULT_CLIENT_SETTINGS } from "@t4code/contracts/settings";
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { vi } from "vite-plus/test";
 import { __setClientSettingsForTests } from "../hooks/useSettings";
+
+vi.mock("./ui/menu", () => ({
+  Menu: ({ children }: { children?: ReactNode }) => <>{children}</>,
+  MenuTrigger: ({ render, children }: { render?: ReactNode; children?: ReactNode }) => (
+    <>{render ?? children}</>
+  ),
+  MenuPopup: ({ children }: { children?: ReactNode }) => <>{children}</>,
+  MenuItem: ({ children, onClick }: { children?: ReactNode; onClick?: () => void }) => (
+    <button type="button" role="menuitem" onClick={onClick}>
+      {children}
+    </button>
+  ),
+}));
 
 let ChatMarkdownComponent: typeof import("./ChatMarkdown").default | null = null;
 let domWindow: Window | null = null;
@@ -660,6 +673,59 @@ describe("ChatMarkdown", () => {
       expect(container.querySelectorAll("th")[0]?.style.minWidth).not.toBe("");
     });
 
+    it("copies tables as Markdown and CSV and replaces the copied-state timer", async () => {
+      const writeText = vi.fn(async () => {});
+      installClipboard(writeText);
+      const container = await mountMarkdown(
+        ["| A | B |", "| - | - |", "| one | two |"].join("\n"),
+      );
+
+      const chooseCopyFormat = async (label: string) => {
+        const item = Array.from(
+          document.querySelectorAll<HTMLElement>("[role=menuitem], [data-slot=menu-item]"),
+        ).find((candidate) => candidate.textContent === label);
+        expect(item).toBeDefined();
+        await click(item!);
+        await act(async () => Promise.resolve());
+      };
+
+      await chooseCopyFormat("Copy as Markdown");
+      expect(writeText).toHaveBeenCalledWith("| A | B |\n| --- | --- |\n| one | two |");
+      expect(container.querySelector('button[aria-label="Copied"]')).not.toBeNull();
+
+      await chooseCopyFormat("Copy as CSV");
+      expect(writeText).toHaveBeenCalledWith("A,B\none,two");
+      expect(writeText).toHaveBeenCalledTimes(2);
+    });
+
+    it("ignores unavailable table clipboards and reports copy failures", async () => {
+      const failure = new Error("table copy failed");
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      const container = await mountMarkdown(
+        ["| A | B |", "| - | - |", "| one | two |"].join("\n"),
+      );
+      const chooseMarkdown = async () => {
+        const item = Array.from(
+          document.querySelectorAll<HTMLElement>("[role=menuitem], [data-slot=menu-item]"),
+        ).find((candidate) => candidate.textContent === "Copy as Markdown");
+        expect(item).toBeDefined();
+        await click(item!);
+        await act(async () => Promise.resolve());
+      };
+
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+      await chooseMarkdown();
+      expect(consoleError).not.toHaveBeenCalled();
+
+      installClipboard(vi.fn(async () => Promise.reject(failure)));
+      await chooseMarkdown();
+      expect(consoleError).toHaveBeenCalledWith(
+        "[chat-markdown] action failed",
+        { operation: "copy-table", format: "markdown" },
+        failure,
+      );
+    });
+
     it("toggles details content through the rendered summary", async () => {
       const container = await mountMarkdown(
         ["<details>", "<summary>More</summary>", "", "Body", "", "</details>"].join("\n"),
@@ -697,6 +763,50 @@ describe("ChatMarkdown", () => {
         ),
       );
       expect(scrollIntoView).not.toHaveBeenCalled();
+    });
+
+    it("normalizes sanitized fragment ids and ignores unsupported click gestures", async () => {
+      const container = await mountMarkdown("[Jump](#section)");
+      const markdownRoot = container.querySelector<HTMLElement>(".chat-markdown")!;
+      const target = document.createElement("div");
+      target.id = "user-content-user-content-section";
+      const scrollIntoView = vi.fn();
+      Object.defineProperty(target, "scrollIntoView", {
+        configurable: true,
+        value: scrollIntoView,
+      });
+      markdownRoot.append(target);
+      const anchor = container.querySelector<HTMLAnchorElement>('a[href="#section"]')!;
+
+      await act(async () =>
+        anchor.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })),
+      );
+      expect(scrollIntoView).toHaveBeenCalledOnce();
+
+      for (const init of [
+        { button: 1 },
+        { metaKey: true },
+        { shiftKey: true },
+        { altKey: true },
+      ]) {
+        await act(async () =>
+          anchor.dispatchEvent(
+            new MouseEvent("click", { bubbles: true, cancelable: true, ...init }),
+          ),
+        );
+      }
+      expect(scrollIntoView).toHaveBeenCalledOnce();
+    });
+
+    it("leaves missing and malformed fragment targets to normal browser handling", async () => {
+      const container = await mountMarkdown("[Missing](#missing) [Malformed](#%E0%A4%A)");
+      const anchors = [...container.querySelectorAll<HTMLAnchorElement>('a[href^="#"]')];
+
+      for (const anchor of anchors) {
+        const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+        await act(async () => anchor.dispatchEvent(event));
+        expect(event.defaultPrevented).toBe(false);
+      }
     });
 
     it("reports code clipboard failure and ignores an unavailable clipboard", async () => {
