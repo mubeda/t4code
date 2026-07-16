@@ -85,17 +85,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(plan.outputDir, path.join(repoRoot, "artifacts", "tauri-win"));
       assert.equal(
         plan.bundleDir,
-        path.join(
-          repoRoot,
-          "apps",
-          "desktop",
-          "src-tauri",
-          "target",
-          "x86_64-pc-windows-msvc",
-          "release",
-          "bundle",
-          "nsis",
-        ),
+        path.join(repoRoot, "target", "x86_64-pc-windows-msvc", "release", "bundle", "nsis"),
       );
       assert.deepStrictEqual(plan.buildCommand, {
         command: "vp",
@@ -1370,6 +1360,11 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       ).pipe(Effect.provide(spawnerLayer));
 
       assert.equal(spawnPlans.length, 1);
+      const spawned = spawnPlans[0] as {
+        readonly options: { readonly stdout?: unknown; readonly stderr?: unknown };
+      };
+      assert.equal(spawned.options.stdout, "inherit");
+      assert.equal(spawned.options.stderr, "inherit");
       assert.deepStrictEqual(artifacts, [path.join(repoRoot, "out", "installer.exe")]);
       assert.include(writes.join(""), "Building win/nsis");
       assert.include(writes.join(""), "Artifacts copied");

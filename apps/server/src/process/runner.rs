@@ -14,6 +14,8 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
+use super::configure_background_command_wrap;
+
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 
@@ -211,6 +213,7 @@ impl ProcessRunner {
                 command.env_clear().envs(env);
             }
         });
+        configure_background_command_wrap(&mut command);
         command.wrap(KillOnDrop);
         #[cfg(windows)]
         command.wrap(JobObject);

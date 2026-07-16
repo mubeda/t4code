@@ -11,6 +11,7 @@ use tauri::Manager;
 use tauri::State;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_opener::OpenerExt;
+use t4code_server::process::configure_background_std_command;
 
 use crate::backend::{BackendRunConfig, BackendSupervisor};
 use crate::config::{
@@ -687,7 +688,9 @@ fn read_wsl_environment() -> (bool, Vec<WslDistro>) {
         return (false, Vec::new());
     }
 
-    match Command::new("wsl.exe").args(["-l", "-v"]).output() {
+    let mut command = Command::new("wsl.exe");
+    configure_background_std_command(&mut command);
+    match command.args(["-l", "-v"]).output() {
         Ok(output) if output.status.success() => (true, parse_wsl_distro_list(&output.stdout)),
         _ => (false, Vec::new()),
     }
