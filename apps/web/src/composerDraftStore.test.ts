@@ -2091,6 +2091,159 @@ describe("composerDraftStore legacy storage migration", () => {
     expect(migrated.stickyActiveProvider).toBe("codex");
   });
 
+  it("normalizes malformed legacy option and context entries", () => {
+    const migrated = getPersistOptions().migrate(
+      {
+        draftsByThreadId: {
+          edge: {
+            prompt: "edge",
+            modelSelection: {
+              provider: "codex",
+              model: "gpt-5.4",
+              options: [
+                null,
+                1,
+                {},
+                { id: "", value: "ignored" },
+                { id: "invalid", value: 1 },
+                { id: "reasoningEffort", value: "medium" },
+                { id: "fastMode", value: false },
+              ],
+            },
+            modelOptions: { codex: { valid: "yes", invalid: 1 }, cursor: null },
+            terminalContexts: [
+              null,
+              {
+                id: "bad-terminal",
+                threadId: "edge",
+                createdAt: "2026-01-01T00:00:00.000Z",
+                terminalId: 1,
+                terminalLabel: null,
+                lineStart: 1,
+                lineEnd: 2,
+              },
+              {
+                id: "terminal",
+                threadId: "edge",
+                createdAt: "2026-01-01T00:00:00.000Z",
+                terminalId: " terminal ",
+                terminalLabel: " Terminal ",
+                lineStart: 0.5,
+                lineEnd: 0.1,
+              },
+            ],
+            elementContexts: [
+              null,
+              {
+                id: "element",
+                threadId: "edge",
+                pickedAt: "2026-01-01T00:00:00.000Z",
+                pageUrl: "https://example.test",
+                tagName: "DIV",
+                source: {
+                  functionName: 1,
+                  fileName: false,
+                  lineNumber: Number.NaN,
+                  columnNumber: "2",
+                },
+              },
+            ],
+          },
+          legacyExtras: {
+            prompt: "legacy extras",
+            provider: "codex",
+            model: "gpt-5.4",
+            effort: "high",
+            serviceTier: "fast",
+            modelOptions: {
+              codex: { reasoningEffort: "medium", fastMode: true, invalid: 1 },
+            },
+          },
+          custom: {
+            prompt: "custom",
+            modelSelection: {
+              provider: "custom_instance",
+              model: "custom-model",
+              options: [{ id: "mode", value: true }],
+            },
+          },
+          invalidModel: { prompt: "invalid model", provider: "codex", model: "   " },
+        },
+        draftThreadsByThreadId: {
+          "": { projectId: "ignored", environmentId: "environment" },
+          primitive: "ignored",
+          edge: {
+            threadId: "edge",
+            environmentId: "environment-edge",
+            projectId: "project-edge",
+            logicalProjectKey: "logical-edge",
+          },
+          legacyExtras: {
+            threadId: "legacyExtras",
+            environmentId: "environment-edge",
+            projectId: "project-edge",
+          },
+          custom: {
+            threadId: "custom",
+            environmentId: "environment-edge",
+            projectId: "project-edge",
+          },
+          invalidModel: {
+            threadId: "invalidModel",
+            environmentId: "environment-edge",
+            projectId: "project-edge",
+          },
+        },
+        projectDraftThreadIdByProjectKey: {
+          "not-a-scoped-project": "custom",
+        },
+      },
+      2,
+    ) as unknown as {
+      draftsByThreadKey: Record<
+        string,
+        {
+          modelSelectionByProvider: Record<
+            string,
+            { options: ReadonlyArray<ProviderOptionSelection> }
+          >;
+          terminalContexts: ReadonlyArray<TerminalContextDraft>;
+          elementContexts: ReadonlyArray<{
+            source: {
+              functionName: string | null;
+              fileName: string | null;
+              lineNumber: number | null;
+              columnNumber: number | null;
+            };
+          }>;
+          activeProvider?: string;
+        }
+      >;
+      draftThreadsByThreadKey: Record<string, { logicalProjectKey?: string }>;
+    };
+
+    expect(migrated.draftsByThreadKey.edge.modelSelectionByProvider.codex.options).toEqual([
+      { id: "reasoningEffort", value: "medium" },
+      { id: "fastMode", value: false },
+    ]);
+    expect(migrated.draftsByThreadKey.edge.terminalContexts).toEqual([
+      expect.objectContaining({ terminalId: "terminal", lineStart: 1, lineEnd: 1 }),
+    ]);
+    expect(migrated.draftsByThreadKey.edge.elementContexts[0].source).toEqual({
+      functionName: null,
+      fileName: null,
+      lineNumber: null,
+      columnNumber: null,
+    });
+    expect(migrated.draftsByThreadKey.legacyExtras.modelSelectionByProvider.codex.options).toEqual([
+      { id: "reasoningEffort", value: "medium" },
+      { id: "fastMode", value: true },
+    ]);
+    expect(migrated.draftsByThreadKey.custom.activeProvider).toBe("custom_instance");
+    expect(migrated.draftsByThreadKey.invalidModel.activeProvider).toBeUndefined();
+    expect(migrated.draftThreadsByThreadKey.edge.logicalProjectKey).toBe("logical-edge");
+  });
+
   it("reconciles project mappings against missing and conflicting draft threads", () => {
     const mappedEnvironmentId = EnvironmentId.make("environment-mapped");
     const mappedProjectKey = scopedProjectKey(
