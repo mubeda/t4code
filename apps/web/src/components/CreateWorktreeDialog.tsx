@@ -23,6 +23,7 @@ import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState }
 
 import { cn } from "~/lib/utils";
 import { newThreadId } from "~/lib/utils";
+import { applyProviderInstanceSettings, deriveProviderInstanceEntries } from "~/providerInstances";
 import { useProjects, useServerConfigs } from "~/state/entities";
 import { useEnvironmentQuery } from "~/state/query";
 import { threadEnvironment } from "~/state/threads";
@@ -154,10 +155,11 @@ export function CreateWorktreeDialog({
   const providers = useMemo(() => {
     if (!environmentId) return [];
     const serverConfig = serverConfigs.get(environmentId);
-    // TODO(orca-port): consider reusing `isProviderAvailable` from
-    // @t4code/contracts/server once its exact export path is confirmed,
-    // instead of this local enabled+installed filter.
-    return (serverConfig?.providers ?? []).filter((p) => p.enabled && p.installed);
+    if (!serverConfig) return [];
+    return applyProviderInstanceSettings(
+      deriveProviderInstanceEntries(serverConfig.providers),
+      serverConfig.settings,
+    ).filter((entry) => entry.enabled && entry.installed);
   }, [serverConfigs, environmentId]);
 
   useEffect(() => {
@@ -446,7 +448,7 @@ export function CreateWorktreeDialog({
               onValueChange={(value) => setInstanceId(value as string)}
               items={providers.map((p) => ({
                 value: p.instanceId,
-                label: p.displayName ?? p.instanceId,
+                label: p.displayName,
               }))}
             >
               <SelectTrigger aria-label="Agent">
@@ -457,7 +459,7 @@ export function CreateWorktreeDialog({
                   <SelectGroupLabel>Agent</SelectGroupLabel>
                   {providers.map((p) => (
                     <SelectItem key={p.instanceId} value={p.instanceId}>
-                      {p.displayName ?? p.instanceId}
+                      {p.displayName}
                     </SelectItem>
                   ))}
                 </SelectGroup>
