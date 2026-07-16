@@ -1400,6 +1400,143 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn auth_error_boundaries_cover_policy_scope_expiry_and_revocation_paths() {
+        let unsafe_config = ServerConfig::new(".").with_unsafe_no_auth();
+        assert_eq!(
+            AuthService::new(&unsafe_config, vec![1_u8; 32])
+                .descriptor()
+                .policy,
+            "unsafe-no-auth"
+        );
+        let remote_desktop = ServerConfig::new(".")
+            .with_bind("0.0.0.0", 3773)
+            .with_desktop("remote-desktop")
+            .expect("remote desktop config");
+        assert_eq!(
+            AuthService::new(&remote_desktop, vec![2_u8; 32])
+                .descriptor()
+                .bootstrap_methods,
+            vec!["desktop-bootstrap", "one-time-token"]
+        );
+
+        let auth = service();
+        assert!(matches!(
+            auth.issue_pairing(Vec::new(), None).await,
+            Err(AuthError::InvalidScope)
+        ));
+        let pairing = auth
+            .issue_pairing(owned_scopes(STANDARD_SCOPES), Some("Snapshot".to_owned()))
+            .await
+            .expect("pairing should issue");
+        assert_eq!(auth.access_snapshot("missing").await.1.len(), 1);
+        assert!(matches!(
+            auth.exchange_bootstrap(
+                &pairing.credential,
+                Some(vec!["access:write".to_owned()]),
+                ClientMetadata::default(),
+                None,
+            )
+            .await,
+            Err(AuthError::ScopeNotGranted)
+        ));
+
+        let issued = auth
+            .exchange_bootstrap("desktop-test-seed", None, ClientMetadata::default(), None)
+            .await
+            .expect("session should issue");
+        assert!(matches!(
+            auth
+                .authorize_session(&issued.principal.session_id, "missing:scope")
+                .await,
+            Err(AuthError::ScopeRequired(scope)) if scope == "missing:scope"
+        ));
+        auth.state
+            .lock()
+            .await
+            .sessions
+            .get_mut(&issued.principal.session_id)
+            .expect("session record")
+            .expires_at_ms = now_ms() - 1;
+        assert!(matches!(
+            auth.authorize_session(&issued.principal.session_id, "orchestration:read")
+                .await,
+            Err(AuthError::InvalidCredential)
+        ));
+
+        let mismatched = auth
+            .exchange_bootstrap("desktop-test-seed", None, ClientMetadata::default(), None)
+            .await
+            .expect("mismatched session should issue");
+        auth.state
+            .lock()
+            .await
+            .sessions
+            .get_mut(&mismatched.principal.session_id)
+            .expect("mismatched session record")
+            .subject = "changed-subject".to_owned();
+        assert!(matches!(
+            auth.authenticate_token(&mismatched.token).await,
+            Err(AuthError::InvalidCredential)
+        ));
+
+        let revoked_pairing = auth
+            .issue_pairing(owned_scopes(STANDARD_SCOPES), None)
+            .await
+            .expect("revoked pairing should issue");
+        auth.state
+            .lock()
+            .await
+            .pairings
+            .get_mut(&revoked_pairing.id)
+            .expect("revoked pairing record")
+            .revoked_at_ms = Some(now_ms());
+        assert!(!auth.revoke_pairing(&revoked_pairing.id).await.unwrap());
+
+        let revoked_client = auth
+            .exchange_bootstrap("desktop-test-seed", None, ClientMetadata::default(), None)
+            .await
+            .expect("revoked client should issue");
+        auth.state
+            .lock()
+            .await
+            .sessions
+            .get_mut(&revoked_client.principal.session_id)
+            .expect("revoked client record")
+            .revoked_at_ms = Some(now_ms());
+        assert!(
+            !auth
+                .revoke_client("current", &revoked_client.principal.session_id)
+                .await
+                .unwrap()
+        );
+        let removable = auth
+            .exchange_bootstrap("desktop-test-seed", None, ClientMetadata::default(), None)
+            .await
+            .expect("removable client should issue");
+        assert!(
+            auth.revoke_client("current", &removable.principal.session_id)
+                .await
+                .unwrap()
+        );
+        auth.mark_connected("missing-session").await;
+
+        let mut expired_service = service();
+        expired_service
+            .desktop_bootstrap
+            .as_mut()
+            .expect("desktop bootstrap")
+            .expires_at_ms = now_ms() - 1;
+        assert!(matches!(
+            expired_service
+                .exchange_bootstrap("desktop-test-seed", None, ClientMetadata::default(), None,)
+                .await,
+            Err(AuthError::InvalidCredential)
+        ));
+        assert!(decode_persisted_scopes(serde_json::json!([])).is_err());
+        assert!(decode_persisted_scopes(serde_json::json!(["unknown:scope"])).is_err());
+    }
+
     #[test]
     fn parses_only_unique_known_non_empty_scopes() {
         assert_eq!(

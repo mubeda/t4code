@@ -609,6 +609,11 @@ async fn connect_routes_validate_payload_origin_and_runtime_failures() {
         json!({
             "relayUrl":"https://relay.example",
             "cloudUserId":"cloud-user",
+            "environmentCredential":"secret"
+        }),
+        json!({
+            "relayUrl":"https://relay.example",
+            "cloudUserId":"cloud-user",
             "environmentCredential":"secret",
             "cloudMintPublicKey":"not-a-key"
         }),
@@ -882,6 +887,31 @@ async fn cloud_health_and_mint_fail_closed_at_each_dependency() {
         .lock()
         .await
         .remove(RELAY_HEALTH_RESPONSE_TYP);
+
+    let mut invalid_mint = harness
+        .controls
+        .proof("invalid-mint", "environment:connect");
+    invalid_mint.subject = "different-user".into();
+    harness
+        .controls
+        .verify_results
+        .lock()
+        .await
+        .insert("invalid-mint".into(), Ok(invalid_mint));
+    assert_eq!(
+        error(
+            harness
+                .service
+                .json(
+                    JsonOperation::ConnectMintCredential,
+                    Some(json!({"proof":"invalid-mint"})),
+                    context(HeaderMap::new()),
+                )
+                .await
+        )
+        .status,
+        StatusCode::UNAUTHORIZED
+    );
 
     *harness.controls.pairing_result.lock().await = Err("pairing".into());
     assert_eq!(
@@ -1591,4 +1621,13 @@ async fn owned_credential_scope_inputs_issue_and_replace_thread_credentials() {
     assert_ne!(first.authorization_header, replacement.authorization_header);
     assert_eq!(replacement.thread_id, "thread-owned");
     assert_eq!(replacement.provider_instance_id, "provider-next");
+}
+
+#[test]
+fn database_initialization_reports_parent_directory_creation_failures() {
+    let temp = TempDir::new().expect("temporary directory");
+    let blocker = temp.path().join("blocker");
+    std::fs::write(&blocker, b"file").expect("blocker should write");
+
+    assert!(initialize_database(&blocker.join("connect.sqlite3")).is_err());
 }
