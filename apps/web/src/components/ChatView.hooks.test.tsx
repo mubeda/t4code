@@ -508,7 +508,12 @@ vi.mock("./files/FilePreviewPanel", () => ({
   default: () => <div data-mock="file-preview-panel" />,
 }));
 
-import ChatView from "./ChatView";
+import ChatView, {
+  eventPathContainsSelector,
+  serverTerminalIdsStrictSubsetOfClient,
+  shouldTypeToFocusComposer,
+  terminalIdListsEqual,
+} from "./ChatView";
 import type { ChatMessage, Project, Thread } from "../types";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useRightPanelStore, type RightPanelSurface } from "../rightPanelStore";
@@ -1391,6 +1396,55 @@ describe("ChatView effects (captured and run manually)", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("ChatView keydown shortcuts", () => {
+  it("classifies every type-to-focus keyboard guard and event-path fallback", () => {
+    expect(shouldTypeToFocusComposer(makeKeyEvent({ key: "a" }) as never)).toBe(true);
+    expect(
+      shouldTypeToFocusComposer(makeKeyEvent({ key: "a", defaultPrevented: true }) as never),
+    ).toBe(false);
+    expect(shouldTypeToFocusComposer(makeKeyEvent({ key: "a", isComposing: true }) as never)).toBe(
+      false,
+    );
+    expect(shouldTypeToFocusComposer(makeKeyEvent({ key: "a", metaKey: true }) as never)).toBe(
+      false,
+    );
+    expect(shouldTypeToFocusComposer(makeKeyEvent({ key: "a", ctrlKey: true }) as never)).toBe(
+      false,
+    );
+    expect(shouldTypeToFocusComposer(makeKeyEvent({ key: "a", altKey: true }) as never)).toBe(
+      false,
+    );
+    expect(shouldTypeToFocusComposer(makeKeyEvent({ key: "Enter" }) as never)).toBe(false);
+    expect(
+      shouldTypeToFocusComposer(
+        makeKeyEvent({ key: "a", path: [new FakeElement(true)] }) as never,
+      ),
+    ).toBe(false);
+    const interactive = new FakeElement(false);
+    interactive.closest = (selector: string) => (selector.includes("button") ? interactive : null);
+    expect(
+      shouldTypeToFocusComposer(makeKeyEvent({ key: "a", path: [interactive] }) as never),
+    ).toBe(false);
+
+    const target = new FakeElement(true);
+    const emptyPathEvent = makeKeyEvent({ key: "a", target });
+    expect(eventPathContainsSelector(emptyPathEvent as never, "button")).toBe(true);
+    expect(
+      eventPathContainsSelector(makeKeyEvent({ key: "a", path: [{}] }) as never, "button"),
+    ).toBe(false);
+  });
+
+  it("compares terminal ids without relying on server ordering", () => {
+    expect(terminalIdListsEqual([], [])).toBe(true);
+    expect(terminalIdListsEqual(["one"], [])).toBe(false);
+    expect(terminalIdListsEqual(["two", "one"], ["one", "two"])).toBe(true);
+    expect(terminalIdListsEqual(["one", "three"], ["one", "two"])).toBe(false);
+
+    expect(serverTerminalIdsStrictSubsetOfClient(["one"], ["one", "two"])).toBe(true);
+    expect(serverTerminalIdsStrictSubsetOfClient(["missing"], ["one", "two"])).toBe(false);
+    expect(serverTerminalIdsStrictSubsetOfClient(["one"], ["one"])).toBe(false);
+    expect(serverTerminalIdsStrictSubsetOfClient([], ["one"])).toBe(true);
+  });
+
   function renderWithKeydown(thread: Thread = makeThread()) {
     seedConnectedServerThread(thread);
     renderServerRoute();
@@ -2118,7 +2172,7 @@ describe("ChatView project script handlers", () => {
       id: "test",
       name: "Test",
       command: "pnpm test",
-      icon: null,
+      icon: "test",
       runOnWorktreeCreate: false,
     };
     const header = renderWithScripts([autoScript, secondScript]);

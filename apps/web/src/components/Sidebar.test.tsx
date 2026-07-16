@@ -477,9 +477,13 @@ vi.mock("../keybindings", () => ({
   },
   shouldShowThreadJumpHintsForModifiers: () => h.state.showJumpHintModifiers,
   threadJumpCommandForIndex: (index: number) =>
-    index < 9 ? `chat.jumpToThread${index + 1}` : null,
-  threadJumpIndexFromCommand: () => null,
-  threadTraversalDirectionFromCommand: () => null,
+    index < 9 ? `thread.jump.${index + 1}` : null,
+  threadJumpIndexFromCommand: (command: string) => {
+    const match = /^thread\.jump\.([1-9])$/u.exec(command);
+    return match ? Number(match[1]) - 1 : null;
+  },
+  threadTraversalDirectionFromCommand: (command: string | null) =>
+    command === "thread.previous" ? "previous" : command === "thread.next" ? "next" : null,
 }));
 
 vi.mock("../uiStateStore", async (importOriginal) => {
@@ -623,7 +627,12 @@ vi.mock("./ui/sidebar", () => ({
 }));
 
 // The module under test must be imported after all mocks.
-import Sidebar, { SidebarBrandContent, SidebarThreadRow } from "./Sidebar";
+import Sidebar, {
+  SidebarBrandContent,
+  SidebarThreadRow,
+  handleSidebarNavigationKeyDown,
+  handleSidebarSelectionMouseDown,
+} from "./Sidebar";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Fixtures
@@ -954,6 +963,134 @@ afterEach(() => {
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
+
+staticDescribe("Sidebar global event helpers", () => {
+  function navigationEvent(overrides: { defaultPrevented?: boolean; repeat?: boolean } = {}) {
+    return {
+      defaultPrevented: overrides.defaultPrevented ?? false,
+      repeat: overrides.repeat ?? false,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    };
+  }
+
+  it("handles traversal and numbered jump shortcuts across every guard", () => {
+    const first = makeThread("first");
+    const second = makeThread("second");
+    const firstKey = threadKeyOf(first);
+    const secondKey = threadKeyOf(second);
+    const threadByKey = new Map([
+      [firstKey, first],
+      [secondKey, second],
+    ]);
+    const navigateToThread = vi.fn();
+    const base = {
+      orderedThreadKeys: [firstKey, secondKey],
+      currentThreadKey: firstKey,
+      jumpThreadKeys: [secondKey],
+      threadByKey,
+      navigateToThread,
+    };
+
+    expect(
+      handleSidebarNavigationKeyDown({
+        ...base,
+        event: navigationEvent({ defaultPrevented: true }),
+        resolveCommand: () => "thread.next",
+      }),
+    ).toBe(false);
+    expect(
+      handleSidebarNavigationKeyDown({
+        ...base,
+        event: navigationEvent({ repeat: true }),
+        resolveCommand: () => "thread.next",
+      }),
+    ).toBe(false);
+    expect(
+      handleSidebarNavigationKeyDown({
+        ...base,
+        event: navigationEvent(),
+        resolveCommand: () => null,
+      }),
+    ).toBe(false);
+
+    const traversalEvent = navigationEvent();
+    expect(
+      handleSidebarNavigationKeyDown({
+        ...base,
+        event: traversalEvent,
+        resolveCommand: () => "thread.next",
+      }),
+    ).toBe(true);
+    expect(traversalEvent.preventDefault).toHaveBeenCalledOnce();
+    expect(navigateToThread).toHaveBeenLastCalledWith(scopeThreadRef(ENV_MAIN, second.id));
+
+    const jumpEvent = navigationEvent();
+    expect(
+      handleSidebarNavigationKeyDown({
+        ...base,
+        event: jumpEvent,
+        resolveCommand: () => "thread.jump.1",
+      }),
+    ).toBe(true);
+    expect(jumpEvent.stopPropagation).toHaveBeenCalledOnce();
+
+    expect(
+      handleSidebarNavigationKeyDown({
+        ...base,
+        event: navigationEvent(),
+        currentThreadKey: secondKey,
+        resolveCommand: () => "thread.next",
+      }),
+    ).toBe(false);
+    expect(
+      handleSidebarNavigationKeyDown({
+        ...base,
+        event: navigationEvent(),
+        jumpThreadKeys: [],
+        resolveCommand: () => "thread.jump.1",
+      }),
+    ).toBe(false);
+    expect(
+      handleSidebarNavigationKeyDown({
+        ...base,
+        event: navigationEvent(),
+        jumpThreadKeys: ["missing"],
+        resolveCommand: () => "thread.jump.1",
+      }),
+    ).toBe(false);
+  });
+
+  it("clears selection only for mouse targets outside safe controls", () => {
+    class FakeHtmlElement {
+      constructor(private readonly safe: boolean) {}
+      closest(): FakeHtmlElement | null {
+        return this.safe ? this : null;
+      }
+    }
+    vi.stubGlobal("HTMLElement", FakeHtmlElement);
+    const clearSelection = vi.fn();
+
+    expect(
+      handleSidebarSelectionMouseDown({ hasSelection: false, target: null, clearSelection }),
+    ).toBe(false);
+    expect(
+      handleSidebarSelectionMouseDown({
+        hasSelection: true,
+        target: new FakeHtmlElement(true) as never,
+        clearSelection,
+      }),
+    ).toBe(false);
+    expect(
+      handleSidebarSelectionMouseDown({
+        hasSelection: true,
+        target: new FakeHtmlElement(false) as never,
+        clearSelection,
+      }),
+    ).toBe(true);
+    expect(clearSelection).toHaveBeenCalledOnce();
+  });
+});
 
 staticDescribe("SidebarBrandContent", () => {
   it("renders base name and stage label", () => {

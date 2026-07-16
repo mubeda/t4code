@@ -301,7 +301,7 @@ type EnvironmentUnavailableState = {
 
 type ThreadPlanCatalogEntry = Pick<Thread, "id" | "proposedPlans">;
 
-function eventPathContainsSelector(event: Event, selector: string): boolean {
+export function eventPathContainsSelector(event: Event, selector: string): boolean {
   const path = event.composedPath();
   if (path.length === 0 && event.target) {
     path.push(event.target);
@@ -309,7 +309,7 @@ function eventPathContainsSelector(event: Event, selector: string): boolean {
   return path.some((target) => target instanceof Element && target.closest(selector));
 }
 
-function shouldTypeToFocusComposer(event: KeyboardEvent): boolean {
+export function shouldTypeToFocusComposer(event: KeyboardEvent): boolean {
   if (event.defaultPrevented || event.isComposing) return false;
   if (event.metaKey || event.ctrlKey || event.altKey) return false;
   if (event.key.length !== 1) return false;
@@ -443,7 +443,7 @@ function useLocalDispatchState(input: {
 }
 
 /** Same terminal ids (order ignored) — avoids reconcile when only server session ordering differs. */
-function terminalIdListsEqual(left: readonly string[], right: readonly string[]): boolean {
+export function terminalIdListsEqual(left: readonly string[], right: readonly string[]): boolean {
   if (left.length !== right.length) {
     return false;
   }
@@ -465,7 +465,7 @@ function terminalIdListsEqual(left: readonly string[], right: readonly string[])
  * Typical right after `terminal.open`: known-session list lags; reconciling would drop the new id
  * and later re-add it as a separate group (no split layout).
  */
-function serverTerminalIdsStrictSubsetOfClient(
+export function serverTerminalIdsStrictSubsetOfClient(
   serverIds: readonly string[],
   clientIds: readonly string[],
 ): boolean {
