@@ -6,7 +6,9 @@ import {
   buildDiffReviewComment,
   buildFileReviewComment,
   buildReviewCommentRenderablePatch,
+  formatReviewCommentFence,
   formatReviewCommentContext,
+  hasReviewCommentMessageSegments,
   inferReviewCommentFenceLanguage,
   parseReviewCommentMessageSegments,
   restoreDiffReviewCommentRange,
@@ -270,6 +272,113 @@ describe("review comment context parsing", () => {
       side: "deletions",
       end: 2,
       endSide: "additions",
+    });
+  });
+
+  describe("malformed and fallback inputs", () => {
+    it("preserves invalid review blocks and rejects incomplete numeric attributes", () => {
+      const invalid = [
+        '<review_comment sectionId="s" filePath="a.ts" startIndex="x" endIndex="2">body</review_comment>',
+        '<review_comment sectionId="" filePath="a.ts" startIndex="1" endIndex="2">body</review_comment>',
+        '<review_comment sectionId="s" filePath="" startIndex="1" endIndex="2">body</review_comment>',
+      ].join("between");
+      const segments = parseReviewCommentMessageSegments(invalid);
+      expect(segments.filter((segment) => segment.kind === "review-comment")).toEqual([]);
+      expect(
+        segments.map((segment) => (segment.kind === "text" ? segment.text : "")).join(""),
+      ).toContain('startIndex="x"');
+      expect(hasReviewCommentMessageSegments(invalid)).toBe(false);
+      expect(parseReviewCommentMessageSegments("plain text")).toEqual([
+        { kind: "text", id: "review-comment-text:0", text: "plain text" },
+      ]);
+    });
+
+    it("defaults labels and fences while normalizing reversed indexes", () => {
+      const value =
+        '<review_comment sectionId="section" sectionTitle="" filePath="a.ts" startIndex="9" endIndex="3" rangeLabel="">note</review_comment>';
+      const segments = parseReviewCommentMessageSegments(value);
+      expect(hasReviewCommentMessageSegments(value)).toBe(true);
+      expect(segments[0]).toMatchObject({
+        kind: "review-comment",
+        comment: {
+          sectionTitle: "Review",
+          startIndex: 3,
+          endIndex: 9,
+          rangeLabel: "line",
+          text: "note",
+          diff: "",
+          fenceLanguage: "diff",
+        },
+      });
+    });
+
+    it("chooses a safe markdown fence longer than embedded backticks", () => {
+      expect(formatReviewCommentFence("ts", "const x = 1;\n")).toBe("```ts\nconst x = 1;\n```");
+      expect(formatReviewCommentFence("md", "before ```` after")).toBe(
+        "`````md\nbefore ```` after\n`````",
+      );
+    });
+
+    it("appends no-op, blank-prompt, and populated review blocks", () => {
+      const comment = buildFileReviewComment({
+        id: "file-1",
+        filePath: "src/a.ts",
+        startLine: 2,
+        endLine: 2,
+        text: " note ",
+        contents: "one\ntwo\nthree",
+      });
+      expect(appendReviewCommentsToPrompt(" prompt ", [])).toBe(" prompt ");
+      expect(appendReviewCommentsToPrompt("   ", [comment])).toBe(
+        formatReviewCommentContext(comment),
+      );
+      expect(appendReviewCommentsToPrompt(" prompt ", [comment])).toContain(
+        "prompt\n\n<review_comment",
+      );
+    });
+
+    it("normalizes reversed file ranges and recognizes filename language fallbacks", () => {
+      expect(
+        buildFileReviewComment({
+          id: "file-2",
+          filePath: "src/a.ts",
+          startLine: 3,
+          endLine: 1,
+          text: " text ",
+          contents: "one\ntwo\nthree",
+        }),
+      ).toMatchObject({
+        startIndex: 0,
+        endIndex: 2,
+        rangeLabel: "L1 to L3",
+        text: "text",
+        diff: "one\ntwo\nthree",
+      });
+      expect(inferReviewCommentFenceLanguage("C:\\repo\\FILE.TSX")).toBe("tsx");
+      expect(inferReviewCommentFenceLanguage(".gitignore")).toBe("gitignore");
+      expect(inferReviewCommentFenceLanguage("README")).toBe("text");
+      expect(inferReviewCommentFenceLanguage("name.")).toBe("text");
+    });
+
+    it("returns only renderable diff patches and preserves full git patches", () => {
+      const base = {
+        id: "patch",
+        sectionId: "s",
+        sectionTitle: "S",
+        filePath: "src\\a.ts",
+        startIndex: 0,
+        endIndex: 0,
+        rangeLabel: "L1",
+        text: "note",
+        diff: "@@ -1,1 +1,1 @@\n-old\n+new",
+      };
+      expect(buildReviewCommentRenderablePatch({ ...base, fenceLanguage: "ts" })).toBe("");
+      expect(buildReviewCommentRenderablePatch({ ...base, diff: "   " })).toBe("");
+      expect(buildReviewCommentRenderablePatch({ ...base, fenceLanguage: undefined })).toContain(
+        "diff --git a/src/a.ts b/src/a.ts",
+      );
+      const full = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts";
+      expect(buildReviewCommentRenderablePatch({ ...base, diff: full })).toBe(full);
     });
   });
 });
