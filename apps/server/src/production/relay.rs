@@ -592,9 +592,9 @@ where
     configure_background_command(&mut command);
     command.args(args).kill_on_drop(true);
     let output = timeout(VALIDATION_TIMEOUT, command.output())
-    .await
-    .map_err(|_| RelayInstallError::new(reason, format!("{message}: timed out")))?
-    .map_err(|error| RelayInstallError::new(reason, format!("{message}: {error}")))?;
+        .await
+        .map_err(|_| RelayInstallError::new(reason, format!("{message}: timed out")))?
+        .map_err(|error| RelayInstallError::new(reason, format!("{message}: {error}")))?;
     if output.status.success() {
         Ok(())
     } else {

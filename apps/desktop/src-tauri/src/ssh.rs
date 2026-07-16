@@ -8,6 +8,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use t4code_server::process::configure_background_command;
 use tauri::{AppHandle, Emitter};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::sync::oneshot;
@@ -15,7 +16,6 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::{Child, Command},
 };
-use t4code_server::process::configure_background_command;
 use uuid::Uuid;
 
 const SSH_DIRECTORY_NAME: &str = ".ssh";
