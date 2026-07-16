@@ -17,6 +17,7 @@ const TauriConfiguration = Schema.fromJsonString(
       }),
     }),
     bundle: Schema.Struct({
+      icon: Schema.Array(Schema.String),
       resources: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
     }),
   }),
@@ -32,6 +33,20 @@ const decodeCapabilityConfiguration = Schema.decodeUnknownEffect(CapabilityConfi
 const decodeDesktopPackageConfiguration = Schema.decodeUnknownEffect(DesktopPackageConfiguration);
 
 it.layer(NodeServices.layer)("Tauri production hardening", (it) => {
+  it.effect("bundles the production black Windows icon", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const repoRoot = yield* path.fromFileUrl(new URL("..", import.meta.url));
+      const tauri = yield* decodeTauriConfiguration(
+        yield* fs.readFileString(path.join(repoRoot, "apps/desktop/src-tauri/tauri.conf.json")),
+      );
+
+      assert.include(tauri.bundle.icon, "../../../assets/prod/t4-black-windows.ico");
+      assert.equal(yield* fs.exists(path.join(repoRoot, "assets/prod/t4-black-windows.ico")), true);
+    }),
+  );
+
   it.effect("restricts the main WebView and disables production source maps by default", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
