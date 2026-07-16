@@ -206,6 +206,24 @@ async fn grok_runtime_matches_user_input_and_cancel_traces() {
     assert_eq!(cancelled, stable_fixture("trace-cancel.json"));
 
     peer_task.await.expect("peer");
+    let failed_turn = runtime
+        .send_turn(Some("provider is closed"), Vec::new())
+        .await
+        .expect("failed request still starts a tracked turn");
+    let mut observed_failure = false;
+    for _ in 0..3 {
+        let event = timeout(Duration::from_secs(1), runtime.next_event())
+            .await
+            .expect("closed-provider event timeout")
+            .expect("closed-provider event");
+        if event.turn_id.as_deref() == Some(failed_turn.as_str())
+            && event.payload["state"] == json!("failed")
+        {
+            observed_failure = true;
+            break;
+        }
+    }
+    assert!(observed_failure);
 }
 
 fn fixture(name: &str) -> Value {

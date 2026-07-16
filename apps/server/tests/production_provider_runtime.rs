@@ -344,6 +344,19 @@ fn launch() -> ProviderLaunchRequest {
     }
 }
 
+fn image_attachment(temp: &TempDir) -> Value {
+    let directory = temp.path().join("attachments");
+    std::fs::create_dir_all(&directory).expect("attachment directory");
+    std::fs::write(directory.join("image-1"), b"image bytes").expect("attachment image");
+    json!({
+        "type":"image",
+        "id":"image-1",
+        "name":"screen.png",
+        "mimeType":"image/png",
+        "sizeBytes":11,
+    })
+}
+
 fn persisted_runtime(thread_id: &str, status: &str, last_seen_at: &str) -> ProviderSessionRuntime {
     ProviderSessionRuntime {
         thread_id: thread_id.to_owned(),
@@ -2223,7 +2236,11 @@ async fn native_claude_driver_supports_the_complete_live_command_surface() {
 
     assert!(
         driver
-            .send("hello".to_owned(), Vec::new(), "default".to_owned())
+            .send(
+                "hello".to_owned(),
+                vec![image_attachment(&temp)],
+                "default".to_owned(),
+            )
             .await
             .unwrap()
             .is_some()
@@ -2318,7 +2335,11 @@ async fn native_opencode_driver_supports_session_turn_and_control_commands() {
     );
     assert!(
         driver
-            .send("hello".to_owned(), Vec::new(), "default".to_owned())
+            .send(
+                "hello".to_owned(),
+                vec![image_attachment(&temp)],
+                "default".to_owned(),
+            )
             .await
             .unwrap()
             .is_some()
@@ -2410,7 +2431,11 @@ done
     );
     assert!(
         driver
-            .send("hello".to_owned(), Vec::new(), "default".to_owned())
+            .send(
+                "hello".to_owned(),
+                vec![image_attachment(&temp)],
+                "default".to_owned(),
+            )
             .await
             .unwrap()
             .is_some()
@@ -2494,7 +2519,11 @@ done
         Some(json!({"schemaVersion":1,"sessionId":"cursor-session"}))
     );
     let cursor_turn = cursor
-        .send("hello".to_owned(), Vec::new(), "default".to_owned())
+        .send(
+            "hello".to_owned(),
+            vec![image_attachment(&temp)],
+            "default".to_owned(),
+        )
         .await
         .unwrap()
         .unwrap();
@@ -2535,7 +2564,11 @@ done
         Some(json!({"schemaVersion":1,"sessionId":"grok-session"}))
     );
     let grok_turn = grok
-        .send("hello".to_owned(), Vec::new(), "default".to_owned())
+        .send(
+            "hello".to_owned(),
+            vec![image_attachment(&temp)],
+            "default".to_owned(),
+        )
         .await
         .unwrap()
         .unwrap();

@@ -103,6 +103,20 @@ impl Default for PullRequestService {
 }
 
 impl PullRequestService {
+    #[must_use]
+    pub fn with_provider_commands(
+        github_command: impl Into<String>,
+        gitlab_command: impl Into<String>,
+        azure_command: impl Into<String>,
+    ) -> Self {
+        Self {
+            github_command: github_command.into(),
+            gitlab_command: gitlab_command.into(),
+            azure_command: azure_command.into(),
+            ..Self::default()
+        }
+    }
+
     pub async fn resolve_current(
         &self,
         input: ResolvePullRequestInput,

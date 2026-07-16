@@ -261,6 +261,28 @@ async fn cursor_runtime_matches_approval_and_cancel_traces() {
     assert_eq!(cancel_events, stable_fixture("trace-cancel.json"));
 
     peer_task.await.expect("peer");
+    runtime
+        .interrupt_turn()
+        .await
+        .expect("interrupt without an active turn is a no-op");
+    let failed_turn = runtime
+        .send_turn(Some("provider is closed"), Vec::new())
+        .await
+        .expect("failed request still starts a tracked turn");
+    let mut observed_failure = false;
+    for _ in 0..3 {
+        let event = timeout(Duration::from_secs(1), runtime.next_event())
+            .await
+            .expect("closed-provider event timeout")
+            .expect("closed-provider event");
+        if event.turn_id.as_deref() == Some(failed_turn.as_str())
+            && event.payload["state"] == json!("failed")
+        {
+            observed_failure = true;
+            break;
+        }
+    }
+    assert!(observed_failure);
 }
 
 #[tokio::test]
