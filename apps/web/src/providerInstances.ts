@@ -195,7 +195,12 @@ export function applyProviderInstanceSettings(
       : entry.isDefault
         ? (legacyProviders[entry.driverKind]?.enabled ?? entry.enabled)
         : false;
-    return enabled === entry.enabled ? entry : { ...entry, enabled };
+    const configuredDisplayName = explicitInstance?.displayName?.trim();
+    const displayName = configuredDisplayName || entry.displayName;
+    if (enabled === entry.enabled && displayName === entry.displayName) {
+      return entry;
+    }
+    return { ...entry, enabled, displayName };
   });
 }
 
