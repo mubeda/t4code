@@ -1620,12 +1620,12 @@ staticDescribe("thread rows in the full sidebar", () => {
     expect(h.spies.markRead).toHaveBeenCalledWith(threadKeyOf(threadIdle));
   });
 
-  it("toggles selection on ctrl-click and range-selects on shift-click", () => {
+  it("toggles selection on modifier-click and range-selects on shift-click", () => {
     baseScenario();
     render(<Sidebar />);
     const row = renderedRow("thread-idle");
 
-    invoke(row, "onClick", mouseEvent({ ctrlKey: true }));
+    invoke(row, "onClick", mouseEvent({ metaKey: true, ctrlKey: true }));
     expect(h.spies.toggleThread).toHaveBeenCalledWith(threadKeyOf(threadIdle));
 
     invoke(row, "onClick", mouseEvent({ shiftKey: true }));

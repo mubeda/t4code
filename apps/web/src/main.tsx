@@ -15,8 +15,11 @@ import { ManagedRelayAuthProvider } from "./cloud/managedAuth";
 import { hasCloudPublicConfig } from "./cloud/publicConfig";
 import { getRouter } from "./router";
 import { AppRoot } from "./AppRoot";
+import { installFrontendLogCapture } from "./diagnostics/frontendLogCapture";
 
 const clerkPublishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
+
+installFrontendLogCapture();
 
 async function renderApplication(): Promise<void> {
   await tauriDesktopBridgeReady.catch(() => undefined);

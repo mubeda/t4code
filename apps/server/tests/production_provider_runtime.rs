@@ -3,6 +3,7 @@ use t4code_server::production::provider_runtime;
 use std::{
     collections::VecDeque,
     future::Future,
+    io,
     path::{Path, PathBuf},
     pin::Pin,
     process::Command,
@@ -43,6 +44,36 @@ use tokio_tungstenite::{WebSocketStream, connect_async, tungstenite::Message};
 
 const NOW: &str = "2026-07-10T10:00:00.000Z";
 
+#[derive(Clone, Default)]
+struct TraceCapture(Arc<StdMutex<Vec<u8>>>);
+
+struct TraceCaptureWriter(Arc<StdMutex<Vec<u8>>>);
+
+impl io::Write for TraceCaptureWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for TraceCapture {
+    type Writer = TraceCaptureWriter;
+
+    fn make_writer(&'writer self) -> Self::Writer {
+        TraceCaptureWriter(self.0.clone())
+    }
+}
+
+impl TraceCapture {
+    fn text(&self) -> String {
+        String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+    }
+}
+
 #[derive(Default)]
 struct DriverState {
     launches: Vec<ProviderLaunchRequest>,
@@ -80,15 +111,14 @@ fn started_session(session_id: &str) -> StartedSession {
 impl ProviderDriver for FakeDriver {
     fn start(&self) -> BoxRuntimeFuture<'_, Result<StartedSession, ProviderRuntimeError>> {
         Box::pin(async move {
-            let result = {
+            {
                 let mut state = self.state.lock().unwrap();
                 state.starts += 1;
                 state
                     .start_results
                     .pop_front()
                     .unwrap_or_else(|| Ok(started_session("provider-session-1")))
-            };
-            result
+            }
         })
     }
 
@@ -146,12 +176,11 @@ impl ProviderDriver for FakeDriver {
 
     fn set_mode(&self, mode: String) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
         Box::pin(async move {
-            let result = {
+            {
                 let mut state = self.state.lock().unwrap();
                 state.modes.push(mode);
                 state.set_mode_results.pop_front().unwrap_or(Ok(()))
-            };
-            result
+            }
         })
     }
 
@@ -160,26 +189,24 @@ impl ProviderDriver for FakeDriver {
         mode: String,
     ) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
         Box::pin(async move {
-            let result = {
+            {
                 let mut state = self.state.lock().unwrap();
                 state.interaction_modes.push(mode);
                 state
                     .set_interaction_mode_results
                     .pop_front()
                     .unwrap_or(Ok(()))
-            };
-            result
+            }
         })
     }
 
     fn set_model(&self, model: String) -> BoxRuntimeFuture<'_, Result<(), ProviderRuntimeError>> {
         Box::pin(async move {
-            let result = {
+            {
                 let mut state = self.state.lock().unwrap();
                 state.models.push(model);
                 state.set_model_results.pop_front().unwrap_or(Ok(()))
-            };
-            result
+            }
         })
     }
 
@@ -681,6 +708,59 @@ async fn routes_the_complete_live_session_lifecycle_and_stops_idempotently() {
         .await
         .expect_err("commands after shutdown must fail explicitly");
     assert!(matches!(error, ProviderRuntimeError::Shutdown));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn late_provider_events_after_thread_deletion_do_not_warn() {
+    let capture = TraceCapture::default();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_target(false)
+        .with_writer(capture.clone())
+        .finish();
+    let _subscriber = tracing::subscriber::set_default(subscriber);
+    let engine = engine().await;
+    let state = Arc::new(StdMutex::new(DriverState::default()));
+    let (events_tx, events_rx) = mpsc::channel(1);
+    let factory = Arc::new(FakeFactory {
+        state,
+        events: StdMutex::new(VecDeque::from([events_rx])),
+    });
+    let supervisor =
+        ProviderRuntimeSupervisor::start(engine.clone(), factory, SupervisorOptions::default());
+    let settings = TempDir::new().unwrap();
+    supervisor.launch(launch()).await.unwrap();
+
+    let delete: OrchestrationCommand = serde_json::from_value(json!({
+        "type":"thread.delete",
+        "commandId":"delete-before-provider-stop",
+        "threadId":"t1",
+        "createdAt":NOW
+    }))
+    .unwrap();
+    engine.dispatch(delete.clone()).await.unwrap();
+    events_tx
+        .send(ProviderEvent {
+            event_type: "session.ready".to_owned(),
+            thread_id: "t1".to_owned(),
+            turn_id: None,
+            request_id: None,
+            payload: json!({}),
+        })
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    route_orchestration_command(&supervisor, &engine, &settings.path().to_path_buf(), delete)
+        .await
+        .unwrap();
+    supervisor.shutdown().await.unwrap();
+
+    assert!(
+        !capture
+            .text()
+            .contains("failed to project provider runtime event"),
+        "late shutdown events should not be reported as unexpected projection failures"
+    );
 }
 
 #[tokio::test]

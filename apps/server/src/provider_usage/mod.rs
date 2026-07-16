@@ -11,12 +11,16 @@ use tokio::{
     sync::Mutex,
 };
 
-use crate::production::provider_runtime::{provider_launch_program, resolve_provider_executable};
+use crate::production::provider_runtime::{
+    provider_launch_program, resolve_provider_executable, sanitize_provider_subprocess_environment,
+};
 
 pub const MIN_MANUAL_REFRESH_MS: i64 = 30_000;
 pub const STALE_THRESHOLD_MS: i64 = 30 * 60_000;
 const USAGE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
+#[cfg(target_os = "macos")]
+const CLAUDE_KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum ProviderUsageProvider {
@@ -201,32 +205,30 @@ fn codex_fetcher() -> ProviderUsageFetcher {
 
 async fn fetch_claude_usage() -> Result<ProviderUsageSnapshot, ProviderUsageFetchError> {
     let now = OffsetDateTime::now_utc();
+    let uses_default_config = std::env::var_os("CLAUDE_CONFIG_DIR").is_none();
     let credentials_path = std::env::var_os("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
         .or_else(|| dirs::home_dir().map(|home| home.join(".claude")))
         .map(|directory| directory.join(".credentials.json"));
-    let Some(credentials_path) = credentials_path else {
-        return Ok(unavailable_snapshot(
-            ProviderUsageProvider::Claude,
-            now,
-            "Claude OAuth credentials were not found.",
-        ));
+    let credentials_file = match credentials_path {
+        Some(path) => tokio::fs::read_to_string(path).await.ok(),
+        None => None,
     };
-    let Ok(raw) = tokio::fs::read_to_string(credentials_path).await else {
-        return Ok(unavailable_snapshot(
-            ProviderUsageProvider::Claude,
-            now,
-            "Claude OAuth credentials were not found.",
-        ));
+    #[cfg(target_os = "macos")]
+    let keychain_credentials = if uses_default_config {
+        read_claude_keychain_credentials().await
+    } else {
+        None
     };
-    let token = serde_json::from_str::<Value>(&raw).ok().and_then(|value| {
-        value
-            .pointer("/claudeAiOauth/accessToken")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-    });
+    #[cfg(not(target_os = "macos"))]
+    let keychain_credentials: Option<String> = {
+        let _ = uses_default_config;
+        None
+    };
+    let token = select_claude_oauth_token(
+        credentials_file.as_deref(),
+        keychain_credentials.as_deref(),
+    );
     let Some(token) = token else {
         return Ok(unavailable_snapshot(
             ProviderUsageProvider::Claude,
@@ -259,6 +261,54 @@ async fn fetch_claude_usage() -> Result<ProviderUsageSnapshot, ProviderUsageFetc
     Ok(map_claude_usage(&payload, now))
 }
 
+fn select_claude_oauth_token(
+    credentials_file: Option<&str>,
+    keychain_credentials: Option<&str>,
+) -> Option<String> {
+    [credentials_file, keychain_credentials]
+        .into_iter()
+        .flatten()
+        .find_map(|raw| {
+            serde_json::from_str::<Value>(raw).ok().and_then(|value| {
+                value
+                    .pointer("/claudeAiOauth/accessToken")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned)
+            })
+        })
+}
+
+#[cfg(target_os = "macos")]
+async fn read_claude_keychain_credentials() -> Option<String> {
+    read_claude_keychain_credentials_with(std::path::Path::new("/usr/bin/security")).await
+}
+
+#[cfg(target_os = "macos")]
+async fn read_claude_keychain_credentials_with(program: &std::path::Path) -> Option<String> {
+    let mut command = Command::new(program);
+    command
+        .args([
+            "find-generic-password",
+            "-s",
+            CLAUDE_KEYCHAIN_SERVICE,
+            "-w",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(USAGE_TIMEOUT, command.output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
 async fn fetch_codex_usage() -> Result<ProviderUsageSnapshot, ProviderUsageFetchError> {
     let now = OffsetDateTime::now_utc();
     let codex_home = std::env::var_os("CODEX_HOME")
@@ -279,13 +329,16 @@ async fn fetch_codex_usage() -> Result<ProviderUsageSnapshot, ProviderUsageFetch
         ProviderUsageFetchError::new(format!("Codex executable was not found: {binary}"))
     })?;
     let (program, prefix_args) = provider_launch_program(&executable);
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(prefix_args)
         .args(["-s", "read-only", "-a", "untrusted", "app-server"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    sanitize_provider_subprocess_environment(&mut command);
+    let mut child = command
         .spawn()
         .map_err(|error| ProviderUsageFetchError::new(error.to_string()))?;
     let mut stdin = child
@@ -550,6 +603,46 @@ fn unix_timestamp_ms(value: OffsetDateTime) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_oauth_token_falls_back_to_macos_keychain_payload() {
+        let token = select_claude_oauth_token(
+            None,
+            Some(
+                r#"{"claudeAiOauth":{"accessToken":"keychain-oauth-token","refreshToken":"ignored"}}"#,
+            ),
+        );
+
+        assert_eq!(token.as_deref(), Some("keychain-oauth-token"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn reads_claude_credentials_with_the_expected_macos_keychain_query() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let security = temporary.path().join("security");
+        std::fs::write(
+            &security,
+            r#"#!/bin/sh
+if [ "$#" -ne 4 ] || [ "$1" != "find-generic-password" ] || [ "$2" != "-s" ] || [ "$3" != "Claude Code-credentials" ] || [ "$4" != "-w" ]; then
+  exit 64
+fi
+printf '%s' '{"claudeAiOauth":{"accessToken":"keychain-oauth-token","refreshToken":"refresh-token","expiresAt":1900000000000,"refreshTokenExpiresAt":1900000000000,"scopes":["user:profile"],"subscriptionType":"team","rateLimitTier":"default"},"mcpOAuth":{}}'
+"#,
+        )
+        .expect("security fixture");
+        std::fs::set_permissions(&security, std::fs::Permissions::from_mode(0o700))
+            .expect("security fixture permissions");
+
+        let credentials = read_claude_keychain_credentials_with(&security)
+            .await
+            .expect("keychain credentials");
+        let token = select_claude_oauth_token(None, Some(&credentials));
+
+        assert_eq!(token.as_deref(), Some("keychain-oauth-token"));
+    }
 
     #[test]
     fn maps_claude_oauth_windows() {

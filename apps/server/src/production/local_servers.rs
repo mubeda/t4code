@@ -167,7 +167,7 @@ fn parse_proc_tcp6(input: &str) -> Vec<Listener> {
 
 #[cfg(target_os = "macos")]
 async fn platform_listeners(cancellation: &CancellationToken) -> Vec<Listener> {
-    let mut command = tokio::process::Command::new("lsof");
+    let mut command = tokio::process::Command::new("/usr/sbin/lsof");
     command
         .args(["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn"])
         .kill_on_drop(true);

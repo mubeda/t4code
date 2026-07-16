@@ -158,7 +158,7 @@ async fn opencode_runtime_matches_session_and_rollback_traces() {
     });
 
     let runtime = OpenCodeSessionRuntime::new(
-        &format!("http://{}", address),
+        &format!("http://{address}"),
         "opencode-thread-1",
         "/tmp/project",
         Some("openai/gpt-5"),
@@ -260,7 +260,7 @@ async fn opencode_runtime_dispatches_native_commands_with_agent_and_model() {
     });
 
     let runtime = OpenCodeSessionRuntime::new_with_options(
-        &format!("http://{}", address),
+        &format!("http://{address}"),
         "opencode-command-thread",
         "/tmp/project",
         Some("openai/gpt-5.4"),
@@ -308,7 +308,7 @@ async fn opencode_runtime_surfaces_session_errors_and_removes_the_unanswered_pro
     });
 
     let runtime = OpenCodeSessionRuntime::new(
-        &format!("http://{}", address),
+        &format!("http://{address}"),
         "opencode-error-thread",
         "/tmp/project",
         Some("openai/gpt-5"),
@@ -368,7 +368,7 @@ async fn opencode_turn_ids_remain_unique_across_runtime_restarts() {
     let server = tokio::spawn(async move {
         axum::serve(listener, app).await.expect("serve");
     });
-    let endpoint = format!("http://{}", address);
+    let endpoint = format!("http://{address}");
 
     let first =
         OpenCodeSessionRuntime::new(&endpoint, "opencode-restart-thread", "/tmp/project", None);

@@ -675,9 +675,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                       />
                     );
                   }}
-                  estimatedItemSize={60}
+                  estimatedItemSize={48}
+                  initialScrollIndex={0}
                   drawDistance={480}
-                  recycleItems
+                  recycleItems={false}
                   onLayout={updateModelListScrollFades}
                   onScroll={updateModelListScrollFades}
                   className={cn(

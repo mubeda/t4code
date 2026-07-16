@@ -17,6 +17,7 @@ use crate::{
     ServerConfig,
     assets::{AssetAccess, ResolvedAsset},
     auth::AuthService,
+    diagnostic_bundle::DiagnosticBundleService,
     diagnostics::{DiagnosticsMonitor, NativeProcessSampler, TraceDiagnosticsStore},
     git::GitRepository,
     mcp::preview_automation::PreviewAutomationBroker,
@@ -29,7 +30,8 @@ use crate::{
         control::NativeServerControl,
         git_vcs::{GitVcsRpcServices, register_git_vcs_rpc},
         http_routes::{
-            AssetHttpResponse, HttpRouteError, JsonOperation, JsonRouteResponse, RouteContext,
+            AssetHttpResponse, DiagnosticLogsHttpResponse, HttpRouteError, JsonOperation,
+            JsonRouteResponse, RouteContext,
         },
         operational_logs::{OperationalLogOptions, OperationalLogs},
         orchestration_effects::{
@@ -66,6 +68,7 @@ pub struct ProductionRuntime {
     orchestration_effects: OrchestrationEffects,
     trace_collector: BrowserTraceCollector,
     trace_diagnostics: TraceDiagnosticsStore,
+    diagnostic_bundle: DiagnosticBundleService,
 }
 
 impl ProductionRuntime {
@@ -94,6 +97,7 @@ impl ProductionRuntime {
             .map_err(|error| error.to_string())?;
         let terminal_manager = TerminalManager::default();
         let state_paths = StatePaths::from_config(config);
+        let diagnostic_bundle = DiagnosticBundleService::new(&state_paths.logs_dir);
         let operational_logs = OperationalLogs::start(
             &state_paths,
             &terminal_manager,
@@ -189,6 +193,7 @@ impl ProductionRuntime {
             orchestration_effects,
             trace_collector,
             trace_diagnostics,
+            diagnostic_bundle,
         })
     }
 
@@ -284,6 +289,21 @@ impl ProductionRuntime {
                 cache_control: "private, max-age=3600".to_owned(),
             }),
         }
+    }
+
+    pub async fn diagnostic_logs(
+        &self,
+        frontend_log: String,
+    ) -> Result<DiagnosticLogsHttpResponse, HttpRouteError> {
+        let bundle = self
+            .diagnostic_bundle
+            .build(frontend_log, OffsetDateTime::now_utc())
+            .await
+            .map_err(internal_error)?;
+        Ok(DiagnosticLogsHttpResponse {
+            filename: bundle.filename,
+            bytes: bundle.bytes,
+        })
     }
 
     pub async fn shutdown(&self) {

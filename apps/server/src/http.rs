@@ -90,6 +90,7 @@ pub const ROUTE_INVENTORY: &[RouteSpec] = &[
     route(RouteMethod::Post, "/api/t4code-connect/mint-credential"),
     route(RouteMethod::Get, "/ws"),
     route(RouteMethod::Post, "/api/observability/v1/traces"),
+    route(RouteMethod::Post, "/api/diagnostics/logs.zip"),
     route(RouteMethod::Get, "/api/assets/*"),
     route(RouteMethod::Post, DESKTOP_SHUTDOWN_PATH),
     route(RouteMethod::Post, "/mcp"),

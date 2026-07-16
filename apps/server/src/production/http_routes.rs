@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 pub const MAX_JSON_BODY_BYTES: usize = 1024 * 1024;
+pub const MAX_DIAGNOSTIC_BODY_BYTES: usize = 512 * 1024;
 pub const MAX_TRACE_BODY_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_MCP_BODY_BYTES: usize = 4 * 1024 * 1024;
 
@@ -44,6 +45,11 @@ pub type AssetHandler = Arc<
         + Send
         + Sync,
 >;
+pub type DiagnosticLogsHandler = Arc<
+    dyn Fn(String, RouteContext) -> BoxFuture<Result<DiagnosticLogsHttpResponse, HttpRouteError>>
+        + Send
+        + Sync,
+>;
 pub type McpHandler = Arc<
     dyn Fn(Method, Vec<u8>, RouteContext) -> BoxFuture<Result<McpHttpResponse, HttpRouteError>>
         + Send
@@ -54,6 +60,7 @@ pub type McpHandler = Arc<
 pub struct HttpRoutesState {
     pub authorize: AuthorizeHandler,
     pub json: JsonHandler,
+    pub diagnostic_logs: DiagnosticLogsHandler,
     pub assets: AssetHandler,
     pub mcp: McpHandler,
 }
@@ -63,12 +70,14 @@ impl HttpRoutesState {
     pub fn new(
         authorize: AuthorizeHandler,
         json: JsonHandler,
+        diagnostic_logs: DiagnosticLogsHandler,
         assets: AssetHandler,
         mcp: McpHandler,
     ) -> Self {
         Self {
             authorize,
             json,
+            diagnostic_logs,
             assets,
             mcp,
         }
@@ -135,6 +144,11 @@ pub struct AssetHttpResponse {
     pub cache_control: String,
 }
 
+pub struct DiagnosticLogsHttpResponse {
+    pub filename: String,
+    pub bytes: Vec<u8>,
+}
+
 pub struct McpHttpResponse {
     pub status: u16,
     pub headers: BTreeMap<String, String>,
@@ -191,6 +205,7 @@ where
             post(connect_mint_credential),
         )
         .route("/api/observability/v1/traces", post(observability_traces))
+        .route("/api/diagnostics/logs.zip", post(diagnostic_logs))
         .route("/api/assets/{token}/{*path}", get(asset))
         .route("/mcp", post(mcp_post).delete(mcp_delete))
 }
@@ -301,6 +316,39 @@ async fn observability_traces(State(state): State<HttpRoutesState>, request: Req
         BodyKind::Json(MAX_TRACE_BODY_BYTES),
     )
     .await
+}
+
+async fn diagnostic_logs(State(state): State<HttpRoutesState>, request: Request) -> Response {
+    let cancellation = CancellationToken::new();
+    let _guard = CancellationGuard(cancellation.clone());
+    let (parts, body) = request.into_parts();
+    if let Err(response) = (state.authorize)(
+        parts.headers.clone(),
+        parts.method.clone(),
+        parts.uri.clone(),
+        Some("orchestration:read"),
+        cancellation.clone(),
+    )
+    .await
+    {
+        return response;
+    }
+    let payload = match bounded_json(body, MAX_DIAGNOSTIC_BODY_BYTES).await {
+        Ok(payload) => payload,
+        Err(response) => return response,
+    };
+    let Some(frontend_log) = payload.get("frontendLog").and_then(Value::as_str) else {
+        return bad_request("Request body must contain a frontendLog string.");
+    };
+    let context = RouteContext {
+        headers: parts.headers,
+        uri: parts.uri,
+        cancellation,
+    };
+    match (state.diagnostic_logs)(frontend_log.to_owned(), context).await {
+        Ok(response) => diagnostic_logs_response(response),
+        Err(error) => error.into_response(),
+    }
 }
 
 enum BodyKind {
@@ -440,6 +488,20 @@ fn mcp_response(response: McpHttpResponse) -> Response {
     output
 }
 
+fn diagnostic_logs_response(response: DiagnosticLogsHttpResponse) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/zip")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", response.filename),
+        )
+        .header(header::CACHE_CONTROL, NO_STORE)
+        .header("x-content-type-options", "nosniff")
+        .body(Body::from(response.bytes))
+        .unwrap_or_else(|_| internal_error())
+}
+
 fn append_headers(response: &mut Response, headers: BTreeMap<String, String>) {
     for (name, value) in headers {
         if let (Ok(name), Ok(value)) = (HeaderName::try_from(name), HeaderValue::try_from(value)) {
@@ -455,6 +517,17 @@ fn payload_too_large() -> Response {
         json!({
             "_tag": "EnvironmentHttpBadRequestError",
             "message": "Request body exceeds the configured limit."
+        }),
+    )
+}
+
+fn bad_request(message: &str) -> Response {
+    json_response(
+        StatusCode::BAD_REQUEST,
+        BTreeMap::new(),
+        json!({
+            "_tag": "EnvironmentHttpBadRequestError",
+            "message": message,
         }),
     )
 }

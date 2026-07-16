@@ -8,7 +8,7 @@ import * as Tracer from "effect/Tracer";
 import type { HttpClient } from "effect/unstable/http";
 import { OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
 
-import { sanitizeTraceText } from "./observability.ts";
+import { sanitizeTraceText } from "./traceSanitization.ts";
 
 export interface RelayClientTracingConfig {
   readonly tracesUrl: string;

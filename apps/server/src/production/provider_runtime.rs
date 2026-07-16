@@ -65,6 +65,11 @@ const DEFAULT_QUEUE_CAPACITY: usize = 32;
 const DEFAULT_EVENT_QUEUE_CAPACITY: usize = 128;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Prevent host diagnostics settings from turning provider stderr into a high-volume event stream.
+pub(crate) fn sanitize_provider_subprocess_environment(command: &mut tokio::process::Command) {
+    command.env_remove("RUST_LOG");
+}
+
 #[derive(Clone, Debug)]
 pub struct ProviderLaunchRequest {
     pub thread_id: String,
@@ -1024,12 +1029,27 @@ fn spawn_event_pump(
                         runtime_payload.clone(),
                         event,
                     ).await {
+                        if matches!(error, ProviderRuntimeError::Orchestration(_))
+                            && provider_thread_was_deleted(&engine.repositories(), &launch.thread_id)
+                                .await
+                        {
+                            return;
+                        }
                         tracing::warn!(%error, "failed to project provider runtime event");
                     }
                 }
             }
         }
     })
+}
+
+async fn provider_thread_was_deleted(repositories: &Repositories, thread_id: &str) -> bool {
+    repositories
+        .get_thread(thread_id.to_owned())
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|thread| thread.deleted_at.is_some())
 }
 
 async fn project_provider_event(
@@ -1418,6 +1438,7 @@ fn spawn_child(
                 Stdio::null()
             });
         command.envs(&request.environment);
+        sanitize_provider_subprocess_environment(command);
     });
     command.wrap(KillOnDrop);
     #[cfg(windows)]
@@ -2965,6 +2986,21 @@ mod tests {
                 permission
             );
         }
+    }
+
+    #[test]
+    fn provider_commands_do_not_inherit_host_rust_logging() {
+        let mut command = tokio::process::Command::new("provider-fixture");
+        command.env("RUST_LOG", "info");
+
+        super::sanitize_provider_subprocess_environment(&mut command);
+
+        assert!(
+            command
+                .as_std()
+                .get_envs()
+                .any(|(name, value)| { name == "RUST_LOG" && value.is_none() })
+        );
     }
 
     #[test]

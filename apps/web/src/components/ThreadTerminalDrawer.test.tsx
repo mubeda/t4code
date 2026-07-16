@@ -315,6 +315,23 @@ describe("ThreadTerminalDrawer single terminal", () => {
     expect(markup).not.toContain("Group 1");
   });
 
+  it("omits split and new controls when the host does not support them", () => {
+    const markup = renderToStaticMarkup(
+      <ThreadTerminalDrawer
+        {...drawerProps({
+          onSplitTerminal: undefined as unknown as () => void,
+          onSplitTerminalVertical: undefined as unknown as () => void,
+          onNewTerminal: undefined as unknown as () => void,
+        })}
+      />,
+    );
+
+    expect(markup).not.toContain('aria-label="Split Terminal Horizontally"');
+    expect(markup).not.toContain('aria-label="Split Terminal Vertically"');
+    expect(markup).not.toContain('aria-label="New Terminal"');
+    expect(markup).toContain('aria-label="Close Terminal"');
+  });
+
   it("clamps the drawer height between the minimum and the default maximum", () => {
     // Without a window the max drawer height falls back to the 280px default.
     const tall = renderToStaticMarkup(<ThreadTerminalDrawer {...drawerProps({ height: 5000 })} />);

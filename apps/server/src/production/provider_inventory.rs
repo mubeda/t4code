@@ -15,7 +15,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     git::{OutputPolicy, ProcessRequest, ProcessRunner},
-    production::provider_runtime::{provider_launch_program, resolve_provider_executable},
+    production::provider_runtime::{
+        provider_launch_program, resolve_provider_executable,
+        sanitize_provider_subprocess_environment,
+    },
     provider::{claude, codex, cursor, grok, opencode},
 };
 
@@ -867,6 +870,7 @@ async fn probe_codex(
     let (program, prefix_args) = provider_launch_program(executable);
     let mut command = Command::new(program);
     command.envs(environment.iter().cloned());
+    sanitize_provider_subprocess_environment(&mut command);
     command
         .args(prefix_args)
         .arg("app-server")

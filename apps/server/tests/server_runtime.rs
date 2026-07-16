@@ -760,6 +760,7 @@ fn expected_routes() -> Vec<(&'static str, &'static str)> {
         ("POST", "/api/t4code-connect/mint-credential"),
         ("GET", "/ws"),
         ("POST", "/api/observability/v1/traces"),
+        ("POST", "/api/diagnostics/logs.zip"),
         ("GET", "/api/assets/*"),
         ("POST", "/.well-known/t4code/desktop/shutdown"),
         ("POST", "/mcp"),

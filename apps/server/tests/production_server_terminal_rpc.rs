@@ -209,6 +209,7 @@ async fn terminal_rpc_attach_tracks_activity_and_cleans_up_running_child_process
             value["type"] == "activity"
                 && value["terminalId"] == "term-activity"
                 && value["hasRunningSubprocess"] == true
+                && value["label"] == long_running_label()
         })
         .await;
         assert_eq!(activity["label"].as_str(), Some(long_running_label()));
@@ -217,6 +218,7 @@ async fn terminal_rpc_attach_tracks_activity_and_cleans_up_running_child_process
             value["type"] == "upsert"
                 && value["terminal"]["terminalId"] == "term-activity"
                 && value["terminal"]["hasRunningSubprocess"] == true
+                && value["terminal"]["label"] == long_running_label()
         })
         .await;
         assert_eq!(

@@ -1,6 +1,7 @@
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import type * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import { HttpClient } from "effect/unstable/http";
 import * as Socket from "effect/unstable/socket/Socket";
 
 import { remoteHttpClientLayer } from "@t4code/client-runtime/rpc";
@@ -41,10 +42,20 @@ const makePrimaryHttpRuntime = () =>
 
 let primaryHttpRuntime: ReturnType<typeof makePrimaryHttpRuntime> | null = null;
 
+const makePrimaryRawHttpRuntime = () => ManagedRuntime.make(primaryEnvironmentHttpLayer);
+
+let primaryRawHttpRuntime: ReturnType<typeof makePrimaryRawHttpRuntime> | null = null;
+
 async function getPrimaryHttpRuntime(): Promise<ReturnType<typeof makePrimaryHttpRuntime>> {
   await tauriDesktopBridgeReady.catch(() => undefined);
   primaryHttpRuntime ??= makePrimaryHttpRuntime();
   return primaryHttpRuntime;
+}
+
+async function getPrimaryRawHttpRuntime(): Promise<ReturnType<typeof makePrimaryRawHttpRuntime>> {
+  await tauriDesktopBridgeReady.catch(() => undefined);
+  primaryRawHttpRuntime ??= makePrimaryRawHttpRuntime();
+  return primaryRawHttpRuntime;
 }
 
 export type PrimaryHttpEffectRunner = <A, E>(
@@ -62,6 +73,22 @@ export const runPrimaryHttp = <A, E>(
 
 export function __setPrimaryHttpRunnerForTests(runner?: PrimaryHttpEffectRunner): void {
   primaryHttpRunner = runner ?? livePrimaryHttpRunner;
+}
+
+export type PrimaryRawHttpEffectRunner = <A, E>(
+  effect: Effect.Effect<A, E, HttpClient.HttpClient>,
+) => Promise<A>;
+
+const livePrimaryRawHttpRunner: PrimaryRawHttpEffectRunner = async (effect) =>
+  (await getPrimaryRawHttpRuntime()).runPromise(effect);
+
+let primaryRawHttpRunner = livePrimaryRawHttpRunner;
+
+export const runPrimaryRawHttp = <A, E>(effect: Effect.Effect<A, E, HttpClient.HttpClient>) =>
+  primaryRawHttpRunner(effect);
+
+export function __setPrimaryRawHttpRunnerForTests(runner?: PrimaryRawHttpEffectRunner): void {
+  primaryRawHttpRunner = runner ?? livePrimaryRawHttpRunner;
 }
 
 const runtimeLayer = Layer.mergeAll(

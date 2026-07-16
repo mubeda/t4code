@@ -3,6 +3,7 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   CopyIcon,
+  DownloadIcon,
   FolderOpenIcon,
   InfoIcon,
   RefreshCwIcon,
@@ -21,6 +22,8 @@ import type {
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
+import { downloadDiagnosticLogs } from "../../diagnostics/downloadDiagnosticLogs";
+import { readFrontendLogSnapshot } from "../../diagnostics/frontendLogCapture";
 import { cn } from "../../lib/utils";
 import { resolveAndPersistPreferredEditor } from "../../editorPreferences";
 import { formatRelativeTime } from "../../timestampFormat";
@@ -37,7 +40,12 @@ import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
-import { SettingsPageContainer, SettingsSection, useRelativeTimeTick } from "./settingsLayout";
+import {
+  SettingsPageContainer,
+  SettingsRow,
+  SettingsSection,
+  useRelativeTimeTick,
+} from "./settingsLayout";
 import { useAtomCommand } from "../../state/use-atom-command";
 
 const NUMBER_FORMAT = new Intl.NumberFormat();
@@ -861,6 +869,7 @@ export function DiagnosticsSettingsPanel() {
   const [isOpeningLogsDirectory, setIsOpeningLogsDirectory] = useState(false);
   const [openLogsDirectoryError, setOpenLogsDirectoryError] = useState<string | null>(null);
   const [signalingPid, setSignalingPid] = useState<number | null>(null);
+  const [downloadStatus, setDownloadStatus] = useState<"idle" | "downloading">("idle");
 
   const openLogsDirectory = useCallback(() => {
     const logsDirectoryPath = observability?.logsDirectoryPath ?? null;
@@ -960,9 +969,27 @@ export function DiagnosticsSettingsPanel() {
   const traceDiagnosticsPartialFailure = data
     ? Option.getOrElse(data.partialFailure, () => false)
     : false;
+  const downloadLogs = useCallback(() => {
+    if (downloadStatus === "downloading") return;
+    setDownloadStatus("downloading");
+    void (async () => {
+      try {
+        await downloadDiagnosticLogs(readFrontendLogSnapshot());
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: "Could not download diagnostic logs",
+          description:
+            error instanceof Error ? error.message : "Unable to prepare the diagnostic archive.",
+        });
+      } finally {
+        setDownloadStatus("idle");
+      }
+    })();
+  }, [downloadStatus]);
 
   return (
-    <SettingsPageContainer>
+    <SettingsPageContainer className="pb-12">
       <SettingsSection
         title="Live Processes"
         headerAction={
@@ -1355,6 +1382,28 @@ export function DiagnosticsSettingsPanel() {
         ) : (
           <EmptyRows label={isInitialLoading ? "Loading span names..." : "No spans found."} />
         )}
+      </SettingsSection>
+
+      <SettingsSection title="Diagnostic logs">
+        <SettingsRow
+          title="Download diagnostic logs"
+          description={
+            <>
+              Download a redacted ZIP containing <span className="font-mono">server.log</span> and{" "}
+              <span className="font-mono">frontend.log</span>.
+            </>
+          }
+          control={
+            <Button
+              aria-label="Download diagnostic logs"
+              disabled={downloadStatus === "downloading"}
+              onClick={downloadLogs}
+            >
+              <DownloadIcon className="size-3.5" />
+              {downloadStatus === "downloading" ? "Preparing logs..." : "Download logs"}
+            </Button>
+          }
+        />
       </SettingsSection>
     </SettingsPageContainer>
   );
