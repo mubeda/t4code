@@ -204,7 +204,10 @@ mod tests {
             .filter_map(|(pid, process)| process.thread_kind().map(|_| pid.as_u32()))
             .collect::<Vec<_>>();
 
-        assert!(!thread_pids.is_empty(), "test process should expose threads");
+        assert!(
+            !thread_pids.is_empty(),
+            "test process should expose threads"
+        );
         assert!(
             rows.iter().all(|row| !thread_pids.contains(&row.pid)),
             "sampled process rows must not contain Linux threads"

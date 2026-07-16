@@ -75,6 +75,14 @@ const h = vi.hoisted(() => {
     frontendLogSnapshot: "captured frontend warning\n",
     downloadCalls: [] as Array<string>,
     downloadError: null as unknown,
+    downloadResult: {
+      status: "saved",
+      filename: "t4code-diagnostics-test.zip",
+      path: "C:\\Users\\test\\Downloads\\t4code-diagnostics-test.zip",
+    } as
+      | { status: "saved"; filename: string; path: string }
+      | { status: "downloaded"; filename: string }
+      | { status: "cancelled"; filename: string },
     reset() {
       h.stateSeeds.length = 0;
       h.setStateCalls.length = 0;
@@ -99,6 +107,11 @@ const h = vi.hoisted(() => {
       h.frontendLogSnapshot = "captured frontend warning\n";
       h.downloadCalls.length = 0;
       h.downloadError = null;
+      h.downloadResult = {
+        status: "saved",
+        filename: "t4code-diagnostics-test.zip",
+        path: "C:\\Users\\test\\Downloads\\t4code-diagnostics-test.zip",
+      };
     },
   };
 
@@ -165,7 +178,7 @@ vi.mock("../../diagnostics/downloadDiagnosticLogs", () => ({
   downloadDiagnosticLogs: async (frontendLog: string) => {
     h.downloadCalls.push(frontendLog);
     if (h.downloadError !== null) throw h.downloadError;
-    return "t4code-diagnostics-test.zip";
+    return h.downloadResult;
   },
 }));
 
@@ -887,6 +900,13 @@ describe("DiagnosticsSettingsPanel diagnostic log download", () => {
     await flush();
 
     expect(h.downloadCalls).toEqual(["captured frontend warning\n"]);
+    expect(h.toasts).toContainEqual(
+      expect.objectContaining({
+        type: "success",
+        title: "Diagnostic logs saved",
+        description: "C:\\Users\\test\\Downloads\\t4code-diagnostics-test.zip",
+      }),
+    );
   });
 
   it("shows an actionable toast when the archive cannot be downloaded", async () => {
@@ -904,5 +924,19 @@ describe("DiagnosticsSettingsPanel diagnostic log download", () => {
         description: "server unavailable",
       }),
     );
+  });
+
+  it("stays silent when the native save dialog is cancelled", async () => {
+    h.downloadResult = {
+      status: "cancelled",
+      filename: "t4code-diagnostics-test.zip",
+    };
+    seedAll();
+    render();
+
+    (findButton("Download diagnostic logs").onClick as () => void)();
+    await flush();
+
+    expect(h.toasts).toHaveLength(0);
   });
 });

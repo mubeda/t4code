@@ -974,7 +974,20 @@ export function DiagnosticsSettingsPanel() {
     setDownloadStatus("downloading");
     void (async () => {
       try {
-        await downloadDiagnosticLogs(readFrontendLogSnapshot());
+        const result = await downloadDiagnosticLogs(readFrontendLogSnapshot());
+        if (result.status === "saved") {
+          toastManager.add({
+            type: "success",
+            title: "Diagnostic logs saved",
+            description: result.path,
+          });
+        } else if (result.status === "downloaded") {
+          toastManager.add({
+            type: "success",
+            title: "Diagnostic logs download started",
+            description: result.filename,
+          });
+        }
       } catch (error) {
         toastManager.add({
           type: "error",

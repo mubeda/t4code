@@ -46,6 +46,7 @@ const PRIMARY_LOCAL_ENVIRONMENT_ID: &str = "primary";
 const WSL_INSTANCE_ID_PREFIX: &str = "wsl:";
 const REMOTE_API_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const TAURI_DESKTOP_BRIDGE_VERSION: u16 = 1;
+const MAX_DIAGNOSTIC_ARCHIVE_BYTES: usize = 20 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DesktopSettings {
@@ -1119,6 +1120,62 @@ pub fn desktop_bridge_pick_folder(
     }))
 }
 
+fn validate_diagnostic_archive_filename(filename: &str) -> Result<(), String> {
+    let is_plain_name = !filename.is_empty()
+        && filename.len() <= 255
+        && !filename.contains(['/', '\\'])
+        && Path::new(filename)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"));
+    if is_plain_name {
+        Ok(())
+    } else {
+        Err("Diagnostic archive filename must be a plain .zip filename.".to_owned())
+    }
+}
+
+fn validate_diagnostic_archive_bytes(bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() > MAX_DIAGNOSTIC_ARCHIVE_BYTES {
+        return Err("Diagnostic archive exceeds the desktop save limit.".to_owned());
+    }
+    if !bytes.starts_with(b"PK") {
+        return Err("Diagnostic archive is not a ZIP file.".to_owned());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn desktop_bridge_save_diagnostic_logs(
+    app: AppHandle,
+    filename: String,
+    bytes: Vec<u8>,
+) -> Result<Option<String>, String> {
+    validate_diagnostic_archive_filename(&filename)?;
+    validate_diagnostic_archive_bytes(&bytes)?;
+
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Save diagnostic logs")
+        .set_file_name(filename)
+        .add_filter("ZIP archive", &["zip"]);
+    if let Ok(download_dir) = app.path().download_dir() {
+        dialog = dialog.set_directory(download_dir);
+    }
+
+    let Some(selected) = dialog.blocking_save_file() else {
+        return Ok(None);
+    };
+    let path = selected
+        .simplified()
+        .into_path()
+        .map_err(|error| bridge_error("Could not normalize the diagnostic archive path", error))?;
+    fs::write(&path, bytes)
+        .map_err(|error| bridge_error("Could not save diagnostic logs", error))?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
 #[tauri::command]
 pub fn desktop_bridge_confirm(app: AppHandle, message: String) -> bool {
     app.dialog()
@@ -1270,6 +1327,23 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
     use std::sync::mpsc;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn diagnostic_archive_filename_accepts_only_plain_zip_names() {
+        assert!(validate_diagnostic_archive_filename("t4code-diagnostics-20260716.zip").is_ok());
+        assert!(validate_diagnostic_archive_filename("../diagnostics.zip").is_err());
+        assert!(validate_diagnostic_archive_filename("diagnostics.txt").is_err());
+    }
+
+    #[test]
+    fn diagnostic_archive_bytes_require_a_bounded_zip_payload() {
+        assert!(validate_diagnostic_archive_bytes(b"PK\x03\x04archive").is_ok());
+        assert!(validate_diagnostic_archive_bytes(b"not a zip").is_err());
+        assert!(
+            validate_diagnostic_archive_bytes(&vec![0_u8; MAX_DIAGNOSTIC_ARCHIVE_BYTES + 1])
+                .is_err()
+        );
+    }
 
     fn read_test_http_request(stream: &mut TcpStream) -> String {
         stream

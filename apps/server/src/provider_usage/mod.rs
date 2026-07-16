@@ -225,10 +225,8 @@ async fn fetch_claude_usage() -> Result<ProviderUsageSnapshot, ProviderUsageFetc
         let _ = uses_default_config;
         None
     };
-    let token = select_claude_oauth_token(
-        credentials_file.as_deref(),
-        keychain_credentials.as_deref(),
-    );
+    let token =
+        select_claude_oauth_token(credentials_file.as_deref(), keychain_credentials.as_deref());
     let Some(token) = token else {
         return Ok(unavailable_snapshot(
             ProviderUsageProvider::Claude,
@@ -289,12 +287,7 @@ async fn read_claude_keychain_credentials() -> Option<String> {
 async fn read_claude_keychain_credentials_with(program: &std::path::Path) -> Option<String> {
     let mut command = Command::new(program);
     command
-        .args([
-            "find-generic-password",
-            "-s",
-            CLAUDE_KEYCHAIN_SERVICE,
-            "-w",
-        ])
+        .args(["find-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE, "-w"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
