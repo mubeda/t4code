@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node ../../scripts/run-msvc-x64.mjs pnpm dlx @tauri-apps/cli@2.11.4 dev -- -p t4code-desktop",
-    "build": "node ../../scripts/run-msvc-x64.mjs pnpm dlx @tauri-apps/cli@2.11.4 build -- -p t4code-desktop",
+    "build": "node ../../scripts/run-msvc-x64.mjs pnpm dlx @tauri-apps/cli@2.11.4 build",
     "typecheck": "node ../../scripts/run-msvc-x64.mjs cargo check -p t4code-desktop",
     "test": "node ../../scripts/run-msvc-x64.mjs cargo test -p t4code-desktop -j 2"
   },
