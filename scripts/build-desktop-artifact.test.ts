@@ -85,17 +85,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(plan.outputDir, path.join(repoRoot, "artifacts", "tauri-win"));
       assert.equal(
         plan.bundleDir,
-        path.join(
-          repoRoot,
-          "apps",
-          "desktop",
-          "src-tauri",
-          "target",
-          "x86_64-pc-windows-msvc",
-          "release",
-          "bundle",
-          "nsis",
-        ),
+        path.join(repoRoot, "target", "x86_64-pc-windows-msvc", "release", "bundle", "nsis"),
       );
       assert.deepStrictEqual(plan.buildCommand, {
         command: "vp",
