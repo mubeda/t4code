@@ -1,4 +1,4 @@
-import type { ServerProvider, ServerSettings } from "@t3tools/contracts";
+import type { ServerProvider, ServerSettings } from "@t4code/contracts";
 import { PlusIcon, TerminalSquare } from "lucide-react";
 import { memo, type ReactElement } from "react";
 

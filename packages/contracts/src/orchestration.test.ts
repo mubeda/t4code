@@ -23,6 +23,7 @@ import {
   ThreadTurnStartRequestedPayload,
 } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import { expectDecodeFailure } from "./test/schemaAssertions.ts";
 
 const decodeTurnDiffInput = Schema.decodeUnknownEffect(OrchestrationGetTurnDiffInput);
 const decodeFullThreadDiffInput = Schema.decodeUnknownEffect(OrchestrationGetFullThreadDiffInput);
@@ -276,7 +277,7 @@ it.effect("accepts bootstrap metadata in thread.turn.start", () =>
         prepareWorktree: {
           projectCwd: "/tmp/workspace",
           baseBranch: "main",
-          branch: "t3code/example",
+          branch: "t4code/example",
           startFromOrigin: true,
         },
         runSetupScript: true,
@@ -743,3 +744,11 @@ it.effect("ModelSelection rejects malformed instance ids", () =>
     assert.strictEqual(result._tag, "Failure");
   }),
 );
+
+it("ModelSelection rejects a non-string legacy provider at the routing-key path", () => {
+  expectDecodeFailure(
+    ModelSelection,
+    { provider: 42, model: "gpt-5.4" },
+    { rootTag: "Composite", paths: [["instanceId"]] },
+  );
+});

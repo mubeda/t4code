@@ -1,4 +1,4 @@
-import { EnvironmentId, type ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
+import { EnvironmentId, type ExecutionEnvironmentDescriptor } from "@t4code/contracts";
 import * as Effect from "effect/Effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -122,8 +122,8 @@ describe("environmentBootstrap", () => {
     await installDescriptorApi();
 
     await expect(resolveInitialPrimaryEnvironmentDescriptor()).resolves.toEqual(BASE_ENVIRONMENT);
-    expect(resolvePrimaryEnvironmentHttpUrl("/.well-known/t3/environment")).toBe(
-      "https://remote.example.com/.well-known/t3/environment",
+    expect(resolvePrimaryEnvironmentHttpUrl("/.well-known/t4code/environment")).toBe(
+      "https://remote.example.com/.well-known/t4code/environment",
     );
   });
 
@@ -132,8 +132,8 @@ describe("environmentBootstrap", () => {
     await installDescriptorApi();
 
     await expect(resolveInitialPrimaryEnvironmentDescriptor()).resolves.toEqual(BASE_ENVIRONMENT);
-    expect(resolvePrimaryEnvironmentHttpUrl("/.well-known/t3/environment")).toBe(
-      "https://remote.example.com/.well-known/t3/environment",
+    expect(resolvePrimaryEnvironmentHttpUrl("/.well-known/t4code/environment")).toBe(
+      "https://remote.example.com/.well-known/t4code/environment",
     );
     expect(getPrimaryKnownEnvironment()?.target).toEqual({
       httpBaseUrl: "https://remote.example.com/",
@@ -146,8 +146,8 @@ describe("environmentBootstrap", () => {
     await installDescriptorApi();
 
     await expect(resolveInitialPrimaryEnvironmentDescriptor()).resolves.toEqual(BASE_ENVIRONMENT);
-    expect(resolvePrimaryEnvironmentHttpUrl("/.well-known/t3/environment")).toBe(
-      "https://remote.example.com/.well-known/t3/environment",
+    expect(resolvePrimaryEnvironmentHttpUrl("/.well-known/t4code/environment")).toBe(
+      "https://remote.example.com/.well-known/t4code/environment",
     );
     expect(getPrimaryKnownEnvironment()?.target).toEqual({
       httpBaseUrl: "https://remote.example.com/",
@@ -160,12 +160,12 @@ describe("environmentBootstrap", () => {
     await installDescriptorApi();
 
     await expect(resolveInitialPrimaryEnvironmentDescriptor()).resolves.toEqual(BASE_ENVIRONMENT);
-    expect(resolvePrimaryEnvironmentHttpUrl("/.well-known/t3/environment")).toBe(
-      "http://localhost:5735/.well-known/t3/environment",
+    expect(resolvePrimaryEnvironmentHttpUrl("/.well-known/t4code/environment")).toBe(
+      "http://localhost:5735/.well-known/t4code/environment",
     );
   });
 
-  it("uses the vite proxy for desktop-managed loopback descriptor requests during local dev", async () => {
+  it("uses the managed desktop backend for descriptor requests during local dev", async () => {
     vi.stubEnv("VITE_DEV_SERVER_URL", "http://127.0.0.1:5733");
     vi.stubGlobal("window", {
       location: new URL("http://127.0.0.1:5733/"),
@@ -187,8 +187,8 @@ describe("environmentBootstrap", () => {
     await installDescriptorApi();
 
     await expect(resolveInitialPrimaryEnvironmentDescriptor()).resolves.toEqual(BASE_ENVIRONMENT);
-    expect(resolvePrimaryEnvironmentHttpUrl("/.well-known/t3/environment")).toBe(
-      "http://127.0.0.1:5733/.well-known/t3/environment",
+    expect(resolvePrimaryEnvironmentHttpUrl("/.well-known/t4code/environment")).toBe(
+      "http://127.0.0.1:3773/.well-known/t4code/environment",
     );
   });
 
@@ -241,7 +241,7 @@ describe("environmentBootstrap", () => {
 
   it("preserves an unsupported window-origin protocol", () => {
     vi.stubGlobal("window", {
-      location: { origin: "file:///tmp/t3code/" },
+      location: { origin: "file:///tmp/t4code/" },
       history: { replaceState: vi.fn() },
     });
 

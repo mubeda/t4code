@@ -1,5 +1,5 @@
-import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
-import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t3tools/contracts/settings";
+import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t4code/contracts";
+import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t4code/contracts/settings";
 import { describe, expect, it } from "vite-plus/test";
 import { deriveProviderInstanceEntries } from "./providerInstances";
 import {
@@ -35,6 +35,7 @@ function provider(input: {
     })),
     slashCommands: [],
     skills: [],
+    agents: [],
   };
 }
 

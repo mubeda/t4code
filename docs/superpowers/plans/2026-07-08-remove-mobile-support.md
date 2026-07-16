@@ -1,5 +1,9 @@
 # Remove Mobile Support Implementation Plan
 
+> Status: completed and archival. Native mobile support is absent from the
+> current architecture. Use [Current Scripts](../../reference/scripts.md) for
+> supported commands; the steps below preserve the migration record.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Remove native mobile app support and mobile-only relay/device infrastructure from T4Code.
@@ -35,7 +39,7 @@
 
 **Interfaces:**
 
-- Produces: a workspace with no `@t3tools/mobile` package and no `lint:mobile` script.
+- Produces: a workspace with no `@t4code/mobile` package and no `lint:mobile` script.
 
 - [x] **Step 1: Delete mobile app and native static-analysis script**
 
@@ -92,7 +96,7 @@ Remove APNS credentials/config, queue subscription, mobile API group, device-lis
 
 **Files:**
 
-- Modify: `apps/web/src/components/clerk/T3ConnectSidebarSignIn.tsx`
+- Modify: `apps/web/src/components/clerk/T4CodeConnectSidebarSignIn.tsx`
 - Delete: `apps/web/src/components/clerk/MobileClientsUserProfilePage.tsx`
 - Delete: `apps/web/src/components/clerk/MobileClientsUserProfilePage.logic.ts`
 - Delete: `apps/web/src/components/clerk/MobileClientsUserProfilePage.logic.test.ts`
@@ -150,7 +154,7 @@ Remove APNS secrets, Expo/Clerk mobile setup, mobile auth flow endpoints, and na
 Run:
 
 ```bash
-rg -n "apps/mobile|@t3tools/mobile|react-native|expo|eas|APNS|Apns|mobile:registration|/v1/mobile|Mobile clients|Live Activities|push notifications" -g "!node_modules/**" -g "!.repos/**"
+rg -n "apps/mobile|@t4code/mobile|react-native|expo|eas|APNS|Apns|mobile:registration|/v1/mobile|Mobile clients|Live Activities|push notifications" -g "!node_modules/**" -g "!.repos/**"
 ```
 
 Expected: no product-support references except responsive web wording and historical plan docs.

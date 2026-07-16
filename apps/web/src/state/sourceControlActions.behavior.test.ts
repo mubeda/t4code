@@ -10,7 +10,7 @@
  * driving the returned `run`/`resetError` directly. `VcsActionUnavailableError`,
  * `AsyncResult`, `Cause`, and `Option` are kept real.
  */
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t4code/contracts";
 import { AsyncResult } from "effect/unstable/reactivity";
 import * as Cause from "effect/Cause";
 import { describe, expect, it, vi, beforeEach } from "vite-plus/test";
@@ -124,7 +124,7 @@ import {
   useVcsStageAction,
   useVcsUnstageAction,
 } from "./sourceControlActions";
-import { VcsActionUnavailableError } from "@t3tools/client-runtime/state/vcs";
+import { VcsActionUnavailableError } from "@t4code/client-runtime/state/vcs";
 
 const environmentId = EnvironmentId.make("environment-1");
 const fullScope = { environmentId, cwd: "/repo" } as const;

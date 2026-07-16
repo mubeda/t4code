@@ -1,6 +1,6 @@
 /**
  * Returns true when the user's keyboard focus is somewhere inside the
- * preview panel (URL bar, chrome buttons, or — once detected via Electron
+ * preview panel (URL bar, chrome buttons, or once detected via native
  * `<webview>` focus events — the embedded page).
  *
  * Used by the global keybinding handler to gate `preview.refresh` and

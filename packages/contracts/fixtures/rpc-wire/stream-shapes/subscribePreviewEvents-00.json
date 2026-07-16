@@ -1,0 +1,22 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "threadId": "nam",
+      "tabId": "keyb",
+      "createdAt": "",
+      "type": "opened",
+      "snapshot": {
+        "threadId": "bind",
+        "tabId": "i||&",
+        "navStatus": {
+          "_tag": "Idle"
+        },
+        "canGoBack": true,
+        "canGoForward": false,
+        "updatedAt": "_QR"
+      }
+    }
+  ]
+}

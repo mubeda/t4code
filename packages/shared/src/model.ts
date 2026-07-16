@@ -8,7 +8,7 @@ import {
   ProviderInstanceId,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 
 const DEFAULT_PROVIDER_DRIVER_KIND = ProviderDriverKind.make("codex");
 
@@ -277,10 +277,6 @@ export function resolveSelectableModel(
   }
 
   const normalized = normalizeModelSlug(trimmed, provider);
-  if (!normalized) {
-    return null;
-  }
-
   const resolved = options.find((option) => option.slug === normalized);
   return resolved ? resolved.slug : null;
 }

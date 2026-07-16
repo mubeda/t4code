@@ -1,5 +1,5 @@
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import type { EditorId, ProjectEntry } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t4code/contracts";
+import type { EditorId, ProjectEntry } from "@t4code/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -133,7 +133,7 @@ vi.mock("@pierre/trees/react", () => ({
   },
 }));
 
-vi.mock("@t3tools/client-runtime/state/runtime", () => ({
+vi.mock("@t4code/client-runtime/state/runtime", () => ({
   // Mutation commands surface interruption as a `Failure` carrying an interrupt
   // marker; the preview flow uses a dedicated `Interrupted` tag. Support both.
   isAtomCommandInterrupted: (result: { _tag: string; interrupted?: boolean }) =>
@@ -159,7 +159,7 @@ vi.mock("~/lib/utils", () => ({
   newProjectId: () => testState.newProjectId,
 }));
 
-vi.mock("~/pierre-icons", () => ({ T3_PIERRE_ICONS: {} }));
+vi.mock("~/pierre-icons", () => ({ T4CODE_PIERRE_ICONS: {} }));
 
 vi.mock("~/previewStateStore", () => ({
   isPreviewSupportedInRuntime: () => testState.isPreviewSupported,
@@ -510,6 +510,24 @@ describe("selection", () => {
 describe("context menu model", () => {
   beforeEach(() => {
     setEntries([entry("src", "directory"), entry("src/app.ts", "file")]);
+  });
+
+  it("positions row menus from a viewport rect instead of the shadow-DOM element", () => {
+    renderPanel();
+    const rect = { x: 120, y: 48, width: 240, height: 24 } as DOMRect;
+    const anchorElement = { getBoundingClientRect: vi.fn(() => rect) };
+    const fileTree = ui.last("FileTree")!;
+    const element = (
+      fileTree["renderContextMenu"] as (
+        item: { path: string; kind: string },
+        context: { anchorElement: typeof anchorElement; close: () => void },
+      ) => React.ReactElement
+    )({ path: "src/app.ts", kind: "file" }, { anchorElement, close: vi.fn() });
+    const anchor = (element.props as { anchor: { getBoundingClientRect: () => DOMRect } }).anchor;
+
+    expect(anchor).not.toBe(anchorElement);
+    expect(anchor.getBoundingClientRect()).toBe(rect);
+    expect(anchorElement.getBoundingClientRect).toHaveBeenCalledTimes(1);
   });
 
   it("builds a file menu with preview + external editor for the primary env", () => {

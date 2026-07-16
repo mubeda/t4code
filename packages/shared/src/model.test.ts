@@ -5,7 +5,7 @@ import {
   ProviderInstanceId,
   type ModelCapabilities,
   type ProviderOptionDescriptor,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 
 import {
   applyClaudePromptEffortPrefix,
@@ -83,6 +83,28 @@ const claudeCaps: ModelCapabilities = createModelCapabilities({
 });
 
 describe("descriptor helpers", () => {
+  it("clones descriptor-owned arrays without mutating caller values", () => {
+    const options = [{ id: "high", label: "High", isDefault: true }];
+    const promptInjectedValues = ["ultrathink"];
+    const input: ProviderOptionDescriptor = {
+      id: "effort",
+      label: "Reasoning",
+      type: "select",
+      options,
+      promptInjectedValues,
+    };
+
+    const capabilities = createModelCapabilities({ optionDescriptors: [input] });
+    const descriptor = capabilities.optionDescriptors?.[0];
+    expect(descriptor).not.toBe(input);
+    if (descriptor?.type === "select") {
+      expect(descriptor.options).toEqual(options);
+      expect(descriptor.options).not.toBe(options);
+      expect(descriptor.promptInjectedValues).toEqual(promptInjectedValues);
+      expect(descriptor.promptInjectedValues).not.toBe(promptInjectedValues);
+    }
+  });
+
   it("applies selection values to capability descriptors", () => {
     expect(
       getProviderOptionDescriptors({
@@ -131,6 +153,18 @@ describe("descriptor helpers", () => {
       { id: "reasoningEffort", value: "high" },
       { id: "fastMode", value: true },
     ]);
+  });
+
+  it("returns no wire selections for missing descriptors or descriptors without values", () => {
+    expect(buildProviderOptionSelectionsFromDescriptors(null)).toBeUndefined();
+    expect(buildProviderOptionSelectionsFromDescriptors(undefined)).toBeUndefined();
+    expect(buildProviderOptionSelectionsFromDescriptors([])).toBeUndefined();
+    expect(
+      buildProviderOptionSelectionsFromDescriptors([
+        { id: "fast", label: "Fast", type: "boolean" },
+        { id: "empty", label: "Empty", type: "select", options: [] },
+      ]),
+    ).toBeUndefined();
   });
 
   it("stores option selection arrays in model selections", () => {
@@ -201,6 +235,11 @@ describe("selection value readers", () => {
 });
 
 describe("getProviderOptionDescriptors edge cases", () => {
+  it("returns no descriptors when capabilities omit them", () => {
+    const caps: ModelCapabilities = {};
+    expect(getProviderOptionDescriptors({ caps })).toEqual([]);
+  });
+
   it("keeps the descriptor's own currentValue when no selection overrides it", () => {
     const caps = createModelCapabilities({
       optionDescriptors: [
@@ -265,6 +304,55 @@ describe("getProviderOptionDescriptors edge cases", () => {
     if (descriptor.type === "select") {
       expect(descriptor.currentValue).toBe("high");
     }
+  });
+
+  it("drops a prompt-injected value when no default exists", () => {
+    const caps = createModelCapabilities({
+      optionDescriptors: [
+        {
+          id: "effort",
+          label: "Reasoning",
+          type: "select",
+          options: [{ id: "ultrathink", label: "Ultrathink" }],
+          promptInjectedValues: ["ultrathink"],
+        },
+      ],
+    });
+    const descriptor = getProviderOptionDescriptors({
+      caps,
+      selections: [{ id: "effort", value: "ultrathink" }],
+    })[0]!;
+    expect(descriptor.type).toBe("select");
+    expect("currentValue" in descriptor).toBe(false);
+  });
+
+  it("falls back from invalid select values to a current value or default", () => {
+    const caps = createModelCapabilities({
+      optionDescriptors: [
+        {
+          id: "withCurrent",
+          label: "With current",
+          type: "select",
+          options: [{ id: "current", label: "Current" }],
+          currentValue: "current",
+        },
+        {
+          id: "withDefault",
+          label: "With default",
+          type: "select",
+          options: [{ id: "default", label: "Default", isDefault: true }],
+        },
+      ],
+    });
+    const descriptors = getProviderOptionDescriptors({
+      caps,
+      selections: [
+        { id: "withCurrent", value: "invalid" },
+        { id: "withDefault", value: "invalid" },
+      ],
+    });
+    expect(getProviderOptionCurrentValue(descriptors[0])).toBe("current");
+    expect(getProviderOptionCurrentValue(descriptors[1])).toBe("default");
   });
 
   it("passes through an arbitrary value for a select with no options", () => {
@@ -432,6 +520,14 @@ describe("createModelSelection", () => {
       instanceId: "codex",
       model: "gpt-5.4",
     });
+  });
+
+  it("clones caller-owned selections", () => {
+    const options = [{ id: "effort", value: "high" }];
+    const selection = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4", options);
+    expect(selection.options).toEqual(options);
+    expect(selection.options).not.toBe(options);
+    expect(selection.options?.[0]).not.toBe(options[0]);
   });
 });
 

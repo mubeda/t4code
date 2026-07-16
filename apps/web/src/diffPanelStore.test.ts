@@ -1,13 +1,23 @@
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { EnvironmentId, ThreadId, TurnId } from "@t3tools/contracts";
+import { scopeThreadRef } from "@t4code/client-runtime/environment";
+import { EnvironmentId, ThreadId, TurnId } from "@t4code/contracts";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
-import { selectThreadDiffPanelSelection, useDiffPanelStore } from "./diffPanelStore";
+import {
+  selectThreadDiffPanelRefreshRequest,
+  selectThreadDiffPanelSelection,
+  useDiffPanelStore,
+} from "./diffPanelStore";
 
 const THREAD_REF = scopeThreadRef(EnvironmentId.make("environment-1"), ThreadId.make("thread-1"));
 
 describe("diffPanelStore", () => {
-  beforeEach(() => useDiffPanelStore.setState({ byThreadKey: {}, branchBaseRefByThreadKey: {} }));
+  beforeEach(() =>
+    useDiffPanelStore.setState({
+      byThreadKey: {},
+      branchBaseRefByThreadKey: {},
+      gitRefreshRequestByThreadKey: {},
+    }),
+  );
 
   it("defaults each thread to branch changes with automatic base selection", () => {
     expect(
@@ -48,6 +58,19 @@ describe("diffPanelStore", () => {
     expect(
       selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF),
     ).toEqual({ kind: "branch", baseRef: "origin/main" });
+  });
+
+  it("requests a fresh git preview whenever a scope is opened", () => {
+    const store = useDiffPanelStore.getState();
+    store.selectGitScope(THREAD_REF, "unstaged");
+    store.selectGitScope(THREAD_REF, "unstaged");
+
+    expect(
+      selectThreadDiffPanelRefreshRequest(
+        useDiffPanelStore.getState().gitRefreshRequestByThreadKey,
+        THREAD_REF,
+      ),
+    ).toBe(2);
   });
 
   it("reconciles a missing turn selection to the latest available turn", () => {

@@ -1,0 +1,44 @@
+{
+  "options": [
+    {
+      "category": "thought_level",
+      "id": "reasoning"
+    },
+    {
+      "category": "model_config",
+      "id": "context"
+    },
+    {
+      "category": "model_config",
+      "id": "fast"
+    }
+  ],
+  "updates": [
+    {
+      "id": "reasoning",
+      "value": "xhigh"
+    },
+    {
+      "id": "fastMode",
+      "value": true
+    },
+    {
+      "id": "contextWindow",
+      "value": "1m"
+    }
+  ],
+  "expected": [
+    {
+      "configId": "reasoning",
+      "value": "extra-high"
+    },
+    {
+      "configId": "fast",
+      "value": "true"
+    },
+    {
+      "configId": "context",
+      "value": "1m"
+    }
+  ]
+}

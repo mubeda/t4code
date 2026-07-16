@@ -2,7 +2,7 @@
 
 T4Code reads keybindings from:
 
-- `~/.t3/keybindings.json`
+- `~/.t4code/keybindings.json`
 
 The file must be a JSON array of rules:
 
@@ -45,7 +45,8 @@ See the full schema for more details: [`packages/contracts/src/keybindings.ts`](
 ]
 ```
 
-For most up to date defaults, see [`DEFAULT_KEYBINDINGS` in `apps/server/src/keybindings.ts`](../../apps/server/src/keybindings.ts)
+The native server validates and persists overrides in
+[`apps/server/src/production/control.rs`](../../apps/server/src/production/control.rs).
 
 ## Configuration
 
@@ -69,7 +70,7 @@ Invalid rules are ignored. Invalid config files are ignored. Warnings are logged
 - `terminal.close`: close/kill the focused terminal
 - `rightPanel.toggle`: open/close the right tool panel
 - `diff.toggle`: open/close the thread diff view
-- `preview.toggle`: open/close the in-app browser preview panel (desktop app only)
+- `preview.toggle`: open/close the in-app browser preview when the active host exposes preview support
 - `preview.refresh`: reload the active preview tab (in focused preview context by default)
 - `preview.focusUrl`: focus the URL input of the preview panel (in focused preview context by default)
 - `preview.zoomIn`: zoom the preview viewport in one step (in focused preview context by default)

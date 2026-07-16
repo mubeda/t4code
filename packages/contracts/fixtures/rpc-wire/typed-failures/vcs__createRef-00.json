@@ -1,0 +1,22 @@
+{
+  "_tag": "Exit",
+  "requestId": "900719925474099312345",
+  "exit": {
+    "_tag": "Failure",
+    "cause": [
+      {
+        "_tag": "Fail",
+        "error": {
+          "_tag": "GitCommandError",
+          "operation": "{]Sl}*-g7E",
+          "command": "|#KlpEUC4[",
+          "cwd": "call",
+          "argumentCount": 1.6816924659172615e25,
+          "stdoutLength": -7.661531640223984e-7,
+          "detail": "u",
+          "cause": "undefined"
+        }
+      }
+    ]
+  }
+}

@@ -1,4 +1,4 @@
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { ProviderInstanceId } from "@t4code/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ProviderInstanceEntry } from "~/providerInstances";
@@ -39,14 +39,16 @@ describe("buildPanelMenuModel", () => {
     ]);
   });
 
-  it("keeps visible providers selectable even when their runtime status is not ready", () => {
+  it("keeps enabled but unavailable providers visible and disables their action", () => {
     const [ready, notReady] = buildPanelMenuModel([
       makeEntry({ instanceId: "codex" }),
       makeEntry({ instanceId: "claude", isAvailable: false }),
     ]);
     expect(ready?.disabled).toBe(false);
     expect(ready?.disabledReason).toBeUndefined();
-    expect(notReady?.disabled).toBe(false);
-    expect(notReady?.disabledReason).toBeUndefined();
+    expect(notReady?.disabled).toBe(true);
+    expect(notReady?.disabledReason).toBe(
+      "This provider isn't ready yet — check its connection in Settings.",
+    );
   });
 });

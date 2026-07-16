@@ -20,16 +20,16 @@ import {
   ProviderInstanceId,
   type ScopedThreadRef,
   ThreadId,
-} from "@t3tools/contracts";
-import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
-import { createModelSelection } from "@t3tools/shared/model";
-import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
+} from "@t4code/contracts";
+import { DEFAULT_CLIENT_SETTINGS } from "@t4code/contracts/settings";
+import { createModelSelection } from "@t4code/shared/model";
+import { scopeThreadRef, scopedThreadKey } from "@t4code/client-runtime/environment";
 import type {
   EnvironmentProject,
   EnvironmentThreadShell,
-} from "@t3tools/client-runtime/state/models";
+} from "@t4code/client-runtime/state/models";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { squashAtomCommandFailure } from "@t4code/client-runtime/state/runtime";
 import * as Cause from "effect/Cause";
 
 // ── hoisted harness state shared by every vi.mock factory ─────────────────────

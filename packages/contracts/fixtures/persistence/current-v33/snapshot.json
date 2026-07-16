@@ -1,0 +1,235 @@
+{
+  "formatVersion": 1,
+  "valueEncoding": {
+    "integerOutsideJsonSafeRange": {
+      "$integer": "base-10 string"
+    },
+    "blob": {
+      "$base64": "RFC 4648 base64 string"
+    },
+    "jsonText": "preserved as the exact SQLite TEXT value"
+  },
+  "tables": {
+    "auth_pairing_links": [
+      {
+        "id": "pairing-current",
+        "credential": "CURRENT-CREDENTIAL",
+        "method": "one-time-token",
+        "scopes": "[\"access:read\",\"orchestration:read\",\"orchestration:write\"]",
+        "subject": "fixture-current",
+        "label": "Current fixture pairing",
+        "created_at": "2026-01-01T00:00:00.000Z",
+        "expires_at": "2026-01-31T00:00:00.000Z",
+        "consumed_at": null,
+        "revoked_at": null,
+        "proof_key_thumbprint": "fixture-proof-key-thumbprint"
+      }
+    ],
+    "auth_sessions": [
+      {
+        "session_id": "00000000-0000-4000-8000-000000000301",
+        "subject": "fixture-current",
+        "scopes": "[\"access:read\",\"orchestration:read\"]",
+        "method": "dpop-access-token",
+        "client_label": "Current fixture CLI",
+        "client_ip_address": "127.0.0.1",
+        "client_user_agent": "t4-fixture/1.0",
+        "client_device_type": "desktop",
+        "client_os": "FixtureOS 1.0",
+        "client_browser": null,
+        "issued_at": "2026-01-01T00:00:00.000Z",
+        "expires_at": "2026-01-31T00:00:00.000Z",
+        "last_connected_at": "2026-01-01T00:05:00.000Z",
+        "revoked_at": null
+      }
+    ],
+    "checkpoint_diff_blobs": [
+      {
+        "thread_id": "thread-current",
+        "from_turn_count": 2,
+        "to_turn_count": 3,
+        "diff": "diff --git a/current.txt b/current.txt\n+current fixture\n",
+        "created_at": "2026-01-01T00:05:00.000Z"
+      }
+    ],
+    "orchestration_command_receipts": [
+      {
+        "command_id": "command-current-create-thread",
+        "aggregate_kind": "thread",
+        "aggregate_id": "thread-current",
+        "accepted_at": "2026-01-01T00:05:00.000Z",
+        "result_sequence": 302,
+        "status": "accepted",
+        "error": null
+      }
+    ],
+    "orchestration_events": [
+      {
+        "sequence": 301,
+        "event_id": "event-current-project-created",
+        "aggregate_kind": "project",
+        "stream_id": "project-current",
+        "stream_version": 1,
+        "event_type": "project.created",
+        "occurred_at": "2026-01-01T00:00:00.000Z",
+        "command_id": "command-current-create-project",
+        "causation_event_id": null,
+        "correlation_id": "correlation-current",
+        "actor_kind": "user",
+        "payload_json": "{\"projectId\":\"project-current\",\"defaultModelSelection\":{\"provider\":\"codex\",\"model\":\"gpt-5.4\",\"options\":[{\"id\":\"effort\",\"value\":\"high\"},{\"id\":\"fastMode\",\"value\":false}]}}",
+        "metadata_json": "{\"source\":\"golden-corpus\",\"version\":33}"
+      },
+      {
+        "sequence": 302,
+        "event_id": "event-current-thread-created",
+        "aggregate_kind": "thread",
+        "stream_id": "thread-current",
+        "stream_version": 1,
+        "event_type": "thread.created",
+        "occurred_at": "2026-01-01T00:05:00.000Z",
+        "command_id": "command-current-create-thread",
+        "causation_event_id": "event-current-project-created",
+        "correlation_id": "correlation-current",
+        "actor_kind": "agent",
+        "payload_json": "{\"threadId\":\"thread-current\",\"kind\":\"workspace\",\"runtimeMode\":\"full-access\",\"interactionMode\":\"default\",\"modelSelection\":{\"provider\":\"codex\",\"model\":\"gpt-5.4\",\"options\":[{\"id\":\"effort\",\"value\":\"high\"}]}}",
+        "metadata_json": "{\"source\":\"golden-corpus\",\"version\":33}"
+      }
+    ],
+    "projection_pending_approvals": [
+      {
+        "request_id": "approval-current",
+        "thread_id": "thread-current",
+        "turn_id": "turn-current-1",
+        "status": "pending",
+        "decision": null,
+        "created_at": "2026-01-01T00:05:00.000Z",
+        "resolved_at": null
+      }
+    ],
+    "projection_projects": [
+      {
+        "project_id": "project-current",
+        "title": "Current fixture project",
+        "workspace_root": "/fixtures/current",
+        "scripts_json": "{\"check\":\"vp check\",\"test\":\"vp test\"}",
+        "created_at": "2026-01-01T00:00:00.000Z",
+        "updated_at": "2026-01-01T00:05:00.000Z",
+        "deleted_at": null,
+        "default_model_selection_json": "{\"provider\":\"codex\",\"model\":\"gpt-5.4\",\"options\":[{\"id\":\"effort\",\"value\":\"high\"}]}"
+      }
+    ],
+    "projection_state": [
+      {
+        "projector": "orchestration",
+        "last_applied_sequence": 302,
+        "updated_at": "2026-01-01T00:05:00.000Z"
+      }
+    ],
+    "projection_thread_activities": [
+      {
+        "activity_id": "activity-current-approval",
+        "thread_id": "thread-current",
+        "turn_id": "turn-current-1",
+        "tone": "warning",
+        "kind": "approval.requested",
+        "summary": "Current approval requested",
+        "payload_json": "{\"requestId\":\"approval-current\",\"command\":\"vp check\"}",
+        "created_at": "2026-01-01T00:05:00.000Z",
+        "sequence": 302
+      }
+    ],
+    "projection_thread_messages": [
+      {
+        "message_id": "message-current-user",
+        "thread_id": "thread-current",
+        "turn_id": "turn-current-1",
+        "role": "user",
+        "text": "Exercise every current persistence table.",
+        "is_streaming": 0,
+        "created_at": "2026-01-01T00:00:00.000Z",
+        "updated_at": "2026-01-01T00:00:00.000Z",
+        "attachments_json": "[{\"kind\":\"file\",\"name\":\"current.txt\",\"path\":\"/fixtures/current/current.txt\"}]"
+      }
+    ],
+    "projection_thread_proposed_plans": [
+      {
+        "plan_id": "plan-current",
+        "thread_id": "thread-current",
+        "turn_id": "turn-current-1",
+        "plan_markdown": "# Current plan\n\nValidate the Rust persistence port.",
+        "created_at": "2026-01-01T00:00:00.000Z",
+        "updated_at": "2026-01-01T00:05:00.000Z",
+        "implemented_at": null,
+        "implementation_thread_id": null
+      }
+    ],
+    "projection_thread_sessions": [
+      {
+        "thread_id": "thread-current",
+        "status": "ready",
+        "provider_name": "codex",
+        "provider_session_id": "provider-session-current",
+        "provider_thread_id": "provider-thread-current",
+        "active_turn_id": "turn-current-1",
+        "last_error": null,
+        "updated_at": "2026-01-01T00:05:00.000Z",
+        "runtime_mode": "full-access",
+        "provider_instance_id": "codex-primary"
+      }
+    ],
+    "projection_threads": [
+      {
+        "thread_id": "thread-current",
+        "project_id": "project-current",
+        "title": "Current migration thread",
+        "branch": "fixture/current",
+        "worktree_path": "/fixtures/current/worktree",
+        "latest_turn_id": "turn-current-1",
+        "created_at": "2026-01-01T00:00:00.000Z",
+        "updated_at": "2026-01-01T00:05:00.000Z",
+        "deleted_at": null,
+        "runtime_mode": "full-access",
+        "interaction_mode": "default",
+        "model_selection_json": "{\"provider\":\"codex\",\"model\":\"gpt-5.4\",\"options\":[{\"id\":\"effort\",\"value\":\"high\"}]}",
+        "archived_at": null,
+        "latest_user_message_at": "2026-01-01T00:00:00.000Z",
+        "pending_approval_count": 1,
+        "pending_user_input_count": 0,
+        "has_actionable_proposed_plan": 1,
+        "kind": "workspace"
+      }
+    ],
+    "projection_turns": [
+      {
+        "row_id": 301,
+        "thread_id": "thread-current",
+        "turn_id": "turn-current-1",
+        "pending_message_id": "message-current-user",
+        "assistant_message_id": "message-current-assistant",
+        "state": "completed",
+        "requested_at": "2026-01-01T00:00:00.000Z",
+        "started_at": "2026-01-01T00:00:00.000Z",
+        "completed_at": "2026-01-01T00:05:00.000Z",
+        "checkpoint_turn_count": 3,
+        "checkpoint_ref": "checkpoint/current/3",
+        "checkpoint_status": "ready",
+        "checkpoint_files_json": "[\"current.txt\",\"nested/fixture.ts\"]",
+        "source_proposed_plan_thread_id": "thread-source-plan",
+        "source_proposed_plan_id": "plan-source"
+      }
+    ],
+    "provider_session_runtime": [
+      {
+        "thread_id": "thread-current",
+        "provider_name": "codex",
+        "adapter_key": "codex-app-server",
+        "runtime_mode": "full-access",
+        "status": "ready",
+        "last_seen_at": "2026-01-01T00:05:00.000Z",
+        "resume_cursor_json": "{\"cursor\":\"current-cursor\",\"eventSequence\":302}",
+        "runtime_payload_json": "{\"pid\":4301,\"transport\":\"stdio\"}",
+        "provider_instance_id": "codex-primary"
+      }
+    ]
+  }
+}

@@ -1,4 +1,4 @@
-import type { ContextMenuItem } from "@t3tools/contracts";
+import type { ContextMenuItem } from "@t4code/contracts";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -102,7 +102,7 @@ function isNodeWithinMenuStack(target: EventTarget | null, menuStack: readonly H
 }
 
 /**
- * Imperative DOM-based context menu for non-Electron environments.
+ * Imperative DOM-based context menu fallback for browser environments.
  * Supports nested submenus and resolves with the clicked leaf item id.
  */
 export function showContextMenuFallback<T extends string>(

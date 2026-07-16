@@ -7,6 +7,7 @@ import {
   FolderPlusIcon,
   Globe2Icon,
   LoaderIcon,
+  MessageSquarePlusIcon,
   PinIcon,
   SearchIcon,
   SettingsIcon,
@@ -55,21 +56,21 @@ import {
   type ResolvedKeybindingsConfig,
   type SidebarProjectGroupingMode,
   ThreadId,
-} from "@t3tools/contracts";
-import { createModelSelection } from "@t3tools/shared/model";
+} from "@t4code/contracts";
+import { createModelSelection } from "@t4code/shared/model";
 import {
   parseScopedThreadKey,
   scopedProjectKey,
   scopedThreadKey,
   scopeProjectRef,
   scopeThreadRef,
-} from "@t3tools/client-runtime/environment";
-import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
+} from "@t4code/client-runtime/environment";
+import { safeErrorLogAttributes } from "@t4code/client-runtime/errors";
 import {
   isAtomCommandInterrupted,
   settlePromise,
   squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
+} from "@t4code/client-runtime/state/runtime";
 import { Link, useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
 import {
   MAX_SIDEBAR_THREAD_PREVIEW_COUNT,
@@ -77,10 +78,10 @@ import {
   type SidebarProjectSortOrder,
   type SidebarThreadPreviewCount,
   type SidebarThreadSortOrder,
-} from "@t3tools/contracts/settings";
+} from "@t4code/contracts/settings";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
-import { isElectron } from "../env";
+import { isDesktopHost } from "../env";
 import { APP_BASE_NAME, APP_STAGE_LABEL } from "../branding";
 import { useOpenPrLink } from "../lib/openPullRequestLink";
 import { isTerminalFocused } from "../lib/terminalFocus";
@@ -276,6 +277,40 @@ function formatProjectMemberActionLabel(
   return member.environmentLabel
     ? `${member.environmentLabel} — ${member.workspaceRoot}`
     : member.workspaceRoot;
+}
+
+async function chooseProjectMember(
+  members: readonly SidebarProjectGroupMember[],
+  position: { readonly x: number; readonly y: number },
+): Promise<SidebarProjectGroupMember | null> {
+  if (members.length <= 1) {
+    return members[0] ?? null;
+  }
+  const api = readLocalApi();
+  if (!api) {
+    return null;
+  }
+  const clickedResult = await settlePromise(() =>
+    api.contextMenu.show(
+      members.map((member) => ({
+        id: member.physicalProjectKey,
+        label: formatProjectMemberActionLabel(member, members.length),
+      })),
+      position,
+    ),
+  );
+  if (clickedResult._tag === "Failure") {
+    const error = squashAtomCommandFailure(clickedResult);
+    toastManager.add(
+      stackedThreadToast({
+        type: "error",
+        title: "Could not choose environment",
+        description: error instanceof Error ? error.message : "An error occurred.",
+      }),
+    );
+    return null;
+  }
+  return members.find((member) => member.physicalProjectKey === clickedResult.value) ?? null;
 }
 
 function projectExpansionPreferenceKeys(project: SidebarProjectSnapshot): string[] {
@@ -1211,7 +1246,6 @@ interface SidebarProjectItemProps {
   activeRouteThreadKey: string | null;
   newThreadShortcutLabel: string | null;
   handleNewThread: ReturnType<typeof useNewThreadHandler>;
-  openCreateWorktreeDialog: (projectId?: ProjectId | null) => void;
   archiveThread: ReturnType<typeof useThreadActions>["archiveThread"];
   deleteThread: ReturnType<typeof useThreadActions>["deleteThread"];
   threadJumpLabelByKey: ReadonlyMap<string, string>;
@@ -1231,7 +1265,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     isThreadListExpanded,
     activeRouteThreadKey,
     newThreadShortcutLabel,
-    openCreateWorktreeDialog,
+    handleNewThread,
     archiveThread,
     deleteThread,
     threadJumpLabelByKey,
@@ -2087,20 +2121,18 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     ],
   );
 
-  // Orca port: the sidebar no longer seeds/routes to draft threads (spec
-  // item 6) — the "new thread" action opens `CreateWorktreeDialog` for the
-  // clicked project member instead of `handleNewThread`'s draft-creation
-  // flow. `handleNewThread` is still threaded through as a prop (used
-  // elsewhere in this file, e.g. keyboard shortcuts) but is intentionally
-  // NOT called from here anymore.
-  const createThreadForProjectMember = useCallback(
+  const createMainChatForProjectMember = useCallback(
     (member: SidebarProjectGroupMember) => {
       if (isMobile) {
         setOpenMobile(false);
       }
-      openCreateWorktreeDialog(member.id);
+      void handleNewThread(scopeProjectRef(member.environmentId, member.id), {
+        branch: null,
+        worktreePath: null,
+        envMode: "local",
+      });
     },
-    [isMobile, openCreateWorktreeDialog, setOpenMobile],
+    [handleNewThread, isMobile, setOpenMobile],
   );
 
   const handleCreateThreadClick = useCallback(
@@ -2109,52 +2141,22 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       event.stopPropagation();
 
       if (project.memberProjects.length === 1) {
-        createThreadForProjectMember(project.memberProjects[0]!);
+        createMainChatForProjectMember(project.memberProjects[0]!);
         return;
       }
 
       void (async () => {
-        const api = readLocalApi();
-        if (!api) {
-          return;
-        }
-        const clickedResult = await settlePromise(() =>
-          api.contextMenu.show(
-            project.memberProjects.map((member) => ({
-              id: member.physicalProjectKey,
-              label: formatProjectMemberActionLabel(member, project.groupedProjectCount),
-            })),
-            {
-              x: event.clientX,
-              y: event.clientY,
-            },
-          ),
-        );
-        if (clickedResult._tag === "Failure") {
-          const error = squashAtomCommandFailure(clickedResult);
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Could not choose environment",
-              description: error instanceof Error ? error.message : "An error occurred.",
-            }),
-          );
-          return;
-        }
-        const clicked = clickedResult.value;
-        if (!clicked) {
-          return;
-        }
-        const targetMember = project.memberProjects.find(
-          (member) => member.physicalProjectKey === clicked,
-        );
+        const targetMember = await chooseProjectMember(project.memberProjects, {
+          x: event.clientX,
+          y: event.clientY,
+        });
         if (!targetMember) {
           return;
         }
-        createThreadForProjectMember(targetMember);
+        createMainChatForProjectMember(targetMember);
       })();
     },
-    [createThreadForProjectMember, project.groupedProjectCount, project.memberProjects],
+    [createMainChatForProjectMember, project.memberProjects],
   );
 
   const attemptArchiveThread = useCallback(
@@ -3163,17 +3165,8 @@ function SortableProjectItem({
   );
 }
 
-const SidebarChromeHeader = memo(function SidebarChromeHeader({
-  isElectron,
-}: {
-  isElectron: boolean;
-}) {
-  return isElectron ? (
-    <SidebarHeader className="@container/sidebar-header drag-region h-[var(--workspace-topbar-height)] shrink-0 flex-row items-center px-3 py-0 md:px-0">
-      <SidebarTrigger className="md:hidden" />
-      <SidebarBrand />
-    </SidebarHeader>
-  ) : (
+const SidebarChromeHeader = memo(function SidebarChromeHeader() {
+  return (
     <SidebarHeader className="@container/sidebar-header h-[var(--workspace-topbar-height)] shrink-0 flex-row items-center px-3 py-0 md:px-0">
       <SidebarTrigger className="md:hidden" />
       <SidebarBrand />
@@ -3341,6 +3334,36 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     },
     [updateSettings],
   );
+  const toolbarProjectMembers = useMemo(
+    () => sortedProjects.flatMap((project) => project.memberProjects),
+    [sortedProjects],
+  );
+  const handleNewMainChatClick = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      if (toolbarProjectMembers.length === 1) {
+        const member = toolbarProjectMembers[0]!;
+        void handleNewThread(scopeProjectRef(member.environmentId, member.id), {
+          branch: null,
+          worktreePath: null,
+          envMode: "local",
+        });
+        return;
+      }
+      void (async () => {
+        const member = await chooseProjectMember(toolbarProjectMembers, {
+          x: event.clientX,
+          y: event.clientY,
+        });
+        if (!member) return;
+        await handleNewThread(scopeProjectRef(member.environmentId, member.id), {
+          branch: null,
+          worktreePath: null,
+          envMode: "local",
+        });
+      })();
+    },
+    [handleNewThread, toolbarProjectMembers],
+  );
   const handleThreadSortOrderChange = useCallback(
     (sortOrder: SidebarThreadSortOrder) => {
       updateSettings({ sidebarThreadSortOrder: sortOrder });
@@ -3430,6 +3453,23 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                 render={
                   <button
                     type="button"
+                    aria-label="New main-branch chat"
+                    data-testid="sidebar-new-main-chat-trigger"
+                    disabled={toolbarProjectMembers.length === 0}
+                    className="inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+                    onClick={handleNewMainChatClick}
+                  />
+                }
+              >
+                <MessageSquarePlusIcon className="size-3.5" />
+              </TooltipTrigger>
+              <TooltipPopup side="right">New main-branch chat</TooltipPopup>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    type="button"
                     aria-label="New worktree"
                     data-testid="sidebar-new-worktree-trigger"
                     className="inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
@@ -3485,7 +3525,6 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                         }
                         newThreadShortcutLabel={newThreadShortcutLabel}
                         handleNewThread={handleNewThread}
-                        openCreateWorktreeDialog={openCreateWorktreeDialog}
                         archiveThread={archiveThread}
                         deleteThread={deleteThread}
                         threadJumpLabelByKey={threadJumpLabelByKey}
@@ -3518,7 +3557,6 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                 }
                 newThreadShortcutLabel={newThreadShortcutLabel}
                 handleNewThread={handleNewThread}
-                openCreateWorktreeDialog={openCreateWorktreeDialog}
                 archiveThread={archiveThread}
                 deleteThread={deleteThread}
                 threadJumpLabelByKey={threadJumpLabelByKey}
@@ -4070,7 +4108,7 @@ export default function Sidebar() {
     ? resolveDesktopUpdateButtonAction(desktopUpdateState)
     : "none";
   const showArm64IntelBuildWarning =
-    isElectron && shouldShowArm64IntelBuildWarning(desktopUpdateState);
+    isDesktopHost && shouldShowArm64IntelBuildWarning(desktopUpdateState);
   const arm64IntelBuildWarningDescription =
     desktopUpdateState && showArm64IntelBuildWarning
       ? getArm64IntelBuildWarningDescription(desktopUpdateState)
@@ -4181,7 +4219,7 @@ export default function Sidebar() {
       {prewarmedSidebarThreadRefs.map((threadRef) => (
         <SidebarThreadDetailPrewarmer key={scopedThreadKey(threadRef)} threadRef={threadRef} />
       ))}
-      <SidebarChromeHeader isElectron={isElectron} />
+      <SidebarChromeHeader />
 
       {isOnSettings ? (
         <SettingsSidebarNav pathname={pathname} />

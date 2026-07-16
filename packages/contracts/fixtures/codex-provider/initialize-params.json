@@ -1,0 +1,10 @@
+{
+  "clientInfo": {
+    "name": "t4code_desktop",
+    "title": "T4Code Desktop",
+    "version": "0.1.1"
+  },
+  "capabilities": {
+    "experimentalApi": true
+  }
+}

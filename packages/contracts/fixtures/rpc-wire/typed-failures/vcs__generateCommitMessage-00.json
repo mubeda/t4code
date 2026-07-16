@@ -1,0 +1,29 @@
+{
+  "_tag": "Exit",
+  "requestId": "900719925474099312345",
+  "exit": {
+    "_tag": "Failure",
+    "cause": [
+      {
+        "_tag": "Fail",
+        "error": {
+          "_tag": "TextGenerationError",
+          "operation": "QH#}l",
+          "detail": "",
+          "cause": [
+            2747917535988037,
+            null,
+            -7068240396856315,
+            true,
+            5325907925230343,
+            "xUP0",
+            false,
+            "qjx",
+            true,
+            null
+          ]
+        }
+      }
+    ]
+  }
+}

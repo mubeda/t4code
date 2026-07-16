@@ -1,0 +1,101 @@
+{
+  "scenario": "project-thread-turn-checkpoint",
+  "commands": [
+    {
+      "type": "project.create",
+      "commandId": "client:project-create-1",
+      "projectId": "project-1",
+      "title": "Project 1",
+      "workspaceRoot": "C:/work/project-1",
+      "defaultModelSelection": { "provider": "codex", "model": "gpt-5" },
+      "createdAt": "2026-07-10T10:00:00.000Z"
+    },
+    {
+      "type": "thread.create",
+      "commandId": "client:thread-create-1",
+      "threadId": "thread-1",
+      "projectId": "project-1",
+      "title": "Thread 1",
+      "kind": "coding",
+      "modelSelection": { "provider": "codex", "model": "gpt-5" },
+      "runtimeMode": "full-access",
+      "interactionMode": "default",
+      "branch": "codex/thread-1",
+      "worktreePath": "C:/worktrees/thread-1",
+      "createdAt": "2026-07-10T10:01:00.000Z"
+    },
+    {
+      "type": "thread.turn.start",
+      "commandId": "client:turn-start-1",
+      "threadId": "thread-1",
+      "turnId": "turn-1",
+      "message": {
+        "messageId": "message-1",
+        "role": "user",
+        "text": "hello world",
+        "createdAt": "2026-07-10T10:02:00.000Z"
+      },
+      "requestedAt": "2026-07-10T10:02:00.000Z"
+    },
+    {
+      "type": "thread.activity.append",
+      "commandId": "client:activity-1",
+      "threadId": "thread-1",
+      "activityId": "activity-1",
+      "turnId": "turn-1",
+      "tone": "info",
+      "kind": "status",
+      "summary": "turn started",
+      "payload": { "step": 1 },
+      "createdAt": "2026-07-10T10:02:01.000Z"
+    },
+    {
+      "type": "thread.session.set",
+      "commandId": "provider:session-1",
+      "threadId": "thread-1",
+      "status": "running",
+      "providerName": "codex",
+      "providerInstanceId": "codex",
+      "runtimeMode": "full-access",
+      "activeTurnId": "turn-1",
+      "lastError": null,
+      "updatedAt": "2026-07-10T10:02:02.000Z"
+    },
+    {
+      "type": "thread.approval.upsert",
+      "commandId": "provider:approval-1",
+      "threadId": "thread-1",
+      "requestId": "approval-1",
+      "turnId": "turn-1",
+      "status": "pending",
+      "decision": null,
+      "createdAt": "2026-07-10T10:02:03.000Z",
+      "resolvedAt": null
+    },
+    {
+      "type": "thread.plan.upsert",
+      "commandId": "provider:plan-1",
+      "threadId": "thread-1",
+      "planId": "plan-1",
+      "turnId": "turn-1",
+      "planMarkdown": "1. Do the thing",
+      "implementedAt": null,
+      "implementationThreadId": null,
+      "createdAt": "2026-07-10T10:02:04.000Z",
+      "updatedAt": "2026-07-10T10:02:04.000Z"
+    },
+    {
+      "type": "thread.checkpoint.save",
+      "commandId": "provider:checkpoint-1",
+      "threadId": "thread-1",
+      "turnId": "turn-1",
+      "checkpointTurnCount": 1,
+      "checkpointRef": "refs/t4code/checkpoints/thread-1/turn/1",
+      "status": "ready",
+      "files": [],
+      "assistantMessageId": "assistant-1",
+      "completedAt": "2026-07-10T10:02:05.000Z",
+      "diff": "--- a/file.rs\n+++ b/file.rs\n@@ -1 +1 @@\n-old\n+new\n"
+    }
+  ]
+}

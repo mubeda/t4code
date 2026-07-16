@@ -6,7 +6,7 @@ import * as Schema from "effect/Schema";
 import * as HttpApiError from "effect/unstable/httpapi/HttpApiError";
 import { lt } from "drizzle-orm";
 
-import { verifyDpopProof } from "@t3tools/shared/dpop";
+import { verifyDpopProof } from "@t4code/shared/dpop";
 import * as RelayDb from "../db.ts";
 import { relayDpopProofs } from "../persistence/schema.ts";
 
@@ -18,7 +18,7 @@ export class DpopProofReplayPersistenceError extends Schema.TaggedErrorClass<Dpo
     jti: Schema.optionalKey(Schema.String),
     iat: Schema.optionalKey(Schema.Number),
     expiresBefore: Schema.optionalKey(Schema.String),
-    cause: Schema.Defect(),
+    cause: Schema.Literal("database-error"),
   },
 ) {
   override get message(): string {
@@ -45,7 +45,7 @@ export class DpopProofReplay extends Context.Service<
     }) => Effect.Effect<boolean, DpopProofReplayPersistenceError>;
     readonly pruneExpired: Effect.Effect<void, DpopProofReplayPersistenceError>;
   }
->()("t3code-relay/auth/DpopProofs/DpopProofReplay") {}
+>()("t4code-relay/auth/DpopProofs/DpopProofReplay") {}
 
 const make = Effect.gen(function* () {
   const db = yield* RelayDb.RelayDb;
@@ -66,13 +66,13 @@ const make = Effect.gen(function* () {
         .returning({ jti: relayDpopProofs.jti })
         .pipe(
           Effect.mapError(
-            (cause) =>
+            () =>
               new DpopProofReplayPersistenceError({
                 operation: "consume",
                 thumbprint: input.thumbprint,
                 jti: input.jti,
                 iat: input.iat,
-                cause,
+                cause: "database-error",
               }),
           ),
         );
@@ -93,14 +93,17 @@ const make = Effect.gen(function* () {
       method: input.method,
       url: input.url,
       nowEpochSeconds: Math.floor(input.now.epochMilliseconds / 1_000),
-      ...(input.expectedThumbprint ? { expectedThumbprint: input.expectedThumbprint } : {}),
-      ...(input.expectedAccessToken ? { expectedAccessToken: input.expectedAccessToken } : {}),
+      ...(input.expectedThumbprint !== undefined
+        ? { expectedThumbprint: input.expectedThumbprint }
+        : {}),
+      ...(input.expectedAccessToken !== undefined
+        ? { expectedAccessToken: input.expectedAccessToken }
+        : {}),
     });
     if (!result.ok) {
       yield* Effect.logWarning("relay dpop proof rejected", {
         reason: result.reason,
         method: input.method,
-        url: input.url,
         expectedThumbprintPresent: input.expectedThumbprint !== undefined,
         expectedAccessTokenPresent: input.expectedAccessToken !== undefined,
       });
@@ -135,11 +138,11 @@ const make = Effect.gen(function* () {
       .where(lt(relayDpopProofs.expiresAt, now))
       .pipe(
         Effect.mapError(
-          (cause) =>
+          () =>
             new DpopProofReplayPersistenceError({
               operation: "prune-expired",
               expiresBefore: now,
-              cause,
+              cause: "database-error",
             }),
         ),
       );

@@ -1,30 +1,32 @@
-import type { ProjectScript } from "@t3tools/contracts";
+import type { ProjectScript } from "@t4code/contracts";
 
-interface ProjectScriptRuntimeEnvInput {
+interface ProjectScriptLocationInput {
   project: {
     cwd: string;
   };
   worktreePath?: string | null;
+}
+
+interface ProjectScriptRuntimeEnvInput extends ProjectScriptLocationInput {
   extraEnv?: Record<string, string>;
 }
 
-export function projectScriptCwd(input: {
-  project: {
-    cwd: string;
-  };
-  worktreePath?: string | null;
-}): string {
-  return input.worktreePath ?? input.project.cwd;
+const nonEmptyWorktreePath = (input: ProjectScriptLocationInput): string | undefined =>
+  input.worktreePath?.trim() ? input.worktreePath : undefined;
+
+export function projectScriptCwd(input: ProjectScriptLocationInput): string {
+  return nonEmptyWorktreePath(input) ?? input.project.cwd;
 }
 
 export function projectScriptRuntimeEnv(
   input: ProjectScriptRuntimeEnvInput,
 ): Record<string, string> {
   const env: Record<string, string> = {
-    T3CODE_PROJECT_ROOT: input.project.cwd,
+    T4CODE_PROJECT_ROOT: input.project.cwd,
   };
-  if (input.worktreePath) {
-    env.T3CODE_WORKTREE_PATH = input.worktreePath;
+  const worktreePath = nonEmptyWorktreePath(input);
+  if (worktreePath !== undefined) {
+    env.T4CODE_WORKTREE_PATH = worktreePath;
   }
   if (input.extraEnv) {
     return { ...env, ...input.extraEnv };

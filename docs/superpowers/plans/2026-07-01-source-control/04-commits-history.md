@@ -1,5 +1,8 @@
 # Plan 04 — COMMITS History Section
 
+> Status: archival. This shipped plan preserves its original paths and commands.
+> Use [Current Scripts](../../../reference/scripts.md) for supported commands.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax. Read [00-overview.md](./00-overview.md) first. **Depends on Plan 01** (the panel). Independent of Plans 02/03.
 
 **Goal:** Add the collapsible bottom **COMMITS** section from the Orca screenshot — a recent-commit list (`git log`) that loads lazily the first time the user expands it.
@@ -85,7 +88,7 @@ and add `WsVcsListCommitsRpc` to `WsRpcGroup`.
 
 - [ ] **Step 3: Typecheck contracts + commit**
 
-Run: `pnpm --filter @t3tools/contracts exec tsc --noEmit` → PASS.
+Run: `pnpm --filter @t4code/contracts exec tsc --noEmit` → PASS.
 
 ```bash
 git add packages/contracts/src/git.ts packages/contracts/src/rpc.ts
@@ -214,8 +217,8 @@ Add `listCommits` to the returned driver object, and declare it on the `GitVcsDr
 
 - [ ] **Step 4: Run test + typecheck + commit**
 
-Run: `pnpm --filter @t3tools/server exec vp test run apps/server/src/vcs/GitVcsDriverCore.test.ts` → PASS.
-Run: `pnpm --filter @t3tools/server exec tsc --noEmit` → PASS.
+Run: `pnpm --filter @t4code/server exec vp test run apps/server/src/vcs/GitVcsDriverCore.test.ts` → PASS.
+Run: `pnpm --filter @t4code/server exec tsc --noEmit` → PASS.
 
 ```bash
 git add apps/server/src/vcs/GitVcsDriver.ts apps/server/src/vcs/GitVcsDriverCore.ts apps/server/src/vcs/GitVcsDriverCore.test.ts apps/server/src/git/GitManager.ts apps/server/src/git/GitWorkflowService.ts
@@ -245,8 +248,8 @@ Dispatch (near the `vcsListRefs` handler, line 1522):
 
 - [ ] **Step 2: Typecheck + server test + commit**
 
-Run: `pnpm --filter @t3tools/server exec tsc --noEmit` → PASS.
-Run: `pnpm --filter @t3tools/server exec vp test run apps/server/src/server.test.ts` → PASS.
+Run: `pnpm --filter @t4code/server exec tsc --noEmit` → PASS.
+Run: `pnpm --filter @t4code/server exec vp test run apps/server/src/server.test.ts` → PASS.
 
 ```bash
 git add apps/server/src/ws.ts
@@ -347,14 +350,14 @@ Run → FAIL.
 - [ ] **Step 5: Implement the component** (`SourceControlCommits.tsx`)
 
 ```tsx
-import type { VcsCommit } from "@t3tools/contracts";
+import type { VcsCommit } from "@t4code/contracts";
 import { ChevronDownIcon } from "lucide-react";
 import { useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { useEnvironmentQuery } from "~/state/query";
 import { vcsEnvironment } from "~/state/vcs";
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import type { ScopedThreadRef } from "@t4code/contracts";
 
 import { formatCommitTimestamp } from "./SourceControlCommits.logic";
 
@@ -435,8 +438,8 @@ Run the render test → PASS.
 
 - [ ] **Step 7: Typecheck + web tests + manual + commit**
 
-Run: `pnpm --filter @t3tools/web exec tsgo --noEmit` → PASS.
-Run: `pnpm --filter @t3tools/web exec vp test run --project unit apps/web/src/components/SourceControlCommits.logic.test.ts apps/web/src/components/SourceControlCommits.test.tsx` → PASS.
+Run: `pnpm --filter @t4code/web exec tsgo --noEmit` → PASS.
+Run: `pnpm --filter @t4code/web exec vp test run --project unit apps/web/src/components/SourceControlCommits.logic.test.ts apps/web/src/components/SourceControlCommits.test.tsx` → PASS.
 Manual: `pnpm dev:web` → the panel shows a collapsed **COMMITS** header; expanding it loads recent commits (short sha, subject, author, relative time); collapsed on first open (deferred load).
 
 ```bash

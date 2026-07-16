@@ -1,0 +1,23 @@
+{
+  "_tag": "Exit",
+  "requestId": "900719925474099312345",
+  "exit": {
+    "_tag": "Failure",
+    "cause": [
+      {
+        "_tag": "Fail",
+        "error": {
+          "_tag": "GitCommandError",
+          "operation": " ",
+          "command": "{f5mX1c{qw",
+          "cwd": "&{/x'E?[ti",
+          "argumentCount": 2.451193022337844e26,
+          "exitCode": 3.40281981555156e38,
+          "stderrLength": -3.923635700109488e-44,
+          "outputLength": -4.649957039375632e-19,
+          "detail": "eU__look"
+        }
+      }
+    ]
+  }
+}

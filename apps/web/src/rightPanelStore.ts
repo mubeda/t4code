@@ -8,8 +8,8 @@
  * workspace paths, and diff/plan/files/sourceControl remain singleton
  * surfaces.
  */
-import { scopedThreadKey } from "@t3tools/client-runtime/environment";
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import { scopedThreadKey } from "@t4code/client-runtime/environment";
+import type { ScopedThreadRef } from "@t4code/contracts";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
@@ -49,7 +49,7 @@ export type RightPanelSurface =
     }
   | { id: "plan"; kind: "plan" };
 
-const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
+const RIGHT_PANEL_STORAGE_KEY = "t4code:right-panel-state:v2";
 const RIGHT_PANEL_STORAGE_VERSION = 8;
 
 export interface ThreadRightPanelState {

@@ -16,6 +16,7 @@ import type { ReactElement, ReactNode, RefObject } from "react";
 import {
   ApprovalRequestId,
   type ChatAttachmentId,
+  DEFAULT_MODEL,
   EnvironmentId,
   EventId,
   MessageId,
@@ -27,16 +28,16 @@ import {
   type ServerProvider,
   ThreadId,
   TurnId,
-} from "@t3tools/contracts";
-import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
-import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
+} from "@t4code/contracts";
+import { DEFAULT_SERVER_SETTINGS } from "@t4code/contracts";
+import { DEFAULT_CLIENT_SETTINGS } from "@t4code/contracts/settings";
 import { AsyncResult } from "effect/unstable/reactivity";
 import * as Cause from "effect/Cause";
 import {
   scopeProjectRef,
   scopeThreadRef,
   scopedThreadKey,
-} from "@t3tools/client-runtime/environment";
+} from "@t4code/client-runtime/environment";
 
 const h = vi.hoisted(() => {
   const state = {
@@ -546,6 +547,7 @@ const codexProvider: ServerProvider = {
   models: [{ slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: null }],
   slashCommands: [],
   skills: [],
+  agents: [],
 };
 
 // ── Host useState call indexes (ChatViewContent renders first, so its
@@ -1130,6 +1132,37 @@ describe("ChatView effects (captured and run manually)", () => {
     for (const cleanup of cleanups) cleanup();
   });
 
+  it("does not reserve overlay space for a zero-height composer without ResizeObserver", () => {
+    seedConnectedServerThread();
+    const overlayElement = {
+      getBoundingClientRect: () => ({ height: 0 }),
+    };
+    seedHostState("composerOverlayElement", overlayElement);
+    vi.stubGlobal("ResizeObserver", undefined);
+
+    renderServerRoute();
+    const cleanups = runEffects();
+
+    expect(h.setStateCalls.some((call) => call.applied === 0)).toBe(false);
+    for (const cleanup of cleanups) cleanup();
+  });
+
+  it("keeps an already measured overlay height stable", () => {
+    seedConnectedServerThread();
+    const overlayElement = {
+      getBoundingClientRect: () => ({ height: 42 }),
+    };
+    seedHostState("composerOverlayElement", overlayElement);
+    h.stateSeeds.set(20, { value: 42, expectInitial: (value) => value === 0 });
+    vi.stubGlobal("ResizeObserver", undefined);
+
+    renderServerRoute();
+    const cleanups = runEffects();
+
+    expect(h.setStateCalls.some((call) => call.index === 20 && call.applied === 42)).toBe(true);
+    for (const cleanup of cleanups) cleanup();
+  });
+
   it("reconciles optimistic user messages once the server confirms them", () => {
     const optimisticMessage: ChatMessage = {
       id: MessageId.make("message-1"),
@@ -1179,6 +1212,43 @@ describe("ChatView effects (captured and run manually)", () => {
         (call) => Array.isArray(call.applied) && (call.applied as unknown[]).length === 0,
       ),
     ).toBe(true);
+  });
+
+  it("positions and stabilizes a timeline anchor after manual navigation", () => {
+    seedConnectedServerThread();
+    renderServerRoute();
+    const list = installLegendList({ scroll: 24, scrollLength: 200, dataLength: 4 });
+    const cleanups = runEffects();
+    const timeline = capturedProps("messagesTimeline");
+    const messageId = MessageId.make("anchor-message");
+    const onAnchorReady = timeline["onAnchorReady"] as (
+      messageId: MessageId,
+      anchorIndex: number,
+    ) => void;
+    const onAnchorSizeChanged = timeline["onAnchorSizeChanged"] as (messageId: MessageId) => void;
+
+    onAnchorReady(messageId, 2);
+    expect(list.calls.scrollToIndex).toContainEqual({
+      index: 2,
+      animated: true,
+      viewPosition: 0,
+      viewOffset: 16,
+    });
+
+    list.scrollNode.fire("scrollend");
+    expect(list.calls.scrollToOffset).toContainEqual({ offset: 24, animated: false });
+
+    list.scrollNode.fire("wheel");
+    onAnchorReady(messageId, 2);
+    list.scrollNode.fire("scrollend");
+    expect(list.calls.scrollToOffset).toHaveLength(2);
+
+    onAnchorSizeChanged(messageId);
+    expect(list.calls.scrollToOffset).toHaveLength(3);
+
+    onAnchorReady(messageId, 2);
+    expect(list.calls.scrollToIndex).toHaveLength(2);
+    for (const cleanup of cleanups) cleanup();
   });
 
   it("promotes blob attachment previews to settled server preview urls", async () => {
@@ -1906,6 +1976,53 @@ describe("ChatView project script handlers", () => {
     (header["onOpenTerminalPanel"] as () => void)();
     const centerState = useCenterPanelStore.getState().byThreadKey[threadKey];
     expect(centerState?.surfaces.some((surface) => surface.kind === "terminal")).toBe(true);
+  });
+
+  it("creates a provider chat panel even when model discovery is temporarily empty", async () => {
+    const header = renderWithScripts();
+    const entry = {
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      driver: ProviderDriverKind.make("claudeAgent"),
+      displayName: "Claude",
+      models: [],
+    } as unknown as ProviderInstanceEntry;
+
+    (header["onCreateChatPanel"] as (entry: ProviderInstanceEntry) => void)(entry);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const createCalls = commandCallsFor("thread.create");
+    expect(createCalls).toHaveLength(1);
+    const createInput = createCalls[0]?.input as {
+      environmentId: EnvironmentId;
+      input: {
+        threadId: ThreadId;
+        title: string;
+        modelSelection: { instanceId: ProviderInstanceId; model: string };
+        kind: string;
+      };
+    };
+    expect(createInput).toMatchObject({
+      environmentId,
+      input: {
+        title: "Panel — Claude",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: DEFAULT_MODEL,
+        },
+        kind: "panel",
+      },
+    });
+
+    const centerState = useCenterPanelStore.getState().byThreadKey[threadKey];
+    const claudeSurface = centerState?.surfaces.find((surface) => surface.kind === "chat");
+    expect(claudeSurface).toEqual({
+      id: `chat:${createInput.input.threadId}`,
+      kind: "chat",
+      threadId: createInput.input.threadId,
+      providerLabel: "Claude",
+    });
+    expect(centerState?.activeSurfaceId).toBe(claudeSurface?.id);
   });
 });
 

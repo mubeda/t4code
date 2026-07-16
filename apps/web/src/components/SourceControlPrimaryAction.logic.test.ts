@@ -1,4 +1,4 @@
-import type { VcsStatusResult } from "@t3tools/contracts";
+import type { VcsStatusResult } from "@t4code/contracts";
 import { assert, describe, it } from "vite-plus/test";
 import {
   buildSourceControlMenuItems,
@@ -461,13 +461,13 @@ describe("buildSourceControlMenuItems — always-rendered, disabled-with-reason"
 
   it("hides push-family menu actions on generated worktree refs", () => {
     const input = makeInput({
-      status: { refName: "t3code/deadbeef", aheadCount: 2 },
+      status: { refName: "t4code/deadbeef", aheadCount: 2 },
       stagedCount: 3,
     });
     assert.deepEqual(menuIds(buildSourceControlMenuItems(input)), ["commit", "pull", "create_pr"]);
     assert.equal(
       resolveSourceControlPrimaryAction(
-        makeInput({ status: { refName: "t3code/deadbeef", aheadCount: 2 } }),
+        makeInput({ status: { refName: "t4code/deadbeef", aheadCount: 2 } }),
       ).kind,
       "none",
     );

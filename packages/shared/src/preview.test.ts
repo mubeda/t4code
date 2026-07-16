@@ -67,6 +67,9 @@ describe("normalizePreviewUrl", () => {
     } catch (error) {
       expect(error).toBeInstanceOf(PreviewUrlNormalizationError);
       expect(error).toMatchObject({ inputLength: 3, reason: "empty" });
+      expect((error as PreviewUrlNormalizationError).message).toBe(
+        "Invalid preview URL (empty; input length 3).",
+      );
       expect(error).not.toHaveProperty("rawUrl");
       expect("cause" in (error as object)).toBe(false);
     }

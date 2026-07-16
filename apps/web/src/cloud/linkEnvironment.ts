@@ -14,17 +14,17 @@ import {
   EnvironmentHttpUnauthorizedError,
   EnvironmentId,
   WS_METHODS,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import {
   type RelayClientEnvironmentRecord,
   type RelayEnvironmentLinkResponse,
   type RelayProtectedError as RelayProtectedErrorType,
   type RelayManagedEndpointProviderKind,
-} from "@t3tools/contracts/relay";
-import { EnvironmentRegistry } from "@t3tools/client-runtime/connection";
-import { request, runStream } from "@t3tools/client-runtime/rpc";
-import { makeEnvironmentHttpApiClient } from "@t3tools/client-runtime/rpc";
-import { ManagedRelay } from "@t3tools/client-runtime/relay";
+} from "@t4code/contracts/relay";
+import { EnvironmentRegistry } from "@t4code/client-runtime/connection";
+import { request, runStream } from "@t4code/client-runtime/rpc";
+import { makeEnvironmentHttpApiClient } from "@t4code/client-runtime/rpc";
+import { ManagedRelay } from "@t4code/client-runtime/relay";
 
 import {
   readPrimaryEnvironmentDescriptor,
@@ -271,7 +271,7 @@ export function listManagedCloudEnvironments(input: {
     const configuredRelayUrl = relayUrl();
     if (!configuredRelayUrl) {
       return yield* new CloudEnvironmentLinkError({
-        message: "T3CODE_RELAY_URL is not configured.",
+        message: "T4CODE_RELAY_URL is not configured.",
       });
     }
     const relayClient = yield* ManagedRelay.ManagedRelayClient;
@@ -347,7 +347,7 @@ export function linkPrimaryEnvironmentToCloud(input: {
     const configuredRelayUrl = relayUrl();
     if (!configuredRelayUrl) {
       return yield* new CloudEnvironmentLinkError({
-        message: "T3CODE_RELAY_URL is not configured.",
+        message: "T4CODE_RELAY_URL is not configured.",
       });
     }
     const relayClient = yield* ManagedRelay.ManagedRelayClient;

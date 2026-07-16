@@ -1,4 +1,4 @@
-import { EnvironmentId, ThreadId, type ResolvedKeybindingsConfig } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId, type ResolvedKeybindingsConfig } from "@t4code/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -210,7 +210,7 @@ vi.mock("@pierre/diffs/react", () => ({
   },
 }));
 
-vi.mock("@t3tools/client-runtime/state/runtime", () => ({
+vi.mock("@t4code/client-runtime/state/runtime", () => ({
   isAtomCommandInterrupted: (result: { _tag: string }) => result._tag === "Interrupted",
   squashAtomCommandFailure: (result: { error?: unknown }) => result.error,
 }));
@@ -636,7 +636,7 @@ describe("file explorer toggle", () => {
 
     const toggle = ui.byLabel("Toggle", "Hide file explorer");
     (toggle.onPressedChange as () => void)();
-    expect(testState.setLocalStorageItem).toHaveBeenCalledWith("t3code.fileExplorerOpen", false);
+    expect(testState.setLocalStorageItem).toHaveBeenCalledWith("t4code.fileExplorerOpen", false);
 
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     testState.setLocalStorageItem.mockImplementation(() => {
@@ -953,17 +953,12 @@ describe("editable file surface", () => {
     return renderPanel(props);
   }
 
-  it("propagates editor changes to the query cache, save coordinator, and review comments", () => {
+  it("queues editor changes without feeding them back through the query cache", () => {
     renderEditable();
     const editor = testState.editors[0]!;
 
     editor.options.onChange({ contents: "updated" }, undefined);
-    expect(testState.setProjectFileQueryData).toHaveBeenCalledWith(
-      environmentId,
-      "/workspace/demo",
-      "src/app.ts",
-      "updated",
-    );
+    expect(testState.setProjectFileQueryData).not.toHaveBeenCalled();
     const coordinator = testState.coordinators[testState.coordinators.length - 1]!;
     expect(coordinator.change).toHaveBeenCalledWith("updated");
     expect(testState.addReviewComment).not.toHaveBeenCalled();
@@ -1006,6 +1001,12 @@ describe("editable file surface", () => {
     });
 
     coordinator.options.onConfirmed("persisted");
+    expect(testState.setProjectFileQueryData).toHaveBeenCalledWith(
+      environmentId,
+      "/workspace/demo",
+      "src/app.ts",
+      "persisted",
+    );
     expect(testState.confirmProjectFileQueryData).toHaveBeenCalledWith(
       environmentId,
       "/workspace/demo",

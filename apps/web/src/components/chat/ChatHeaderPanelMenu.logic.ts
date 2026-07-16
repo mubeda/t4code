@@ -6,7 +6,11 @@
  * Only settings-enabled instances are visible; each is selectable only when the
  * instance is picker-ready, otherwise it renders disabled with a reason.
  */
-import { isProviderInstancePickerVisible, type ProviderInstanceEntry } from "~/providerInstances";
+import {
+  isProviderInstancePickerReady,
+  isProviderInstancePickerVisible,
+  type ProviderInstanceEntry,
+} from "~/providerInstances";
 
 /** Reason shown on a visible-but-not-ready provider item. */
 export const PROVIDER_NOT_READY_REASON =
@@ -27,11 +31,12 @@ export interface PanelMenuProviderItem {
 export function buildPanelMenuModel(
   entries: ReadonlyArray<ProviderInstanceEntry>,
 ): ReadonlyArray<PanelMenuProviderItem> {
-  return entries.filter(isProviderInstancePickerVisible).map(
-    (entry) =>
-      ({
-        entry,
-        disabled: false,
-      }) satisfies PanelMenuProviderItem,
-  );
+  return entries.filter(isProviderInstancePickerVisible).map((entry) => {
+    const ready = isProviderInstancePickerReady(entry);
+    return {
+      entry,
+      disabled: !ready,
+      ...(ready ? {} : { disabledReason: PROVIDER_NOT_READY_REASON }),
+    } satisfies PanelMenuProviderItem;
+  });
 }

@@ -1,9 +1,9 @@
-import { DEFAULT_MODEL, ProviderInstanceId } from "@t3tools/contracts";
-import type { EditorId, EnvironmentId, ProjectEntry, ScopedThreadRef } from "@t3tools/contracts";
+import { DEFAULT_MODEL, ProviderInstanceId } from "@t4code/contracts";
+import type { EditorId, EnvironmentId, ProjectEntry, ScopedThreadRef } from "@t4code/contracts";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
+} from "@t4code/client-runtime/state/runtime";
 import { FileTree, useFileTree } from "@pierre/trees/react";
 import { FolderClosed, FolderOpen, RefreshCw, Search } from "lucide-react";
 import type { MouseEvent } from "react";
@@ -14,7 +14,7 @@ import { usePreferredEditor } from "~/editorPreferences";
 import { useTheme } from "~/hooks/useTheme";
 import { inferProjectTitleFromPath } from "~/lib/projectPaths";
 import { cn, newProjectId } from "~/lib/utils";
-import { T3_PIERRE_ICONS } from "~/pierre-icons";
+import { T4CODE_PIERRE_ICONS } from "~/pierre-icons";
 import { isPreviewSupportedInRuntime } from "~/previewStateStore";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { assetEnvironment } from "~/state/assets";
@@ -388,7 +388,7 @@ export default function FileBrowserPanel({
     fileTreeSearchMode: "hide-non-matches",
     flattenEmptyDirectories: true,
     initialExpansion: 1,
-    icons: T3_PIERRE_ICONS,
+    icons: T4CODE_PIERRE_ICONS,
     onSelectionChange: (selectedPaths) => {
       const selectedPath = selectedPaths.at(-1)?.replace(/\/$/, "");
       if (selectedPath && entryKindsRef.current.get(selectedPath) === "file") {
@@ -533,7 +533,9 @@ export default function FileBrowserPanel({
               <FileTreeContextMenu
                 model={menuModel}
                 actions={rowActions(relativePath, entryKind)}
-                anchor={context.anchorElement}
+                anchor={{
+                  getBoundingClientRect: () => context.anchorElement.getBoundingClientRect(),
+                }}
                 onClose={() => context.close()}
               />
             );

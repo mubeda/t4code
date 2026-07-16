@@ -1,0 +1,89 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "type": "snapshot",
+      "terminals": [
+        {
+          "threadId": "T.WEUib.",
+          "terminalId": "4Y=Q4",
+          "cwd": "LQs=cFsiF1|0",
+          "worktreePath": null,
+          "status": "error",
+          "pid": null,
+          "exitCode": null,
+          "exitSignal": null,
+          "hasRunningSubprocess": true,
+          "label": "#Acz}s",
+          "updatedAt": "(QI&:"
+        },
+        {
+          "threadId": "w,itid;U",
+          "terminalId": "\"_/P>a)dcc",
+          "cwd": "7;",
+          "worktreePath": ",AlN?PN",
+          "status": "error",
+          "pid": null,
+          "exitCode": 1486694066,
+          "exitSignal": 1000981244,
+          "hasRunningSubprocess": false,
+          "label": "1}*V?k",
+          "updatedAt": ""
+        },
+        {
+          "threadId": "{W&~}c2",
+          "terminalId": "fBaK%VZOB",
+          "cwd": "g6- .)&=",
+          "worktreePath": "y17Z`Yf",
+          "status": "exited",
+          "pid": 755183443,
+          "exitCode": 726406190,
+          "exitSignal": 626362690,
+          "hasRunningSubprocess": true,
+          "label": "2&uT;$",
+          "updatedAt": "\\\\8w"
+        },
+        {
+          "threadId": "M4wv:+",
+          "terminalId": "[h<w]+rRx;",
+          "cwd": ")'D1-.d",
+          "worktreePath": null,
+          "status": "starting",
+          "pid": 1082727110,
+          "exitCode": null,
+          "exitSignal": 1134587218,
+          "hasRunningSubprocess": true,
+          "label": "\"4]*fX]w",
+          "updatedAt": ""
+        },
+        {
+          "threadId": "`",
+          "terminalId": "< $jb9U",
+          "cwd": "AU:og\"?",
+          "worktreePath": "yCC_qu2,k`y/",
+          "status": "starting",
+          "pid": null,
+          "exitCode": 932963937,
+          "exitSignal": 1293630928,
+          "hasRunningSubprocess": false,
+          "label": "h+I_",
+          "updatedAt": "~ct"
+        },
+        {
+          "threadId": "3w^7\"eMUw}",
+          "terminalId": " ",
+          "cwd": "5DN",
+          "worktreePath": "BhbQ:",
+          "status": "starting",
+          "pid": 543456700,
+          "exitCode": null,
+          "exitSignal": 1981859440,
+          "hasRunningSubprocess": true,
+          "label": "Wq|T q",
+          "updatedAt": "r"
+        }
+      ]
+    }
+  ]
+}

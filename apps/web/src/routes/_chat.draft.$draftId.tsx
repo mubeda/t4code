@@ -7,7 +7,7 @@ import {
   markPromotedDraftThreadByRef,
   useComposerDraftStore,
 } from "../composerDraftStore";
-import { SidebarInset } from "../components/ui/sidebar";
+import { ChatRouteInset } from "./-ChatRouteInset";
 import { buildThreadRouteParams } from "../threadRoutes";
 import { useThread, useThreadRefs } from "../state/entities";
 
@@ -56,13 +56,13 @@ function DraftChatThreadRouteView() {
 
   if (canonicalThreadRef) {
     return (
-      <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-dvh">
+      <ChatRouteInset>
         <ChatView
           environmentId={canonicalThreadRef.environmentId}
           threadId={canonicalThreadRef.threadId}
           routeKind="server"
         />
-      </SidebarInset>
+      </ChatRouteInset>
     );
   }
 
@@ -71,14 +71,14 @@ function DraftChatThreadRouteView() {
   }
 
   return (
-    <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-dvh">
+    <ChatRouteInset>
       <ChatView
         draftId={draftId}
         environmentId={draftSession.environmentId}
         threadId={draftSession.threadId}
         routeKind="draft"
       />
-    </SidebarInset>
+    </ChatRouteInset>
   );
 }
 

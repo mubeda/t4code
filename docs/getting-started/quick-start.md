@@ -1,25 +1,37 @@
-# Quick start
+# Quick Start
+
+Install Vite+ and workspace dependencies first (see the root README), then use:
 
 ```bash
-# Development (with hot reload)
-bun run dev
+# Browser development with hot reload
+vp run dev
 
-# Desktop development
-bun run dev:desktop
+# Tauri 2 desktop development with hot reload
+vp run dev:desktop
 
 # Desktop development on an isolated port set
-T3CODE_DEV_INSTANCE=feature-xyz bun run dev:desktop
+T4CODE_DEV_INSTANCE=feature-xyz vp run dev:desktop
 
-# Production
-bun run build
-bun run start
+# Production web assets and native Rust server
+vp run build
+cargo run -p t4code-server -- serve
 
-# Build a shareable macOS .dmg (arm64 by default)
-bun run dist:desktop:dmg
+# Host-native desktop installer
+vp run dist:desktop:win     # Windows
+vp run dist:desktop:dmg     # macOS
+vp run dist:desktop:linux   # Linux
 
-# Or from any project directory after publishing:
-npx t3
+# Native CLI from this checkout
+cargo run -p t4code-server -- --help
 ```
+
+Desktop development requires Rust and the platform prerequisites documented by
+Tauri 2. On Windows, the package script enters the installed Visual Studio x64
+build environment automatically.
+
+Node.js is required when developing the React frontend and running repository
+scripts. Packaged desktop applications and the native `t4code` server do not ship
+or require Node.js.
 
 ## First Run
 
@@ -27,12 +39,10 @@ npx t3
    supports local folder selection, folder-of-repos import, clone-from-URL, and
    creating a new local project.
 2. Pick the project's primary row to work in the live checkout, or use the
-   project `+` action to create a worktree thread. Worktree threads are created
-   eagerly before the first message.
-3. Use the chat header `+` menu to open another AI chat panel, open a terminal
-   panel in the same worktree, or add a custom action.
-4. Use the right panel for Files and Source Control. Files handles normal file
-   operations and explicit Ctrl/Cmd+S saves. Source Control handles staging,
-   commits, commit history, AI commit messages, pull/push, and PR actions.
+   project `+` action to create a worktree thread.
+3. Use the chat header `+` menu to open another AI chat panel, a terminal in the
+   same worktree, or a custom action.
+4. Use Files and Source Control in the right panel for filesystem, staging,
+   commits, history, pull/push, and PR actions.
 
 See [Workspace UI](../user/workspace-ui.md) for the full UI map.

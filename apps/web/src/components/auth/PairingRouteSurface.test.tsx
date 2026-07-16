@@ -12,7 +12,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { ReactNode } from "react";
-import type { AuthSessionState } from "@t3tools/contracts";
+import type { AuthSessionState } from "@t4code/contracts";
 
 const harness = vi.hoisted(() => {
   type Matcher = (initial: unknown) => boolean;
@@ -125,7 +125,7 @@ vi.mock("../../connection/onboarding", () => ({
   connectPairing: { label: "connectPairing" },
 }));
 
-vi.mock("@t3tools/client-runtime/state/runtime", () => ({
+vi.mock("@t4code/client-runtime/state/runtime", () => ({
   squashAtomCommandFailure: () => testState.squashError,
 }));
 

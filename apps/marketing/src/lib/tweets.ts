@@ -46,11 +46,6 @@ export const tweets = [
     link: "https://x.com/BennettBuhner/status/2054667115697754387",
   },
   {
-    handle: "ex0t1clol",
-    content: "T4Code is proof electron apps don't have to suck",
-    link: "https://x.com/ex0t1clol/status/2054666870008021197",
-  },
-  {
     handle: "Josikinz",
     content:
       "T4 code is better because it’s like if the codex Mac app didn’t make my computer run like shit 😋",
@@ -111,13 +106,13 @@ export const tweets = [
   },
   {
     handle: "iamkaffe",
-    content: "T3Code was the first one to truly care about Linux users.",
+    content: "T4Code was the first one to truly care about Linux users.",
     link: "https://x.com/iamkaffe/status/2054675539311411280",
   },
   {
     handle: "uwunetes",
     content:
-      "claude code make me go *whine whine whine* and t3 code make me go woof woof awooooo!!!",
+      "claude code make me go *whine whine whine* and t4code make me go woof woof awooooo!!!",
     link: "https://x.com/uwunetes/status/2054683356022120640",
   },
 ] satisfies Tweet[];

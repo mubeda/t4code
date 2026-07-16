@@ -35,7 +35,10 @@ Every privileged surface of the T4 server must go through the same auth policy e
 - WebSocket upgrades
 - RPC methods reached through WebSocket
 
-The current split where [`/ws`](../apps/server/src/ws.ts) checks `authToken` but routes in [`http.ts`](../apps/server/src/http.ts) do not is not sufficient for a remote-capable product.
+The Rust server now applies this policy centrally. [`http.rs`](../apps/server/src/http.rs)
+routes WebSocket upgrades through
+[`auth/http.rs`](../apps/server/src/auth/http.rs), which validates short-lived
+WebSocket tickets or an authenticated request before creating the RPC session.
 
 ### 2. Pairing and session are different things
 
@@ -291,7 +294,7 @@ export interface ServerAuthShape {
 }
 
 export class ServerAuth extends ServiceMap.Service<ServerAuth, ServerAuthShape>()(
-  "t3/ServerAuth",
+  "t4code/ServerAuth",
 ) {}
 ```
 
@@ -429,22 +432,21 @@ Layer naming should follow existing repo style:
 
 ### Example: WebSocket upgrade auth
 
-Current state:
+Implemented shape:
 
-- `authToken` query param is checked in [`ws.ts`](../apps/server/src/ws.ts)
-
-Target shape:
-
-```ts
-const websocketUpgradeAuth = HttpMiddleware.make((httpApp) =>
-  Effect.gen(function* () {
-    const request = yield* HttpServerRequest.HttpServerRequest;
-    const serverAuth = yield* ServerAuth;
-    yield* serverAuth.authenticateWebSocketUpgrade(request);
-    return yield* httpApp;
-  }),
-);
+```rust
+match auth::authenticate_websocket(&state.auth, &headers, &uri).await {
+    Ok(principal) => {
+        let rpc_context = RpcSessionContext::authenticated(principal, state.auth.clone());
+        upgrade.on_upgrade(move |socket| serve_websocket(socket, rpc_context))
+    }
+    Err(error) => auth::auth_error_response(error),
+}
 ```
+
+The production implementation is in [`http.rs`](../apps/server/src/http.rs),
+with ticket and bearer/DPoP validation in
+[`auth/http.rs`](../apps/server/src/auth/http.rs).
 
 Then the `/ws` route becomes:
 
@@ -494,12 +496,13 @@ export const attachmentsRouteLayer = HttpRouter.add(
 
 The desktop shell launches the local server and gets a short-lived bootstrap grant through a trusted side channel.
 
-That grant is then exchanged for a browser cookie session when the renderer loads.
+That grant is then exchanged for a browser cookie session when the React
+frontend loads in the Tauri WebView.
 
 Sketch:
 
 ```ts
-const pairDesktopRenderer = Effect.gen(function* () {
+const pairDesktopFrontend = Effect.gen(function* () {
   const bootstrapService = yield* BootstrapCredentialService;
   const credential = yield* bootstrapService.issueDesktopBootstrap({
     audience: "desktop-renderer",
@@ -509,7 +512,8 @@ const pairDesktopRenderer = Effect.gen(function* () {
 });
 ```
 
-The renderer then calls a bootstrap endpoint and receives a cookie session. The bootstrap credential is consumed and becomes invalid.
+The frontend then calls a bootstrap endpoint and receives a cookie session. The
+bootstrap credential is consumed and becomes invalid.
 
 ### Example: one-time pairing URL
 
@@ -541,14 +545,16 @@ The important invariant across all of them is:
 
 This is the default desktop-managed local flow.
 
-The desktop shell is trusted to bootstrap the local renderer, but the renderer should still exchange that one-time bootstrap grant for a normal browser session cookie.
+The Tauri Rust host is trusted to bootstrap the local frontend, but the
+frontend should still exchange that one-time bootstrap grant for a normal
+browser session cookie.
 
 ```text
 Participants:
-  DesktopMain   = Electron main
+  DesktopMain   = Tauri Rust host
   SecretStore   = secure local secret backend
   T3Server      = local backend child process
-  Frontend      = desktop renderer
+  Frontend      = React frontend in the system WebView
 
 DesktopMain -> SecretStore : getOrCreate("server-signing-key")
 SecretStore --> DesktopMain : signing key available
@@ -571,7 +577,7 @@ T3Server -> T3Server : validate cookie session
 T3Server --> Frontend : websocket accepted
 ```
 
-### `npx t3` user
+### `npx t4code` user
 
 This is the standalone local server flow.
 
@@ -579,7 +585,7 @@ There is no trusted desktop shell here, so pairing should be explicit.
 
 ```text
 Participants:
-  UserShell     = npx t3 launcher
+  UserShell     = npx t4code launcher
   T3Server      = standalone local server
   Browser       = browser tab
 
@@ -679,7 +685,9 @@ T3Server --> PhoneBrowser : websocket accepted
 
 SSH should be treated as launch and reachability plumbing, not as the long-term auth model.
 
-The desktop app uses SSH to start or reach the remote server, then the renderer pairs against that server using the same bootstrap/session split as every other environment.
+The desktop app uses SSH to start or reach the remote server, then the React
+frontend pairs against that server using the same bootstrap/session split as
+every other environment.
 
 ```text
 Participants:
@@ -688,13 +696,13 @@ Participants:
   SSH           = ssh transport/session
   RemoteHost    = remote machine
   RemoteT3      = remote T4 server
-  Frontend      = desktop renderer
+  Frontend      = React frontend in the system WebView
 
 DesktopUser -> DesktopMain : add SSH host
 DesktopMain -> SSH : connect to remote host
-SSH -> RemoteHost : probe environment / verify t3 availability
+SSH -> RemoteHost : probe environment / verify t4code availability
 DesktopMain -> SSH : run remote launch command
-SSH -> RemoteHost : t3 remote launch --json
+SSH -> RemoteHost : t4code remote launch --json
 RemoteHost -> RemoteT3 : start or reuse server
 RemoteT3 --> RemoteHost : port + environment metadata
 RemoteHost --> SSH : launch result JSON
@@ -807,7 +815,7 @@ That keeps the server auth model stable even as access methods expand later.
 
 - Add desktop bootstrap flow on top of the same services.
 - Make desktop-managed local environments default to bootstrap-only pairing.
-- Surface auth capabilities in shared contracts and renderer bootstrap.
+- Surface auth capabilities in shared contracts and frontend bootstrap.
 
 ### Phase 4
 

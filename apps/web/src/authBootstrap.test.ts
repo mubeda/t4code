@@ -4,7 +4,7 @@ import {
   type AuthCreatePairingCredentialInput,
   type AuthSessionState,
   type DesktopBridge,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import { HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
@@ -25,14 +25,14 @@ const LOOPBACK_AUTH = {
   policy: "loopback-browser",
   bootstrapMethods: ["one-time-token"],
   sessionMethods: ["browser-session-cookie"],
-  sessionCookieName: "t3_session",
+  sessionCookieName: "t4code_session",
 } as const;
 
 const DESKTOP_AUTH = {
   policy: "desktop-managed-local",
   bootstrapMethods: ["desktop-bootstrap"],
   sessionMethods: ["browser-session-cookie"],
-  sessionCookieName: "t3_session",
+  sessionCookieName: "t4code_session",
 } as const;
 
 const SESSION_EXPIRES_AT = DateTime.makeUnsafe("2026-04-05T00:00:00.000Z");
@@ -200,7 +200,7 @@ describe("resolveInitialServerAuthGateState", () => {
     );
   });
 
-  it("uses the vite proxy for desktop-managed loopback auth requests during local dev", async () => {
+  it("uses the managed desktop backend for auth requests during local dev", async () => {
     await installAuthApi({ session: () => unauthenticatedSession(DESKTOP_AUTH) });
     vi.stubEnv("VITE_DEV_SERVER_URL", "http://127.0.0.1:5733");
 
@@ -224,7 +224,7 @@ describe("resolveInitialServerAuthGateState", () => {
       auth: DESKTOP_AUTH,
     });
     expect(resolvePrimaryEnvironmentHttpUrl("/api/auth/session")).toBe(
-      "http://127.0.0.1:5733/api/auth/session",
+      "http://127.0.0.1:3773/api/auth/session",
     );
   });
 

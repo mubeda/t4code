@@ -16,7 +16,7 @@ import {
   ProviderInstanceId,
   EnvironmentId,
   type ServerProvider,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import { AsyncResult } from "effect/unstable/reactivity";
 import * as Cause from "effect/Cause";
 
@@ -158,6 +158,7 @@ function provider(input: {
     models: [],
     slashCommands: [],
     skills: [],
+    agents: [],
     versionAdvisory: {
       status: input.advisoryStatus ?? "behind_latest",
       currentVersion: "1.0.0",

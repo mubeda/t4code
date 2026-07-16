@@ -6,6 +6,7 @@ export interface ReferenceRepo {
   readonly versionSourcePath: string;
   readonly packageVersionPath: ReadonlyArray<string>;
   readonly versionTagPrefix: string;
+  readonly prunePaths?: ReadonlyArray<string>;
 }
 
 export const referenceRepos: ReadonlyArray<ReferenceRepo> = [
@@ -26,5 +27,6 @@ export const referenceRepos: ReadonlyArray<ReferenceRepo> = [
     versionSourcePath: "infra/relay/package.json",
     packageVersionPath: ["dependencies", "alchemy"],
     versionTagPrefix: "v",
+    prunePaths: [".gitmodules", ".vendor/alchemy"],
   },
 ];

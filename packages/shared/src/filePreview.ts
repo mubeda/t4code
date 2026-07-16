@@ -12,7 +12,7 @@ export const WORKSPACE_IMAGE_PREVIEW_EXTENSIONS = [
 ] as const;
 
 function hasPreviewExtension(path: string, extensions: ReadonlyArray<string>): boolean {
-  const pathWithoutQuery = path.split(/[?#]/, 1)[0]?.toLowerCase() ?? "";
+  const pathWithoutQuery = path.replace(/[?#].*$/, "").toLowerCase();
   return extensions.some((extension) => pathWithoutQuery.endsWith(extension));
 }
 

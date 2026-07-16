@@ -1,0 +1,36 @@
+{
+  "threadId": "provider-thread-1",
+  "sessionId": "claude-session-restore",
+  "turnId": "turn-9",
+  "runtimeMode": "approval-required",
+  "pendingApproval": {
+    "requestId": "approval:3001",
+    "providerItemId": "tool-edit-1",
+    "toolName": "Edit",
+    "input": {
+      "file_path": "src/main.rs"
+    }
+  },
+  "pendingUserInput": {
+    "requestId": "approval:3002",
+    "providerItemId": "tool-ask-2",
+    "questions": [
+      {
+        "id": "Deploy to which env?",
+        "header": "Deploy",
+        "question": "Deploy to which env?",
+        "options": [
+          {
+            "label": "Staging",
+            "description": "Safe"
+          },
+          {
+            "label": "Prod",
+            "description": "Live"
+          }
+        ],
+        "multiSelect": false
+      }
+    ]
+  }
+}

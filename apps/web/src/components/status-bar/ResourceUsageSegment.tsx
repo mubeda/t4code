@@ -1,7 +1,7 @@
 import type {
   ServerProcessDiagnosticsResult,
   ServerProcessResourceHistoryResult,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import { CpuIcon, MemoryStickIcon, TerminalIcon } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
@@ -21,8 +21,8 @@ export function ResourceUsageSegment({
   terminalCount: number;
   iconOnly: boolean;
 }) {
-  const summary = buildResourceSummaryViewModel({ diagnostics, terminalCount });
-  const label = `Server child process resources, ${summary.memoryLabel}, ${summary.terminalCountLabel} terminals`;
+  const summary = buildResourceSummaryViewModel({ diagnostics, resourceHistory, terminalCount });
+  const label = `T4Code native process resources, ${summary.memoryLabel}, ${summary.terminalCountLabel} terminals`;
   return (
     <Popover>
       <PopoverTrigger
@@ -47,7 +47,8 @@ export function ResourceUsageSegment({
             <span>Resource Manager</span>
           </div>
           <p className="text-muted-foreground">
-            T4 server child processes only. Desktop shell and unrelated processes are not included.
+            T4Code native host and supervised child processes. Browser and WebView processes outside
+            this tree are not included.
           </p>
           <div className="grid grid-cols-4 gap-2">
             <div>

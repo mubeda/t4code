@@ -185,12 +185,12 @@ vi.mock("../editorPreferences", () => ({
   resolveAndPersistPreferredEditor: () => s.preferredEditor,
 }));
 
-vi.mock("@t3tools/client-runtime/environment", () => ({
+vi.mock("@t4code/client-runtime/environment", () => ({
   scopeProjectRef: (environmentId: string, projectId: string) => ({ environmentId, projectId }),
   scopedProjectKey: () => "scoped-project-key",
 }));
 
-vi.mock("@t3tools/client-runtime/state/runtime", () => ({
+vi.mock("@t4code/client-runtime/state/runtime", () => ({
   squashAtomCommandFailure: (result: { error?: unknown }) => result.error ?? new Error("failed"),
 }));
 
@@ -410,6 +410,15 @@ describe("Route.errorComponent", () => {
     s.buttonClicks[1]!(); // reload button
     expect(reloadCalls).toBe(1);
     s.buttonClicks[0]!(); // retry/reset button (executes reset arrow)
+  });
+
+  it("renders nested error causes in the diagnostic details", () => {
+    const cause = new Error("response schema mismatch");
+    const error = new Error("request failed", { cause });
+    const { markup } = renderError(error);
+    expect(markup).toContain("request failed");
+    expect(markup).toContain("Caused by:");
+    expect(markup).toContain("response schema mismatch");
   });
 
   it("renders a plain string error", () => {

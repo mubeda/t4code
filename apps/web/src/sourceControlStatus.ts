@@ -1,4 +1,4 @@
-import type { VcsWorkingTreeFileStatus } from "@t3tools/contracts";
+import type { VcsWorkingTreeFileStatus } from "@t4code/contracts";
 
 interface WorkingTreeStatusBadge {
   readonly letter: string;

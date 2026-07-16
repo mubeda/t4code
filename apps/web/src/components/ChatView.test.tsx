@@ -21,12 +21,12 @@ import {
   type ServerProvider,
   ThreadId,
   TurnId,
-} from "@t3tools/contracts";
-import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
-import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
+} from "@t4code/contracts";
+import { DEFAULT_SERVER_SETTINGS } from "@t4code/contracts";
+import { DEFAULT_CLIENT_SETTINGS } from "@t4code/contracts/settings";
 import { AsyncResult } from "effect/unstable/reactivity";
 import * as Cause from "effect/Cause";
-import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { scopeProjectRef, scopeThreadRef } from "@t4code/client-runtime/environment";
 
 const h = vi.hoisted(() => {
   return {
@@ -388,6 +388,7 @@ const codexProvider: ServerProvider = {
   models: [{ slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: null }],
   slashCommands: [],
   skills: [],
+  agents: [],
 };
 
 function makeProject(overrides: Partial<Project> = {}): Project {
@@ -615,9 +616,20 @@ describe("ChatView", () => {
       expect(composer["environmentUnavailable"]).toBeNull();
       expect(composer["providerStatuses"]).toEqual([codexProvider]);
 
+      const activeThread = composer["activeThread"] as Thread;
+      expect(activeThread.messages).toEqual([]);
+      expect(activeThread.session).toBeNull();
+      expect(activeThread.latestTurn).toBeNull();
+
       const header = capturedProps<Record<string, unknown>>("chatHeader");
       expect(header["activeThreadId"]).toBe(threadId);
       expect(header["activeProjectName"]).toBe("Demo Project");
+      expect(header["canCreatePanel"]).toBe(true);
+
+      const panelControls = capturedProps<Record<string, unknown>>("panelLayoutControls");
+      expect(panelControls["terminalAvailable"]).toBe(true);
+      expect(panelControls["rightPanelAvailable"]).toBe(true);
+      expect(panelControls["rightPanelOpen"]).toBe(false);
 
       const bannerStack = capturedProps<{ items: ComposerBannerStackItem[] }>(
         "composerBannerStack",
@@ -939,6 +951,40 @@ describe("ChatView handlers (captured from mocked children)", () => {
       {
         key: "thread.respondToApproval",
         input: { environmentId, input: { threadId, requestId, decision: "approve" } },
+      },
+    ]);
+  });
+
+  it("onRespondToApproval interrupts the active turn when cancellation is requested", async () => {
+    const runningTurnId = TurnId.make("turn-running");
+    seedConnectedServerThread(
+      makeThread({
+        session: {
+          threadId,
+          status: "running",
+          providerName: "cursor",
+          providerInstanceId: ProviderInstanceId.make("cursor"),
+          runtimeMode: "full-access",
+          activeTurnId: runningTurnId,
+          lastError: null,
+          updatedAt: now,
+        },
+      }),
+    );
+
+    renderServerRoute();
+    const composer = capturedProps<Record<string, unknown>>("chatComposer");
+    const onRespondToApproval = composer["onRespondToApproval"] as (
+      requestId: ApprovalRequestId,
+      decision: string,
+    ) => Promise<unknown>;
+    await onRespondToApproval(ApprovalRequestId.make("approval-1"), "cancel");
+
+    expect(commandCallsFor("thread.respondToApproval")).toEqual([]);
+    expect(commandCallsFor("thread.interruptTurn")).toEqual([
+      {
+        key: "thread.interruptTurn",
+        input: { environmentId, input: { threadId, turnId: runningTurnId } },
       },
     ]);
   });

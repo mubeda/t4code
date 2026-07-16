@@ -1,0 +1,44 @@
+{
+  "threadId": "provider-thread-1",
+  "turnId": "turn-7",
+  "startup": {
+    "sessionId": "sdk-session-exit-plan",
+    "runtimeMode": "plan"
+  },
+  "message": {
+    "type": "assistant",
+    "session_id": "sdk-session-exit-plan",
+    "uuid": "assistant-exit-plan",
+    "parent_tool_use_id": null,
+    "message": {
+      "model": "claude-opus-4-6",
+      "id": "msg-exit-plan",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "tool-exit-2",
+          "name": "ExitPlanMode",
+          "input": {
+            "plan": "# Final plan\n\n- capture it"
+          }
+        }
+      ],
+      "stop_reason": null,
+      "stop_sequence": null,
+      "usage": {}
+    }
+  },
+  "expectedEvent": {
+    "type": "turn.proposed.completed",
+    "threadId": "provider-thread-1",
+    "turnId": "turn-7",
+    "providerRefs": {
+      "providerItemId": "tool-exit-2"
+    },
+    "payload": {
+      "planMarkdown": "# Final plan\n\n- capture it"
+    }
+  }
+}

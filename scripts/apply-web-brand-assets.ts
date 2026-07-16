@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 import {
   resolveWebAssetBrandForChannel,
@@ -23,10 +24,13 @@ const WEB_ASSET_BRANDS = [
 export const applyWebBrandAssets = Effect.fn("applyWebBrandAssets")(function* (
   brand: WebAssetBrand,
   targetDirectory: string,
+  options: { readonly rootDir?: string | undefined } = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const repoRoot = yield* path.fromFileUrl(new URL("..", import.meta.url));
+  const repoRoot = options.rootDir
+    ? path.resolve(options.rootDir)
+    : yield* path.fromFileUrl(new URL("..", import.meta.url));
 
   yield* Effect.forEach(
     resolveWebIconOverrides(brand, targetDirectory),
@@ -39,37 +43,60 @@ export const applyWebBrandAssets = Effect.fn("applyWebBrandAssets")(function* (
   );
 });
 
-export const applyWebBrandAssetsCommand = Command.make(
-  "apply-web-brand-assets",
-  {
-    brand: Argument.choice("brand", WEB_ASSET_BRANDS).pipe(
-      Argument.withDescription("Asset brand to copy into the hosted web output directory."),
-      Argument.optional,
-    ),
-    channel: Flag.choice("channel", WEB_ASSET_CHANNELS).pipe(
-      Flag.withDescription("Hosted release channel to map to a web asset brand."),
-      Flag.optional,
-    ),
-    targetDirectory: Argument.string("target-directory").pipe(
-      Argument.withDescription("Output directory that contains the hosted web build assets."),
-      Argument.optional,
-    ),
-  },
-  ({ brand, channel, targetDirectory }) =>
-    applyWebBrandAssets(
-      Option.getOrElse(brand, () =>
-        Option.match(channel, {
-          onNone: () => "production" as const,
-          onSome: resolveWebAssetBrandForChannel,
-        }),
-      ),
-      Option.getOrElse(targetDirectory, () => "apps/web/dist"),
-    ),
-).pipe(Command.withDescription("Copy web brand assets into a built hosted web app."));
+type ApplyWebBrandAssets = (
+  brand: WebAssetBrand,
+  targetDirectory: string,
+) => Effect.Effect<
+  void,
+  PlatformError.PlatformError | PlatformError.BadArgument,
+  FileSystem.FileSystem | Path.Path
+>;
 
-if (import.meta.main) {
-  Command.run(applyWebBrandAssetsCommand, { version: "0.0.0" }).pipe(
-    Effect.provide(NodeServices.layer),
-    NodeRuntime.runMain,
+type MainLauncher = <E, A>(effect: Effect.Effect<A, E, never>) => void;
+
+export const makeApplyWebBrandAssetsCommand = (apply: ApplyWebBrandAssets = applyWebBrandAssets) =>
+  Command.make(
+    "apply-web-brand-assets",
+    {
+      brand: Argument.choice("brand", WEB_ASSET_BRANDS).pipe(
+        Argument.withDescription("Asset brand to copy into the hosted web output directory."),
+        Argument.optional,
+      ),
+      channel: Flag.choice("channel", WEB_ASSET_CHANNELS).pipe(
+        Flag.withDescription("Hosted release channel to map to a web asset brand."),
+        Flag.optional,
+      ),
+      targetDirectory: Argument.string("target-directory").pipe(
+        Argument.withDescription("Output directory that contains the hosted web build assets."),
+        Argument.optional,
+      ),
+    },
+    ({ brand, channel, targetDirectory }) =>
+      apply(
+        Option.getOrElse(brand, () =>
+          Option.match(channel, {
+            onNone: () => "production" as const,
+            onSome: resolveWebAssetBrandForChannel,
+          }),
+        ),
+        Option.getOrElse(targetDirectory, () => "apps/web/dist"),
+      ),
+  ).pipe(Command.withDescription("Copy web brand assets into a built hosted web app."));
+
+export const applyWebBrandAssetsCommand = makeApplyWebBrandAssetsCommand();
+
+export const runApplyWebBrandAssetsMain = (
+  isMain: boolean,
+  launch: MainLauncher = NodeRuntime.runMain,
+) => {
+  if (!isMain) return false;
+
+  launch(
+    Command.run(applyWebBrandAssetsCommand, { version: "0.0.0" }).pipe(
+      Effect.provide(NodeServices.layer),
+    ),
   );
-}
+  return true;
+};
+
+runApplyWebBrandAssetsMain(import.meta.main);

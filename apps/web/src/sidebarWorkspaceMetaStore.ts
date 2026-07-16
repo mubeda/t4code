@@ -12,7 +12,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 
 import { resolveStorage } from "./lib/storage";
 
-const SIDEBAR_WORKSPACE_META_STORAGE_KEY = "t3code:sidebar-workspace-meta:v1";
+const SIDEBAR_WORKSPACE_META_STORAGE_KEY = "t4code:sidebar-workspace-meta:v1";
 const SIDEBAR_WORKSPACE_META_STORAGE_VERSION = 1;
 
 export interface SidebarWorkspaceMetaState {

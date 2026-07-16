@@ -1,9 +1,10 @@
 import type {
   ServerProcessDiagnosticsResult,
+  ServerProcessResourceHistoryResult,
   ServerProcessResourceHistorySummary,
   ServerProviderUsageSnapshot,
   ServerProviderUsageWindow,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 
 import {
   formatCpuPercent,
@@ -78,12 +79,24 @@ export interface ResourceSummaryViewModel {
 
 export function buildResourceSummaryViewModel(input: {
   readonly diagnostics: ServerProcessDiagnosticsResult | null;
+  readonly resourceHistory: ServerProcessResourceHistoryResult | null;
   readonly terminalCount: number;
 }): ResourceSummaryViewModel {
+  const currentProcesses =
+    input.resourceHistory && input.resourceHistory.retainedSampleCount > 0
+      ? input.resourceHistory.topProcesses
+      : null;
+  const totalRssBytes =
+    currentProcesses?.reduce((total, process) => total + process.currentRssBytes, 0) ??
+    input.diagnostics?.totalRssBytes;
+  const totalCpuPercent =
+    currentProcesses?.reduce((total, process) => total + process.currentCpuPercent, 0) ??
+    input.diagnostics?.totalCpuPercent;
+  const processCount = currentProcesses?.length ?? input.diagnostics?.processCount;
   return {
-    memoryLabel: input.diagnostics ? formatMemoryBytes(input.diagnostics.totalRssBytes) : "--",
-    cpuLabel: input.diagnostics ? formatCpuPercent(input.diagnostics.totalCpuPercent) : "--",
-    processCountLabel: input.diagnostics ? String(input.diagnostics.processCount) : "0",
+    memoryLabel: totalRssBytes === undefined ? "--" : formatMemoryBytes(totalRssBytes),
+    cpuLabel: totalCpuPercent === undefined ? "--" : formatCpuPercent(totalCpuPercent),
+    processCountLabel: processCount === undefined ? "0" : String(processCount),
     terminalCountLabel: String(Math.max(0, input.terminalCount)),
   };
 }

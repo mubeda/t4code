@@ -1,0 +1,25 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "version": 1,
+      "revision": 4,
+      "type": "clientUpserted",
+      "payload": {
+        "sessionId": "00000000-0000-4000-8000-000000000001",
+        "subject": "fixture",
+        "scopes": ["orchestration:read"],
+        "method": "bearer-access-token",
+        "client": {
+          "deviceType": "desktop"
+        },
+        "issuedAt": "2026-01-01T00:00:00.000Z",
+        "expiresAt": "2026-01-01T00:00:00.000Z",
+        "lastConnectedAt": null,
+        "connected": false,
+        "current": false
+      }
+    }
+  ]
+}

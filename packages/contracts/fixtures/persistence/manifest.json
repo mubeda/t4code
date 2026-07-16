@@ -1,0 +1,234 @@
+{
+  "formatVersion": 1,
+  "currentMigrationId": 33,
+  "migrationLedgerTable": "effect_sql_migrations",
+  "applicationTables": [
+    "auth_pairing_links",
+    "auth_sessions",
+    "checkpoint_diff_blobs",
+    "orchestration_command_receipts",
+    "orchestration_events",
+    "projection_pending_approvals",
+    "projection_projects",
+    "projection_state",
+    "projection_thread_activities",
+    "projection_thread_messages",
+    "projection_thread_proposed_plans",
+    "projection_thread_sessions",
+    "projection_threads",
+    "projection_turns",
+    "provider_session_runtime"
+  ],
+  "migrations": [
+    {
+      "id": 1,
+      "name": "OrchestrationEvents"
+    },
+    {
+      "id": 2,
+      "name": "OrchestrationCommandReceipts"
+    },
+    {
+      "id": 3,
+      "name": "CheckpointDiffBlobs"
+    },
+    {
+      "id": 4,
+      "name": "ProviderSessionRuntime"
+    },
+    {
+      "id": 5,
+      "name": "Projections"
+    },
+    {
+      "id": 6,
+      "name": "ProjectionThreadSessionRuntimeModeColumns"
+    },
+    {
+      "id": 7,
+      "name": "ProjectionThreadMessageAttachments"
+    },
+    {
+      "id": 8,
+      "name": "ProjectionThreadActivitySequence"
+    },
+    {
+      "id": 9,
+      "name": "ProviderSessionRuntimeMode"
+    },
+    {
+      "id": 10,
+      "name": "ProjectionThreadsRuntimeMode"
+    },
+    {
+      "id": 11,
+      "name": "OrchestrationThreadCreatedRuntimeMode"
+    },
+    {
+      "id": 12,
+      "name": "ProjectionThreadsInteractionMode"
+    },
+    {
+      "id": 13,
+      "name": "ProjectionThreadProposedPlans"
+    },
+    {
+      "id": 14,
+      "name": "ProjectionThreadProposedPlanImplementation"
+    },
+    {
+      "id": 15,
+      "name": "ProjectionTurnsSourceProposedPlan"
+    },
+    {
+      "id": 16,
+      "name": "CanonicalizeModelSelections"
+    },
+    {
+      "id": 17,
+      "name": "ProjectionThreadsArchivedAt"
+    },
+    {
+      "id": 18,
+      "name": "ProjectionThreadsArchivedAtIndex"
+    },
+    {
+      "id": 19,
+      "name": "ProjectionSnapshotLookupIndexes"
+    },
+    {
+      "id": 20,
+      "name": "AuthAccessManagement"
+    },
+    {
+      "id": 21,
+      "name": "AuthSessionClientMetadata"
+    },
+    {
+      "id": 22,
+      "name": "AuthSessionLastConnectedAt"
+    },
+    {
+      "id": 23,
+      "name": "ProjectionThreadShellSummary"
+    },
+    {
+      "id": 24,
+      "name": "BackfillProjectionThreadShellSummary"
+    },
+    {
+      "id": 25,
+      "name": "CleanupInvalidProjectionPendingApprovals"
+    },
+    {
+      "id": 26,
+      "name": "CanonicalizeModelSelectionOptions"
+    },
+    {
+      "id": 27,
+      "name": "ProviderSessionRuntimeInstanceId"
+    },
+    {
+      "id": 28,
+      "name": "ProjectionThreadSessionInstanceId"
+    },
+    {
+      "id": 29,
+      "name": "ProjectionThreadDetailOrderingIndexes"
+    },
+    {
+      "id": 30,
+      "name": "ProjectionThreadShellArchiveIndexes"
+    },
+    {
+      "id": 31,
+      "name": "AuthAuthorizationScopes"
+    },
+    {
+      "id": 32,
+      "name": "AuthPairingProofKeyThumbprint"
+    },
+    {
+      "id": 33,
+      "name": "ProjectionThreadsKind"
+    }
+  ],
+  "normalization": {
+    "schema": "PRAGMA table_xinfo/index_list/index_xinfo/foreign_key_list ordered by stable names",
+    "rows": "application tables ordered by declared logical keys; JSON-in-TEXT remains raw TEXT",
+    "ledgerCreatedAt": "2026-01-01 00:00:00",
+    "database": "4096-byte pages, WAL checkpointed, VACUUM compacted, no sidecar files"
+  },
+  "scenarios": [
+    {
+      "id": "empty-unmigrated",
+      "description": "Valid empty SQLite file with no application schema or migration ledger.",
+      "latestMigrationId": null,
+      "migrationState": {
+        "kind": "unmigrated"
+      },
+      "files": {
+        "database": "empty-unmigrated/database.sqlite",
+        "migratedDatabase": "empty-unmigrated/migrated-database.sqlite",
+        "ledger": "empty-unmigrated/ledger.json",
+        "pragmas": "empty-unmigrated/pragmas.json",
+        "schema": "empty-unmigrated/schema.json",
+        "snapshot": "empty-unmigrated/snapshot.json"
+      }
+    },
+    {
+      "id": "legacy-v15",
+      "description": "Legacy schema through migration 15 with rows that exercise later model-selection and shell-summary rewrites.",
+      "latestMigrationId": 15,
+      "migrationState": {
+        "kind": "ledger-prefix",
+        "throughMigrationId": 15
+      },
+      "files": {
+        "database": "legacy-v15/database.sqlite",
+        "migratedDatabase": "legacy-v15/migrated-database.sqlite",
+        "ledger": "legacy-v15/ledger.json",
+        "pragmas": "legacy-v15/pragmas.json",
+        "schema": "legacy-v15/schema.json",
+        "snapshot": "legacy-v15/snapshot.json"
+      }
+    },
+    {
+      "id": "interrupted-v27",
+      "description": "Ledger complete through migration 26, with migration 27's provider_instance_id column committed but its index and ledger row absent.",
+      "latestMigrationId": 26,
+      "migrationState": {
+        "kind": "interrupted",
+        "ledgerThroughMigrationId": 26,
+        "partiallyAppliedMigrationId": 27,
+        "committedArtifacts": ["provider_session_runtime.provider_instance_id"],
+        "missingArtifacts": ["effect_sql_migrations[27]", "idx_provider_session_runtime_instance"]
+      },
+      "files": {
+        "database": "interrupted-v27/database.sqlite",
+        "migratedDatabase": "interrupted-v27/migrated-database.sqlite",
+        "ledger": "interrupted-v27/ledger.json",
+        "pragmas": "interrupted-v27/pragmas.json",
+        "schema": "interrupted-v27/schema.json",
+        "snapshot": "interrupted-v27/snapshot.json"
+      }
+    },
+    {
+      "id": "current-v33",
+      "description": "Current migration 33 with representative rows in all 15 application tables.",
+      "latestMigrationId": 33,
+      "migrationState": {
+        "kind": "current",
+        "throughMigrationId": 33
+      },
+      "files": {
+        "database": "current-v33/database.sqlite",
+        "migratedDatabase": "current-v33/migrated-database.sqlite",
+        "ledger": "current-v33/ledger.json",
+        "pragmas": "current-v33/pragmas.json",
+        "schema": "current-v33/schema.json",
+        "snapshot": "current-v33/snapshot.json"
+      }
+    }
+  ]
+}

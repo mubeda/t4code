@@ -1,0 +1,14 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "version": 1,
+      "revision": 3,
+      "type": "pairingLinkRemoved",
+      "payload": {
+        "id": "fixture-pairing-link"
+      }
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+[
+  {
+    "type": "turn.started",
+    "threadId": "grok-thread-1",
+    "turnId": "turn-3",
+    "payload": {}
+  },
+  {
+    "type": "user-input.requested",
+    "threadId": "grok-thread-1",
+    "turnId": "turn-3",
+    "requestId": "user-input:2001",
+    "payload": {
+      "questions": [
+        {
+          "id": "Which scope should Grok use?",
+          "header": "Which scope should Grok use?",
+          "question": "Which scope should Grok use?",
+          "options": [
+            {
+              "label": "Workspace",
+              "description": "Use the current workspace"
+            },
+            {
+              "label": "Session",
+              "description": "Only use this session"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "type": "content.delta",
+    "threadId": "grok-thread-1",
+    "turnId": "turn-3",
+    "payload": {
+      "streamKind": "assistant_text",
+      "delta": "hello from grok"
+    }
+  },
+  {
+    "type": "turn.completed",
+    "threadId": "grok-thread-1",
+    "turnId": "turn-3",
+    "payload": {
+      "state": "completed",
+      "stopReason": "end_turn"
+    }
+  }
+]

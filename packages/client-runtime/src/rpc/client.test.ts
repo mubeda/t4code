@@ -1,8 +1,4 @@
-import {
-  EnvironmentId,
-  type RelayClientInstallProgressEvent,
-  WS_METHODS,
-} from "@t3tools/contracts";
+import { EnvironmentId, type RelayClientInstallProgressEvent, WS_METHODS } from "@t4code/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";

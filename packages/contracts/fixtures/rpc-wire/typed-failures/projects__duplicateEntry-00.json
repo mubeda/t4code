@@ -1,0 +1,22 @@
+{
+  "_tag": "Exit",
+  "requestId": "900719925474099312345",
+  "exit": {
+    "_tag": "Failure",
+    "cause": [
+      {
+        "_tag": "Fail",
+        "error": {
+          "_tag": "ProjectDuplicateEntryError",
+          "relativePath": "s|!#",
+          "failure": "binary_file",
+          "resolvedPath": "key",
+          "resolvedWorkspaceRoot": "Ds",
+          "operation": "remove",
+          "message": "ez@`/gF",
+          "cause": "undefined"
+        }
+      }
+    ]
+  }
+}

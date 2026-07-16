@@ -6,8 +6,8 @@ import {
   type ServerProvider,
   type ServerSettings,
   type ThreadId,
-} from "@t3tools/contracts";
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+} from "@t4code/contracts";
+import { scopeThreadRef } from "@t4code/client-runtime/environment";
 import { memo, useState } from "react";
 import GitActionsControl from "../GitActionsControl";
 import { type DraftId } from "~/composerDraftStore";

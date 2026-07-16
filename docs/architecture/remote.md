@@ -9,7 +9,7 @@ It is intentionally architecture-first. It does not define a complete implementa
 - Treat remote environments as first-class product primitives, not special cases.
 - Support multiple ways to reach the same environment.
 - Keep the T4 server as the execution boundary.
-- Let desktop, mobile, and web all share the same conceptual model.
+- Let desktop and browser clients share the same conceptual model.
 - Avoid introducing a local control plane unless product pressure proves it is necessary.
 
 ## Non-goals
@@ -27,7 +27,7 @@ Remote support should preserve that boundary.
 
 ```text
 ┌──────────────────────────────────────────────┐
-│ Client (desktop / mobile / web)             │
+│ Client (Tauri desktop / browser)             │
 │                                              │
 │ - known environments                         │
 │ - connection manager                         │
@@ -76,7 +76,7 @@ It is the unit that owns:
 
 It is identified by a stable `environmentId`.
 
-This is the shared cross-client primitive. Desktop, mobile, and web should all reason about the same concept here.
+This is the shared cross-client primitive. Desktop and browser clients should reason about the same concept here.
 
 ### KnownEnvironment
 
@@ -103,7 +103,7 @@ This is the key abstraction that keeps SSH from taking over the model.
 
 A single environment may have many endpoints:
 
-- `wss://t3.example.com`
+- `wss://t4code.example.com`
 - `ws://10.0.0.25:3773`
 - a tunneled relay URL
 - a desktop-managed SSH tunnel that resolves to a local forwarded WebSocket URL
@@ -158,7 +158,7 @@ A hosted pairing request is a bootstrap URL for the static web app, not a transp
 Example:
 
 ```text
-https://app.t3.codes/pair?host=https://backend.example.com:3773#token=PAIRCODE
+https://app.t4code.codes/pair?host=https://backend.example.com:3773#token=PAIRCODE
 ```
 
 The hosted app reads the `host` parameter and pairing token, exchanges the token directly with that backend, then saves the resulting environment record in browser local storage.
@@ -204,13 +204,13 @@ They do not answer:
 Examples:
 
 - `ws://10.0.0.15:3773`
-- `wss://t3.example.com`
+- `wss://t4code.example.com`
 
 This is the base model and should be the first-class default.
 
 Benefits:
 
-- works for desktop, mobile, and web
+- works for desktop and browser clients
 - no client-specific process management required
 - best fit for hosted or self-managed remote T4 deployments
 
@@ -232,7 +232,7 @@ This is especially useful when:
 
 - the host is behind NAT
 - inbound ports are unavailable
-- mobile must reach a desktop-hosted environment
+- another browser or desktop client must reach a desktop-hosted environment
 - a machine should be reachable without exposing raw LAN or public ports
 
 Tailscale-backed access sits here architecturally even though the current implementation is endpoint discovery rather than a T4-managed tunnel. It contributes private-network endpoints and lets the existing HTTP/WebSocket client path do the actual connection.
@@ -241,7 +241,7 @@ Tailscale-backed access sits here architecturally even though the current implem
 
 SSH is an access and launch helper, not a separate environment type.
 
-The desktop main process can use SSH to:
+The Tauri Rust host can use SSH to:
 
 - reach a machine
 - probe it
@@ -252,7 +252,7 @@ After that, the renderer should still connect using an ordinary WebSocket URL ag
 
 This keeps the renderer transport model consistent with every other access method.
 
-The desktop main process owns the SSH bridge because it can spawn local SSH processes, manage askpass prompts, write temporary launch scripts, and clean up forwards. The renderer receives a saved environment record and connects through the forwarded URL; it should not need SSH-specific RPC paths for normal environment traffic.
+The Tauri Rust host owns the SSH bridge because it can spawn local SSH processes, manage askpass prompts, write temporary launch scripts, and clean up forwards. The React client receives a saved environment record and connects through the forwarded URL; it does not need SSH-specific RPC paths for normal environment traffic.
 
 ## Launch methods
 
@@ -311,7 +311,7 @@ This is the inverse of remote launch: a local T4 server is already running, and 
 
 This is useful for:
 
-- exposing a desktop-hosted environment to mobile
+- exposing a desktop-hosted environment to another client
 - temporary remote access without changing router or firewall settings
 
 This is still a launch concern, not a new environment kind.
@@ -325,7 +325,7 @@ Examples:
 - A manually hosted T4 server might be reached through direct `wss`.
 - The same server might also be reachable through a tunnel.
 - An SSH-managed server might be launched over SSH but then reached through forwarded WebSocket.
-- A local desktop server might be published through a tunnel for mobile.
+- A local desktop server might be published through a tunnel for another client.
 
 In all of those cases, the `ExecutionEnvironment` is the same kind of thing.
 

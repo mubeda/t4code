@@ -1,0 +1,28 @@
+{
+  "_tag": "Exit",
+  "requestId": "900719925474099312345",
+  "exit": {
+    "_tag": "Failure",
+    "cause": [
+      {
+        "_tag": "Fail",
+        "error": {
+          "_tag": "GitCommandError",
+          "operation": "Qp",
+          "command": "n",
+          "cwd": "syzW$O",
+          "detail": "S-L@@ b",
+          "cause": {
+            "": null,
+            "|u-A7MK^": -3.2549406804334145e173,
+            "tx~5d(H,r": -6292728762068979,
+            "1g;": false,
+            "*`,": "*KF",
+            "5^`C),pux[": 6967813915002219,
+            "`th\"~>wQun": -6.454035132786662e-206
+          }
+        }
+      }
+    ]
+  }
+}

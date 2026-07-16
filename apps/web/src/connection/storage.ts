@@ -10,19 +10,19 @@ import {
   removeCatalogValue,
   removeConnectionFromCatalog,
   replaceCatalogValue,
-} from "@t3tools/client-runtime/platform";
-import { TokenStore } from "@t3tools/client-runtime/authorization";
+} from "@t4code/client-runtime/platform";
+import { TokenStore } from "@t4code/client-runtime/authorization";
 import {
   ConnectionTransientError,
   CredentialStore,
   ProfileStore,
-} from "@t3tools/client-runtime/connection";
+} from "@t4code/client-runtime/connection";
 import {
   EnvironmentId,
   OrchestrationShellSnapshot,
   OrchestrationThread,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -31,7 +31,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
-const DATABASE_NAME = "t3code:connection-runtime";
+const DATABASE_NAME = "t4code:connection-runtime";
 const DATABASE_VERSION = 2;
 const CATALOG_STORE_NAME = "catalog";
 const SHELL_STORE_NAME = "shell";

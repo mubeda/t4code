@@ -1,0 +1,39 @@
+[
+  {
+    "type": "turn.started",
+    "threadId": "cursor-thread-1",
+    "turnId": "turn-10",
+    "payload": {
+      "model": "default"
+    }
+  },
+  {
+    "type": "request.opened",
+    "threadId": "cursor-thread-1",
+    "turnId": "turn-10",
+    "requestId": "approval:1002",
+    "payload": {
+      "requestType": "exec_command_approval",
+      "detail": "cat server/package.json"
+    }
+  },
+  {
+    "type": "request.resolved",
+    "threadId": "cursor-thread-1",
+    "turnId": "turn-10",
+    "requestId": "approval:1002",
+    "payload": {
+      "requestType": "exec_command_approval",
+      "decision": "cancel"
+    }
+  },
+  {
+    "type": "turn.completed",
+    "threadId": "cursor-thread-1",
+    "turnId": "turn-10",
+    "payload": {
+      "state": "cancelled",
+      "stopReason": "cancelled"
+    }
+  }
+]

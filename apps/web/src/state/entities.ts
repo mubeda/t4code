@@ -3,8 +3,8 @@ import type {
   EnvironmentProject,
   EnvironmentThread,
   EnvironmentThreadShell,
-} from "@t3tools/client-runtime/state/shell";
-import { mergeEnvironmentThread } from "@t3tools/client-runtime/state/threads";
+} from "@t4code/client-runtime/state/shell";
+import { mergeEnvironmentThread } from "@t4code/client-runtime/state/threads";
 import type {
   OrchestrationMessage,
   OrchestrationProposedPlan,
@@ -13,8 +13,8 @@ import type {
   ScopedProjectRef,
   ScopedThreadRef,
   ServerConfig,
-} from "@t3tools/contracts";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+} from "@t4code/contracts";
+import type { EnvironmentId, ThreadId } from "@t4code/contracts";
 import { Atom } from "effect/unstable/reactivity";
 import { useMemo } from "react";
 import { appAtomRegistry } from "../rpc/atomRegistry";

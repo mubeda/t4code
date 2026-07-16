@@ -5,7 +5,7 @@ import type {
   PreviewReportStatusInput,
   ScopedThreadRef,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import { useEffect, useRef } from "react";
 
 import { useBrowserPointerStore } from "~/browser/browserPointerStore";
@@ -17,7 +17,7 @@ import { previewBridge } from "./previewBridge";
 
 /**
  * Mirrors low-latency desktop state into the store and reflects navigation
- * events back to the server. Webview lifetime is owned by ElectronBrowserHost.
+ * events back to the server. The native preview host owns webview lifetime.
  */
 export function usePreviewBridge(input: { threadRef: ScopedThreadRef; tabId: string }): void {
   const { threadRef, tabId } = input;

@@ -1,5 +1,5 @@
 {
-  "name": "@t3tools/scripts",
+  "name": "@t4code/scripts",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,9 +8,10 @@
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
-    "@t3tools/contracts": "workspace:*",
-    "@t3tools/shared": "workspace:*",
+    "@t4code/contracts": "workspace:*",
+    "@t4code/shared": "workspace:*",
     "effect": "catalog:",
+    "smol-toml": "1.7.0",
     "yaml": "catalog:"
   },
   "devDependencies": {

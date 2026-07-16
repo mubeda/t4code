@@ -1,0 +1,14 @@
+{
+  "approvalPolicy": "never",
+  "input": [
+    {
+      "text": "Run a tool",
+      "type": "text"
+    }
+  ],
+  "model": "gpt-5.3-codex",
+  "sandboxPolicy": {
+    "type": "dangerFullAccess"
+  },
+  "threadId": "provider-thread-1"
+}

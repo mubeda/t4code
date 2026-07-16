@@ -1,0 +1,137 @@
+{
+  "formatVersion": 1,
+  "present": true,
+  "latestMigrationId": 26,
+  "entries": [
+    {
+      "migrationId": 1,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "OrchestrationEvents"
+    },
+    {
+      "migrationId": 2,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "OrchestrationCommandReceipts"
+    },
+    {
+      "migrationId": 3,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "CheckpointDiffBlobs"
+    },
+    {
+      "migrationId": 4,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProviderSessionRuntime"
+    },
+    {
+      "migrationId": 5,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "Projections"
+    },
+    {
+      "migrationId": 6,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProjectionThreadSessionRuntimeModeColumns"
+    },
+    {
+      "migrationId": 7,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProjectionThreadMessageAttachments"
+    },
+    {
+      "migrationId": 8,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProjectionThreadActivitySequence"
+    },
+    {
+      "migrationId": 9,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProviderSessionRuntimeMode"
+    },
+    {
+      "migrationId": 10,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProjectionThreadsRuntimeMode"
+    },
+    {
+      "migrationId": 11,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "OrchestrationThreadCreatedRuntimeMode"
+    },
+    {
+      "migrationId": 12,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProjectionThreadsInteractionMode"
+    },
+    {
+      "migrationId": 13,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProjectionThreadProposedPlans"
+    },
+    {
+      "migrationId": 14,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProjectionThreadProposedPlanImplementation"
+    },
+    {
+      "migrationId": 15,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProjectionTurnsSourceProposedPlan"
+    },
+    {
+      "migrationId": 16,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "CanonicalizeModelSelections"
+    },
+    {
+      "migrationId": 17,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProjectionThreadsArchivedAt"
+    },
+    {
+      "migrationId": 18,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProjectionThreadsArchivedAtIndex"
+    },
+    {
+      "migrationId": 19,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProjectionSnapshotLookupIndexes"
+    },
+    {
+      "migrationId": 20,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "AuthAccessManagement"
+    },
+    {
+      "migrationId": 21,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "AuthSessionClientMetadata"
+    },
+    {
+      "migrationId": 22,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "AuthSessionLastConnectedAt"
+    },
+    {
+      "migrationId": 23,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProjectionThreadShellSummary"
+    },
+    {
+      "migrationId": 24,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "BackfillProjectionThreadShellSummary"
+    },
+    {
+      "migrationId": 25,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "CleanupInvalidProjectionPendingApprovals"
+    },
+    {
+      "migrationId": 26,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "CanonicalizeModelSelectionOptions"
+    }
+  ]
+}

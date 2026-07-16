@@ -1,0 +1,52 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "_tag": "snapshot",
+      "local": {
+        "isRepo": false,
+        "sourceControlProvider": {
+          "kind": "gitlab",
+          "name": "CyT2wdGPfl^y",
+          "baseUrl": "f~yX"
+        },
+        "hasPrimaryRemote": true,
+        "isDefaultRef": false,
+        "refName": null,
+        "defaultRefName": "@",
+        "hasWorkingTreeChanges": true,
+        "workingTree": {
+          "files": [
+            {
+              "path": "70$8>}x3]#",
+              "insertions": 11,
+              "deletions": 1576334567,
+              "status": "deleted",
+              "area": "staged"
+            },
+            {
+              "path": "YKx",
+              "insertions": 17,
+              "deletions": 29
+            },
+            {
+              "path": "}_Y",
+              "insertions": 13,
+              "deletions": 2147483621,
+              "area": "untracked"
+            },
+            {
+              "path": "numeran",
+              "insertions": 435754498,
+              "deletions": 415710238
+            }
+          ],
+          "insertions": 995438101,
+          "deletions": 1734523376
+        }
+      },
+      "remote": null
+    }
+  ]
+}

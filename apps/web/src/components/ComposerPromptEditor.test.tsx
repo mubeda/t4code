@@ -1,5 +1,5 @@
-import { type ServerProviderSkill, ThreadId } from "@t3tools/contracts";
-import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
+import { type ServerProviderSkill, ThreadId } from "@t4code/contracts";
+import { serializeComposerFileLink } from "@t4code/shared/composerTrigger";
 import {
   $createRangeSelection,
   $createTextNode,

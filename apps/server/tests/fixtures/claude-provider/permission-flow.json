@@ -1,0 +1,83 @@
+{
+  "threadId": "provider-thread-1",
+  "turnId": "turn-5",
+  "startup": {
+    "sessionId": "sdk-session-approval-1",
+    "runtimeMode": "approval-required"
+  },
+  "message": {
+    "type": "stream_event",
+    "session_id": "sdk-session-approval-1",
+    "uuid": "stream-approval-thread",
+    "parent_tool_use_id": null,
+    "event": {
+      "type": "message_start",
+      "message": {
+        "id": "msg-approval-thread"
+      }
+    }
+  },
+  "request": {
+    "toolName": "Bash",
+    "input": {
+      "command": "pwd"
+    },
+    "toolUseId": "tool-use-1",
+    "suggestions": [
+      {
+        "type": "setMode",
+        "mode": "default",
+        "destination": "session"
+      }
+    ]
+  },
+  "resolution": {
+    "decision": "accept",
+    "requestId": "approval:1001"
+  },
+  "expectedEvents": [
+    {
+      "type": "thread.started",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-5",
+      "payload": {
+        "providerThreadId": "msg-approval-thread"
+      }
+    },
+    {
+      "type": "request.opened",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-5",
+      "requestId": "approval:1001",
+      "providerRefs": {
+        "providerItemId": "tool-use-1"
+      },
+      "payload": {
+        "requestType": "command_execution_approval",
+        "toolName": "Bash",
+        "input": {
+          "command": "pwd"
+        },
+        "suggestions": [
+          {
+            "type": "setMode",
+            "mode": "default",
+            "destination": "session"
+          }
+        ]
+      }
+    },
+    {
+      "type": "request.resolved",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-5",
+      "requestId": "approval:1001",
+      "providerRefs": {
+        "providerItemId": "tool-use-1"
+      },
+      "payload": {
+        "decision": "accept"
+      }
+    }
+  ]
+}

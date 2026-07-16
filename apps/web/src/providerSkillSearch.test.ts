@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import type { ServerProviderSkill } from "@t3tools/contracts";
+import type { ServerProviderSkill } from "@t4code/contracts";
 
 import { searchProviderSkills } from "./providerSkillSearch";
 
@@ -55,5 +55,14 @@ describe("searchProviderSkills", () => {
     ];
 
     expect(searchProviderSkills(skills, "ui").map((skill) => skill.name)).toEqual([]);
+  });
+
+  it("keeps the first enabled skill when provider roots contain duplicate names", () => {
+    const skills = [
+      makeSkill({ name: "diagnose", path: "/project/.cursor/skills/diagnose/SKILL.md" }),
+      makeSkill({ name: "Diagnose", path: "/home/.agents/skills/diagnose/SKILL.md" }),
+    ];
+
+    expect(searchProviderSkills(skills, "")).toEqual([skills[0]]);
   });
 });

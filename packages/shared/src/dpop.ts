@@ -138,7 +138,7 @@ export function verifyDpopProof(input: {
     }
 
     const thumbprint = computeDpopJwkThumbprint(header.value.jwk);
-    if (input.expectedThumbprint && thumbprint !== input.expectedThumbprint) {
+    if (input.expectedThumbprint !== undefined && thumbprint !== input.expectedThumbprint) {
       return { ok: false, reason: "DPoP key thumbprint mismatch." };
     }
     if (payload.value.htm.toUpperCase() !== input.method.toUpperCase()) {
@@ -148,7 +148,7 @@ export function verifyDpopProof(input: {
     if (normalizedHtu === null || payload.value.htu !== normalizedHtu) {
       return { ok: false, reason: "DPoP URL mismatch." };
     }
-    if (input.expectedAccessToken) {
+    if (input.expectedAccessToken !== undefined) {
       const expectedAth = computeDpopAccessTokenHash(input.expectedAccessToken);
       if (payload.value.ath !== expectedAth) {
         return { ok: false, reason: "DPoP access token hash mismatch." };

@@ -16,10 +16,18 @@ import {
   relayDocsRedirectRoute,
   relayNotFoundRoute,
   traceRelayHttpRequestWith,
+  requireDpopProof,
+  requireDpopThumbprint,
+  unlinkEnvironment,
   verifyRelayClientBearerToken,
   withoutCapturedParentSpan,
 } from "./Api.ts";
+import * as DpopProofs from "../auth/DpopProofs.ts";
 import * as RelayConfiguration from "../Config.ts";
+import * as EnvironmentCredentials from "../environments/EnvironmentCredentials.ts";
+import * as EnvironmentLinks from "../environments/EnvironmentLinks.ts";
+import * as ManagedEndpointAllocations from "../environments/ManagedEndpointAllocations.ts";
+import * as ManagedEndpointProvider from "../environments/ManagedEndpointProvider.ts";
 
 vi.mock("@clerk/backend", () => ({
   createClerkClient: vi.fn(),
@@ -30,7 +38,7 @@ const relaySettings: RelayConfiguration.RelayConfiguration["Service"] = {
   relayIssuer: "https://relay.example.test",
   clerkSecretKey: Redacted.make("clerk-secret-key"),
   clerkPublishableKey: "pk_test_test",
-  clerkJwtAudience: "t3-code-relay",
+  clerkJwtAudience: "t4code-relay",
   cloudMintPrivateKey: Redacted.make("cloud-mint-private-key"),
   cloudMintPublicKey: "cloud-mint-public-key",
   managedEndpointBaseDomain: undefined,
@@ -90,6 +98,147 @@ describe("relay client authentication", () => {
         }),
       ),
     ),
+  );
+});
+
+describe("relay environment unlink", () => {
+  it.effect("retries orphan cleanup after the link was already revoked", () => {
+    let linked = true;
+    let credentialAttempts = 0;
+    let deprovisioned = 0;
+    let generation = 0;
+    const links = EnvironmentLinks.EnvironmentLinks.of({
+      upsert: () => Effect.die("unused"),
+      listUsersForEnvironment: () => Effect.die("unused"),
+      listPublicKeysForEnvironment: () => Effect.die("unused"),
+      listForUser: () => Effect.die("unused"),
+      getForUser: () =>
+        Effect.succeed(
+          linked
+            ? {
+                environmentId:
+                  "env-retry" as EnvironmentLinks.RelayLinkedEnvironmentRecord["environmentId"],
+                environmentPublicKey: "public-key",
+                label: "Retry",
+                endpoint: {
+                  httpBaseUrl: "https://env.example.test/",
+                  wsBaseUrl: "wss://env.example.test/ws",
+                  providerKind: "cloudflare_tunnel",
+                },
+                managedTunnelsEnabled: true,
+                linkedAt: "2026-07-14T00:00:00.000Z",
+              }
+            : null,
+        ),
+      restoreForUser: () => Effect.die("unused"),
+      revokeForUser: () =>
+        Effect.sync(() => {
+          const wasLinked = linked;
+          linked = false;
+          return wasLinked;
+        }),
+    });
+    const credentialFailure =
+      new EnvironmentCredentials.EnvironmentCredentialRevokePersistenceError({
+        environmentId: "env-retry",
+        cause: new Error("database unavailable"),
+      });
+    const credentials = EnvironmentCredentials.EnvironmentCredentials.of({
+      create: () => Effect.die("unused"),
+      rotate: () => Effect.die("unused"),
+      rollbackRotation: () => Effect.die("unused"),
+      authenticate: () => Effect.die("unused"),
+      revokeForEnvironmentPublicKey: () => Effect.die("unused"),
+      revokeOrphanedForEnvironment: () =>
+        Effect.suspend(() =>
+          credentialAttempts++ === 0 ? Effect.fail(credentialFailure) : Effect.succeed(true),
+        ),
+    });
+    const provider = ManagedEndpointProvider.ManagedEndpointProvider.of({
+      provision: () => Effect.die("unused"),
+      deprovision: (input) =>
+        Effect.sync(() => {
+          expect(input.ownership?.generation).toBe(2);
+          deprovisioned++;
+        }),
+    });
+    const allocations = ManagedEndpointAllocations.ManagedEndpointAllocations.of({
+      withOperation: (input, use) =>
+        use({ ...input, generation: ++generation, ownerToken: `owner-${generation}` }),
+      acquireOperation: () => Effect.die("unused"),
+      releaseOperation: () => Effect.die("unused"),
+      renewOperation: () => Effect.die("unused"),
+      claimForOperation: () => Effect.die("unused"),
+      get: () => Effect.die("unused"),
+      reserve: () => Effect.die("unused"),
+      recordTunnel: () => Effect.die("unused"),
+      recordDns: () => Effect.die("unused"),
+      markReady: () => Effect.die("unused"),
+      remove: () => Effect.die("unused"),
+    });
+    const run = unlinkEnvironment({ userId: "user-1", environmentId: "env-retry" }).pipe(
+      Effect.provideService(EnvironmentLinks.EnvironmentLinks, links),
+      Effect.provideService(EnvironmentCredentials.EnvironmentCredentials, credentials),
+      Effect.provideService(ManagedEndpointProvider.ManagedEndpointProvider, provider),
+      Effect.provideService(ManagedEndpointAllocations.ManagedEndpointAllocations, allocations),
+    );
+
+    return Effect.gen(function* () {
+      const first = yield* Effect.flip(run);
+      expect(first).toBe(credentialFailure);
+      expect(linked).toBe(false);
+      expect(deprovisioned).toBe(0);
+
+      expect(yield* run).toEqual({ ok: true });
+      expect(credentialAttempts).toBe(2);
+      expect(deprovisioned).toBe(1);
+    });
+  });
+});
+
+describe("relay DPoP binding forwarding", () => {
+  it.effect("forwards present empty bindings and omits absent access-token bindings", () =>
+    Effect.gen(function* () {
+      const inputs: Array<
+        Parameters<DpopProofs.DpopProofReplay["Service"]["verifyAndConsume"]>[0]
+      > = [];
+      const replay = DpopProofs.DpopProofReplay.of({
+        verifyAndConsume: (input) =>
+          Effect.sync(() => {
+            inputs.push(input);
+            return "verified-thumbprint";
+          }),
+        consume: () => Effect.die("unexpected replay consumption"),
+        pruneExpired: Effect.die("unexpected replay pruning"),
+      });
+      const request = HttpServerRequest.fromWeb(
+        new Request("https://relay.example.test/v1/environments/env/connect?client=web", {
+          method: "POST",
+          headers: { dpop: "signed-proof" },
+        }),
+      );
+      const provideRequest = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(
+          Effect.provideService(DpopProofs.DpopProofReplay, replay),
+          Effect.provideService(HttpServerRequest.HttpServerRequest, request),
+        );
+
+      yield* provideRequest(requireDpopThumbprint("", { expectedAccessToken: "" }));
+      yield* provideRequest(requireDpopProof({ expectedAccessToken: "" }));
+      yield* provideRequest(requireDpopThumbprint("expected-thumbprint"));
+      yield* provideRequest(requireDpopProof());
+
+      expect(inputs[0]).toMatchObject({
+        expectedThumbprint: "",
+        expectedAccessToken: "",
+      });
+      expect(inputs[1]).toMatchObject({ expectedAccessToken: "" });
+      expect(inputs[1]).not.toHaveProperty("expectedThumbprint");
+      expect(inputs[2]).toMatchObject({ expectedThumbprint: "expected-thumbprint" });
+      expect(inputs[2]).not.toHaveProperty("expectedAccessToken");
+      expect(inputs[3]).not.toHaveProperty("expectedThumbprint");
+      expect(inputs[3]).not.toHaveProperty("expectedAccessToken");
+    }),
   );
 });
 

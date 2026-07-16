@@ -1,5 +1,5 @@
-import type { KeybindingRule } from "@t3tools/contracts";
-import { MAX_WHEN_EXPRESSION_DEPTH } from "@t3tools/contracts";
+import type { KeybindingRule } from "@t4code/contracts";
+import { MAX_KEYBINDINGS_COUNT, MAX_WHEN_EXPRESSION_DEPTH } from "@t4code/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import {
   compileResolvedKeybindingRule,
@@ -38,6 +38,17 @@ describe("parseKeybindingShortcut", () => {
       shiftKey: false,
       altKey: true,
       modKey: false,
+    });
+  });
+
+  it("normalizes repeated platform modifier aliases without changing the key", () => {
+    expect(parseKeybindingShortcut("cmd+meta+ctrl+control+alt+option+mod+mod+k")).toEqual({
+      key: "k",
+      metaKey: true,
+      ctrlKey: true,
+      shiftKey: false,
+      altKey: true,
+      modKey: true,
     });
   });
 
@@ -237,6 +248,31 @@ describe("compileResolvedKeybindingsConfig", () => {
   it("returns an empty config when every rule is invalid", () => {
     const config: ReadonlyArray<KeybindingRule> = [{ key: "a+b", command: "sidebar.toggle" }];
     expect(compileResolvedKeybindingsConfig(config)).toEqual([]);
+  });
+
+  it("preserves conflicting shortcuts in declaration order", () => {
+    const config: ReadonlyArray<KeybindingRule> = [
+      { key: "mod+b", command: "sidebar.toggle" },
+      { key: "mod+b", command: "terminal.toggle" },
+    ];
+
+    expect(compileResolvedKeybindingsConfig(config).map((rule) => rule.command)).toEqual([
+      "sidebar.toggle",
+      "terminal.toggle",
+    ]);
+  });
+
+  it("retains the most recently declared rules at the configured limit", () => {
+    const config: ReadonlyArray<KeybindingRule> = Array.from(
+      { length: MAX_KEYBINDINGS_COUNT + 2 },
+      (_, index) => ({ key: `key${index}`, command: "sidebar.toggle" }),
+    );
+
+    const compiled = compileResolvedKeybindingsConfig(config);
+
+    expect(compiled).toHaveLength(MAX_KEYBINDINGS_COUNT);
+    expect(compiled[0]?.shortcut.key).toBe("key2");
+    expect(compiled.at(-1)?.shortcut.key).toBe(`key${MAX_KEYBINDINGS_COUNT + 1}`);
   });
 });
 

@@ -1,0 +1,34 @@
+[
+  {
+    "type": "turn.started",
+    "threadId": "fixture-thread",
+    "turnId": "fixture-turn",
+    "payload": {}
+  },
+  {
+    "type": "content.delta",
+    "threadId": "fixture-thread",
+    "turnId": "fixture-turn",
+    "payload": {
+      "streamKind": "assistant_text",
+      "delta": "I will make a small update.\n"
+    }
+  },
+  {
+    "type": "content.delta",
+    "threadId": "fixture-thread",
+    "turnId": "fixture-turn",
+    "payload": {
+      "streamKind": "assistant_text",
+      "delta": "Done.\n"
+    }
+  },
+  {
+    "type": "turn.completed",
+    "threadId": "fixture-thread",
+    "turnId": "fixture-turn",
+    "payload": {
+      "state": "completed"
+    }
+  }
+]

@@ -2,8 +2,8 @@ import {
   type ProviderInstanceId,
   type ProviderDriverKind,
   type ResolvedKeybindingsConfig,
-} from "@t3tools/contracts";
-import { resolveSelectableModel } from "@t3tools/shared/model";
+} from "@t4code/contracts";
+import { resolveSelectableModel } from "@t4code/shared/model";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { memo, useMemo, useState, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { SearchIcon } from "lucide-react";
@@ -61,6 +61,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   /** The instance currently selected in the composer (combobox "value"). */
   activeInstanceId: ProviderInstanceId;
   model: string;
+  /** Restrict the picker to the provider instance that owns the chat panel. */
+  lockToActiveInstance?: boolean;
   /**
    * When set, the picker is locked to the given driver kind — typically
    * because the user is editing a previously-sent message and can't change
@@ -105,7 +107,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const favorites = useClientSettings((s) => s.favorites ?? []);
   const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | "favorites">(
     () => {
-      if (props.lockedProvider !== null) {
+      if (props.lockToActiveInstance || props.lockedProvider !== null) {
         // When locked, prime the sidebar to the currently-active instance
         // so jumping into the picker keeps the focused instance visible.
         return props.activeInstanceId;
@@ -192,6 +194,9 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const flatModels = useMemo(() => {
     const out: ModelPickerItem[] = [];
     for (const [instanceId, models] of modelOptionsByInstance) {
+      if (props.lockToActiveInstance && instanceId !== props.activeInstanceId) {
+        continue;
+      }
       const entry = entryByInstanceId.get(instanceId);
       if (!entry) {
         // Instance disappeared between renders (configuration change). Skip
@@ -218,7 +223,13 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       }
     }
     return out;
-  }, [modelOptionsByInstance, entryByInstanceId, readyInstanceSet]);
+  }, [
+    modelOptionsByInstance,
+    entryByInstanceId,
+    readyInstanceSet,
+    props.activeInstanceId,
+    props.lockToActiveInstance,
+  ]);
 
   const isLocked = props.lockedProvider !== null;
   const isSearching = searchQuery.trim().length > 0;
@@ -250,7 +261,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     }
     return [...available, ...disabled];
   }, [instanceEntries, isLocked, matchesLockedProvider]);
-  const showSidebar = !isSearching && sidebarInstanceEntries.length > 0;
+  const showSidebar =
+    !props.lockToActiveInstance && !isSearching && sidebarInstanceEntries.length > 0;
   const instanceOrder = useMemo(
     () => instanceEntries.map((entry) => entry.instanceId),
     [instanceEntries],
@@ -364,6 +376,9 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
 
   const handleModelSelect = useCallback(
     (modelSlug: string, instanceId: ProviderInstanceId) => {
+      if (props.lockToActiveInstance && instanceId !== props.activeInstanceId) {
+        return;
+      }
       if (getModelDisabledReason?.(instanceId, modelSlug)) {
         return;
       }
@@ -383,7 +398,14 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
         onInstanceModelChange(instanceId, resolvedModel);
       }
     },
-    [entryByInstanceId, getModelDisabledReason, modelOptionsByInstance, onInstanceModelChange],
+    [
+      entryByInstanceId,
+      getModelDisabledReason,
+      modelOptionsByInstance,
+      onInstanceModelChange,
+      props.activeInstanceId,
+      props.lockToActiveInstance,
+    ],
   );
 
   const toggleFavorite = useCallback(
@@ -653,9 +675,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                       />
                     );
                   }}
-                  estimatedItemSize={60}
+                  estimatedItemSize={48}
+                  initialScrollIndex={0}
                   drawDistance={480}
-                  recycleItems
+                  recycleItems={false}
                   onLayout={updateModelListScrollFades}
                   onScroll={updateModelListScrollFades}
                   className={cn(

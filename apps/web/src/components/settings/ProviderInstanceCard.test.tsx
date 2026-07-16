@@ -16,7 +16,7 @@ import {
   ProviderInstanceId,
   type ProviderInstanceConfig,
   type ServerProvider,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import type { DriverOption } from "./providerDriverMeta";
 
 const harness = vi.hoisted(() => {

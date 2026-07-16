@@ -74,20 +74,8 @@ export const waitForHttpReady = Effect.fn("shared.httpReadiness.waitForHttpReady
   const lastProbeFailure = yield* Ref.make<unknown>(null);
   let attempt = 0;
 
-  // Tracks errors this function itself produced via `makeError`, so the
-  // pass-through guards below never double-wrap an already-constructed error
-  // (mirrors the SSH original's `cause instanceof SshReadinessError` checks).
   const makeError = input.makeError;
-  const madeErrors = new WeakSet<object>();
-  const fail = (cause: unknown): E => {
-    const error = makeError({ requestUrl, probeTimeoutMs, attempt, cause });
-    if (typeof error === "object" && error !== null) {
-      madeErrors.add(error);
-    }
-    return error;
-  };
-  const isMadeError = (value: unknown): value is E =>
-    typeof value === "object" && value !== null && madeErrors.has(value);
+  const fail = (cause: unknown): E => makeError({ requestUrl, probeTimeoutMs, attempt, cause });
 
   yield* Effect.logDebug("httpReadiness.start", {
     baseUrl: input.baseUrl,
@@ -99,7 +87,8 @@ export const waitForHttpReady = Effect.fn("shared.httpReadiness.waitForHttpReady
 
   const readinessClient = client.pipe(
     HttpClient.filterStatusOk,
-    HttpClient.transform((effect) =>
+    HttpClient.tap((response) => response.text.pipe(Effect.asVoid)),
+    HttpClient.transformResponse((effect) =>
       Effect.gen(function* () {
         attempt += 1;
         const responseOption = yield* effect.pipe(
@@ -118,7 +107,6 @@ export const waitForHttpReady = Effect.fn("shared.httpReadiness.waitForHttpReady
             ),
         });
       }).pipe(
-        Effect.mapError((cause) => (isMadeError(cause) ? cause : fail(cause))),
         Effect.tapError((cause) =>
           Ref.set(lastProbeFailure, {
             attempt,
@@ -127,14 +115,12 @@ export const waitForHttpReady = Effect.fn("shared.httpReadiness.waitForHttpReady
         ),
       ),
     ),
-    HttpClient.tap((response) => response.text.pipe(Effect.ignore)),
     HttpClient.retry(retryPolicy),
   );
 
-  const result = yield* readinessClient.execute(HttpClientRequest.get(requestUrl)).pipe(
-    Effect.mapError((cause) => (isMadeError(cause) ? cause : fail(cause))),
-    Effect.timeoutOption(Duration.millis(timeoutMs)),
-  );
+  const result = yield* readinessClient
+    .execute(HttpClientRequest.get(requestUrl))
+    .pipe(Effect.timeoutOption(Duration.millis(timeoutMs)));
 
   return yield* Option.match(result, {
     onSome: () =>
