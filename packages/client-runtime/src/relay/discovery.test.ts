@@ -166,6 +166,56 @@ const makeHarness = Effect.fn("RelayDiscoveryTest.makeHarness")(function* () {
 });
 
 describe("RelayEnvironmentDiscovery", () => {
+  it.effect("rejects relay status records that do not match the linked environment", () =>
+    Effect.gen(function* () {
+      const environment = environments[0]!;
+      const valid = status(environment, "online");
+
+      expect(yield* RelayEnvironmentDiscovery.validateStatus(environment, valid)).toBe(valid);
+
+      const mismatches: ReadonlyArray<RelayEnvironmentStatusResponse> = [
+        { ...valid, environmentId: EnvironmentId.make("different") },
+        {
+          ...valid,
+          endpoint: { ...valid.endpoint, httpBaseUrl: "https://different.example.test" },
+        },
+        {
+          ...valid,
+          endpoint: { ...valid.endpoint, wsBaseUrl: "wss://different.example.test" },
+        },
+        {
+          ...valid,
+          endpoint: { ...valid.endpoint, providerKind: "manual" },
+        },
+        {
+          ...valid,
+          descriptor: {
+            environmentId: EnvironmentId.make("different"),
+          } as RelayEnvironmentStatusResponse["descriptor"],
+        },
+      ];
+
+      for (const mismatch of mismatches) {
+        const error = yield* Effect.flip(
+          RelayEnvironmentDiscovery.validateStatus(environment, mismatch),
+        );
+        expect(error).toBeInstanceOf(ConnectionBlockedError);
+      }
+    }),
+  );
+
+  it("extracts only non-empty relay account subjects", () => {
+    const token = (payload: object) =>
+      `${Buffer.from("{}").toString("base64url")}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
+
+    expect(Option.getOrNull(RelayEnvironmentDiscovery.relayAccountId(token({ sub: "user-1" })))).toBe(
+      "user-1",
+    );
+    expect(Option.isNone(RelayEnvironmentDiscovery.relayAccountId(token({})))).toBe(true);
+    expect(Option.isNone(RelayEnvironmentDiscovery.relayAccountId(token({ sub: "" })))).toBe(true);
+    expect(Option.isNone(RelayEnvironmentDiscovery.relayAccountId("not-a-token"))).toBe(true);
+  });
+
   it.effect("publishes each environment status as soon as that lookup completes", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
