@@ -1,5 +1,10 @@
-use process_wrap::tokio::CommandWrap;
+#[cfg(unix)]
+use process_wrap::tokio::ProcessGroup;
+use process_wrap::tokio::{CommandWrap, KillOnDrop};
 use tokio::process::Command;
+
+#[cfg(windows)]
+use super::windows_job::BackgroundJob;
 
 /// Configures a non-interactive Tokio child process so a GUI parent does not
 /// flash a console window on Windows.
@@ -23,9 +28,7 @@ pub fn configure_background_std_command(command: &mut std::process::Command) {
     let _ = command;
 }
 
-/// Applies the same policy through process-wrap's creation-flags shim. This
-/// must be installed before JobObject because JobObject also modifies Windows
-/// creation flags while spawning the child.
+/// Applies the same policy through process-wrap's creation-flags shim.
 pub(crate) fn configure_background_command_wrap(command: &mut CommandWrap) {
     #[cfg(windows)]
     command.wrap(process_wrap::tokio::CreationFlags(
@@ -35,15 +38,26 @@ pub(crate) fn configure_background_command_wrap(command: &mut CommandWrap) {
     let _ = command;
 }
 
+/// Applies the platform process-tree supervision policy for a non-interactive
+/// background command.
+pub fn configure_supervised_background_command_wrap(command: &mut CommandWrap) {
+    configure_background_command_wrap(command);
+    command.wrap(KillOnDrop);
+    #[cfg(windows)]
+    command.wrap(BackgroundJob::default());
+    #[cfg(unix)]
+    command.wrap(ProcessGroup::leader());
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use std::process::Stdio;
 
-    use process_wrap::tokio::{CommandWrap, JobObject, KillOnDrop};
+    use process_wrap::tokio::CommandWrap;
     use tokio::io::AsyncReadExt;
     use windows_sys::Win32::System::Console::GetConsoleWindow;
 
-    use super::{configure_background_command, configure_background_command_wrap};
+    use super::{configure_background_command, configure_supervised_background_command_wrap};
 
     const CONSOLE_PROBE_ENV: &str = "T4CODE_WINDOWS_CONSOLE_PROBE";
     const CONSOLE_PROBE_MARKER: &str = "T4CODE_HAS_CONSOLE=";
@@ -88,7 +102,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn background_wrapped_command_has_no_console_with_job_object() {
+    async fn supervised_background_command_has_no_console() {
         let executable = std::env::current_exe().expect("current test executable should resolve");
         let mut command = CommandWrap::with_new(executable, |command| {
             command
@@ -102,9 +116,7 @@ mod tests {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
         });
-        configure_background_command_wrap(&mut command);
-        command.wrap(KillOnDrop);
-        command.wrap(JobObject);
+        configure_supervised_background_command_wrap(&mut command);
 
         let mut child = command
             .spawn()
@@ -127,6 +139,49 @@ mod tests {
         assert!(
             stdout.contains(&format!("{CONSOLE_PROBE_MARKER}false")),
             "wrapped background process unexpectedly inherited a console: {stdout}"
+        );
+    }
+
+    #[tokio::test]
+    async fn supervised_background_cmd_shim_has_no_console() {
+        let executable = std::env::current_exe().expect("current test executable should resolve");
+        let mut command = CommandWrap::with_new("cmd.exe", |command| {
+            command
+                .args(["/d", "/s", "/c"])
+                .arg(executable)
+                .args([
+                    "--exact",
+                    "process::background::tests::windows_child_console_probe",
+                    "--nocapture",
+                ])
+                .env(CONSOLE_PROBE_ENV, "1")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+        });
+        configure_supervised_background_command_wrap(&mut command);
+
+        let mut child = command
+            .spawn()
+            .expect("wrapped cmd console probe should run");
+        let mut stdout = child
+            .stdout()
+            .take()
+            .expect("wrapped cmd console probe should expose stdout");
+        let mut bytes = Vec::new();
+        stdout
+            .read_to_end(&mut bytes)
+            .await
+            .expect("wrapped cmd console probe stdout should be readable");
+        let status = child
+            .wait()
+            .await
+            .expect("wrapped cmd console probe should complete");
+        assert!(status.success(), "wrapped cmd probe failed: {status}");
+        let stdout = String::from_utf8_lossy(&bytes);
+        assert!(
+            stdout.contains(&format!("{CONSOLE_PROBE_MARKER}false")),
+            "wrapped cmd process unexpectedly inherited a console: {stdout}"
         );
     }
 }

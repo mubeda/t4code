@@ -5,6 +5,12 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
+import {
+  releaseCargoLockFile,
+  releasePackageFiles,
+  releaseRustPackageFiles,
+} from "./update-release-package-versions.ts";
+
 const defaultRepoRoot = NodePath.resolve(
   NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)),
   "..",
@@ -14,17 +20,18 @@ export const releaseSmokeWorkspaceFiles = [
   "package.json",
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
-  "apps/server/package.json",
-  "apps/desktop/package.json",
-  "apps/web/package.json",
+  ...releasePackageFiles,
+  ...releaseRustPackageFiles,
+  releaseCargoLockFile,
   "apps/marketing/package.json",
   "infra/relay/package.json",
   "oxlint-plugin-t4code/package.json",
   "packages/client-runtime/package.json",
-  "packages/contracts/package.json",
   "packages/shared/package.json",
   "scripts/package.json",
 ] as const;
+
+const releaseSmokeVersion = "9.9.9-smoke.0";
 
 export interface ReleaseSmokeExecOptions {
   readonly cwd: string;
@@ -116,6 +123,19 @@ function assertPackageVersion(filePath: string, version: string): void {
   }
 }
 
+function assertCargoVersion(filePath: string, version: string, expectedOccurrences: number): void {
+  const source = NodeFS.readFileSync(filePath, "utf8");
+  const escapedVersion = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const occurrences = source.match(
+    new RegExp(`^version\\s*=\\s*"${escapedVersion}"\\s*$`, "gm"),
+  )?.length;
+  if (occurrences !== expectedOccurrences) {
+    throw new Error(
+      `Expected ${filePath} to contain ${expectedOccurrences} Cargo version entries for ${version}.`,
+    );
+  }
+}
+
 function writeFilteredInstallOutput(output: string, write: (text: string) => void): void {
   const filteredOutput = output
     .split(/\r?\n/)
@@ -160,7 +180,7 @@ export function runReleaseSmoke(options: ReleaseSmokeOptions): void {
       process.execPath,
       [
         NodePath.resolve(repoRoot, "scripts/update-release-package-versions.ts"),
-        "9.9.9-smoke.0",
+        releaseSmokeVersion,
         "--root",
         tempRoot,
       ],
@@ -178,8 +198,16 @@ export function runReleaseSmoke(options: ReleaseSmokeOptions): void {
       "apps/web/package.json",
       "packages/contracts/package.json",
     ]) {
-      assertPackageVersion(NodePath.resolve(tempRoot, relativePath), "9.9.9-smoke.0");
+      assertPackageVersion(NodePath.resolve(tempRoot, relativePath), releaseSmokeVersion);
     }
+    for (const relativePath of releaseRustPackageFiles) {
+      assertCargoVersion(NodePath.resolve(tempRoot, relativePath), releaseSmokeVersion, 1);
+    }
+    assertCargoVersion(
+      NodePath.resolve(tempRoot, releaseCargoLockFile),
+      releaseSmokeVersion,
+      releaseRustPackageFiles.length,
+    );
 
     const nightlyReleaseMetadata = runtime.execFile(
       process.execPath,
