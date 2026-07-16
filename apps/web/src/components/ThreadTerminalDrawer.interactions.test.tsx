@@ -2,6 +2,7 @@
 
 import { scopeThreadRef } from "@t4code/client-runtime/environment";
 import { EnvironmentId, ThreadId, type ResolvedKeybindingsConfig } from "@t4code/contracts";
+import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -13,11 +14,17 @@ interface FakeTerminalInstance {
   readonly focus: ReturnType<typeof vi.fn>;
   readonly refresh: ReturnType<typeof vi.fn>;
   readonly dispose: ReturnType<typeof vi.fn>;
+  readonly clearSelection: ReturnType<typeof vi.fn>;
   readonly inputDisposable: { readonly dispose: ReturnType<typeof vi.fn> };
   readonly selectionDisposable: { readonly dispose: ReturnType<typeof vi.fn> };
   readonly linkDisposable: { readonly dispose: ReturnType<typeof vi.fn> };
   readonly writes: string[];
   dataHandler: ((data: string) => void) | null;
+  selectionHandler: (() => void) | null;
+  keyHandler: ((event: KeyboardEvent) => boolean) | null;
+  hasActiveSelection: boolean;
+  selectionText: string;
+  selectionPosition: { start: { y: number } } | null;
 }
 
 const xtermState = vi.hoisted(() => ({
@@ -58,13 +65,20 @@ vi.mock("@xterm/xterm", () => ({
       },
     };
     dataHandler: ((data: string) => void) | null = null;
+    selectionHandler: (() => void) | null = null;
+    keyHandler: ((event: KeyboardEvent) => boolean) | null = null;
+    hasActiveSelection = false;
+    selectionText = "";
+    selectionPosition: { start: { y: number } } | null = null;
 
     constructor(options: Record<string, unknown>) {
       this.options = options;
       xtermState.terminals.push(this);
     }
 
-    attachCustomKeyEventHandler() {}
+    attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) {
+      this.keyHandler = handler;
+    }
 
     registerLinkProvider() {
       return this.linkDisposable;
@@ -75,20 +89,21 @@ vi.mock("@xterm/xterm", () => ({
       return this.inputDisposable;
     }
 
-    onSelectionChange() {
+    onSelectionChange(handler: () => void) {
+      this.selectionHandler = handler;
       return this.selectionDisposable;
     }
 
     hasSelection() {
-      return false;
+      return this.hasActiveSelection;
     }
 
     getSelection() {
-      return "";
+      return this.selectionText;
     }
 
     getSelectionPosition() {
-      return null;
+      return this.selectionPosition;
     }
 
     write(value: string) {
@@ -103,6 +118,9 @@ const testState = vi.hoisted(() => ({
   resizeCommand: vi.fn(),
   previewCommand: vi.fn(),
   openPath: vi.fn(),
+  contextMenuShow: vi.fn(),
+  shellOpenExternal: vi.fn(),
+  localApiAvailable: false,
 }));
 
 vi.mock("@effect/atom-react", () => ({ useAtomValue: () => ({ availableEditors: ["vscode"] }) }));
@@ -126,7 +144,15 @@ vi.mock("../state/terminalSessions", () => ({
 vi.mock("../editorPreferences", () => ({
   useOpenInPreferredEditor: () => testState.openPath,
 }));
-vi.mock("~/localApi", () => ({ readLocalApi: () => undefined }));
+vi.mock("~/localApi", () => ({
+  readLocalApi: () =>
+    testState.localApiAvailable
+      ? {
+          contextMenu: { show: testState.contextMenuShow },
+          shell: { openExternal: testState.shellOpenExternal },
+        }
+      : undefined,
+}));
 vi.mock("./preview/openTerminalLinkInPreview", () => ({
   openTerminalLinkInPreview: vi.fn(),
 }));
@@ -161,6 +187,7 @@ const mountedTrees: MountedTree[] = [];
 const observerInstances: Array<{
   observe: ReturnType<typeof vi.fn>;
   disconnect: ReturnType<typeof vi.fn>;
+  callback: MutationCallback;
 }> = [];
 const componentTimers = new Set<number>();
 const animationFrames = new Map<number, FrameRequestCallback>();
@@ -250,6 +277,9 @@ beforeEach(() => {
   testState.resizeCommand.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   testState.previewCommand.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   testState.openPath.mockReset().mockResolvedValue(AsyncResult.success(undefined));
+  testState.contextMenuShow.mockReset().mockResolvedValue(undefined);
+  testState.shellOpenExternal.mockReset().mockResolvedValue(undefined);
+  testState.localApiAvailable = false;
   observerInstances.length = 0;
   componentTimers.clear();
   animationFrames.clear();
@@ -289,7 +319,9 @@ beforeEach(() => {
     class MutationObserver {
       readonly observe = vi.fn();
       readonly disconnect = vi.fn();
-      constructor() {
+      readonly callback: MutationCallback;
+      constructor(callback: MutationCallback) {
+        this.callback = callback;
         observerInstances.push(this);
       }
     },
@@ -398,6 +430,121 @@ describe("TerminalViewport mounted lifecycle", () => {
     });
     expect(terminal.focus).toHaveBeenCalled();
   });
+
+  it("rewrites divergent buffers, reports errors, and closes exited sessions once", async () => {
+    const onSessionExited = vi.fn();
+    const props = viewportProps({ onSessionExited });
+    const mounted = await mount(<TerminalViewport {...props} />);
+    const terminal = xtermState.terminals[0]!;
+
+    testState.session = { buffer: "abcdef", error: null, status: "running", version: 1 };
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+    testState.session = { buffer: "xy", error: "stream failed", status: "closed", version: 2 };
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+    await act(async () => new Promise((resolve) => window.setTimeout(resolve, 0)));
+
+    expect(terminal.writes).toContain("\u001bc");
+    expect(terminal.writes).toContain("xy");
+    expect(terminal.writes).toContain("\r\n[terminal] stream failed\r\n");
+    expect(terminal.writes).toContain("\r\n[terminal] Terminal closed\r\n");
+    expect(onSessionExited).toHaveBeenCalledOnce();
+
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+    await act(async () => new Promise((resolve) => window.setTimeout(resolve, 0)));
+    expect(onSessionExited).toHaveBeenCalledOnce();
+  });
+
+  it("reports write and keyboard-command failures while allowing ordinary keys", async () => {
+    await mount(<TerminalViewport {...viewportProps()} />);
+    const terminal = xtermState.terminals[0]!;
+    testState.writeCommand.mockResolvedValueOnce(
+      AsyncResult.failure(Cause.fail(new Error("write denied"))),
+    );
+    await act(async () => terminal.dataHandler?.("blocked"));
+    await act(async () => Promise.resolve());
+    expect(terminal.writes).toContain("\r\n[terminal] write denied\r\n");
+
+    testState.writeCommand.mockResolvedValueOnce(AsyncResult.failure(Cause.fail("no details")));
+    const clearEvent = new KeyboardEvent("keydown", { key: "l", ctrlKey: true, cancelable: true });
+    expect(terminal.keyHandler?.(clearEvent)).toBe(false);
+    await act(async () => Promise.resolve());
+    expect(testState.writeCommand).toHaveBeenCalledWith({
+      environmentId: ENVIRONMENT_ID,
+      input: { threadId: THREAD_ID, terminalId: "term-1", data: "\u000c" },
+    });
+    expect(terminal.writes).toContain("\r\n[terminal] Failed to clear terminal\r\n");
+    expect(terminal.keyHandler?.(new KeyboardEvent("keydown", { key: "a" }))).toBe(true);
+  });
+
+  it("adds a normalized terminal selection through the native context menu", async () => {
+    testState.localApiAvailable = true;
+    testState.contextMenuShow.mockResolvedValue("add-to-chat");
+    const onAddTerminalContext = vi.fn();
+    const mounted = await mount(
+      <TerminalViewport {...viewportProps({ onAddTerminalContext, terminalLabel: "Build" })} />,
+    );
+    const terminal = xtermState.terminals[0]!;
+    terminal.hasActiveSelection = true;
+    terminal.selectionText = "\r\nfirst\r\nsecond\r\n";
+    terminal.selectionPosition = { start: { y: 4 } };
+    const mountElement = mounted.container.querySelector<HTMLElement>(".overflow-hidden")!;
+
+    await act(async () => {
+      mountElement.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerId: 1 }),
+      );
+      window.dispatchEvent(
+        new MouseEvent("mouseup", {
+          bubbles: true,
+          button: 0,
+          detail: 1,
+          clientX: 30,
+          clientY: 40,
+        }),
+      );
+      await new Promise((resolve) => window.setTimeout(resolve, 2));
+      for (const callback of animationFrames.values()) callback(0);
+      animationFrames.clear();
+      await Promise.resolve();
+    });
+
+    expect(testState.contextMenuShow).toHaveBeenCalledWith(
+      [{ id: "add-to-chat", label: "Add to chat" }],
+      expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }),
+    );
+    expect(onAddTerminalContext).toHaveBeenCalledWith({
+      terminalId: "term-1",
+      terminalLabel: "Build",
+      lineStart: 5,
+      lineEnd: 6,
+      text: "first\nsecond",
+    });
+    expect(terminal.clearSelection).toHaveBeenCalled();
+    expect(terminal.focus).toHaveBeenCalled();
+
+    terminal.hasActiveSelection = false;
+    terminal.selectionHandler?.();
+  });
+
+  it("refreshes theme and refits when the viewport changes", async () => {
+    const props = viewportProps();
+    const mounted = await mount(<TerminalViewport {...props} />);
+    const terminal = xtermState.terminals[0]!;
+    const observer = observerInstances[0]!;
+    observer.callback([], observer as never);
+    expect(terminal.refresh).toHaveBeenCalledWith(0, 23);
+
+    await act(async () => mounted.root.render(<TerminalViewport {...props} resizeEpoch={1} />));
+    await act(async () => {
+      for (const callback of animationFrames.values()) callback(0);
+      animationFrames.clear();
+    });
+    expect(xtermState.fitAddons[0]?.fit).toHaveBeenCalled();
+    expect(testState.resizeCommand).toHaveBeenCalledWith({
+      environmentId: ENVIRONMENT_ID,
+      input: { threadId: THREAD_ID, terminalId: "term-1", cols: 80, rows: 24 },
+    });
+  });
 });
 
 describe("ThreadTerminalDrawer mounted controls", () => {
@@ -455,5 +602,45 @@ describe("ThreadTerminalDrawer mounted controls", () => {
     expect(terminalTwo).toBeDefined();
     await click(terminalTwo!);
     expect(onActiveTerminalChange).toHaveBeenCalledWith("term-2");
+  });
+
+  it("resizes the drawer by pointer and syncs the clamped height", async () => {
+    const onHeightChange = vi.fn();
+    const mounted = await mount(
+      <ThreadTerminalDrawer
+        {...drawerProps({ onHeightChange, terminalIds: [], terminalGroups: [] })}
+      />,
+    );
+    const handle = mounted.container.querySelector<HTMLElement>(".cursor-row-resize")!;
+    const captured = new Set<number>();
+    Object.defineProperties(handle, {
+      setPointerCapture: {
+        configurable: true,
+        value: (pointerId: number) => captured.add(pointerId),
+      },
+      hasPointerCapture: {
+        configurable: true,
+        value: (pointerId: number) => captured.has(pointerId),
+      },
+      releasePointerCapture: {
+        configurable: true,
+        value: (pointerId: number) => captured.delete(pointerId),
+      },
+    });
+
+    await act(async () => {
+      handle.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerId: 7, clientY: 300 }),
+      );
+      handle.dispatchEvent(
+        new PointerEvent("pointermove", { bubbles: true, pointerId: 7, clientY: 250 }),
+      );
+      handle.dispatchEvent(
+        new PointerEvent("pointerup", { bubbles: true, pointerId: 7, clientY: 250 }),
+      );
+    });
+
+    expect(mounted.container.querySelector("aside")?.getAttribute("style")).toContain("330px");
+    expect(onHeightChange).toHaveBeenCalledWith(330);
   });
 });
