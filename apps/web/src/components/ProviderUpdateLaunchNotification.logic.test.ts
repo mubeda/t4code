@@ -1247,6 +1247,133 @@ describe("provider update launch notification logic", () => {
       ).toMatchObject({ phase: "running" });
     });
 
+    it("preserves prefixed versions and treats current snapshots as completed", () => {
+      const candidate = updateCandidate({ driver: driver("custom"), latestVersion: "v2.0.0" });
+      expect(
+        getProviderUpdateInitialToastView({
+          updateProviders: [candidate],
+          oneClickProviders: [candidate],
+        }).title,
+      ).toBe("Update Available: custom v2.0.0");
+      expect(
+        getProviderUpdateProgressToastView({
+          providers: [
+            provider({
+              driver: driver("custom"),
+              advisoryStatus: "current",
+              latestVersion: "2.0.0",
+            }),
+          ],
+          providerCount: 1,
+        }),
+      ).toMatchObject({ phase: "succeeded" });
+    });
+
+    it("uses driver and idle-state fallbacks for custom providers", () => {
+      const activeCustom = provider({
+        driver: driver("custom-active"),
+        updateState: {
+          status: "queued",
+          startedAt: null,
+          finishedAt: null,
+          message: null,
+          output: null,
+        },
+      });
+      expect(getProviderUpdateSidebarPillView([activeCustom])).toMatchObject({
+        tone: "loading",
+        title: "Updating custom-active",
+      });
+
+      const customGroup: LocalEnvironmentUpdateGroup = {
+        environmentId: "custom-env" as EnvironmentId,
+        label: "Custom",
+        isPrimary: false,
+        isSettling: false,
+        candidates: [updateCandidate({ driver: driver("custom-idle") })],
+        providers: [],
+      };
+      expect(
+        resolveEnvironmentUpdateRowStatus({
+          group: customGroup,
+          error: undefined,
+          result: undefined,
+          pill: null,
+          isPending: false,
+        }),
+      ).toEqual({ kind: "idle", text: "custom-idle" });
+    });
+
+    it("builds and orders terminal pills with missing optional details", () => {
+      const state = (
+        status: "succeeded" | "failed" | "unchanged",
+        finishedAt: string | null,
+      ): NonNullable<ServerProvider["updateState"]> => ({
+        status,
+        startedAt: checkedAt,
+        finishedAt,
+        message: null,
+        output: null,
+      });
+      const providers = [
+        provider({ driver: driver("custom-failed"), updateState: state("failed", null) }),
+        provider({
+          driver: driver("custom-unchanged"),
+          updateState: state("unchanged", laterCheckedAt),
+        }),
+        provider({ driver: driver("custom-succeeded"), updateState: state("succeeded", null) }),
+      ];
+
+      const first = getProviderUpdateSidebarPillView(providers);
+      expect(first).toMatchObject({ tone: "warning", title: "custom-unchanged still needs an update" });
+      const second = getProviderUpdateSidebarPillView(providers, {
+        dismissedKeys: new Set([first!.key]),
+      });
+      expect(second).not.toBeNull();
+      const third = getProviderUpdateSidebarPillView(providers, {
+        dismissedKeys: new Set([first!.key, second!.key]),
+      });
+      expect(new Set([second!.tone, third!.tone])).toEqual(new Set(["error", "success"]));
+    });
+
+    it("handles rejected secondary outcomes and providers without update state", () => {
+      expect(
+        firstUnsuccessfulSecondaryProviderOutcome([
+          { status: "rejected", reason: new Error("offline") },
+        ]),
+      ).toBeNull();
+
+      const first = provider({ driver: driver("custom") });
+      const second = provider({
+        driver: driver("custom"),
+        instanceId: instanceId("custom-secondary"),
+      });
+      expect(
+        collectProviderUpdateOutcomeSnapshots([
+          {
+            status: "fulfilled",
+            value: {
+              environmentId: "primary" as EnvironmentId,
+              isPrimary: true,
+              driver: first.driver,
+              instanceId: first.instanceId,
+              provider: first,
+            },
+          },
+          {
+            status: "fulfilled",
+            value: {
+              environmentId: "secondary" as EnvironmentId,
+              isPrimary: false,
+              driver: second.driver,
+              instanceId: second.instanceId,
+              provider: second,
+            },
+          },
+        ]),
+      ).toEqual([first]);
+    });
+
     it("summarizes plural terminal sidebar states and can dismiss all of them", () => {
       const failedProviders = [
         provider({ driver: driver("codex"), updateState: terminalState("failed", "") }),

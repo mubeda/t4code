@@ -315,6 +315,14 @@ function isTransientBootstrapError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
+/** @internal Deterministic authentication helpers used by focused unit tests. */
+export const primaryEnvironmentAuthInternals = {
+  getDesktopBootstrapCredential,
+  isTransientBootstrapError,
+  readEnvironmentHttpErrorStatus,
+  readHttpApiStatus,
+};
+
 async function bootstrapServerAuth(): Promise<ServerAuthGateState> {
   const bootstrapCredential = getDesktopBootstrapCredential();
   const currentSession = await fetchSessionState();
