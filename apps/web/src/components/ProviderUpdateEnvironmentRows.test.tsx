@@ -6,6 +6,7 @@ import {
   ProviderInstanceId,
   type ServerProvider,
 } from "@t4code/contracts";
+import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 
 import type {
@@ -158,9 +159,9 @@ type RowElement = ReactElement<{
   readonly onUpdate: () => void;
 }>;
 
-function renderRow(): RowElement {
+function renderRow(onInteract?: () => void): RowElement {
   hooks.beginRender();
-  const output = ProviderUpdateEnvironmentRows({}) as ReactElement<{
+  const output = ProviderUpdateEnvironmentRows(onInteract ? { onInteract } : {}) as ReactElement<{
     readonly children: RowElement | RowElement[];
   }>;
   const children = output.props.children;
@@ -223,5 +224,143 @@ describe("ProviderUpdateEnvironmentRows", () => {
     await flushPromises();
 
     expect(renderRow().props.status.kind).toBe("success");
+  });
+
+  it("renders no rows when no environment has update work", () => {
+    testState.groups = [];
+    hooks.beginRender();
+    expect(ProviderUpdateEnvironmentRows({})).toBeNull();
+
+    hooks.reset();
+    testState.groups = [
+      {
+        environmentId,
+        label: "WSL",
+        isPrimary: false,
+        isSettling: false,
+        candidates: [],
+        providers: [],
+      },
+    ];
+    hooks.beginRender();
+    expect(ProviderUpdateEnvironmentRows({})).toBeNull();
+  });
+
+  it("ignores rapid duplicate updates and invokes the interaction callback once", async () => {
+    const request =
+      deferred<ReturnType<typeof AsyncResult.success<{ providers: ServerProvider[] }>>>();
+    testState.updateProvider.mockReturnValue(request.promise);
+    const onInteract = vi.fn();
+    const update = renderRow(onInteract).props.onUpdate;
+
+    update();
+    update();
+    expect(testState.updateProvider).toHaveBeenCalledOnce();
+    expect(onInteract).toHaveBeenCalledOnce();
+
+    request.resolve(AsyncResult.success({ providers: [provider("succeeded")] }));
+    await flushPromises();
+    expect(renderRow(onInteract).props.status.kind).toBe("success");
+  });
+
+  it("shows rejected command errors and clears them before a successful retry", async () => {
+    testState.updateProvider
+      .mockResolvedValueOnce(AsyncResult.failure(Cause.fail(new Error("update denied"))))
+      .mockResolvedValueOnce(AsyncResult.success({ providers: [provider("succeeded")] }));
+
+    renderRow().props.onUpdate();
+    await flushPromises();
+    expect(renderRow().props.status).toMatchObject({ kind: "failed", text: "update denied" });
+
+    renderRow().props.onUpdate();
+    expect(renderRow().props.status.kind).toBe("loading");
+    await flushPromises();
+    expect(renderRow().props.status.kind).toBe("success");
+  });
+
+  it("uses generic errors for non-error command failures and thrown values", async () => {
+    testState.updateProvider
+      .mockResolvedValueOnce(AsyncResult.failure(Cause.fail("unknown")))
+      .mockRejectedValueOnce("transport closed");
+
+    renderRow().props.onUpdate();
+    await flushPromises();
+    expect(renderRow().props.status).toMatchObject({
+      kind: "failed",
+      text: "Provider update failed.",
+    });
+
+    renderRow().props.onUpdate();
+    await flushPromises();
+    expect(renderRow().props.status).toMatchObject({
+      kind: "failed",
+      text: "Provider update failed.",
+    });
+  });
+
+  it("does not pin interrupted or missing-provider snapshots as running results", async () => {
+    testState.updateProvider
+      .mockResolvedValueOnce(AsyncResult.failure(Cause.interrupt()))
+      .mockResolvedValueOnce(AsyncResult.success({ providers: [] }));
+
+    renderRow().props.onUpdate();
+    await flushPromises();
+    expect(renderRow().props.status.kind).not.toBe("loading");
+
+    renderRow().props.onUpdate();
+    await flushPromises();
+    expect(renderRow().props.status.kind).not.toBe("loading");
+  });
+
+  it("updates every candidate in one environment and reports unchanged outcomes", async () => {
+    const unchangedState = {
+      status: "unchanged" as const,
+      startedAt: "2026-06-26T12:00:00.000Z",
+      finishedAt: "2026-06-26T12:00:01.000Z",
+      message: "Still outdated.",
+      output: null,
+    };
+    const firstCandidate = {
+      ...testState.groups[0]!.candidates[0]!,
+      updateState: unchangedState,
+    } as ProviderUpdateCandidate;
+    const secondCandidate = {
+      ...provider(),
+      instanceId: ProviderInstanceId.make("claude-wsl"),
+      driver: ProviderDriverKind.make("claudeAgent"),
+      updateState: unchangedState,
+    } as ProviderUpdateCandidate;
+    testState.groups[0] = {
+      ...testState.groups[0]!,
+      candidates: [firstCandidate, secondCandidate],
+      providers: [firstCandidate, secondCandidate],
+    };
+    testState.updateProvider.mockImplementation(({ input }) =>
+      Promise.resolve(
+        AsyncResult.success({
+          providers: [input.instanceId === "codex-wsl" ? firstCandidate : secondCandidate],
+        }),
+      ),
+    );
+
+    renderRow().props.onUpdate();
+    await flushPromises();
+
+    expect(testState.updateProvider).toHaveBeenCalledTimes(2);
+    expect(renderRow().props.status.kind).toBe("unchanged");
+  });
+
+  it("executes every row trailing-control presentation", () => {
+    const row = renderRow();
+    const RowComponent = row.type as (props: RowElement["props"]) => ReactElement;
+    for (const status of [
+      { kind: "idle", text: "Update available" },
+      { kind: "loading", text: "Updating" },
+      { kind: "success", text: "Updated" },
+      { kind: "failed", text: "Failed" },
+      { kind: "unchanged", text: "Unchanged" },
+    ] as ProviderUpdateRowStatus[]) {
+      expect(RowComponent({ ...row.props, status })).toBeTruthy();
+    }
   });
 });
