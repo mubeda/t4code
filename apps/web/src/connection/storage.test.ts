@@ -45,7 +45,7 @@ const encodeCatalog = Schema.encodeSync(Schema.fromJsonString(ConnectionCatalogD
 // the fake must fire events after the synchronous body has run — every
 // request/transaction event is deferred through `queueMicrotask`.
 
-type FaultMode = "none" | "get" | "put" | "cursor";
+type FaultMode = "none" | "get" | "put" | "delete" | "cursor";
 
 class FakeRequest {
   result: unknown = undefined;
@@ -109,6 +109,11 @@ class FakeTransaction {
       delete: (key: IDBValidKey) => {
         const request = new FakeRequest();
         queueMicrotask(() => {
+          if (this.fault === "delete") {
+            this.error = new Error("boom-delete");
+            this.fire("error");
+            return;
+          }
           this.store.delete(key);
           request.fire("success");
           this.fire("complete");
@@ -308,6 +313,27 @@ describe("makeCatalogStore", () => {
       expect(quarantined).toEqual(["{not-json"]);
       expect(writes).toHaveLength(1);
       expect(decodeCatalog(writes[0]!)).toEqual(emptyCatalog);
+    }),
+  );
+
+  it.effect("recovers when corrupt-catalog quarantine and replacement persistence both fail", () =>
+    Effect.gen(function* () {
+      const quarantineFailure = new ConnectionTransientError({
+        reason: "remote-unavailable",
+        detail: "quarantine unavailable",
+      });
+      const writeFailure = new ConnectionTransientError({
+        reason: "remote-unavailable",
+        detail: "replacement unavailable",
+      });
+      const store = yield* makeCatalogStore({
+        read: Effect.succeed("{not-json"),
+        write: () => Effect.fail(writeFailure),
+        quarantine: () => Effect.fail(quarantineFailure),
+      });
+
+      expect(yield* store.read).toEqual(emptyCatalog);
+      expect(yield* store.read).toEqual(emptyCatalog);
     }),
   );
 
@@ -591,5 +617,113 @@ describe("connectionStorageLayer", () => {
       Effect.flip,
       Effect.asVoid,
     );
+  });
+
+  it.effect("maps catalog and cache read failures to operation-specific persistence errors", () => {
+    installFakeIndexedDb({ fault: "get" });
+    return Effect.gen(function* () {
+      const targetStore = yield* ConnectionTargetStore;
+      const cacheStore = yield* EnvironmentCacheStore;
+
+      const targetsError = yield* Effect.flip(targetStore.list);
+      expect(targetsError.operation).toBe("list-targets");
+      const shellError = yield* Effect.flip(cacheStore.loadShell(environmentId));
+      expect(shellError.operation).toBe("load-shell");
+      const threadError = yield* Effect.flip(cacheStore.loadThread(environmentId, threadId));
+      expect(threadError.operation).toBe("load-thread");
+    }).pipe(Effect.provide(connectionStorageLayer));
+  });
+
+  it.effect("maps catalog and cache write failures to operation-specific persistence errors", () => {
+    installFakeIndexedDb({ fault: "put" });
+    return Effect.gen(function* () {
+      const registrationStore = yield* ConnectionRegistrationStore;
+      const cacheStore = yield* EnvironmentCacheStore;
+
+      const registerError = yield* Effect.flip(registrationStore.register(bearerRegistration()));
+      expect(registerError.operation).toBe("register-connection");
+      const removeError = yield* Effect.flip(registrationStore.remove(bearerRegistration().target));
+      expect(removeError.operation).toBe("remove-connection");
+      const shellError = yield* Effect.flip(cacheStore.saveShell(environmentId, shellSnapshot()));
+      expect(shellError.operation).toBe("save-shell");
+      const threadError = yield* Effect.flip(
+        cacheStore.saveThread(environmentId, orchestrationThread()),
+      );
+      expect(threadError.operation).toBe("save-thread");
+    }).pipe(Effect.provide(connectionStorageLayer));
+  });
+
+  it.effect("rejects malformed cached snapshots and ignores snapshots scoped elsewhere", () => {
+    const handle = installFakeIndexedDb();
+    const shellStore = new Map<IDBValidKey, unknown>();
+    const threadStore = new Map<IDBValidKey, unknown>();
+    handle.stores.set("shell", shellStore);
+    handle.stores.set("thread", threadStore);
+    shellStore.set(environmentId, "{malformed");
+    threadStore.set(`${environmentId}:${threadId}`, "{malformed");
+
+    return Effect.gen(function* () {
+      const cacheStore = yield* EnvironmentCacheStore;
+      expect((yield* Effect.flip(cacheStore.loadShell(environmentId))).operation).toBe(
+        "load-shell",
+      );
+      expect((yield* Effect.flip(cacheStore.loadThread(environmentId, threadId))).operation).toBe(
+        "load-thread",
+      );
+
+      shellStore.set(
+        environmentId,
+        JSON.stringify({
+          schemaVersion: 1,
+          environmentId: otherEnvironmentId,
+          snapshot: shellSnapshot(),
+        }),
+      );
+      threadStore.set(
+        `${environmentId}:${threadId}`,
+        JSON.stringify({
+          schemaVersion: 1,
+          environmentId: otherEnvironmentId,
+          threadId,
+          thread: orchestrationThread(),
+        }),
+      );
+      expect(Option.isNone(yield* cacheStore.loadShell(environmentId))).toBe(true);
+      expect(Option.isNone(yield* cacheStore.loadThread(environmentId, threadId))).toBe(true);
+    }).pipe(Effect.provide(connectionStorageLayer));
+  });
+
+  it.effect("maps malformed save payloads and removal failures to persistence errors", () => {
+    installFakeIndexedDb();
+    return Effect.gen(function* () {
+      const cacheStore = yield* EnvironmentCacheStore;
+
+      expect((yield* Effect.flip(cacheStore.saveShell(environmentId, null as never))).operation).toBe(
+        "save-shell",
+      );
+      expect(
+        (yield* Effect.flip(cacheStore.saveThread(environmentId, { id: threadId } as never)))
+          .operation,
+      ).toBe("save-thread");
+    }).pipe(Effect.provide(connectionStorageLayer));
+  });
+
+  it.effect("maps delete and cursor failures to the exact cache operations", () => {
+    const deleteHandle = installFakeIndexedDb({ fault: "delete" });
+    const deleteLayer = connectionStorageLayer;
+    return Effect.gen(function* () {
+      const deleteStore = yield* EnvironmentCacheStore.pipe(Effect.provide(deleteLayer));
+      expect(
+        (yield* Effect.flip(deleteStore.removeThread(environmentId, threadId))).operation,
+      ).toBe("remove-thread");
+
+      vi.unstubAllGlobals();
+      installFakeIndexedDb({ fault: "cursor" });
+      const cursorStore = yield* EnvironmentCacheStore.pipe(Effect.provide(connectionStorageLayer));
+      expect((yield* Effect.flip(cursorStore.clear(environmentId))).operation).toBe(
+        "clear-environment",
+      );
+      expect(deleteHandle.stores).toBeDefined();
+    });
   });
 });
