@@ -417,7 +417,10 @@ staticDescribe("CreateWorktreeDialog", () => {
       ],
       settings: {
         providers: {},
-        providerInstances: { claude: { driver: "claudeAgent" } },
+        providerInstances: {
+          claude: { driver: "claudeAgent" },
+          missing: { driver: "codex", enabled: true },
+        },
       },
     });
 
@@ -457,7 +460,7 @@ staticDescribe("CreateWorktreeDialog", () => {
       settings: {
         providers: {},
         providerInstances: {
-          codex_personal: { driver: "codex", displayName: "Codex Personal" },
+          codex_personal: { driver: "codex", displayName: "Personal Codex" },
         },
       },
     });
@@ -469,7 +472,7 @@ staticDescribe("CreateWorktreeDialog", () => {
       { value: "opencode", label: "OpenCode" },
       { value: "codex", label: "Codex" },
       { value: "claudeAgent", label: "Claude" },
-      { value: "codex_personal", label: "Codex Personal" },
+      { value: "codex_personal", label: "Personal Codex" },
     ]);
     expect(markup).not.toContain("claudeAgent");
   });
