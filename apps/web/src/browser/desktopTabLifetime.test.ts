@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const { closeTab, createTab } = vi.hoisted(() => ({
   closeTab: vi.fn(async () => undefined),
@@ -13,8 +13,16 @@ import { acquireDesktopTab } from "./desktopTabLifetime";
 
 describe("desktopTabLifetime", () => {
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", { setTimeout, clearTimeout });
     closeTab.mockClear();
     createTab.mockClear();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it("shares tab creation readiness across concurrent leases", async () => {
@@ -41,5 +49,37 @@ describe("desktopTabLifetime", () => {
     resolveCreation?.();
     await first.ready;
     expect(ready).toBe(true);
+  });
+
+  it("closes a tab only after the last lease releases", async () => {
+    const first = acquireDesktopTab("tab_shared");
+    const second = acquireDesktopTab("tab_shared");
+    await first.ready;
+
+    first.release();
+    await vi.runAllTimersAsync();
+    expect(closeTab).not.toHaveBeenCalled();
+
+    second.release();
+    await vi.runAllTimersAsync();
+    expect(closeTab).toHaveBeenCalledWith("tab_shared");
+
+    second.release();
+    await vi.runAllTimersAsync();
+    expect(closeTab).toHaveBeenCalledOnce();
+  });
+
+  it("cancels a pending close when the tab is acquired again", async () => {
+    const first = acquireDesktopTab("tab_reacquired");
+    first.release();
+    const second = acquireDesktopTab("tab_reacquired");
+
+    await vi.runAllTimersAsync();
+    expect(closeTab).not.toHaveBeenCalled();
+    expect(second.ready).toBe(first.ready);
+
+    second.release();
+    await vi.runAllTimersAsync();
+    expect(closeTab).toHaveBeenCalledWith("tab_reacquired");
   });
 });

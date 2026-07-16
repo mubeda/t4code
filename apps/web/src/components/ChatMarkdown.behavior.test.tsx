@@ -138,6 +138,36 @@ async function mountFileLink(withThread = true): Promise<HTMLAnchorElement> {
   return container.querySelector<HTMLAnchorElement>(".chat-markdown-file-link")!;
 }
 
+async function mountExternalLink(withThread = true): Promise<HTMLAnchorElement> {
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () =>
+    root?.render(
+      <ChatMarkdown
+        text="[Documentation](https://example.test/docs)"
+        cwd="/workspace"
+        {...(withThread ? { threadRef } : {})}
+      />,
+    ),
+  );
+  return container.querySelector<HTMLAnchorElement>('a[href="https://example.test/docs"]')!;
+}
+
+async function openContextMenu(link: HTMLAnchorElement): Promise<void> {
+  await act(async () =>
+    link.dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 14,
+        clientY: 28,
+      }),
+    ),
+  );
+  await flush();
+}
+
 async function flush(): Promise<void> {
   await act(async () => {
     await Promise.resolve();
@@ -192,6 +222,13 @@ describe("ChatMarkdown file-link behavior", () => {
       expect.objectContaining({ title: "Unable to open file", description: "An error occurred." }),
     );
     expect(consoleError).toHaveBeenCalled();
+
+    mocks.openEditor.mockResolvedValueOnce(AsyncResult.failure(Cause.fail("unknown")));
+    await act(async () => link.click());
+    await flush();
+    expect(mocks.toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Unable to open file", description: "An error occurred." }),
+    );
   });
 
   it("runs every file context-menu action and handles unavailable native APIs", async () => {
@@ -294,5 +331,110 @@ describe("ChatMarkdown file-link behavior", () => {
       expect.objectContaining({ title: "Unable to open file in browser" }),
     );
     expect(consoleError).toHaveBeenCalled();
+
+    mocks.openFileInPreview.mockResolvedValueOnce(AsyncResult.failure(Cause.fail("unknown")));
+    await act(async () => link.click());
+    await flush();
+    expect(mocks.toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Unable to open file in browser",
+        description: "An error occurred.",
+      }),
+    );
+  });
+});
+
+describe("ChatMarkdown external-link behavior", () => {
+  it("opens external links in the integrated or system browser from the native menu", async () => {
+    const link = await mountExternalLink();
+
+    mocks.contextMenuShow.mockResolvedValueOnce("open-in-browser");
+    await openContextMenu(link);
+    expect(mocks.contextMenuShow).toHaveBeenCalledWith(
+      [
+        { id: "open-in-browser", label: "Open in integrated browser" },
+        { id: "open-external", label: "Open in system browser" },
+      ],
+      { x: 14, y: 28 },
+    );
+    expect(mocks.openUrlInPreview).toHaveBeenCalledWith(
+      expect.objectContaining({ threadRef, url: "https://example.test/docs" }),
+    );
+
+    mocks.contextMenuShow.mockResolvedValueOnce("open-external");
+    await openContextMenu(link);
+    expect(mocks.openExternal).toHaveBeenCalledWith("https://example.test/docs");
+
+    mocks.contextMenuShow.mockResolvedValueOnce(undefined);
+    await openContextMenu(link);
+    expect(mocks.openUrlInPreview).toHaveBeenCalledOnce();
+    expect(mocks.openExternal).toHaveBeenCalledOnce();
+  });
+
+  it("reports integrated and system browser failures with operation context", async () => {
+    const link = await mountExternalLink();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const previewCause = Cause.fail(new Error("preview rejected"));
+    mocks.openUrlInPreview.mockResolvedValueOnce(AsyncResult.failure(previewCause));
+    mocks.contextMenuShow.mockResolvedValueOnce("open-in-browser");
+    await openContextMenu(link);
+    expect(consoleError).toHaveBeenCalledWith(
+      "[chat-markdown] action failed",
+      { operation: "open-link-in-preview", target: "https://example.test/docs" },
+      previewCause,
+    );
+
+    mocks.openUrlInPreview.mockRejectedValueOnce(new Error("preview threw"));
+    mocks.contextMenuShow.mockResolvedValueOnce("open-in-browser");
+    await openContextMenu(link);
+    expect(consoleError).toHaveBeenCalledWith(
+      "[chat-markdown] action failed",
+      { operation: "open-link-in-preview", target: "https://example.test/docs" },
+      expect.any(Error),
+    );
+
+    mocks.openExternal.mockRejectedValueOnce(new Error("shell denied"));
+    mocks.contextMenuShow.mockResolvedValueOnce("open-external");
+    await openContextMenu(link);
+    expect(consoleError).toHaveBeenCalledWith(
+      "[chat-markdown] action failed",
+      { operation: "open-link-external", target: "https://example.test/docs" },
+      expect.any(Error),
+    );
+
+    mocks.contextMenuShow.mockRejectedValueOnce(new Error("menu unavailable"));
+    await openContextMenu(link);
+    expect(consoleError).toHaveBeenCalledWith(
+      "[chat-markdown] action failed",
+      { operation: "show-link-context-menu", target: "https://example.test/docs" },
+      expect.any(Error),
+    );
+  });
+
+  it("does not intercept external-link context menus without all preview capabilities", async () => {
+    mocks.localApiAvailable = false;
+    const withoutApi = await mountExternalLink();
+    await openContextMenu(withoutApi);
+    expect(mocks.contextMenuShow).not.toHaveBeenCalled();
+
+    await act(async () => root?.unmount());
+    root = null;
+    container?.remove();
+    container = null;
+    mocks.localApiAvailable = true;
+    mocks.previewSupported = false;
+    const withoutPreview = await mountExternalLink();
+    await openContextMenu(withoutPreview);
+    expect(mocks.contextMenuShow).not.toHaveBeenCalled();
+
+    await act(async () => root?.unmount());
+    root = null;
+    container?.remove();
+    container = null;
+    mocks.previewSupported = true;
+    const withoutThread = await mountExternalLink(false);
+    await openContextMenu(withoutThread);
+    expect(mocks.contextMenuShow).not.toHaveBeenCalled();
   });
 });

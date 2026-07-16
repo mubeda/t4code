@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { createFrontendLogCapture, type FrontendLogEventTarget } from "./frontendLogCapture";
+import {
+  createFrontendLogCapture,
+  sanitizeFrontendLogText,
+  type FrontendLogEventTarget,
+} from "./frontendLogCapture";
 
 function fakeEventTarget() {
   const listeners = new Map<string, Array<(event: unknown) => void>>();
@@ -130,5 +134,88 @@ describe("frontend log capture", () => {
     expect(events.listenerCount("error")).toBe(1);
     expect(events.listenerCount("unhandledrejection")).toBe(1);
     expect(capture.snapshot().match(/console\.warn/g)).toHaveLength(1);
+  });
+
+  it("serializes uncommon values, bounded collections, and hostile root objects", () => {
+    const capture = createFrontendLogCapture({
+      maxBytes: 32_000,
+      now: () => new Date("2026-07-15T12:00:00.000Z"),
+    });
+    const consoleTarget = fakeConsole();
+    capture.install({ console: consoleTarget, eventTarget: fakeEventTarget().target });
+    const deep = { one: { two: { three: { four: { five: true } } } } };
+    const values = Array.from({ length: 40 }, (_, index) => index);
+    const hostileRoot = new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error("no keys");
+        },
+      },
+    );
+
+    consoleTarget.warn(
+      undefined,
+      12n,
+      Symbol("symbol"),
+      function namedFunction() {},
+      deep,
+      values,
+      hostileRoot,
+    );
+
+    const snapshot = capture.snapshot();
+    expect(snapshot).toContain("[undefined]");
+    expect(snapshot).toContain("12n");
+    expect(snapshot).toContain("Symbol(symbol)");
+    expect(snapshot).toContain("namedFunction");
+    expect(snapshot).toContain("[Max depth]");
+    expect(snapshot).not.toContain("\"32\"");
+    expect(snapshot).toContain("[Unserializable]");
+  });
+
+  it("uses event fallbacks and contains failures in timestamp generation", () => {
+    const capture = createFrontendLogCapture({ maxBytes: 4_096 });
+    const events = fakeEventTarget();
+    capture.install({ console: fakeConsole(), eventTarget: events.target });
+    events.dispatch("error", { message: "message fallback" });
+    events.dispatch("error", "raw error event");
+    events.dispatch("unhandledrejection", "raw rejection event");
+    expect(capture.snapshot()).toContain("message fallback");
+    expect(capture.snapshot()).toContain("raw error event");
+    expect(capture.snapshot()).toContain("raw rejection event");
+
+    const brokenClock = createFrontendLogCapture({
+      now: () => {
+        throw new Error("clock failed");
+      },
+    });
+    const consoleTarget = fakeConsole();
+    brokenClock.install({ console: consoleTarget, eventTarget: fakeEventTarget().target });
+    expect(() => consoleTarget.error("still safe")).not.toThrow();
+    expect(brokenClock.snapshot()).toBe("");
+  });
+
+  it("redacts every text credential shape and truncates below marker length", () => {
+    const sanitized = sanitizeFrontendLogText(
+      [
+        '"access_token": "json-secret"',
+        "proxy-authorization: proxy-secret",
+        "apikey=plain-secret",
+        "Bearer bearer-secret",
+        "https://alice:password@example.test/path",
+      ].join(" "),
+    );
+    expect(sanitized).not.toContain("json-secret");
+    expect(sanitized).not.toContain("proxy-secret");
+    expect(sanitized).not.toContain("plain-secret");
+    expect(sanitized).not.toContain("bearer-secret");
+    expect(sanitized).not.toContain("password");
+
+    const capture = createFrontendLogCapture({ maxBytes: 5 });
+    const consoleTarget = fakeConsole();
+    capture.install({ console: consoleTarget, eventTarget: fakeEventTarget().target });
+    consoleTarget.warn("a very long diagnostic message");
+    expect(new TextEncoder().encode(capture.snapshot())).toHaveLength(5);
   });
 });

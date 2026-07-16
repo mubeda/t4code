@@ -88,4 +88,66 @@ describe("diffPanelStore", () => {
       revealRequestId: 1,
     });
   });
+
+  it("handles absent refs, refresh maps, and blank selection values", () => {
+    expect(selectThreadDiffPanelSelection({}, null)).toEqual({ kind: "branch", baseRef: null });
+    expect(selectThreadDiffPanelRefreshRequest(undefined, THREAD_REF)).toBe(0);
+    expect(selectThreadDiffPanelRefreshRequest({}, undefined)).toBe(0);
+
+    useDiffPanelStore.getState().selectBranchBaseRef(THREAD_REF, "   ");
+    expect(
+      selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF),
+    ).toEqual({ kind: "branch", baseRef: null });
+
+    useDiffPanelStore.getState().selectTurn(THREAD_REF, TurnId.make("turn-blank"), "   ");
+    expect(
+      selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF),
+    ).toEqual({
+      kind: "turn",
+      turnId: TurnId.make("turn-blank"),
+      filePath: null,
+      revealRequestId: 1,
+    });
+  });
+
+  it("preserves branch selection metadata and initializes a missing refresh map", () => {
+    useDiffPanelStore.getState().selectBranchBaseRef(THREAD_REF, "origin/release");
+    useDiffPanelStore.setState({ gitRefreshRequestByThreadKey: undefined } as never);
+
+    useDiffPanelStore.getState().selectGitScope(THREAD_REF, "branch");
+
+    expect(useDiffPanelStore.getState().branchBaseRefByThreadKey).toEqual({
+      "environment-1:thread-1": "origin/release",
+    });
+    expect(useDiffPanelStore.getState().gitRefreshRequestByThreadKey).toEqual({
+      "environment-1:thread-1": 1,
+    });
+  });
+
+  it("leaves valid or non-turn selections unchanged during reconciliation", () => {
+    const stateBefore = useDiffPanelStore.getState();
+    stateBefore.reconcileTurnSelection(THREAD_REF, [TurnId.make("turn-1")]);
+    expect(useDiffPanelStore.getState().byThreadKey).toEqual({});
+
+    stateBefore.selectTurn(THREAD_REF, TurnId.make("turn-1"));
+    const selected = useDiffPanelStore.getState().byThreadKey;
+    useDiffPanelStore.getState().reconcileTurnSelection(THREAD_REF, []);
+    useDiffPanelStore.getState().reconcileTurnSelection(THREAD_REF, [TurnId.make("turn-1")]);
+    expect(useDiffPanelStore.getState().byThreadKey).toEqual(selected);
+  });
+
+  it("removes every thread-scoped selection map and ignores repeated removal", () => {
+    useDiffPanelStore.getState().selectBranchBaseRef(THREAD_REF, "origin/main");
+    useDiffPanelStore.getState().selectGitScope(THREAD_REF, "branch");
+    useDiffPanelStore.getState().removeThread(THREAD_REF);
+
+    expect(useDiffPanelStore.getState()).toMatchObject({
+      byThreadKey: {},
+      branchBaseRefByThreadKey: {},
+      gitRefreshRequestByThreadKey: {},
+    });
+    const before = useDiffPanelStore.getState();
+    useDiffPanelStore.getState().removeThread(THREAD_REF);
+    expect(useDiffPanelStore.getState()).toBe(before);
+  });
 });
