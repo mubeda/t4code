@@ -19,7 +19,10 @@ function zipResponse(
   };
 }
 
-function harness(response: DiagnosticLogsTransportResponse = zipResponse()) {
+function harness(
+  response: DiagnosticLogsTransportResponse = zipResponse(),
+  saveArchive?: (filename: string, bytes: Uint8Array) => Promise<string | null>,
+) {
   const requests: Array<DiagnosticLogsRequest> = [];
   const anchor = {
     href: "",
@@ -47,6 +50,7 @@ function harness(response: DiagnosticLogsTransportResponse = zipResponse()) {
       createObjectURL,
       revokeObjectURL,
       now: () => new Date("2026-07-15T12:34:56.000Z"),
+      saveArchive,
     },
   };
 }
@@ -68,7 +72,10 @@ describe("downloadDiagnosticLogs", () => {
         body: JSON.stringify({ frontendLog: "frontend warning\n" }),
       },
     ]);
-    expect(filename).toBe("t4code-diagnostics-20260715T123456Z.zip");
+    expect(filename).toEqual({
+      status: "downloaded",
+      filename: "t4code-diagnostics-20260715T123456Z.zip",
+    });
     expect(h.createObjectURL).toHaveBeenCalledTimes(1);
     const blob = h.createObjectURL.mock.calls[0]?.[0];
     expect(blob).toBeInstanceOf(Blob);
@@ -104,8 +111,40 @@ describe("downloadDiagnosticLogs", () => {
 
     const filename = await downloadDiagnosticLogs("warning", h.dependencies);
 
-    expect(filename).toBe("t4code-diagnostics-20260715T123456Z.zip");
-    expect(h.anchor.download).toBe(filename);
+    expect(filename).toEqual({
+      status: "downloaded",
+      filename: "t4code-diagnostics-20260715T123456Z.zip",
+    });
+    expect(h.anchor.download).toBe("t4code-diagnostics-20260715T123456Z.zip");
+  });
+
+  it("uses the native archive saver without triggering a WebView download", async () => {
+    const saveArchive = vi.fn(async () => "C:\\Users\\test\\Downloads\\diagnostics.zip");
+    const h = harness(zipResponse(), saveArchive);
+
+    const result = await downloadDiagnosticLogs("warning", h.dependencies);
+
+    expect(saveArchive).toHaveBeenCalledWith(
+      "t4code-diagnostics-20260715T123456Z.zip",
+      new Uint8Array([0x50, 0x4b, 1, 2]),
+    );
+    expect(result).toEqual({
+      status: "saved",
+      filename: "t4code-diagnostics-20260715T123456Z.zip",
+      path: "C:\\Users\\test\\Downloads\\diagnostics.zip",
+    });
+    expect(h.createObjectURL).not.toHaveBeenCalled();
+    expect(h.anchor.click).not.toHaveBeenCalled();
+  });
+
+  it("reports a cancelled native save without triggering a WebView download", async () => {
+    const h = harness(zipResponse(), async () => null);
+
+    await expect(downloadDiagnosticLogs("warning", h.dependencies)).resolves.toEqual({
+      status: "cancelled",
+      filename: "t4code-diagnostics-20260715T123456Z.zip",
+    });
+    expect(h.createObjectURL).not.toHaveBeenCalled();
   });
 
   it("keeps the JSON request within the server limit while retaining newest records", async () => {

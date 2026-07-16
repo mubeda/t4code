@@ -79,6 +79,8 @@ function installTauriHarness(options?: {
           completed: false,
           state: { status: "disabled", channel: "latest" },
         });
+      case "desktop_bridge_save_diagnostic_logs":
+        return Promise.resolve("C:\\Users\\test\\Downloads\\diagnostics.zip");
       case "desktop_bridge_ensure_ssh_environment":
         if (options?.rejectSshProvisioning) {
           return Promise.reject(unsupportedSshError);
@@ -372,6 +374,19 @@ describe("tauriDesktopBridge", () => {
     expect(harness.invoke).toHaveBeenCalledWith("desktop_bridge_check_for_update", undefined);
     expect(harness.invoke).toHaveBeenCalledWith("desktop_bridge_download_update", undefined);
     expect(harness.invoke).toHaveBeenCalledWith("desktop_bridge_install_update", undefined);
+  });
+
+  it("saves diagnostic archives through the Tauri host", async () => {
+    const harness = installTauriHarness();
+    const bridge = await installBridge();
+
+    await expect(
+      bridge.saveDiagnosticLogs?.("diagnostics.zip", new Uint8Array([0x50, 0x4b])),
+    ).resolves.toBe("C:\\Users\\test\\Downloads\\diagnostics.zip");
+    expect(harness.invoke).toHaveBeenCalledWith("desktop_bridge_save_diagnostic_logs", {
+      filename: "diagnostics.zip",
+      bytes: [0x50, 0x4b],
+    });
   });
 
   it("wraps Tauri event listeners and tears them down", async () => {

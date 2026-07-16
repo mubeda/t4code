@@ -35,7 +35,15 @@ interface DiagnosticDownloadDependencies {
   readonly createObjectURL: (blob: Blob) => string;
   readonly revokeObjectURL: (url: string) => void;
   readonly now: () => Date;
+  readonly saveArchive:
+    | ((filename: string, bytes: Uint8Array) => Promise<string | null>)
+    | undefined;
 }
+
+export type DiagnosticLogsDownloadResult =
+  | { readonly status: "saved"; readonly filename: string; readonly path: string }
+  | { readonly status: "downloaded"; readonly filename: string }
+  | { readonly status: "cancelled"; readonly filename: string };
 
 function requestBody(frontendLog: string): string {
   const encoder = new TextEncoder();
@@ -115,12 +123,15 @@ const liveDependencies: DiagnosticDownloadDependencies = {
   createObjectURL: (blob) => URL.createObjectURL(blob),
   revokeObjectURL: (url) => URL.revokeObjectURL(url),
   now: () => new Date(),
+  get saveArchive() {
+    return window.desktopBridge?.saveDiagnosticLogs;
+  },
 };
 
 export async function downloadDiagnosticLogs(
   frontendLog: string,
   dependencies: DiagnosticDownloadDependencies = liveDependencies,
-): Promise<string> {
+): Promise<DiagnosticLogsDownloadResult> {
   const response = await dependencies.execute({
     url: dependencies.resolveUrl("/api/diagnostics/logs.zip"),
     contentType: "application/json",
@@ -136,6 +147,11 @@ export async function downloadDiagnosticLogs(
   const filename = safeResponseFilename(response.contentDisposition, dependencies.now());
   const archiveBytes = new Uint8Array(response.bytes.byteLength);
   archiveBytes.set(response.bytes);
+  if (dependencies.saveArchive) {
+    const path = await dependencies.saveArchive(filename, archiveBytes);
+    return path === null ? { status: "cancelled", filename } : { status: "saved", filename, path };
+  }
+
   const blob = new Blob([archiveBytes.buffer], { type: "application/zip" });
   const objectUrl = dependencies.createObjectURL(blob);
   const anchor = dependencies.createAnchor();
@@ -148,5 +164,5 @@ export async function downloadDiagnosticLogs(
     anchor.remove();
     dependencies.revokeObjectURL(objectUrl);
   }
-  return filename;
+  return { status: "downloaded", filename };
 }

@@ -448,6 +448,11 @@ function createTauriDesktopBridge(): DesktopBridge {
     setWslOnly: (enabled) =>
       tauriInvokeOr<DesktopWslState>("desktop_bridge_set_wsl_only", { enabled }, defaultWslState),
     pickFolder: (options) => tauriInvokeOr("desktop_bridge_pick_folder", { options }, () => null),
+    saveDiagnosticLogs: (filename, bytes) =>
+      tauriInvokeDesktop<string | null>("desktop_bridge_save_diagnostic_logs", {
+        filename,
+        bytes: Array.from(bytes),
+      }),
     confirm: (message) =>
       tauriInvokeOr("desktop_bridge_confirm", { message }, () => window.confirm(message)),
     setTheme: (theme) => tauriInvokeOr("desktop_bridge_set_theme", { theme }, () => undefined),

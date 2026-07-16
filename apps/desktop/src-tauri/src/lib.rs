@@ -35,6 +35,7 @@ macro_rules! desktop_bridge_commands {
             desktop_bridge_download_update,
             desktop_bridge_install_update,
             desktop_bridge_pick_folder,
+            desktop_bridge_save_diagnostic_logs,
             desktop_bridge_confirm,
             desktop_bridge_open_external,
         ]
