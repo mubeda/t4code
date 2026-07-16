@@ -500,6 +500,39 @@ describe("getStartedThreadModelChangeBlockReason", () => {
         "This provider does not allow switching models after a conversation has started.",
     });
   });
+
+  it("blocks a restricted current provider and allows changes between unrestricted providers", () => {
+    expect(
+      getStartedThreadModelChangeBlockReason({
+        providers,
+        hasStartedSession: true,
+        currentModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "stale-model",
+        },
+        currentProviderInstanceId: ProviderInstanceId.make("grok"),
+        nextModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        },
+      }),
+    ).not.toBeNull();
+
+    expect(
+      getStartedThreadModelChangeBlockReason({
+        providers,
+        hasStartedSession: true,
+        currentModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        },
+        nextModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.5",
+        },
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("resolveSendEnvMode", () => {
@@ -604,6 +637,20 @@ describe("shouldWriteThreadErrorToCurrentServerThread", () => {
 });
 
 describe("hasServerAcknowledgedLocalDispatch", () => {
+  it("does not acknowledge without a local dispatch snapshot", () => {
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        localDispatch: null,
+        phase: "ready",
+        latestTurn: null,
+        session: null,
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+      }),
+    ).toBe(false);
+  });
+
   it("does not acknowledge unchanged server state", () => {
     const localDispatch = createLocalDispatchSnapshot(
       makeThread({ latestTurn: completedTurn, session: readySession }),
@@ -707,5 +754,42 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
     expect(hasServerAcknowledgedLocalDispatch({ ...common, hasPendingApproval: true })).toBe(true);
     expect(hasServerAcknowledgedLocalDispatch({ ...common, hasPendingUserInput: true })).toBe(true);
     expect(hasServerAcknowledgedLocalDispatch({ ...common, threadError: "failed" })).toBe(true);
+  });
+
+  it("requires a started latest turn while running and detects either session field settling", () => {
+    const localDispatch = createLocalDispatchSnapshot(
+      makeThread({ latestTurn: completedTurn, session: readySession }),
+    );
+    const common = {
+      localDispatch,
+      hasPendingApproval: false,
+      hasPendingUserInput: false,
+      threadError: null,
+    };
+
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        ...common,
+        phase: "running",
+        latestTurn: null,
+        session: null,
+      }),
+    ).toBe(false);
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        ...common,
+        phase: "ready",
+        latestTurn: completedTurn,
+        session: { ...readySession, status: "running" },
+      }),
+    ).toBe(true);
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        ...common,
+        phase: "ready",
+        latestTurn: completedTurn,
+        session: { ...readySession, updatedAt: "2026-03-29T02:00:00.000Z" },
+      }),
+    ).toBe(true);
   });
 });
