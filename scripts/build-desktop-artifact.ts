@@ -367,9 +367,6 @@ export const resolveTauriBuildPlan = Effect.fn("resolveTauriBuildPlan")(function
   const bundleDirectoryName = target === "app" ? "macos" : target;
   const bundleDir = path.join(
     repoRoot,
-    "apps",
-    "desktop",
-    "src-tauri",
     "target",
     rustTarget,
     "release",
