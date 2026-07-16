@@ -2811,8 +2811,11 @@ mod tests {
     use super::{ProviderDriver, ProviderDriverFactory};
     use crate::{
         orchestration::engine::{EngineOptions, OrchestrationCommand},
-        persistence::{Database, run_migrations},
-        server_settings::{ProviderInstanceState, ProvidersState},
+        persistence::{Database, ProviderSessionRuntime, run_migrations},
+        server_settings::{
+            ProviderEnvironmentVariableState, ProviderInstanceState, ProviderSettingsState,
+            ProvidersState,
+        },
     };
     use axum::{
         Json, Router,
@@ -3053,6 +3056,148 @@ mod tests {
             super::SupervisorOptions::default(),
         );
         let temp = TempDir::new().unwrap();
+        let settings_root = temp.path().join("settings");
+        std::fs::create_dir(&settings_root).unwrap();
+        let mut settings = ProviderSettingsState::default();
+        settings.provider_instances.insert(
+            "codex-custom".to_owned(),
+            ProviderInstanceState {
+                driver: "codex".to_owned(),
+                enabled: true,
+                display_name: Some("Custom Codex".to_owned()),
+                environment: vec![
+                    ProviderEnvironmentVariableState {
+                        name: "UNIT_ENV".to_owned(),
+                        value: "enabled".to_owned(),
+                        sensitive: false,
+                        value_redacted: false,
+                    },
+                    ProviderEnvironmentVariableState {
+                        name: String::new(),
+                        value: "ignored".to_owned(),
+                        sensitive: false,
+                        value_redacted: false,
+                    },
+                ],
+                config: json!({
+                    "binaryPath": "/bin/sh",
+                    "serverUrl": "http://127.0.0.1:4773",
+                    "serverPassword": "fixture-password",
+                    "homePath": temp.path().join("shared-home"),
+                    "shadowHomePath": temp.path().join("shadow-home")
+                }),
+            },
+        );
+        std::fs::write(
+            settings_root.join("settings.json"),
+            serde_json::to_vec(&settings).unwrap(),
+        )
+        .unwrap();
+        let launch_command = serde_json::from_value(json!({
+            "type":"thread.turn.start",
+            "commandId":"launch-options",
+            "threadId":"t1",
+            "message":{"messageId":"launch-message","role":"user","text":"launch","attachments":[]},
+            "modelSelection":{
+                "instanceId":"codex-custom",
+                "model":"gpt-5.2",
+                "options":[
+                    {"id":"serviceTier","value":"fast"},
+                    {"id":"reasoningEffort","value":"high"},
+                    {"id":"agent","value":"reviewer"}
+                ]
+            },
+            "runtimeMode":"full-access",
+            "interactionMode":"plan",
+            "createdAt":"2026-07-16T00:00:00Z"
+        }))
+        .unwrap();
+        let missing_thread_command = serde_json::from_value(json!({
+            "type":"thread.turn.start",
+            "commandId":"missing-launch",
+            "threadId":"missing",
+            "message":{"messageId":"missing-message","role":"user","text":"launch","attachments":[]},
+            "modelSelection":{"instanceId":"codex-custom","model":"gpt-5.2"},
+            "runtimeMode":"full-access",
+            "interactionMode":"plan",
+            "createdAt":"2026-07-16T00:00:00Z"
+        }))
+        .unwrap();
+        assert!(matches!(
+            super::launch_request_for_command(&engine, &settings_root, &missing_thread_command)
+                .await,
+            Err(super::ProviderRuntimeError::SessionNotFound { .. })
+        ));
+        let blocked_settings_root = temp.path().join("blocked-settings");
+        std::fs::write(&blocked_settings_root, "not a directory").unwrap();
+        assert!(
+            super::launch_request_for_command(&engine, &blocked_settings_root, &launch_command)
+                .await
+                .is_err()
+        );
+        engine
+            .repositories()
+            .upsert_provider_session_runtime(ProviderSessionRuntime {
+                thread_id: "t1".to_owned(),
+                provider_name: "claudeAgent".to_owned(),
+                provider_instance_id: Some("other-instance".to_owned()),
+                adapter_key: "unit".to_owned(),
+                runtime_mode: "full-access".to_owned(),
+                status: "running".to_owned(),
+                last_seen_at: "2026-07-16T00:00:00Z".to_owned(),
+                resume_cursor: Some(json!({"threadId":"ignored"})),
+                runtime_payload: None,
+            })
+            .await
+            .unwrap();
+        let resolved_launch =
+            super::launch_request_for_command(&engine, &settings_root, &launch_command)
+                .await
+                .unwrap();
+        assert_eq!(
+            resolved_launch.provider_instance_id.as_deref(),
+            Some("codex-custom")
+        );
+        assert_eq!(
+            resolved_launch.environment.get("UNIT_ENV"),
+            Some(&"enabled".to_owned())
+        );
+        assert_eq!(resolved_launch.service_tier.as_deref(), Some("fast"));
+        assert_eq!(resolved_launch.effort.as_deref(), Some("high"));
+        assert_eq!(resolved_launch.agent.as_deref(), Some("reviewer"));
+        assert_eq!(
+            resolved_launch.endpoint.as_deref(),
+            Some("http://127.0.0.1:4773")
+        );
+        assert_eq!(
+            resolved_launch.server_password.as_deref(),
+            Some("fixture-password")
+        );
+        assert!(resolved_launch.codex_home.is_some());
+        assert!(resolved_launch.resume_cursor.is_none());
+        engine
+            .repositories()
+            .upsert_provider_session_runtime(ProviderSessionRuntime {
+                thread_id: "t1".to_owned(),
+                provider_name: "codex".to_owned(),
+                provider_instance_id: Some("codex-custom".to_owned()),
+                adapter_key: "unit".to_owned(),
+                runtime_mode: "full-access".to_owned(),
+                status: "running".to_owned(),
+                last_seen_at: "2026-07-16T00:00:01Z".to_owned(),
+                resume_cursor: Some(json!({"threadId":"resume-unit"})),
+                runtime_payload: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            super::launch_request_for_command(&engine, &settings_root, &launch_command)
+                .await
+                .unwrap()
+                .resume_cursor,
+            Some(json!({"threadId":"resume-unit"}))
+        );
+
         let mut launch = native_launch(&temp, "codex");
         launch.thread_id = "t1".to_owned();
         launch.cwd = temp.path().to_path_buf();
@@ -3209,6 +3354,17 @@ mod tests {
         );
         claude.shutdown().await.expect("Claude should shut down");
 
+        let mut fresh_claude_request = native_launch(&temp, "claudeAgent");
+        fresh_claude_request.binary_path = claude_fixture.to_string_lossy().into_owned();
+        let fresh_claude =
+            super::ClaudeDriver::spawn(fresh_claude_request, factory.attachments.clone())
+                .await
+                .expect("fresh Claude driver should create");
+        fresh_claude
+            .shutdown()
+            .await
+            .expect("fresh Claude should shut down");
+
         let codex_fixture = executable_fixture(
             &temp,
             "codex-fixture.sh",
@@ -3310,6 +3466,11 @@ done
         for provider in ["cursor", "grok"] {
             let mut request = native_launch(&temp, provider);
             request.binary_path = acp_fixture.to_string_lossy().into_owned();
+            if provider == "grok" {
+                request
+                    .environment
+                    .insert("XAI_API_KEY".to_owned(), "unit-key".to_owned());
+            }
             let driver = factory
                 .create(request)
                 .await
@@ -3411,6 +3572,16 @@ done
         });
 
         let temp = TempDir::new().expect("OpenCode fixture directory");
+        let endpoint_child = tokio::process::Command::new("/bin/sh")
+            .args(["-c", "sleep 2"])
+            .spawn()
+            .expect("endpoint child should spawn");
+        let endpoint_child: Box<dyn process_wrap::tokio::ChildWrapper> = Box::new(endpoint_child);
+        let endpoint_child = Arc::new(tokio::sync::Mutex::new(endpoint_child));
+        super::wait_for_endpoint(&format!("http://{address}"), &endpoint_child)
+            .await
+            .expect("live endpoint should become ready");
+        super::kill_child(&endpoint_child).await;
         let factory = super::NativeProviderDriverFactory::new(temp.path().join("attachments"));
         let mut request = native_launch(&temp, "opencode");
         request.endpoint = Some(format!("http://{address}"));

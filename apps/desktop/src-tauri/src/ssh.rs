@@ -9,7 +9,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use t4code_server::process::configure_background_command;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Runtime};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::sync::oneshot;
 use tokio::{
@@ -367,9 +367,9 @@ impl SshEnvironmentManager {
         }
     }
 
-    pub async fn ensure_environment(
+    pub async fn ensure_environment<R: Runtime>(
         &self,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         prompts: &SshPasswordPromptManager,
         target: SshEnvironmentTarget,
         options: Option<SshEnvironmentEnsureOptions>,
@@ -456,9 +456,9 @@ impl SshEnvironmentManager {
         Ok(bootstrap)
     }
 
-    pub async fn disconnect_environment(
+    pub async fn disconnect_environment<R: Runtime>(
         &self,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         prompts: &SshPasswordPromptManager,
         target: SshEnvironmentTarget,
     ) -> Result<(), String> {
@@ -500,9 +500,9 @@ impl SshEnvironmentManager {
         }
     }
 
-    async fn prompt_for_password(
+    async fn prompt_for_password<R: Runtime>(
         &self,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         prompts: &SshPasswordPromptManager,
         target: &SshEnvironmentTarget,
         attempt: u8,
@@ -526,9 +526,9 @@ impl SshEnvironmentManager {
             .map_err(|error| error.to_string())
     }
 
-    async fn run_with_ssh_auth<T, F, Fut>(
+    async fn run_with_ssh_auth<R: Runtime, T, F, Fut>(
         &self,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         prompts: &SshPasswordPromptManager,
         key: &str,
         target: &SshEnvironmentTarget,
@@ -1118,9 +1118,9 @@ impl SshPasswordPromptManager {
         }
     }
 
-    pub async fn request_password(
+    pub async fn request_password<R: Runtime>(
         &self,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         request: SshPasswordRequest,
     ) -> PendingPromptResult {
         let request_id = Uuid::new_v4().simple().to_string();

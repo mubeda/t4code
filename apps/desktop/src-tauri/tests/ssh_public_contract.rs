@@ -2,10 +2,62 @@ use std::{collections::BTreeSet, fs, time::Duration};
 
 use t4code_desktop_lib::ssh::{
     DiscoveredSshHost, RemoteLaunchResult, SshAuthOptions, SshEnvironmentBootstrap,
-    SshEnvironmentLaunchPlan, SshEnvironmentTarget, SshPasswordPromptManager,
-    SshPasswordPromptResolution, SshPasswordPromptResolveError, discover_ssh_hosts,
+    SshEnvironmentLaunchPlan, SshEnvironmentManager, SshEnvironmentTarget,
+    SshPasswordPromptManager, SshPasswordPromptRequestError, SshPasswordPromptResolution,
+    SshPasswordPromptResolveError, SshPasswordRequest, default_home_dir, discover_ssh_hosts,
     parse_known_hosts_hostnames, parse_remote_launch_result, parse_remote_pairing_credential,
 };
+
+#[tokio::test]
+async fn public_environment_manager_surfaces_native_ssh_connection_failures() {
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+
+    let app = mock_builder()
+        .build(mock_context(noop_assets()))
+        .expect("mock Tauri app");
+    let manager = SshEnvironmentManager::new();
+    let prompts = SshPasswordPromptManager::with_timeout(Duration::from_millis(10));
+    let unreachable = SshEnvironmentTarget {
+        alias: "127.0.0.1".to_owned(),
+        hostname: "127.0.0.1".to_owned(),
+        username: None,
+        port: Some(1),
+    };
+
+    let ensure_error = manager
+        .ensure_environment(app.handle(), &prompts, unreachable.clone(), None)
+        .await
+        .expect_err("closed local port should reject remote bootstrap");
+    assert!(
+        ensure_error.contains("SSH launch command failed"),
+        "{ensure_error}"
+    );
+
+    let disconnect_error = manager
+        .disconnect_environment(app.handle(), &prompts, unreachable)
+        .await
+        .expect_err("closed local port should reject remote cleanup");
+    assert!(
+        disconnect_error.contains("SSH stop command failed"),
+        "{disconnect_error}"
+    );
+
+    let prompt_error = prompts
+        .request_password(
+            app.handle(),
+            SshPasswordRequest {
+                destination: "127.0.0.1".to_owned(),
+                username: None,
+                prompt: "Password".to_owned(),
+            },
+        )
+        .await
+        .expect_err("unresolved prompt should expire");
+    assert!(matches!(
+        prompt_error,
+        SshPasswordPromptRequestError::TimedOut { .. }
+    ));
+}
 
 fn target() -> SshEnvironmentTarget {
     SshEnvironmentTarget {
@@ -154,6 +206,10 @@ fn public_remote_parsers_cover_success_defaults_and_validation_errors() {
 
 #[test]
 fn public_discovery_and_prompt_resolution_cover_filesystem_and_error_contracts() {
+    let _environment_manager = SshEnvironmentManager::new();
+    let _default_environment_manager = SshEnvironmentManager::default();
+    let _ = default_home_dir();
+
     let home = tempfile::tempdir().expect("temporary home should create");
     let ssh_dir = home.path().join(".ssh");
     let include_dir = ssh_dir.join("config dir");
@@ -234,4 +290,31 @@ fn public_discovery_and_prompt_resolution_cover_filesystem_and_error_contracts()
             request_id: "missing".to_string(),
         })
     );
+    let _default_prompt_manager = SshPasswordPromptManager::default();
+    assert_eq!(
+        SshPasswordPromptResolveError::InvalidRequestId.to_string(),
+        "Invalid SSH password prompt id."
+    );
+    for error in [
+        SshPasswordPromptRequestError::Presentation {
+            request_id: "request".to_string(),
+            destination: "host".to_string(),
+            operation: "emit",
+            message: "closed".to_string(),
+        },
+        SshPasswordPromptRequestError::TimedOut {
+            request_id: "request".to_string(),
+            destination: "host".to_string(),
+        },
+        SshPasswordPromptRequestError::Cancelled {
+            request_id: "request".to_string(),
+            destination: "host".to_string(),
+        },
+        SshPasswordPromptRequestError::ServiceStopped {
+            request_id: "request".to_string(),
+            destination: "host".to_string(),
+        },
+    ] {
+        assert!(!error.to_string().is_empty());
+    }
 }

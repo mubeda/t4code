@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
 use serde_json::{Value, json};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Runtime};
 use tauri_plugin_updater::{Error as UpdaterError, Update, UpdaterExt};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -47,7 +47,7 @@ impl DesktopUpdateManager {
         Self::default()
     }
 
-    pub fn state(&self, app: &AppHandle, channel: &str) -> Value {
+    pub fn state<R: Runtime>(&self, app: &AppHandle<R>, channel: &str) -> Value {
         let inner = self.inner.lock().expect("desktop update mutex poisoned");
         match app.updater() {
             Ok(_) => update_state_value(app, channel, true, &inner),
@@ -56,7 +56,7 @@ impl DesktopUpdateManager {
         }
     }
 
-    pub async fn check_for_update(&self, app: AppHandle, channel: &str) -> Value {
+    pub async fn check_for_update<R: Runtime>(&self, app: AppHandle<R>, channel: &str) -> Value {
         let updater = match app.updater() {
             Ok(updater) => updater,
             Err(error) if is_updater_disabled(&error) => {
@@ -131,7 +131,7 @@ impl DesktopUpdateManager {
         }
     }
 
-    pub async fn download_update(&self, app: AppHandle, channel: &str) -> Value {
+    pub async fn download_update<R: Runtime>(&self, app: AppHandle<R>, channel: &str) -> Value {
         if let Err(error) = app.updater() {
             if is_updater_disabled(&error) {
                 return disabled_update_action_result(disabled_update_state(&app, channel));
@@ -227,7 +227,7 @@ impl DesktopUpdateManager {
         }
     }
 
-    pub fn install_update(&self, app: &AppHandle, channel: &str) -> Value {
+    pub fn install_update<R: Runtime>(&self, app: &AppHandle<R>, channel: &str) -> Value {
         if let Err(error) = app.updater() {
             if is_updater_disabled(&error) {
                 return disabled_update_action_result(disabled_update_state(app, channel));
@@ -295,9 +295,9 @@ impl DesktopUpdateManager {
         inner.clone_without_updates()
     }
 
-    fn record_error_state(
+    fn record_error_state<R: Runtime>(
         &self,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         channel: &str,
         context: &'static str,
         message: String,
@@ -313,7 +313,7 @@ impl DesktopUpdateManager {
 }
 
 impl DesktopUpdateInner {
-    fn emit(&self, app: &AppHandle, channel: &str) -> Value {
+    fn emit<R: Runtime>(&self, app: &AppHandle<R>, channel: &str) -> Value {
         let state = update_state_value(app, channel, true, self);
         emit_update_state(app, &state);
         state
@@ -345,13 +345,13 @@ fn now_rfc3339() -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
-fn emit_update_state(app: &AppHandle, state: &Value) {
+fn emit_update_state<R: Runtime>(app: &AppHandle<R>, state: &Value) {
     if let Err(error) = app.emit(UPDATE_STATE_EVENT, state.clone()) {
         tracing::debug!("failed to emit Tauri update state event: {error}");
     }
 }
 
-pub fn disabled_update_state(app: &AppHandle, channel: &str) -> Value {
+pub fn disabled_update_state<R: Runtime>(app: &AppHandle<R>, channel: &str) -> Value {
     let runtime = runtime_info();
     json!({
         "enabled": false,
@@ -371,8 +371,8 @@ pub fn disabled_update_state(app: &AppHandle, channel: &str) -> Value {
     })
 }
 
-fn error_update_state(
-    app: &AppHandle,
+fn error_update_state<R: Runtime>(
+    app: &AppHandle<R>,
     channel: &str,
     context: &'static str,
     message: String,
@@ -396,8 +396,8 @@ fn error_update_state(
     })
 }
 
-fn update_state_value(
-    app: &AppHandle,
+fn update_state_value<R: Runtime>(
+    app: &AppHandle<R>,
     channel: &str,
     enabled: bool,
     inner: &DesktopUpdateInner,
@@ -466,6 +466,18 @@ mod tests {
 
     #[test]
     fn manager_state_helpers_clone_metadata_without_runtime_updates() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let mut context = mock_context(noop_assets());
+        context.config_mut().plugins.0.insert(
+            "updater".to_owned(),
+            serde_json::json!({"pubkey":"","windows":null}),
+        );
+        let app = mock_builder()
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .build(context)
+            .expect("mock Tauri app");
+        let handle = app.handle();
         let manager = DesktopUpdateManager::new();
         let snapshot = manager.replace_inner(|inner| {
             inner.available_version = Some("2.0.0".to_string());
@@ -486,5 +498,34 @@ mod tests {
                 .is_some_and(|value| value.contains('T'))
         );
         assert!(is_updater_disabled(&UpdaterError::EmptyEndpoints));
+        assert_eq!(
+            disabled_update_state(handle, "nightly")["status"],
+            STATUS_DISABLED
+        );
+        assert_eq!(
+            error_update_state(handle, "latest", "check", "failed".to_owned())["errorContext"],
+            "check"
+        );
+        assert_eq!(
+            update_state_value(handle, "latest", true, &snapshot)["availableVersion"],
+            "2.0.0"
+        );
+        assert_eq!(
+            manager.record_error_state(handle, "latest", "install", "failed".to_owned())["errorContext"],
+            "install"
+        );
+        assert_eq!(manager.state(handle, "latest")["status"], STATUS_DISABLED);
+
+        tauri::async_runtime::block_on(async {
+            assert_eq!(
+                manager.check_for_update(handle.clone(), "latest").await["checked"],
+                false
+            );
+            assert_eq!(
+                manager.download_update(handle.clone(), "latest").await["accepted"],
+                false
+            );
+        });
+        assert_eq!(manager.install_update(handle, "latest")["accepted"], false);
     }
 }

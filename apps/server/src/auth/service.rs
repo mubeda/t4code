@@ -1549,6 +1549,9 @@ mod tests {
                 Err(AuthError::InvalidScope)
             ));
         }
+        assert!(decode_persisted_scopes(serde_json::json!(42)).is_err());
+        assert!(parse_timestamp_ms("not-a-timestamp").is_err());
+        assert_eq!(format_iso(i64::MAX), "1970-01-01T00:00:00Z");
     }
 
     #[tokio::test]

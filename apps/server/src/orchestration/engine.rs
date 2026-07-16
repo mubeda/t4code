@@ -3467,6 +3467,35 @@ mod tests {
 
         let events = engine.read_events(0).await.expect("events");
         assert!(events.len() >= 18);
+        for value in [
+            json!({"type":"thread.proposed-plan.upsert","commandId":"plan-2","threadId":"t1","proposedPlan":{"id":"plan-2","turnId":"turn-2","planMarkdown":"Do the second thing","createdAt":CREATED_AT,"updatedAt":CREATED_AT},"createdAt":CREATED_AT}),
+            json!({"type":"thread.turn.start","commandId":"turn-start-2","threadId":"t1","message":{"messageId":"m-user-2","role":"user","text":"continue","attachments":[]},"createdAt":CREATED_AT}),
+            json!({"type":"thread.turn.diff.complete","commandId":"diff-2","threadId":"t1","turnId":"turn-2","completedAt":CREATED_AT,"checkpointRef":"checkpoint-2","status":"ready","files":[],"assistantMessageId":null,"checkpointTurnCount":2,"createdAt":CREATED_AT}),
+            json!({"type":"thread.create","commandId":"thread-2","threadId":"t2","projectId":"p1","title":"Thread 2","modelSelection":{"instanceId":"codex","model":"gpt-5"},"runtimeMode":"full-access","interactionMode":"default","branch":null,"worktreePath":null,"createdAt":CREATED_AT}),
+            json!({"type":"thread.session.set","commandId":"session-2","threadId":"t2","session":{"threadId":"t2","status":"running","providerName":"codex","providerInstanceId":"codex","runtimeMode":"full-access","activeTurnId":null,"lastError":null,"updatedAt":CREATED_AT},"createdAt":CREATED_AT}),
+            json!({"type":"thread.create","commandId":"thread-3","threadId":"t4","projectId":"p1","title":"Thread 3","modelSelection":{"instanceId":"codex","model":"gpt-5"},"runtimeMode":"full-access","interactionMode":"default","branch":null,"worktreePath":null,"createdAt":CREATED_AT}),
+            json!({"type":"thread.session.set","commandId":"session-3","threadId":"t4","session":{"threadId":"t4","status":"ready","providerName":"codex","providerInstanceId":"codex","runtimeMode":"full-access","activeTurnId":null,"lastError":null,"updatedAt":CREATED_AT},"createdAt":CREATED_AT}),
+        ] {
+            engine
+                .dispatch(command(value))
+                .await
+                .expect("additional projection command succeeds");
+        }
+        for request_id in ["approval-b", "approval-a"] {
+            engine
+                .repositories()
+                .upsert_pending_approval(ProjectionPendingApproval {
+                    request_id: request_id.to_owned(),
+                    thread_id: "t1".to_owned(),
+                    turn_id: Some("turn-2".to_owned()),
+                    status: "pending".to_owned(),
+                    decision: None,
+                    created_at: CREATED_AT.to_owned(),
+                    resolved_at: None,
+                })
+                .await
+                .expect("approval fixture inserts");
+        }
         let snapshot = load_snapshot(&engine.repositories())
             .await
             .expect("snapshot");
@@ -3484,6 +3513,13 @@ mod tests {
                 .any(|message| { message.message_id == "m-assistant" && message.text == "hello" })
         );
         assert_eq!(snapshot.diffs.len(), 0);
+        assert_eq!(
+            required_str(&json!({"value":"text"}), "value").unwrap(),
+            "text"
+        );
+        assert!(required_str(&json!({}), "value").is_err());
+        assert_eq!(required_i64(&json!({"value":7}), "value").unwrap(), 7);
+        assert!(required_i64(&json!({}), "value").is_err());
 
         engine.shutdown().await;
         assert!(matches!(
