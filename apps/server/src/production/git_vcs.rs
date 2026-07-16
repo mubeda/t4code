@@ -1634,6 +1634,63 @@ mod tests {
             .await
             .is_err()
         );
+        assert!(
+            unary(&services, "server.discoverSourceControl", json!({}))
+                .await
+                .expect("source control should discover")["versionControlSystems"]
+                .is_array()
+        );
+        let source_clone = temporary.path().join("source-clone");
+        assert!(
+            unary(
+                &services,
+                "sourceControl.cloneRepository",
+                json!({
+                    "remoteUrl":format!("file://{}", repository.display()),
+                    "destinationPath":source_clone,
+                }),
+            )
+            .await
+            .expect("source repository should clone")["cwd"]
+                .is_string()
+        );
+        assert!(
+            unary(
+                &services,
+                "sourceControl.publishRepository",
+                json!({
+                    "cwd":cwd,
+                    "provider":"github",
+                    "repository":"owner/name",
+                    "visibility":"friends-only",
+                }),
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            unary(
+                &services,
+                "git.preparePullRequestThread",
+                json!({
+                    "cwd":cwd,
+                    "reference":"current",
+                    "mode":"unsupported",
+                    "threadId":"thread-1",
+                }),
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            unary(
+                &services,
+                "shell.openInEditor",
+                json!({"cwd":cwd,"editor":"missing-editor"}),
+            )
+            .await
+            .is_err()
+        );
         assert!(unary(&services, "unknown.method", json!({})).await.is_err());
         assert!(
             unary(&services, "vcs.listRefs", json!({"cwd":42}))
@@ -1651,6 +1708,118 @@ mod tests {
             CancellationToken::new(),
         );
         assert!(invalid_action.recv().await.expect("action error").is_err());
+
+        let branches =
+            local_branch_names(&services.repository, &repository, &CancellationToken::new())
+                .await
+                .expect("local branches should list");
+        assert!(branches.iter().any(|branch| branch == "main"));
+        assert_eq!(
+            sanitize_branch_fragment(" Feature: It's Ready! "),
+            "feature-its-ready"
+        );
+        assert_eq!(sanitize_branch_fragment("..."), "update");
+        assert_eq!(
+            sanitize_feature_branch_name("Ready Now"),
+            "feature/ready-now"
+        );
+        assert_eq!(
+            sanitize_feature_branch_name("feature/already"),
+            "feature/already",
+        );
+        assert_eq!(
+            resolve_feature_branch_name(
+                &["feature/update".to_owned(), "FEATURE/UPDATE-2".to_owned()],
+                "feature/update",
+            ),
+            "feature/update-3",
+        );
+        assert_eq!(
+            action_phases("commit_push_pr", true),
+            vec!["branch", "commit", "push", "pr"]
+        );
+        assert_eq!(action_phases("unknown", false), Vec::<&str>::new());
+
+        let (event_sender, mut event_receiver) = mpsc::channel(1);
+        send_event(&event_sender, json!({"kind":"test"}))
+            .await
+            .expect("stream event should send");
+        assert_eq!(
+            event_receiver
+                .recv()
+                .await
+                .expect("stream event")
+                .expect("successful stream event"),
+            vec![json!({"kind":"test"})],
+        );
+        drop(event_receiver);
+        assert!(send_event(&event_sender, json!({})).await.is_err());
+
+        assert_eq!(
+            run_provider_json(
+                "/bin/sh",
+                &["-c", "printf '{\"ok\":true}'"],
+                Some(&repository),
+                CancellationToken::new(),
+                "fixture",
+                "success",
+            )
+            .await
+            .expect("provider JSON should decode"),
+            json!({"ok":true}),
+        );
+        assert!(
+            run_provider_json(
+                "/bin/sh",
+                &["-c", "exit 1"],
+                None,
+                CancellationToken::new(),
+                "fixture",
+                "failure",
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            run_provider_json(
+                "/bin/sh",
+                &["-c", "printf invalid"],
+                None,
+                CancellationToken::new(),
+                "fixture",
+                "invalid-json",
+            )
+            .await
+            .is_err()
+        );
+
+        let invalid_action = StackedActionInput {
+            action_id: "action-1".to_owned(),
+            cwd: repository.clone(),
+            action: "unsupported".to_owned(),
+            commit_message: None,
+            file_paths: None,
+            feature_branch: None,
+            commit_staged_index_as_is: None,
+        };
+        assert!(
+            run_stacked_action(
+                &services.repository,
+                &services.pull_requests,
+                &invalid_action,
+                &CancellationToken::new(),
+            )
+            .await
+            .is_err()
+        );
+        assert!(matches!(
+            editor_launch_strategy(
+                "missing-editor",
+                vec!["--goto".to_owned(), repository.display().to_string()],
+                repository.display().to_string(),
+            ),
+            EditorLaunchStrategy::Process { .. }
+        ));
 
         assert_eq!(summarize_commit_context("", None), "");
         assert_eq!(

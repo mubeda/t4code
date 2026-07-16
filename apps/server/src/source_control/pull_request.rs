@@ -1289,7 +1289,8 @@ mod tests {
         }
     }
 
-    fn bitbucket_repository() -> TempDir {
+    async fn bitbucket_repository() -> TempDir {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
         let repository = tempfile::tempdir().expect("temporary repository");
         for args in [
             vec!["init"],
@@ -1305,7 +1306,11 @@ mod tests {
                 .current_dir(repository.path())
                 .output()
                 .expect("run git fixture command");
-            assert!(output.status.success(), "git fixture command failed");
+            assert!(
+                output.status.success(),
+                "git fixture command failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
         repository
     }
@@ -1374,7 +1379,7 @@ mod tests {
 
     #[tokio::test]
     async fn bitbucket_branch_resolution_follows_pagination() {
-        let repository = bitbucket_repository();
+        let repository = bitbucket_repository().await;
         let mut server = spawn_http_server(vec![
             (
                 200,
@@ -1419,7 +1424,7 @@ mod tests {
 
     #[tokio::test]
     async fn bitbucket_pagination_rejects_a_different_origin_before_sending_credentials() {
-        let repository = bitbucket_repository();
+        let repository = bitbucket_repository().await;
         let mut second_server = spawn_http_server(vec![(
             200,
             r#"{"values":[{"id":20,"title":"Leaked request","state":"OPEN","links":{"html":{"href":"https://bitbucket.org/example/native-source-control/pull-requests/20"}},"source":{"branch":{"name":"feature/native"}},"destination":{"branch":{"name":"main"}}}]}"#.to_owned(),
@@ -1464,7 +1469,7 @@ mod tests {
 
     #[tokio::test]
     async fn bitbucket_pagination_maps_a_malformed_next_url_to_a_structured_error() {
-        let repository = bitbucket_repository();
+        let repository = bitbucket_repository().await;
         let server = spawn_http_server(vec![(
             200,
             r#"{"values":[],"next":"not a URL"}"#.to_owned(),
@@ -1517,7 +1522,7 @@ mod tests {
 
     #[tokio::test]
     async fn bitbucket_explicit_references_use_the_direct_endpoint_and_bearer_auth() {
-        let repository = bitbucket_repository();
+        let repository = bitbucket_repository().await;
         let response = r#"{"id":42,"title":"Merged work","state":"MERGED","links":{"html":{"href":"https://bitbucket.org/example/native-source-control/pull-requests/42"}},"source":{"branch":{"name":"feature/merged"}},"destination":{"branch":{"name":"main"}}}"#.to_owned();
         let mut server = spawn_http_server(vec![
             (200, response.clone()),
@@ -1560,7 +1565,7 @@ mod tests {
 
     #[tokio::test]
     async fn bitbucket_current_branch_preserves_numeric_path_segments_in_the_list_query() {
-        let repository = bitbucket_repository();
+        let repository = bitbucket_repository().await;
         let mut server = spawn_http_server(vec![
             (
                 200,
@@ -1615,7 +1620,7 @@ mod tests {
 
     #[tokio::test]
     async fn bitbucket_creation_sends_branch_payload_with_basic_auth() {
-        let repository = bitbucket_repository();
+        let repository = bitbucket_repository().await;
         let mut server = spawn_http_server(vec![(
             200,
             r#"{"id":51,"title":"Create native flow","state":"OPEN","links":{"html":{"href":"https://bitbucket.org/example/native-source-control/pull-requests/51"}},"source":{"branch":{"name":"feature/create"}},"destination":{"branch":{"name":"release"}}}"#.to_owned(),
@@ -1670,7 +1675,7 @@ mod tests {
 
     #[tokio::test]
     async fn bitbucket_cancellation_stops_an_in_flight_request() {
-        let repository = bitbucket_repository();
+        let repository = bitbucket_repository().await;
         let mut server = spawn_stalled_http_server().await;
         let service = bitbucket_service(
             &server.base_url,
@@ -1757,7 +1762,7 @@ mod tests {
 
     #[tokio::test]
     async fn bitbucket_errors_map_credentials_http_status_and_invalid_json() {
-        let repository = bitbucket_repository();
+        let repository = bitbucket_repository().await;
         let cancellation = CancellationToken::new();
         let error = bitbucket_service("http://127.0.0.1:1/2.0", None)
             .resolve(
