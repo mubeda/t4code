@@ -513,6 +513,7 @@ struct FullDiffInput {
 mod tests {
     use super::*;
     use crate::{
+        RequestId,
         orchestration::engine::EngineOptions,
         persistence::{Database, run_migrations},
     };
@@ -535,6 +536,18 @@ mod tests {
 
     fn decode_command(value: Value) -> OrchestrationCommand {
         serde_json::from_value(value).expect("command decodes")
+    }
+
+    fn request(tag: &str, payload: Value) -> RpcRequest {
+        RpcRequest {
+            id: RequestId::try_from("1").unwrap(),
+            tag: tag.to_owned(),
+            payload,
+            headers: Vec::new(),
+            trace_id: None,
+            span_id: None,
+            sampled: None,
+        }
     }
 
     fn assert_empty_thread_contract(thread: &Value, expected_kind: &str) {
@@ -686,6 +699,72 @@ mod tests {
         assert_eq!(message["streaming"], json!(false));
         assert!(message.get("isStreaming").is_none());
         assert_eq!(snapshot["thread"]["activities"][0]["tone"], json!("info"));
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn query_and_stream_boundaries_cover_registered_orchestration_adapters() {
+        let engine = migrated_engine().await;
+        let mut registry = RpcRegistry::empty();
+        register_orchestration_rpc(&mut registry, engine.clone());
+        assert!(
+            registry
+                .validate_complete()
+                .expect_err("focused registry is incomplete")
+                .contains("server.getConfig")
+        );
+
+        assert!(
+            handle_query(&engine, request("orchestration.unknown", json!({})))
+                .await
+                .is_err()
+        );
+        assert!(
+            handle_query(
+                &engine,
+                request("orchestration.getTurnDiff", json!({"threadId":"t1"})),
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            diff(&engine, "t1".to_owned(), 2, 1).await.is_err(),
+            "reversed turn bounds must fail"
+        );
+        assert_eq!(
+            handle_query(
+                &engine,
+                request(
+                    "orchestration.getFullThreadDiff",
+                    json!({"threadId":"t1","toTurnCount":0}),
+                ),
+            )
+            .await
+            .unwrap()["diff"],
+            json!("")
+        );
+
+        let cancellation = CancellationToken::new();
+        let mut shell = shell_stream(engine.clone(), cancellation.clone());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), shell.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                .is_ok()
+        );
+        cancellation.cancel();
+
+        let mut malformed = thread_stream(
+            engine.clone(),
+            request("orchestration.subscribeThread", json!({})),
+            CancellationToken::new(),
+        );
+        assert!(malformed.recv().await.unwrap().is_err());
+
+        let (sender, receiver) = mpsc::channel(1);
+        drop(receiver);
+        assert!(send_snapshot(&sender, Ok(json!({}))).await.is_err());
         engine.shutdown().await;
     }
 }

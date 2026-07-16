@@ -495,6 +495,27 @@ mod tests {
             .await
             .expect("orchestration snapshot should respond");
         assert!(snapshot.status().is_success());
+        let link_state = client
+            .get(format!(
+                "http://{}/api/connect/link-state",
+                production.local_addr()
+            ))
+            .bearer_auth(token["access_token"].as_str().expect("access token"))
+            .send()
+            .await
+            .expect("connect link state should respond");
+        assert!(link_state.status().is_success());
+        let diagnostic = client
+            .post(format!(
+                "http://{}/api/diagnostics/logs.zip",
+                production.local_addr()
+            ))
+            .bearer_auth(token["access_token"].as_str().expect("access token"))
+            .json(&serde_json::json!({"frontendLog":"unit lifecycle log"}))
+            .send()
+            .await
+            .expect("diagnostic logs should respond");
+        assert!(diagnostic.status().is_success());
         production.shutdown();
         production.wait_for_shutdown().await;
         production
@@ -550,6 +571,48 @@ mod tests {
             .await
             .expect("fallback route should respond");
         assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        for response in [
+            client
+                .post(format!(
+                    "http://{}/api/diagnostics/logs.zip",
+                    fallback.local_addr()
+                ))
+                .bearer_auth(
+                    fallback_token["access_token"]
+                        .as_str()
+                        .expect("fallback access token"),
+                )
+                .json(&serde_json::json!({"frontendLog":"fallback"}))
+                .send()
+                .await
+                .expect("fallback diagnostics should respond"),
+            client
+                .get(format!(
+                    "http://{}/api/assets/token/file",
+                    fallback.local_addr()
+                ))
+                .bearer_auth(
+                    fallback_token["access_token"]
+                        .as_str()
+                        .expect("fallback access token"),
+                )
+                .send()
+                .await
+                .expect("fallback asset should respond"),
+            client
+                .post(format!("http://{}/mcp", fallback.local_addr()))
+                .bearer_auth(
+                    fallback_token["access_token"]
+                        .as_str()
+                        .expect("fallback access token"),
+                )
+                .body("{}")
+                .send()
+                .await
+                .expect("fallback MCP should respond"),
+        ] {
+            assert!(response.status().is_client_error() || response.status().is_server_error());
+        }
         fallback.shutdown();
         fallback.join().await.expect("fallback server should join");
 
