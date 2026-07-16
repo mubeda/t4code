@@ -17,7 +17,7 @@ use crate::{
         load_snapshot,
     },
     persistence::{ProviderSessionRuntime, Repositories},
-    process::configure_background_command_wrap,
+    process::configure_supervised_background_command_wrap,
     production::{
         connect_mcp::ConnectMcpService, operational_logs::ProviderOperationalLog,
         orchestration_effects::process_compatible_path,
@@ -44,11 +44,7 @@ use crate::{
     },
     server_settings::{ProviderBinarySettingsState, ProviderSettingsStore},
 };
-#[cfg(windows)]
-use process_wrap::tokio::JobObject;
-#[cfg(unix)]
-use process_wrap::tokio::ProcessGroup;
-use process_wrap::tokio::{ChildWrapper, CommandWrap, KillOnDrop};
+use process_wrap::tokio::{ChildWrapper, CommandWrap};
 use serde_json::{Value, json};
 use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
@@ -1441,12 +1437,7 @@ fn spawn_child(
         command.envs(&request.environment);
         sanitize_provider_subprocess_environment(command);
     });
-    configure_background_command_wrap(&mut command);
-    command.wrap(KillOnDrop);
-    #[cfg(windows)]
-    command.wrap(JobObject);
-    #[cfg(unix)]
-    command.wrap(ProcessGroup::leader());
+    configure_supervised_background_command_wrap(&mut command);
     command
         .spawn()
         .map_err(|error| ProviderRuntimeError::Spawn {

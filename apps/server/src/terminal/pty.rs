@@ -10,6 +10,9 @@ use std::{
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tokio::sync::{broadcast, watch};
 
+#[cfg(windows)]
+use crate::process::WindowsJob;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PtyExit {
     pub exit_code: Option<i32>,
@@ -73,7 +76,12 @@ impl PtyBackend for PortablePtyBackend {
         #[cfg(unix)]
         let process_group = pair.master.process_group_leader();
         #[cfg(windows)]
-        let job = WindowsJob::attach(&*child)?;
+        let job = WindowsJob::attach(
+            child
+                .as_raw_handle()
+                .ok_or_else(|| "PTY child did not expose a Windows process handle".to_owned())?,
+        )
+        .map_err(|error| error.to_string())?;
         let mut reader = pair
             .master
             .try_clone_reader()
@@ -230,7 +238,7 @@ impl PtyProcess for PortablePtyProcess {
         }
         #[cfg(windows)]
         {
-            self.job.terminate()?;
+            self.job.terminate().map_err(|error| error.to_string())?;
             Ok(())
         }
         #[cfg(not(windows))]
@@ -255,87 +263,4 @@ impl PtyProcess for PortablePtyProcess {
 #[cfg(unix)]
 unsafe extern "C" {
     fn kill(pid: i32, signal: i32) -> i32;
-}
-
-#[cfg(windows)]
-struct WindowsJob(windows_sys::Win32::Foundation::HANDLE);
-
-#[cfg(windows)]
-unsafe impl Send for WindowsJob {}
-#[cfg(windows)]
-unsafe impl Sync for WindowsJob {}
-
-#[cfg(windows)]
-impl WindowsJob {
-    fn attach(child: &dyn portable_pty::Child) -> Result<Self, String> {
-        use std::{mem::size_of, ptr};
-        use windows_sys::Win32::{
-            Foundation::GetLastError,
-            System::JobObjects::{
-                AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-                SetInformationJobObject,
-            },
-        };
-
-        let process = child
-            .as_raw_handle()
-            .ok_or_else(|| "PTY child did not expose a Windows process handle".to_string())?;
-        let handle = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
-        if handle.is_null() {
-            return Err(format!("CreateJobObjectW failed with {}", unsafe {
-                GetLastError()
-            }));
-        }
-        let mut information = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        information.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        let configured = unsafe {
-            SetInformationJobObject(
-                handle,
-                JobObjectExtendedLimitInformation,
-                std::ptr::from_ref(&information).cast(),
-                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            )
-        };
-        if configured == 0 {
-            let error = unsafe { GetLastError() };
-            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
-            return Err(format!("SetInformationJobObject failed with {error}"));
-        }
-        let assigned = unsafe { AssignProcessToJobObject(handle, process) };
-        if assigned == 0 {
-            let error = unsafe { GetLastError() };
-            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
-            return Err(format!("AssignProcessToJobObject failed with {error}"));
-        }
-        Ok(Self(handle))
-    }
-
-    fn terminate(&self) -> Result<(), String> {
-        use windows_sys::Win32::{
-            Foundation::GetLastError, System::JobObjects::TerminateJobObject,
-        };
-        let result = unsafe { TerminateJobObject(self.0, 1) };
-        if result == 0 {
-            Err(format!("TerminateJobObject failed with {}", unsafe {
-                GetLastError()
-            }))
-        } else {
-            Ok(())
-        }
-    }
-}
-
-#[cfg(windows)]
-impl Drop for WindowsJob {
-    fn drop(&mut self) {
-        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
-    }
-}
-
-#[cfg(windows)]
-impl fmt::Debug for WindowsJob {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_tuple("WindowsJob").field(&self.0).finish()
-    }
 }

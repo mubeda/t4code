@@ -5,16 +5,12 @@ use std::{
     time::Duration,
 };
 
-#[cfg(windows)]
-use process_wrap::tokio::JobObject;
-#[cfg(unix)]
-use process_wrap::tokio::ProcessGroup;
-use process_wrap::tokio::{ChildWrapper, CommandWrap, KillOnDrop};
+use process_wrap::tokio::{ChildWrapper, CommandWrap};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
-use super::configure_background_command_wrap;
+use super::configure_supervised_background_command_wrap;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
@@ -213,12 +209,7 @@ impl ProcessRunner {
                 command.env_clear().envs(env);
             }
         });
-        configure_background_command_wrap(&mut command);
-        command.wrap(KillOnDrop);
-        #[cfg(windows)]
-        command.wrap(JobObject);
-        #[cfg(unix)]
-        command.wrap(ProcessGroup::leader());
+        configure_supervised_background_command_wrap(&mut command);
 
         let mut child = command.spawn().map_err(|error| ProcessError::Spawn {
             command: input.command.clone(),
