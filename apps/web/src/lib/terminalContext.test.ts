@@ -208,4 +208,72 @@ describe("terminalContext", () => {
       ),
     ).toBe("Investigate @terminal-1:12-13 carefully");
   });
+
+  it("builds short, multiline, and truncated context previews", () => {
+    expect(buildTerminalContextPreviewTitle([])).toBeNull();
+    expect(buildTerminalContextPreviewTitle([makeContext({ text: "one" })])).toContain("one");
+    expect(
+      buildTerminalContextPreviewTitle([
+        makeContext({ text: "one\ntwo\nthree\nfour" }),
+      ]),
+    ).toContain("...");
+    expect(
+      buildTerminalContextPreviewTitle([makeContext({ text: "x".repeat(220) })]),
+    ).toContain(`${"x".repeat(177)}...`);
+  });
+
+  it("normalizes invalid selections and separates multiple context blocks", () => {
+    expect(buildTerminalContextBlock([])).toBe("");
+    expect(buildTerminalContextBlock([makeContext({ terminalLabel: " " })])).toBe("");
+    const block = buildTerminalContextBlock([
+      makeContext({ id: "first", lineStart: 0.9, lineEnd: 0.2, text: "\r\nfirst\r\n" }),
+      makeContext({ id: "second", terminalId: " second ", terminalLabel: " Two ", text: "next" }),
+    ]);
+    expect(block).toContain("Terminal 1 line 1");
+    expect(block).toContain("\n\n- Two lines 12-13:");
+  });
+
+  it("drops surplus inline placeholders and handles empty prompt/context combinations", () => {
+    expect(
+      materializeInlineTerminalContextPrompt(
+        `${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}x${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}`,
+        [makeContext()],
+      ),
+    ).toBe("@terminal-1:12-13x");
+    expect(appendTerminalContextsToPrompt("  prompt  ", [])).toBe("prompt");
+    expect(appendTerminalContextsToPrompt("", [makeContext()])).toBe(
+      buildTerminalContextBlock([makeContext()]),
+    );
+  });
+
+  it("parses headers without bodies and ignores unrelated block lines", () => {
+    expect(
+      extractTrailingTerminalContexts(
+        "Prompt\n<terminal_context>\nnoise\n- Terminal 1 line 1:\n</terminal_context>",
+      ),
+    ).toMatchObject({
+      promptText: "Prompt",
+      contextCount: 1,
+      previewTitle: "Terminal 1 line 1",
+      contexts: [{ header: "Terminal 1 line 1", body: "" }],
+    });
+    expect(
+      extractTrailingTerminalContexts(
+        "Prompt\n<terminal_context>\nnoise\n</terminal_context>",
+      ),
+    ).toMatchObject({ contextCount: 0, previewTitle: null, contexts: [] });
+  });
+
+  it("handles negative and out-of-range placeholder removal", () => {
+    const prompt = `a${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}b`;
+    expect(removeInlineTerminalContextPlaceholder(prompt, -1)).toEqual({
+      prompt,
+      cursor: prompt.length,
+    });
+    expect(removeInlineTerminalContextPlaceholder(prompt, 5)).toEqual({
+      prompt,
+      cursor: prompt.length,
+    });
+    expect(ensureInlineTerminalContextPlaceholders(prompt, 1)).toBe(prompt);
+  });
 });

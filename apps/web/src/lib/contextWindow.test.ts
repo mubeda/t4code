@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 import { EventId, type OrchestrationThreadActivity, TurnId } from "@t4code/contracts";
 
-import { deriveLatestContextWindowSnapshot, formatContextWindowTokens } from "./contextWindow";
+import {
+  deriveLatestContextWindowSnapshot,
+  formatContextWindowTokens,
+  formatProviderDisplayName,
+} from "./contextWindow";
 
 function makeActivity(id: string, kind: string, payload: unknown): OrchestrationThreadActivity {
   return {
@@ -80,5 +84,66 @@ describe("contextWindow", () => {
 
     expect(snapshot?.usedTokens).toBe(81_659);
     expect(snapshot?.totalProcessedTokens).toBe(748_126);
+  });
+
+  it("formats known, missing, and unknown provider names", () => {
+    expect(formatProviderDisplayName(null)).toBe("This agent");
+    expect(formatProviderDisplayName("claudeAgent")).toBe("Claude");
+    expect(formatProviderDisplayName("claude")).toBe("Claude");
+    expect(formatProviderDisplayName("codex")).toBe("Codex");
+    expect(formatProviderDisplayName("cursor")).toBe("Cursor");
+    expect(formatProviderDisplayName("opencode")).toBe("OpenCode");
+    expect(formatProviderDisplayName("customAgent")).toBe("Custom");
+    expect(formatProviderDisplayName("Agent")).toBe("Agent");
+  });
+
+  it("skips absent, unrelated, primitive, and negative usage activities", () => {
+    expect(
+      deriveLatestContextWindowSnapshot([
+        undefined,
+        makeActivity("wrong", "tool.started", {}),
+        makeActivity("primitive", "context-window.updated", "invalid"),
+        makeActivity("negative", "context-window.updated", { usedTokens: -1 }),
+      ] as never),
+    ).toBeNull();
+  });
+
+  it("keeps usage when capacity and optional fields are invalid", () => {
+    expect(
+      deriveLatestContextWindowSnapshot([
+        makeActivity("activity", "context-window.updated", {
+          usedTokens: 5,
+          maxTokens: 0,
+          inputTokens: Number.NaN,
+          compactsAutomatically: "yes",
+        }),
+      ]),
+    ).toMatchObject({
+      usedTokens: 5,
+      maxTokens: 0,
+      remainingTokens: 0,
+      usedPercentage: null,
+      remainingPercentage: null,
+      inputTokens: null,
+      compactsAutomatically: false,
+    });
+    expect(
+      deriveLatestContextWindowSnapshot([
+        makeActivity("activity", "context-window.updated", { usedTokens: 5 }),
+      ]),
+    ).toMatchObject({
+      maxTokens: null,
+      remainingTokens: null,
+      usedPercentage: null,
+      remainingPercentage: null,
+    });
+  });
+
+  it("formats null, non-finite, million, and rounded token boundaries", () => {
+    expect(formatContextWindowTokens(null)).toBe("0");
+    expect(formatContextWindowTokens(Number.POSITIVE_INFINITY)).toBe("0");
+    expect(formatContextWindowTokens(9_999)).toBe("10k");
+    expect(formatContextWindowTokens(1_000_000)).toBe("1m");
+    expect(formatContextWindowTokens(1_250_000)).toBe("1.3m");
   });
 });

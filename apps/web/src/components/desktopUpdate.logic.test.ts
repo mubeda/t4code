@@ -9,6 +9,7 @@ import {
   getDesktopUpdateInstallConfirmationMessage,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
+  shouldHighlightDesktopUpdateError,
   shouldShowArm64IntelBuildWarning,
   shouldShowDesktopUpdateButton,
   shouldToastDesktopUpdateActionResult,
@@ -279,6 +280,105 @@ describe("canCheckForUpdate", () => {
         message: "network",
       }),
     ).toBe(true);
+  });
+});
+
+describe("desktop update defensive branch coverage", () => {
+  it("covers non-actionable architecture and button states", () => {
+    expect(shouldShowDesktopUpdateButton(null)).toBe(false);
+    expect(isDesktopUpdateButtonDisabled(null)).toBe(false);
+    expect(shouldShowArm64IntelBuildWarning(null)).toBe(false);
+    expect(
+      getArm64IntelBuildWarningDescription({
+        ...baseState,
+        hostArch: "arm64",
+        appArch: "arm64",
+      }),
+    ).toContain("correct architecture");
+    expect(
+      getArm64IntelBuildWarningDescription({
+        ...baseState,
+        hostArch: "arm64",
+        appArch: "x64",
+        status: "downloaded",
+        downloadedVersion: "1.1.0",
+      }),
+    ).toContain("Restart to install");
+  });
+
+  it("formats every tooltip fallback", () => {
+    expect(
+      getDesktopUpdateButtonTooltip({ ...baseState, status: "available" }),
+    ).toContain("Update available ready");
+    expect(
+      getDesktopUpdateButtonTooltip({ ...baseState, status: "downloading" }),
+    ).toBe("Downloading update");
+    expect(
+      getDesktopUpdateButtonTooltip({
+        ...baseState,
+        status: "downloaded",
+        availableVersion: "1.1.0",
+      }),
+    ).toContain("1.1.0 downloaded");
+    expect(
+      getDesktopUpdateButtonTooltip({ ...baseState, status: "downloaded" }),
+    ).toContain("Update ready downloaded");
+    expect(
+      getDesktopUpdateButtonTooltip({ ...baseState, status: "error", message: "Offline" }),
+    ).toBe("Offline");
+    expect(getDesktopUpdateButtonTooltip({ ...baseState, status: "error" })).toBe(
+      "Update failed",
+    );
+  });
+
+  it("rejects blank action errors and distinguishes highlighted retry contexts", () => {
+    expect(
+      getDesktopUpdateActionError({
+        accepted: true,
+        completed: false,
+        state: { ...baseState, message: "   " },
+      }),
+    ).toBeNull();
+    expect(shouldHighlightDesktopUpdateError(null)).toBe(false);
+    expect(shouldHighlightDesktopUpdateError({ ...baseState, status: "idle" })).toBe(false);
+    expect(
+      shouldHighlightDesktopUpdateError({
+        ...baseState,
+        status: "error",
+        errorContext: "check",
+      }),
+    ).toBe(false);
+    expect(
+      shouldHighlightDesktopUpdateError({
+        ...baseState,
+        status: "error",
+        errorContext: "download",
+      }),
+    ).toBe(true);
+    expect(
+      shouldHighlightDesktopUpdateError({
+        ...baseState,
+        status: "error",
+        errorContext: "install",
+      }),
+    ).toBe(true);
+  });
+
+  it("uses an available version when no downloaded version exists", () => {
+    expect(
+      getDesktopUpdateInstallConfirmationMessage({
+        availableVersion: "1.2.0",
+        downloadedVersion: null,
+      }),
+    ).toContain("Install update 1.2.0");
+    expect(
+      resolveDesktopUpdateButtonAction({
+        ...baseState,
+        status: "error",
+        errorContext: "download",
+        availableVersion: null,
+      }),
+    ).toBe("none");
   });
 });
 
