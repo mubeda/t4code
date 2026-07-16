@@ -793,6 +793,21 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn typed_payload_decoders_reject_non_object_wire_values() {
+        let invalid = json!("not-an-object");
+        assert!(decode_payload::<RefreshProviderUsageInput>(&invalid).is_err());
+        assert!(decode_payload::<ResourceHistoryInput>(&invalid).is_err());
+        assert!(decode_payload::<SignalProcessInput>(&invalid).is_err());
+        assert!(decode_payload::<TerminalAttachPayload>(&invalid).is_err());
+        assert!(decode_payload::<TerminalClosePayload>(&invalid).is_err());
+        assert!(decode_payload::<TerminalResizePayload>(&invalid).is_err());
+        assert!(decode_payload::<TerminalSessionPayload>(&invalid).is_err());
+        assert!(decode_payload::<TerminalWritePayload>(&invalid).is_err());
+        assert_eq!(effect_option::<u8>(None), effect_none());
+        assert_eq!(format_epoch_ms(i128::MAX), "1970-01-01T00:00:00Z");
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn unit_build_covers_server_terminal_callbacks_payloads_and_wire_adapters() {

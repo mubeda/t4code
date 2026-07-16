@@ -655,3 +655,71 @@ fn to_display_name(display_name: &str) -> String {
     result.clear();
     rebuilt
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_and_fallback_payloads_cover_codex_model_boundaries() {
+        assert!(parse_model_list_response(&json!({}), &[]).is_err());
+        assert!(parse_model_list_response(&json!({"data":[{}]}), &[]).is_err());
+        let models = parse_model_list_response(
+            &json!({
+                "data":[{
+                    "model":"gpt-test",
+                    "supportedReasoningEfforts":[{}, {"reasoningEffort":"high"}],
+                    "serviceTiers":[{"id":"fast"}, {"name":"missing-id"}],
+                    "defaultServiceTier":"missing"
+                }]
+            }),
+            &[" ".to_owned(), "gpt-test".to_owned(), "custom".to_owned()],
+        )
+        .expect("fallback model payload should parse");
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].name, "GPT-Test");
+        assert!(models[1].is_custom);
+
+        assert!(parse_skills_list_response(&json!({}), "/workspace").is_err());
+        assert!(
+            parse_skills_list_response(&json!({"data":[]}), "/workspace")
+                .unwrap()
+                .is_empty()
+        );
+        let skills = parse_skills_list_response(
+            &json!({"data":[{"cwd":"/fallback","skills":[{
+                "interface":{"shortDescription":"nested"}
+            }]}]}),
+            "/missing",
+        )
+        .unwrap();
+        assert_eq!(skills[0].short_description.as_deref(), Some("nested"));
+
+        assert!(parse_thread_snapshot(&json!({})).is_err());
+        assert!(parse_thread_snapshot(&json!({"thread":{}})).is_err());
+        assert_eq!(
+            parse_thread_snapshot(&json!({"thread":{"turns":[{}]}}))
+                .unwrap()
+                .turns[0],
+            CodexThreadTurnSnapshot {
+                id: String::new(),
+                items: Vec::new(),
+            }
+        );
+
+        let turn = build_turn_start_params(&BuildTurnStartInput {
+            thread_id: "thread".to_owned(),
+            runtime_mode: CodexRuntimeMode::ApprovalRequired,
+            prompt: Some(String::new()),
+            attachments: Vec::new(),
+            model: None,
+            service_tier: None,
+            effort: None,
+            interaction_mode: Some("plan".to_owned()),
+        });
+        assert_eq!(
+            turn["collaborationMode"]["settings"]["model"],
+            DEFAULT_MODEL
+        );
+    }
+}

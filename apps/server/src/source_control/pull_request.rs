@@ -84,6 +84,9 @@ pub struct PullRequestService {
     runner: ProcessRunner,
     client: Client,
     bitbucket: BitbucketConfiguration,
+    github_command: String,
+    gitlab_command: String,
+    azure_command: String,
 }
 
 impl Default for PullRequestService {
@@ -92,6 +95,9 @@ impl Default for PullRequestService {
             runner: ProcessRunner,
             client: Client::new(),
             bitbucket: BitbucketConfiguration::default(),
+            github_command: "gh".to_owned(),
+            gitlab_command: "glab".to_owned(),
+            azure_command: "az".to_owned(),
         }
     }
 }
@@ -116,7 +122,7 @@ impl PullRequestService {
                 input.provider,
                 &input.cwd,
                 "resolveCurrentPullRequest",
-                "az",
+                self.azure_command.as_str(),
                 [
                     "repos",
                     "pr",
@@ -141,7 +147,7 @@ impl PullRequestService {
                 input.provider,
                 &input.cwd,
                 "resolveCurrentPullRequest",
-                Some("az"),
+                Some(self.azure_command.as_str()),
                 Some(&input.reference),
                 "No open pull request was found for the current branch.",
             )
@@ -158,7 +164,7 @@ impl PullRequestService {
         }
         let (command, args): (&str, Vec<OsString>) = match input.provider {
             ProviderKind::Github => (
-                "gh",
+                self.github_command.as_str(),
                 [
                     "pr",
                     "create",
@@ -176,7 +182,7 @@ impl PullRequestService {
                 .collect(),
             ),
             ProviderKind::Gitlab => (
-                "glab",
+                self.gitlab_command.as_str(),
                 vec![
                     "api".into(),
                     "--method".into(),
@@ -193,7 +199,7 @@ impl PullRequestService {
                 ],
             ),
             ProviderKind::AzureDevops => (
-                "az",
+                self.azure_command.as_str(),
                 [
                     "repos",
                     "pr",
@@ -271,7 +277,7 @@ impl PullRequestService {
         }
         let (command, args): (&str, Vec<OsString>) = match input.provider {
             ProviderKind::Github => (
-                "gh",
+                self.github_command.as_str(),
                 [
                     "pr",
                     "view",
@@ -284,14 +290,14 @@ impl PullRequestService {
                 .collect(),
             ),
             ProviderKind::Gitlab => (
-                "glab",
+                self.gitlab_command.as_str(),
                 ["mr", "view", input.reference.as_str(), "--output", "json"]
                     .into_iter()
                     .map(OsString::from)
                     .collect(),
             ),
             ProviderKind::AzureDevops => (
-                "az",
+                self.azure_command.as_str(),
                 [
                     "repos",
                     "pr",
@@ -1286,6 +1292,89 @@ mod tests {
                 api_base_url: api_base_url.into(),
                 credentials,
             },
+            github_command: "gh".to_owned(),
+            gitlab_command: "glab".to_owned(),
+            azure_command: "az".to_owned(),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn provider_cli_flows_cover_github_gitlab_and_azure_resolution_and_creation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let temporary = tempfile::tempdir().expect("provider CLI directory");
+        let script = r#"#!/bin/sh
+case "$(basename "$0"):$*" in
+  gh:*create*) printf '%s\n' 'https://github.com/example/repo/pull/42' ;;
+  gh:*) printf '%s\n' '{"number":42,"title":"GitHub PR","url":"https://github.test/42","baseRefName":"main","headRefName":"feature","state":"OPEN"}' ;;
+  glab:*) printf '%s\n' '{"iid":43,"title":"GitLab MR","web_url":"https://gitlab.test/43","target_branch":"main","source_branch":"feature","state":"opened"}' ;;
+  az:*list*) printf '%s\n' '[{"pullRequestId":44,"title":"Azure PR","url":"https://azure.test/44","targetRefName":"refs/heads/main","sourceRefName":"refs/heads/feature","status":"active"}]' ;;
+  az:*) printf '%s\n' '{"pullRequestId":44,"title":"Azure PR","url":"https://azure.test/44","targetRefName":"refs/heads/main","sourceRefName":"refs/heads/feature","status":"active"}' ;;
+esac
+"#;
+        for command in ["gh", "glab", "az"] {
+            let path = temporary.path().join(command);
+            std::fs::write(&path, script).expect("provider fixture should write");
+            let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(path, permissions).unwrap();
+        }
+        let service = PullRequestService {
+            github_command: temporary.path().join("gh").to_string_lossy().into_owned(),
+            gitlab_command: temporary.path().join("glab").to_string_lossy().into_owned(),
+            azure_command: temporary.path().join("az").to_string_lossy().into_owned(),
+            ..PullRequestService::default()
+        };
+        let cancellation = CancellationToken::new();
+
+        let current = service
+            .resolve_current(
+                ResolvePullRequestInput {
+                    cwd: temporary.path().to_path_buf(),
+                    provider: ProviderKind::AzureDevops,
+                    reference: "feature".to_owned(),
+                },
+                &cancellation,
+            )
+            .await
+            .expect("Azure current PR should resolve");
+        assert_eq!(current.number, 44);
+
+        for (provider, expected) in [
+            (ProviderKind::Github, 42),
+            (ProviderKind::Gitlab, 43),
+            (ProviderKind::AzureDevops, 44),
+        ] {
+            let resolved = service
+                .resolve(
+                    ResolvePullRequestInput {
+                        cwd: temporary.path().to_path_buf(),
+                        provider,
+                        reference: expected.to_string(),
+                    },
+                    &cancellation,
+                )
+                .await
+                .expect("provider PR should resolve");
+            assert_eq!(resolved.number, expected);
+
+            let created = service
+                .create(
+                    CreatePullRequestInput {
+                        cwd: temporary.path().to_path_buf(),
+                        provider,
+                        base_branch: "main".to_owned(),
+                        head_branch: "feature".to_owned(),
+                        title: "Fixture".to_owned(),
+                        body: "Body".to_owned(),
+                    },
+                    &cancellation,
+                )
+                .await
+                .expect("provider PR should create");
+            assert_eq!(created.number, expected);
         }
     }
 
