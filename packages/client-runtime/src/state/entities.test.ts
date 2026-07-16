@@ -199,6 +199,80 @@ function makeHarness() {
 }
 
 describe("environment entity projections", () => {
+  it("projects empty thread collections when the shell snapshot is unavailable", () => {
+    const harness = makeHarness();
+    const threadAtom = harness.threadShells.threadShellAtom({
+      environmentId: ENVIRONMENT_ID,
+      threadId: THREAD_ID,
+    });
+    expect(harness.registry.get(threadAtom)).toMatchObject({ id: THREAD_ID });
+    expect(harness.registry.get(harness.threadShells.threadRefsAtom)).toHaveLength(2);
+    expect(harness.registry.get(harness.threadShells.threadShellsAtom)).toHaveLength(2);
+
+    harness.registry.set(
+      harness.shellStateAtom,
+      AsyncResult.success<EnvironmentShellState>({
+        snapshot: Option.none(),
+        status: "empty",
+        error: Option.none(),
+      }),
+    );
+
+    expect(
+      harness.registry.get(harness.threadShells.environmentThreadsAtom(ENVIRONMENT_ID)),
+    ).toEqual([]);
+    expect(
+      harness.registry.get(harness.threadShells.environmentThreadIndexAtom(ENVIRONMENT_ID)).size,
+    ).toBe(0);
+    expect(
+      harness.registry.get(harness.threadShells.environmentThreadRefsByProjectAtom(ENVIRONMENT_ID))
+        .size,
+    ).toBe(0);
+    expect(harness.registry.get(threadAtom)).toBeNull();
+    expect(harness.registry.get(harness.threadShells.threadRefsAtom)).toEqual([]);
+    expect(harness.registry.get(harness.threadShells.threadShellsAtom)).toEqual([]);
+    expect(
+      harness.registry.get(
+        harness.threadShells.threadShellsForProjectRefsAtom([
+          { environmentId: ENVIRONMENT_ID, projectId: PROJECT_ID },
+        ]),
+      ),
+    ).toEqual([]);
+  });
+
+  it("groups sibling threads and deduplicates repeated project references", () => {
+    const harness = makeHarness();
+    harness.registry.set(
+      harness.shellStateAtom,
+      AsyncResult.success(
+        shellState({
+          ...SNAPSHOT,
+          threads: SNAPSHOT.threads.map((thread) => ({ ...thread, projectId: PROJECT_ID })),
+        }),
+      ),
+    );
+    const projectRef = { environmentId: ENVIRONMENT_ID, projectId: PROJECT_ID };
+    const missingProjectRef = {
+      environmentId: ENVIRONMENT_ID,
+      projectId: ProjectId.make("missing-project"),
+    };
+
+    expect(
+      harness.registry
+        .get(harness.threadShells.environmentThreadRefsByProjectAtom(ENVIRONMENT_ID))
+        .get(PROJECT_ID),
+    ).toHaveLength(2);
+    expect(
+      harness.registry.get(
+        harness.threadShells.threadShellsForProjectRefsAtom([
+          projectRef,
+          missingProjectRef,
+          projectRef,
+        ]),
+      ),
+    ).toHaveLength(2);
+  });
+
   it("composes detail collections with authoritative shell workspace metadata", () => {
     const messages: OrchestrationThread["messages"] = [];
     const detail = {
@@ -268,6 +342,8 @@ describe("environment entity projections", () => {
     });
     const projectRefs = harness.registry.get(projectRefsAtom);
     const threadRefs = harness.registry.get(threadRefsAtom);
+    const allThreadRefs = harness.registry.get(harness.threadShells.threadRefsAtom);
+    const allThreadShells = harness.registry.get(harness.threadShells.threadShellsAtom);
     const projects = harness.registry.get(projectsAtom);
     const project = harness.registry.get(projectAtom);
     const thread = harness.registry.get(threadAtom);
@@ -278,6 +354,23 @@ describe("environment entity projections", () => {
         shellState({
           ...SNAPSHOT,
           snapshotSequence: 2,
+          projects: SNAPSHOT.projects.map((candidate) =>
+            candidate.id === OTHER_PROJECT_ID
+              ? { ...candidate, title: "Renamed other project" }
+              : candidate,
+          ),
+        }),
+      ),
+    );
+    expect(harness.registry.get(harness.threadShells.threadRefsAtom)).toBe(allThreadRefs);
+    expect(harness.registry.get(harness.threadShells.threadShellsAtom)).toBe(allThreadShells);
+
+    harness.registry.set(
+      harness.shellStateAtom,
+      AsyncResult.success(
+        shellState({
+          ...SNAPSHOT,
+          snapshotSequence: 3,
           threads: SNAPSHOT.threads.map((candidate) =>
             candidate.id === OTHER_THREAD_ID
               ? { ...candidate, title: "Renamed other thread" }
@@ -289,6 +382,7 @@ describe("environment entity projections", () => {
 
     expect(harness.registry.get(projectRefsAtom)).toBe(projectRefs);
     expect(harness.registry.get(threadRefsAtom)).toBe(threadRefs);
+    expect(harness.registry.get(harness.threadShells.threadRefsAtom)).toBe(allThreadRefs);
     expect(harness.registry.get(projectsAtom)).toBe(projects);
     expect(harness.registry.get(projectAtom)).toBe(project);
     expect(harness.registry.get(threadAtom)).toBe(thread);
