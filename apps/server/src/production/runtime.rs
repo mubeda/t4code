@@ -882,6 +882,7 @@ mod tests {
 
     #[tokio::test]
     async fn git_review_backend_includes_untracked_files() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
         let repository = TempDir::new().expect("temporary repository");
         assert!(
             std::process::Command::new("git")
@@ -915,6 +916,7 @@ mod tests {
 
     #[tokio::test]
     async fn git_review_backend_includes_staged_changes_and_branch_range() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
         let repository = TempDir::new().expect("temporary repository");
         let git = |args: &[&str]| {
             let output = std::process::Command::new("git")
@@ -1023,6 +1025,7 @@ mod tests {
 
     #[tokio::test]
     async fn untracked_review_diff_marks_binary_and_oversized_files() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
         let repository = TempDir::new().expect("temporary repository");
         assert!(
             std::process::Command::new("git")

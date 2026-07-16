@@ -672,3 +672,86 @@ fn non_empty<'a>(value: &'a str, fallback: &'a str) -> &'a str {
         value
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unit_build_covers_otlp_event_attributes_and_file_rotation() {
+        let temp = tempfile::tempdir().expect("trace directory");
+        let path = temp.path().join("server.trace.ndjson");
+        let store = TraceDiagnosticsStore::with_limits(path.clone(), 2, 320);
+        let payload = json!({
+            "resourceSpans":[{
+                "instrumentationLibrarySpans":[{
+                    "spans":[
+                        {
+                            "traceId":"trace-1",
+                            "spanId":"span-1",
+                            "name":"unit.array-attributes",
+                            "startTimeUnixNano":"1000000000",
+                            "endTimeUnixNano":"2500000000",
+                            "status":{"code":"STATUS_CODE_ERROR","message":"token=secret"},
+                            "events":[{
+                                "name":"failed event",
+                                "timeUnixNano":"2000000000",
+                                "attributes":[
+                                    {"key":"effect.logLevel","value":{"stringValue":"Error"}},
+                                    {"key":"attempt","value":{"intValue":"2"}},
+                                    {"key":"ratio","value":{"doubleValue":0.5}},
+                                    {"key":"retry","value":{"boolValue":true}}
+                                ]
+                            }]
+                        },
+                        {
+                            "traceId":"trace-2",
+                            "spanId":"span-2",
+                            "name":"unit.object-attributes",
+                            "startTimeUnixNano":"3000000000",
+                            "endTimeUnixNano":"3250000000",
+                            "status":{"code":0},
+                            "events":[{
+                                "name":"warning event",
+                                "timeUnixNano":"3200000000",
+                                "attributes":{"effect.logLevel":"Warning"}
+                            }]
+                        }
+                    ]
+                }]
+            }]
+        });
+        assert_eq!(
+            store.record_otlp_payload(&payload).expect("OTLP records"),
+            2
+        );
+        store
+            .record_failure(
+                "",
+                &json!({"message":"https://user:password@example.test/path"}),
+            )
+            .expect("native failure");
+        store
+            .record_failure("unit.final", &json!({"detail":"final failure"}))
+            .expect("rotating failure");
+
+        assert!(path.exists());
+        assert!(rotated_path(&path, 1).exists());
+        let diagnostics = store.read();
+        assert!(diagnostics["recordCount"].as_u64().unwrap_or_default() >= 1);
+        assert!(diagnostics["scannedFilePaths"].as_array().is_some());
+        assert!(!diagnostics.to_string().contains("password"));
+
+        let zero_rotation = temp.path().join("zero.ndjson");
+        fs::write(&zero_rotation, "record").expect("rotation fixture");
+        rotate(&zero_rotation, 0).expect("zero-file rotation");
+        assert!(!zero_rotation.exists());
+        assert!(decode_otlp_records(&json!({})).is_empty());
+        assert!(normalize_otlp_span(&json!({})).is_none());
+        assert_eq!(otlp_attributes(None), Map::new());
+        assert_eq!(non_empty(" ", "fallback"), "fallback");
+        assert_eq!(parse_nanos(Some(&json!(1))), None);
+        assert_eq!(effect_none()["_tag"], "None");
+        assert_eq!(effect_some(json!(1))["value"], 1);
+    }
+}
