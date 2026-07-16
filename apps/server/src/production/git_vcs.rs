@@ -1391,3 +1391,278 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+    use crate::RequestId;
+
+    fn rpc_request(tag: &str, payload: Value) -> RpcRequest {
+        RpcRequest {
+            id: RequestId::try_from("1").expect("request id"),
+            tag: tag.to_owned(),
+            payload,
+            headers: Vec::new(),
+            trace_id: None,
+            span_id: None,
+            sampled: None,
+        }
+    }
+
+    fn git(cwd: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("git should start");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    async fn unary(services: &GitVcsRpcServices, tag: &str, payload: Value) -> RpcResult {
+        services
+            .handle_unary(rpc_request(tag, payload), CancellationToken::new())
+            .await
+    }
+
+    #[tokio::test]
+    async fn native_git_vcs_service_covers_repository_lifecycle_and_validation_paths() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let temporary = tempfile::tempdir().expect("temporary repository parent");
+        let repository = temporary.path().join("repository");
+        tokio::fs::create_dir_all(&repository)
+            .await
+            .expect("repository directory should create");
+        let cwd = repository.to_string_lossy().into_owned();
+        let services = GitVcsRpcServices::default();
+
+        assert!(
+            unary(&services, "vcs.init", json!({"cwd":cwd,"kind":"mercurial"}),)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            unary(&services, "vcs.init", json!({"cwd":cwd,"kind":"git"}))
+                .await
+                .expect("repository should initialize"),
+            Value::Null,
+        );
+        git(&repository, &["config", "user.name", "T4Code Test"]);
+        git(
+            &repository,
+            &["config", "user.email", "t4code@example.test"],
+        );
+
+        tokio::fs::write(repository.join("tracked.txt"), "first\n")
+            .await
+            .expect("tracked file should write");
+        let status = unary(&services, "vcs.refreshStatus", json!({"cwd":cwd}))
+            .await
+            .expect("status should refresh");
+        assert!(
+            status["workingTree"]["files"]
+                .as_array()
+                .is_some_and(|files| !files.is_empty())
+        );
+        assert_eq!(
+            unary(
+                &services,
+                "vcs.generateCommitMessage",
+                json!({"cwd":cwd,"filePaths":["tracked.txt"]}),
+            )
+            .await
+            .expect("commit message should generate")["message"],
+            "Update tracked.txt",
+        );
+        assert_eq!(
+            unary(
+                &services,
+                "vcs.stageFiles",
+                json!({"cwd":cwd,"filePaths":["tracked.txt"]}),
+            )
+            .await
+            .expect("file should stage"),
+            Value::Null,
+        );
+        git(&repository, &["commit", "--quiet", "-m", "initial"]);
+        git(&repository, &["branch", "-M", "main"]);
+
+        let refs = unary(
+            &services,
+            "vcs.listRefs",
+            json!({
+                "cwd":cwd,
+                "query":"",
+                "cursor":0,
+                "limit":500,
+                "includeMatchingRemoteRefs":true,
+                "refKind":"branch",
+            }),
+        )
+        .await
+        .expect("refs should list");
+        assert!(
+            refs["refs"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty())
+        );
+        let commits = unary(
+            &services,
+            "vcs.listCommits",
+            json!({"cwd":cwd,"cursor":0,"limit":500}),
+        )
+        .await
+        .expect("commits should list");
+        assert!(
+            commits["commits"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty())
+        );
+
+        assert_eq!(
+            unary(
+                &services,
+                "vcs.createRef",
+                json!({"cwd":cwd,"refName":"feature","switchRef":true}),
+            )
+            .await
+            .expect("feature ref should create")["refName"],
+            "feature",
+        );
+        assert_eq!(
+            unary(
+                &services,
+                "vcs.switchRef",
+                json!({"cwd":cwd,"refName":"main"}),
+            )
+            .await
+            .expect("base ref should switch")["refName"],
+            "main",
+        );
+
+        tokio::fs::write(repository.join("tracked.txt"), "second\n")
+            .await
+            .expect("tracked file should change");
+        unary(
+            &services,
+            "vcs.stageFiles",
+            json!({"cwd":cwd,"filePaths":["tracked.txt"]}),
+        )
+        .await
+        .expect("changed file should stage");
+        unary(
+            &services,
+            "vcs.unstageFiles",
+            json!({"cwd":cwd,"filePaths":["tracked.txt"]}),
+        )
+        .await
+        .expect("changed file should unstage");
+        unary(
+            &services,
+            "vcs.discardFiles",
+            json!({"cwd":cwd,"filePaths":["tracked.txt"]}),
+        )
+        .await
+        .expect("changed file should discard");
+
+        let worktree = temporary.path().join("worktree");
+        unary(
+            &services,
+            "vcs.createWorktree",
+            json!({
+                "cwd":cwd,
+                "refName":"feature",
+                "newRefName":null,
+                "baseRefName":null,
+                "path":worktree,
+            }),
+        )
+        .await
+        .expect("worktree should create");
+        unary(
+            &services,
+            "vcs.removeWorktree",
+            json!({"cwd":cwd,"path":worktree,"force":true}),
+        )
+        .await
+        .expect("worktree should remove");
+
+        let clone_parent = temporary.path().join("clones");
+        tokio::fs::create_dir_all(&clone_parent)
+            .await
+            .expect("clone parent should create");
+        let cloned = unary(
+            &services,
+            "vcs.clone",
+            json!({
+                "url":repository,
+                "parentDir":clone_parent,
+                "directoryName":"copy",
+            }),
+        )
+        .await
+        .expect("repository should clone");
+        assert!(
+            cloned["path"]
+                .as_str()
+                .is_some_and(|path| path.ends_with("copy"))
+        );
+
+        assert!(
+            unary(&services, "vcs.pull", json!({"cwd":cwd}))
+                .await
+                .is_err()
+        );
+        assert!(
+            unary(
+                &services,
+                "git.resolvePullRequest",
+                json!({"cwd":cwd,"reference":"current"}),
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            unary(
+                &services,
+                "sourceControl.lookupRepository",
+                json!({"provider":"unknown","repository":"owner/name","cwd":cwd}),
+            )
+            .await
+            .is_err()
+        );
+        assert!(unary(&services, "unknown.method", json!({})).await.is_err());
+        assert!(
+            unary(&services, "vcs.listRefs", json!({"cwd":42}))
+                .await
+                .is_err()
+        );
+
+        let mut invalid_status = services.status_stream(
+            rpc_request("subscribeVcsStatus", json!({"cwd":42})),
+            CancellationToken::new(),
+        );
+        assert!(invalid_status.recv().await.expect("status error").is_err());
+        let mut invalid_action = services.stacked_action_stream(
+            rpc_request("git.runStackedAction", json!({"actionId":"invalid"})),
+            CancellationToken::new(),
+        );
+        assert!(invalid_action.recv().await.expect("action error").is_err());
+
+        assert_eq!(summarize_commit_context("", None), "");
+        assert_eq!(
+            summarize_commit_context("diff --git a/a.txt b/a.txt\n", None),
+            "Update a.txt",
+        );
+        assert_eq!(
+            summarize_commit_context("plain context", None),
+            "Update working tree",
+        );
+        assert!(request_error("method", "detail").is_object());
+        assert!(vcs_error("operation", &repository, "detail").is_object());
+        assert!(source_control_error("unknown", "lookup", "detail").is_object());
+    }
+}

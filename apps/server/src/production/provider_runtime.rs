@@ -2808,8 +2808,373 @@ async fn wait_for_endpoint(
 
 #[cfg(test)]
 mod tests {
+    use super::ProviderDriverFactory;
     use crate::server_settings::{ProviderInstanceState, ProvidersState};
+    use axum::{
+        Json, Router,
+        routing::{get, post},
+    };
     use serde_json::json;
+    use tempfile::TempDir;
+    use tokio::{net::TcpListener, time::timeout};
+
+    fn native_launch(temp: &TempDir, provider: &str) -> super::ProviderLaunchRequest {
+        super::ProviderLaunchRequest {
+            thread_id: "native-test-thread".to_owned(),
+            provider: provider.to_owned(),
+            provider_instance_id: Some(provider.to_owned()),
+            binary_path: format!("missing-{provider}"),
+            cwd: temp.path().to_path_buf(),
+            runtime_mode: "approval-required".to_owned(),
+            interaction_mode: "default".to_owned(),
+            model: Some("test-model".to_owned()),
+            service_tier: None,
+            effort: None,
+            agent: None,
+            resume_cursor: None,
+            environment: Default::default(),
+            endpoint: None,
+            server_password: None,
+            mcp: None,
+            codex_home: None,
+        }
+    }
+
+    #[cfg(unix)]
+    fn executable_fixture(temp: &TempDir, name: &str, contents: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let executable = temp.path().join(name);
+        std::fs::write(&executable, contents).expect("provider fixture should write");
+        let mut permissions = std::fs::metadata(&executable)
+            .expect("provider fixture metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&executable, permissions)
+            .expect("provider fixture should be executable");
+        executable
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_process_adapters_cover_live_codex_claude_cursor_and_grok_commands() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let temp = TempDir::new().expect("provider fixture directory");
+        let factory = super::NativeProviderDriverFactory::new(temp.path().join("attachments"));
+
+        let claude_fixture = executable_fixture(
+            &temp,
+            "claude-fixture.sh",
+            "#!/bin/sh\nprintf '%s\\n' 'fixture warning' >&2\ncat >/dev/null\n",
+        );
+        let mut claude_request = native_launch(&temp, "claudeAgent");
+        claude_request.binary_path = claude_fixture.to_string_lossy().into_owned();
+        claude_request.model = Some("claude-sonnet".to_owned());
+        claude_request.agent = Some("reviewer".to_owned());
+        claude_request.resume_cursor = Some(json!({"sessionId":"claude-session"}));
+        let claude = factory
+            .create(claude_request)
+            .await
+            .expect("Claude driver should create");
+        assert_eq!(
+            claude
+                .start()
+                .await
+                .expect("Claude should start")
+                .resume_cursor,
+            Some(json!({"sessionId":"claude-session"})),
+        );
+        assert!(
+            claude
+                .send("hello".to_owned(), Vec::new(), "default".to_owned())
+                .await
+                .expect("Claude turn should send")
+                .is_some()
+        );
+        claude
+            .interrupt(None)
+            .await
+            .expect("Claude should interrupt");
+        claude
+            .approve("approval-1".to_owned(), "acceptForSession".to_owned())
+            .await
+            .expect("Claude approval should resolve");
+        claude
+            .approve("approval-2".to_owned(), "deny".to_owned())
+            .await
+            .expect("Claude denial should resolve");
+        claude
+            .set_mode("auto-accept-edits".to_owned())
+            .await
+            .expect("Claude mode should update");
+        claude
+            .set_interaction_mode("plan".to_owned())
+            .await
+            .expect("Claude interaction mode should update");
+        assert!(claude.set_model("other".to_owned()).await.is_err());
+        assert!(claude.rollback(1).await.is_err());
+        assert_eq!(
+            timeout(std::time::Duration::from_secs(2), claude.next_event())
+                .await
+                .expect("Claude event timeout")
+                .expect("Claude stderr event")
+                .event_type,
+            "session.stderr",
+        );
+        claude.shutdown().await.expect("Claude should shut down");
+
+        let codex_fixture = executable_fixture(
+            &temp,
+            "codex-fixture.sh",
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"id":%s,"result":{"userAgent":"fixture"}}\n' "$id" ;;
+    *'"method":"thread/start"'*) printf '{"id":%s,"result":{"cwd":"/tmp","model":"gpt-5","thread":{"id":"native-codex-thread"}}}\n' "$id" ;;
+    *'"method":"thread/goal/set"'*) printf '{"id":%s,"result":{"goal":{"status":"active"}}}\n' "$id" ;;
+    *'"method":"turn/start"'*) printf '{"id":%s,"result":{"turn":{"id":"native-codex-turn"}}}\n' "$id" ;;
+    *'"method":"turn/interrupt"'*) printf '{"id":%s,"result":{}}\n' "$id" ;;
+    *'"method":"thread/rollback"'*) printf '{"id":%s,"result":{"thread":{"id":"native-codex-thread","turns":[]}}}\n' "$id" ;;
+    *'"method":"shutdown"'*) printf '{"id":%s,"result":null}\n' "$id" ;;
+  esac
+done
+"#,
+        );
+        let mut codex_request = native_launch(&temp, "codex");
+        codex_request.binary_path = codex_fixture.to_string_lossy().into_owned();
+        let codex = factory
+            .create(codex_request)
+            .await
+            .expect("Codex driver should create");
+        assert_eq!(
+            timeout(std::time::Duration::from_secs(2), codex.start())
+                .await
+                .expect("Codex start timeout")
+                .expect("Codex should start")
+                .resume_cursor,
+            Some(json!({"threadId":"native-codex-thread"})),
+        );
+        assert!(
+            codex
+                .send("hello".to_owned(), Vec::new(), "default".to_owned())
+                .await
+                .expect("Codex turn should send")
+                .is_some()
+        );
+        assert!(
+            codex
+                .send(
+                    "/goal finish coverage".to_owned(),
+                    Vec::new(),
+                    "default".to_owned(),
+                )
+                .await
+                .expect("Codex goal should send")
+                .is_some()
+        );
+        codex.interrupt(None).await.expect("Codex should interrupt");
+        codex.rollback(0).await.expect("Codex should roll back");
+        assert!(codex.rollback(-1).await.is_err());
+        assert!(
+            codex
+                .set_mode("approval-required".to_owned())
+                .await
+                .is_err()
+        );
+        assert!(codex.set_model("other".to_owned()).await.is_err());
+        assert!(
+            codex
+                .approve("unknown".to_owned(), "accept".to_owned())
+                .await
+                .is_err()
+        );
+        assert!(codex.answer("unknown".to_owned(), json!({})).await.is_err());
+        codex.shutdown().await.expect("Codex should shut down");
+
+        let acp_fixture = executable_fixture(
+            &temp,
+            "acp-fixture.sh",
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*|*'"method":"authenticate"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    *'"method":"session/new"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"cursor-session","configOptions":[{"id":"model","category":"model"}],"modes":{"currentModeId":"ask","availableModes":[{"id":"ask","name":"Ask"},{"id":"code","name":"Agent"},{"id":"architect","name":"Plan"}]}}}\n' "$id" ;;
+    *'"method":"session/create"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"grok-session","modes":{"currentModeId":"code","availableModes":[{"id":"code","name":"Agent"},{"id":"ask","name":"Ask"}]}}}\n' "$id" ;;
+    *'"method":"session/set_config_option"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[]}}\n' "$id" ;;
+    *'"method":"session/set_mode"'*|*'"method":"session/set_model"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    *'"method":"session/prompt"'*) sleep 0.1; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id" ;;
+  esac
+done
+"#,
+        );
+        for provider in ["cursor", "grok"] {
+            let mut request = native_launch(&temp, provider);
+            request.binary_path = acp_fixture.to_string_lossy().into_owned();
+            let driver = factory
+                .create(request)
+                .await
+                .expect("ACP driver should create");
+            assert!(
+                driver
+                    .start()
+                    .await
+                    .expect("ACP driver should start")
+                    .resume_cursor
+                    .is_some()
+            );
+            let turn = driver
+                .send("hello".to_owned(), Vec::new(), "default".to_owned())
+                .await
+                .expect("ACP turn should send")
+                .expect("ACP turn id");
+            driver
+                .interrupt(Some(turn))
+                .await
+                .expect("ACP turn should interrupt");
+            driver
+                .set_model("updated-model".to_owned())
+                .await
+                .expect("ACP model should update");
+            driver
+                .set_mode("full-access".to_owned())
+                .await
+                .expect("ACP mode should update");
+            driver
+                .set_interaction_mode("plan".to_owned())
+                .await
+                .expect("ACP interaction mode should update");
+            assert!(driver.rollback(1).await.is_err());
+            assert!(
+                driver
+                    .approve("unknown".to_owned(), "accept".to_owned())
+                    .await
+                    .is_err()
+            );
+            assert!(
+                driver
+                    .answer("unknown".to_owned(), json!({}))
+                    .await
+                    .is_err()
+            );
+            driver
+                .shutdown()
+                .await
+                .expect("ACP driver should shut down");
+        }
+    }
+
+    #[tokio::test]
+    async fn native_opencode_adapter_covers_live_session_turn_and_control_commands() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let app = Router::new()
+            .route(
+                "/session",
+                post(|| async { Json(json!({"id":"native-opencode-session"})) }),
+            )
+            .route("/event", get(|| async { "" }))
+            .route(
+                "/session/{session_id}/prompt_async",
+                post(|| async { Json(json!({})) }),
+            )
+            .route(
+                "/session/{session_id}/command",
+                post(|| async { Json(json!({})) }),
+            )
+            .route(
+                "/session/{session_id}/abort",
+                post(|| async { Json(json!({})) }),
+            )
+            .route(
+                "/session/{session_id}/message",
+                get(|| async { Json(json!({"data":[]})) }),
+            )
+            .route(
+                "/session/{session_id}/revert",
+                post(|| async { Json(json!({})) }),
+            );
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("OpenCode fixture should bind");
+        let address = listener.local_addr().expect("OpenCode fixture address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("OpenCode fixture should serve");
+        });
+
+        let temp = TempDir::new().expect("OpenCode fixture directory");
+        let factory = super::NativeProviderDriverFactory::new(temp.path().join("attachments"));
+        let mut request = native_launch(&temp, "opencode");
+        request.endpoint = Some(format!("http://{address}"));
+        request.server_password = Some("secret".to_owned());
+        request.agent = Some("reviewer".to_owned());
+        request.model = Some("openai/gpt-5".to_owned());
+        let driver = factory
+            .create(request)
+            .await
+            .expect("OpenCode driver should create");
+        assert_eq!(
+            driver
+                .start()
+                .await
+                .expect("OpenCode should start")
+                .resume_cursor,
+            Some(json!({"sessionId":"native-opencode-session"})),
+        );
+        assert!(
+            driver
+                .send("hello".to_owned(), Vec::new(), "default".to_owned())
+                .await
+                .expect("OpenCode turn should send")
+                .is_some()
+        );
+        assert!(
+            driver
+                .send(
+                    "/review src/provider".to_owned(),
+                    Vec::new(),
+                    "default".to_owned(),
+                )
+                .await
+                .expect("OpenCode command should send")
+                .is_some()
+        );
+        driver
+            .interrupt(None)
+            .await
+            .expect("OpenCode should interrupt");
+        driver
+            .set_model("openai/gpt-5.4".to_owned())
+            .await
+            .expect("OpenCode model should update");
+        driver.rollback(0).await.expect("OpenCode should roll back");
+        assert!(driver.rollback(-1).await.is_err());
+        assert!(driver.set_mode("full-access".to_owned()).await.is_err());
+        assert!(
+            driver
+                .approve("unknown".to_owned(), "accept".to_owned())
+                .await
+                .is_err()
+        );
+        assert!(
+            driver
+                .answer("unknown".to_owned(), json!({}))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            timeout(std::time::Duration::from_secs(2), driver.next_event())
+                .await
+                .expect("OpenCode event timeout")
+                .expect("OpenCode event")
+                .event_type,
+            "session.started",
+        );
+        driver.shutdown().await.expect("OpenCode should shut down");
+        server.abort();
+    }
 
     #[test]
     fn automatic_model_selection_uses_the_provider_default() {
