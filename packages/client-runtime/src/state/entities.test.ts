@@ -1,8 +1,12 @@
 import {
+  CheckpointRef,
   EnvironmentId,
+  EventId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
   type OrchestrationShellSnapshot,
   type OrchestrationThread,
 } from "@t4code/contracts";
@@ -227,6 +231,28 @@ describe("environment entity projections", () => {
     expect(merged?.messages).toBe(messages);
   });
 
+  it("leaves incomplete or mismatched detail and shell pairs unchanged", () => {
+    const detail = {
+      ...THREAD_SHELL,
+      environmentId: ENVIRONMENT_ID,
+      deletedAt: null,
+      messages: [],
+      proposedPlans: [],
+      activities: [],
+      checkpoints: [],
+    } satisfies OrchestrationThread & { readonly environmentId: EnvironmentId };
+    const shell = { ...THREAD_SHELL, environmentId: ENVIRONMENT_ID };
+
+    expect(mergeEnvironmentThread(null, shell)).toBeNull();
+    expect(mergeEnvironmentThread(detail, null)).toBe(detail);
+    expect(
+      mergeEnvironmentThread(detail, { ...shell, environmentId: EnvironmentId.make("other") }),
+    ).toBe(detail);
+    expect(mergeEnvironmentThread(detail, { ...shell, id: ThreadId.make("other-thread") })).toBe(
+      detail,
+    );
+  });
+
   it("preserves untouched project and thread identities across unrelated shell updates", () => {
     const harness = makeHarness();
     const projectRefsAtom = harness.projects.environmentProjectRefsAtom(ENVIRONMENT_ID);
@@ -364,5 +390,116 @@ describe("environment entity projections", () => {
 
     expect(harness.registry.get(messagesAtom)).toBe(messages);
     expect(harness.registry.get(activitiesAtom)).toBe(activities);
+  });
+
+  it("projects every detail collection, status, error, session, and latest turn", () => {
+    const harness = makeHarness();
+    const ref = { environmentId: ENVIRONMENT_ID, threadId: THREAD_ID };
+    const atoms = harness.threadDetails;
+    const stateAtom = atoms.stateAtom(ref);
+    const detailAtom = atoms.detailAtom(ref);
+    const statusAtom = atoms.statusAtom(ref);
+    const errorAtom = atoms.errorAtom(ref);
+    const messagesAtom = atoms.messagesAtom(ref);
+    const activitiesAtom = atoms.activitiesAtom(ref);
+    const plansAtom = atoms.proposedPlansAtom(ref);
+    const checkpointsAtom = atoms.checkpointsAtom(ref);
+    const sessionAtom = atoms.sessionAtom(ref);
+    const latestTurnAtom = atoms.latestTurnAtom(ref);
+
+    expect(harness.registry.get(stateAtom)).toEqual(EMPTY_ENVIRONMENT_THREAD_STATE);
+    expect(harness.registry.get(detailAtom)).toBeNull();
+    expect(harness.registry.get(statusAtom)).toBe("empty");
+    expect(harness.registry.get(errorAtom)).toBeNull();
+    expect(harness.registry.get(messagesAtom)).toEqual([]);
+    expect(harness.registry.get(activitiesAtom)).toEqual([]);
+    expect(harness.registry.get(plansAtom)).toEqual([]);
+    expect(harness.registry.get(checkpointsAtom)).toEqual([]);
+    expect(harness.registry.get(sessionAtom)).toBeNull();
+    expect(harness.registry.get(latestTurnAtom)).toBeNull();
+
+    const message = {
+      id: MessageId.make("message-projected"),
+      role: "assistant" as const,
+      text: "done",
+      turnId: TurnId.make("turn-projected"),
+      streaming: false,
+      createdAt: "created",
+      updatedAt: "updated",
+    };
+    const activity = {
+      id: EventId.make("activity-projected"),
+      tone: "tool" as const,
+      kind: "command" as const,
+      summary: "ran",
+      payload: {},
+      turnId: TurnId.make("turn-projected"),
+      createdAt: "created",
+    };
+    const plan = {
+      id: "plan-projected",
+      turnId: TurnId.make("turn-projected"),
+      planMarkdown: "plan",
+      implementedAt: null,
+      implementationThreadId: null,
+      createdAt: "created",
+      updatedAt: "updated",
+    };
+    const checkpoint = {
+      turnId: TurnId.make("turn-projected"),
+      checkpointTurnCount: 1,
+      checkpointRef: CheckpointRef.make("checkpoint-projected"),
+      status: "ready" as const,
+      files: [],
+      assistantMessageId: message.id,
+      completedAt: "completed",
+    };
+    const latestTurn = {
+      turnId: TurnId.make("turn-projected"),
+      state: "completed" as const,
+      requestedAt: "requested",
+      startedAt: "started",
+      completedAt: "completed",
+      assistantMessageId: message.id,
+    };
+    const session = {
+      threadId: THREAD_ID,
+      status: "ready" as const,
+      providerName: "codex",
+      runtimeMode: "full-access" as const,
+      activeTurnId: null,
+      lastError: null,
+      updatedAt: "updated",
+    };
+    const thread = {
+      ...THREAD_SHELL,
+      deletedAt: null,
+      messages: [message],
+      activities: [activity],
+      proposedPlans: [plan],
+      checkpoints: [checkpoint],
+      latestTurn,
+      session,
+    } satisfies OrchestrationThread;
+    harness.registry.set(
+      harness.threadStateAtom(THREAD_ID),
+      AsyncResult.success<EnvironmentThreadState>({
+        data: Option.some(thread),
+        status: "live",
+        error: Option.some("warning"),
+      }),
+    );
+
+    expect(harness.registry.get(detailAtom)).toMatchObject({ environmentId: ENVIRONMENT_ID });
+    expect(harness.registry.get(statusAtom)).toBe("live");
+    expect(harness.registry.get(errorAtom)).toBe("warning");
+    expect(harness.registry.get(messagesAtom)).toBe(thread.messages);
+    expect(harness.registry.get(activitiesAtom)).toBe(thread.activities);
+    expect(harness.registry.get(plansAtom)).toBe(thread.proposedPlans);
+    expect(harness.registry.get(checkpointsAtom)).toBe(thread.checkpoints);
+    expect(harness.registry.get(sessionAtom)).toBe(session);
+    expect(harness.registry.get(latestTurnAtom)).toBe(latestTurn);
+    expect(harness.registry.get(detailAtom)).toBe(harness.registry.get(detailAtom));
+    harness.registry.dispose();
   });
 });
