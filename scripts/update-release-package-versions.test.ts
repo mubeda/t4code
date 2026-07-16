@@ -20,7 +20,10 @@ import {
   ReleaseGitHubOutputConfigurationError,
   ReleaseGitHubOutputWriteError,
   ReleasePackageManifestError,
+  releaseCargoLockFile,
   releasePackageFiles,
+  releaseRustPackageFiles,
+  releaseVersionFiles,
   updateReleasePackageVersions,
   updateReleasePackageVersionsCommand,
   runUpdateReleasePackageVersionsMain,
@@ -60,6 +63,19 @@ const writePackageJsonFixtures = Effect.fn("writePackageJsonFixtures")(function*
       })}\n`,
     );
   }
+
+  for (const relativePath of releaseRustPackageFiles) {
+    const filePath = path.join(rootDir, relativePath);
+    yield* fs.makeDirectory(path.dirname(filePath), { recursive: true });
+    yield* fs.writeFileString(
+      filePath,
+      `[package]\nname = "${relativePath.includes("desktop") ? "t4code-desktop" : "t4code-server"}"\nversion = "${version}"\n`,
+    );
+  }
+  yield* fs.writeFileString(
+    path.join(rootDir, releaseCargoLockFile),
+    `version = 4\n\n[[package]]\nname = "t4code-desktop"\nversion = "${version}"\n\n[[package]]\nname = "t4code-server"\nversion = "${version}"\n`,
+  );
 });
 
 const readReleaseVersions = Effect.fn("readReleaseVersions")(function* (rootDir: string) {
@@ -131,11 +147,50 @@ it.layer(ScriptTestLayer)("update-release-package-versions", (it) => {
     }),
   );
 
+  it.effect("updates Rust package manifests and lockfile entries", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "release-rust-versions-" });
+      yield* writePackageJsonFixtures(baseDir, "0.0.1");
+
+      const rustManifestPaths = [
+        "apps/server/Cargo.toml",
+        "apps/desktop/src-tauri/Cargo.toml",
+      ] as const;
+      for (const relativePath of rustManifestPaths) {
+        const filePath = path.join(baseDir, relativePath);
+        yield* fs.makeDirectory(path.dirname(filePath), { recursive: true });
+        yield* fs.writeFileString(
+          filePath,
+          `[package]\nname = "${path.basename(path.dirname(filePath))}"\nversion = "0.0.1"\n`,
+        );
+      }
+      const lockfilePath = path.join(baseDir, "Cargo.lock");
+      yield* fs.writeFileString(
+        lockfilePath,
+        `version = 4\n\n[[package]]\nname = "t4code-desktop"\nversion = "0.0.1"\n\n[[package]]\nname = "t4code-server"\nversion = "0.0.1"\n`,
+      );
+
+      yield* updateReleasePackageVersions("1.2.3", { rootDir: baseDir });
+
+      for (const relativePath of rustManifestPaths) {
+        assert.include(
+          yield* fs.readFileString(path.join(baseDir, relativePath)),
+          'version = "1.2.3"',
+        );
+      }
+      const lockfile = yield* fs.readFileString(lockfilePath);
+      assert.equal(lockfile.match(/version = "1\.2\.3"/g)?.length, 2);
+    }),
+  );
+
   it.effect("preserves indentation, newline style, and final-newline policy", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "release-format-style-" });
+      yield* writePackageJsonFixtures(baseDir, "0.0.1");
       const fixtures = [
         '{\n  "name": "server",\n  "version": "0.0.1"\n}\n',
         '{\r\n    "name": "desktop",\r\n    "version": "0.0.1"\r\n}',
@@ -186,14 +241,23 @@ it.layer(ScriptTestLayer)("update-release-package-versions", (it) => {
           FileSystem.FileSystem,
           FileSystem.makeNoop({
             readFileString: (filePath) => {
-              reads.push(String(filePath));
-              return Effect.succeed('{"version":"1.2.3"}');
+              const resolvedPath = String(filePath);
+              reads.push(resolvedPath);
+              if (resolvedPath.endsWith("package.json")) {
+                return Effect.succeed('{"version":"1.2.3"}');
+              }
+              if (resolvedPath.endsWith("Cargo.lock")) {
+                return Effect.succeed(
+                  'version = 4\n\n[[package]]\nname = "t4code-desktop"\nversion = "1.2.3"\n\n[[package]]\nname = "t4code-server"\nversion = "1.2.3"\n',
+                );
+              }
+              return Effect.succeed('[package]\nversion = "1.2.3"\n');
             },
           }),
         ),
       );
       assert.deepStrictEqual(result, { changed: false });
-      assert.lengthOf(reads, releasePackageFiles.length);
+      assert.lengthOf(reads, releaseVersionFiles.length);
       assert.match(reads[0]!, /[\\/]apps[\\/]server[\\/]package\.json$/);
     });
   });
@@ -1014,7 +1078,9 @@ it.layer(ScriptTestLayer)("update-release-package-versions", (it) => {
       }),
     ).pipe(
       Effect.tap(({ logs }) => {
-        assert.deepStrictEqual(logs, ["All package.json versions already match release version."]);
+        assert.deepStrictEqual(logs, [
+          "All release package versions already match release version.",
+        ]);
         return Effect.void;
       }),
     ),

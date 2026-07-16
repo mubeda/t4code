@@ -36,6 +36,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["../resources/icon.png", "../resources/icon.ico", "../resources/icon.icns"]
+    "icon": [
+      "../resources/icon.png",
+      "../../../assets/prod/t4-black-windows.ico",
+      "../resources/icon.icns"
+    ]
   }
 }
