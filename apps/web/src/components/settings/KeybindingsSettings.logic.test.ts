@@ -8,6 +8,7 @@ import {
   commandLabel,
   keybindingConflictLabels,
   keybindingFromKeyboardEvent,
+  normalizeShortcutKeyToken,
   parseWhenExpressionDraft,
   shortcutToKeybindingInput,
   unknownWhenVariables,
@@ -244,5 +245,166 @@ describe("KeybindingsSettings.logic", () => {
         when: "",
       }),
     ).toEqual(["Chat: New Local"]);
+  });
+
+  it("serializes every shortcut modifier and when-expression shape", () => {
+    expect(
+      shortcutToKeybindingInput({
+        key: "escape",
+        modKey: false,
+        metaKey: true,
+        ctrlKey: true,
+        altKey: true,
+        shiftKey: true,
+      }),
+    ).toBe("meta+ctrl+alt+shift+esc");
+    expect(whenAstToExpression(undefined)).toBe("");
+    expect(whenAstToExpression({ type: "identifier", name: "terminalFocus" })).toBe(
+      "terminalFocus",
+    );
+    expect(
+      whenAstToExpression({
+        type: "or",
+        left: {
+          type: "and",
+          left: { type: "identifier", name: "a" },
+          right: { type: "identifier", name: "b" },
+        },
+        right: { type: "identifier", name: "c" },
+      }),
+    ).toBe("(a && b) || c");
+    expect(parseWhenExpressionDraft("   ")).toEqual({ ok: true, value: undefined });
+    expect(unknownWhenVariables(undefined)).toEqual([]);
+  });
+
+  it("filters rows by key, when, source, and missing queries", () => {
+    const bindings = [
+      {
+        command: "script.setup-db.run",
+        shortcut: {
+          key: "r",
+          modKey: true,
+          metaKey: false,
+          ctrlKey: false,
+          altKey: false,
+          shiftKey: false,
+        },
+        whenAst: { type: "identifier", name: "terminalOpen" } as const,
+      },
+      {
+        command: "terminal.toggle",
+        shortcut: {
+          key: "j",
+          modKey: true,
+          metaKey: false,
+          ctrlKey: false,
+          altKey: false,
+          shiftKey: false,
+        },
+      },
+    ] satisfies ResolvedKeybindingsConfig;
+    expect(buildKeybindingRows(bindings, "mod+r")).toHaveLength(1);
+    expect(buildKeybindingRows(bindings, "terminalopen")).toHaveLength(1);
+    expect(buildKeybindingRows(bindings, "project")).toHaveLength(1);
+    expect(buildKeybindingRows(bindings, "does-not-exist")).toEqual([]);
+  });
+
+  it("ignores blank and disjoint shortcut conflicts while deduplicating labels", () => {
+    const base = buildKeybindingRows(
+      [
+        {
+          command: "chat.new",
+          shortcut: {
+            key: "n",
+            modKey: true,
+            metaKey: false,
+            ctrlKey: false,
+            altKey: false,
+            shiftKey: false,
+          },
+          whenAst: { type: "identifier", name: "a" },
+        },
+        {
+          command: "chat.newLocal",
+          shortcut: {
+            key: "n",
+            modKey: true,
+            metaKey: false,
+            ctrlKey: false,
+            altKey: false,
+            shiftKey: false,
+          },
+          whenAst: { type: "identifier", name: "b" },
+        },
+      ] satisfies ResolvedKeybindingsConfig,
+      "",
+    );
+    expect(keybindingConflictLabels(base, { rowId: "none", key: " ", when: "" })).toEqual([]);
+    expect(keybindingConflictLabels(base, { rowId: base[0]!.id, key: "mod+n", when: "a" })).toEqual(
+      [],
+    );
+    expect(
+      keybindingConflictLabels([...base, { ...base[1]!, id: "duplicate", when: "" }], {
+        rowId: base[0]!.id,
+        key: "mod+n",
+        when: "",
+      }),
+    ).toEqual(["Chat: New Local"]);
+  });
+
+  it("normalizes supported key tokens and rejects modifiers or unknown keys", () => {
+    expect(
+      [" ", "escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].map(
+        normalizeShortcutKeyToken,
+      ),
+    ).toEqual(["space", "esc", "arrowup", "arrowdown", "arrowleft", "arrowright"]);
+    expect(
+      ["a", "F12", "Enter", "Tab", "Backspace", "Delete", "Home", "End", "PageUp", "PageDown"].map(
+        normalizeShortcutKeyToken,
+      ),
+    ).toEqual([
+      "a",
+      "f12",
+      "enter",
+      "tab",
+      "backspace",
+      "delete",
+      "home",
+      "end",
+      "pageup",
+      "pagedown",
+    ]);
+    expect(
+      ["Meta", "Control", "Ctrl", "Shift", "Alt", "Option", "CapsLock"].map(
+        normalizeShortcutKeyToken,
+      ),
+    ).toEqual([null, null, null, null, null, null, null]);
+  });
+
+  it("captures platform-specific secondary modifiers and rejects bare keys", () => {
+    expect(
+      keybindingFromKeyboardEvent(
+        { key: "x", metaKey: false, ctrlKey: true, altKey: true, shiftKey: false },
+        "MacIntel",
+      ),
+    ).toBe("ctrl+alt+x");
+    expect(
+      keybindingFromKeyboardEvent(
+        { key: "x", metaKey: true, ctrlKey: false, altKey: false, shiftKey: true },
+        "Linux",
+      ),
+    ).toBe("meta+shift+x");
+    expect(
+      keybindingFromKeyboardEvent(
+        { key: "x", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false },
+        "Linux",
+      ),
+    ).toBeNull();
+    expect(
+      keybindingFromKeyboardEvent(
+        { key: "Shift", metaKey: false, ctrlKey: true, altKey: false, shiftKey: true },
+        "Linux",
+      ),
+    ).toBeNull();
   });
 });
