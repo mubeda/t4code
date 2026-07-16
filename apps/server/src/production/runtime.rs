@@ -793,4 +793,91 @@ mod tests {
         assert!(preview.sources[1].diff.contains("+++ b/branch.txt"));
         assert!(preview.sources[1].diff.contains("+feature"));
     }
+
+    #[test]
+    fn review_diff_helpers_cover_empty_binary_text_and_whitespace_options() {
+        assert_eq!(
+            review_diff_args(true, Some("main...HEAD"), true),
+            vec![
+                "diff",
+                "--no-ext-diff",
+                "--patch",
+                "--minimal",
+                "--ignore-all-space",
+                "main...HEAD",
+            ]
+        );
+        assert_eq!(
+            review_diff_args(false, None, false),
+            vec!["diff", "--no-ext-diff", "--patch", "--minimal", "--"]
+        );
+        assert_eq!(join_review_diffs("", ""), "");
+        assert_eq!(join_review_diffs("left\n", "right\n"), "left\nright");
+        assert!(binary_untracked_diff("image.bin").contains("Binary files"));
+        assert!(text_untracked_diff("empty.txt", "").contains("+1,0"));
+        assert!(text_untracked_diff("lines.txt", "first\nsecond\n").contains("+second\n"));
+        assert!(
+            text_untracked_diff("unterminated.txt", "last")
+                .contains("\\ No newline at end of file")
+        );
+
+        let source = review_source(
+            "working-tree",
+            "working-tree",
+            "Dirty worktree",
+            Some("HEAD".to_owned()),
+            None,
+            "diff".to_owned(),
+            true,
+        );
+        assert_eq!(source.id, "working-tree");
+        assert_eq!(source.diff_hash.len(), 64);
+        assert!(source.truncated);
+        assert!(now_millis() > 0);
+        assert!(now_iso().contains('T'));
+    }
+
+    #[tokio::test]
+    async fn git_review_backend_returns_an_empty_preview_outside_a_repository() {
+        let directory = TempDir::new().expect("temporary directory");
+        let preview = GitReviewBackend
+            .get_diff_preview(&ReviewDiffPreviewInput {
+                cwd: directory.path().to_string_lossy().into_owned(),
+                base_ref: None,
+                ignore_whitespace: None,
+            })
+            .await
+            .expect("review succeeds")
+            .expect("review preview");
+
+        assert!(preview.sources.is_empty());
+        assert!(preview.generated_at > 0);
+    }
+
+    #[tokio::test]
+    async fn untracked_review_diff_marks_binary_and_oversized_files() {
+        let repository = TempDir::new().expect("temporary repository");
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(repository.path())
+                .status()
+                .expect("git starts")
+                .success()
+        );
+        std::fs::write(repository.path().join("binary.dat"), b"binary\0payload")
+            .expect("binary fixture");
+        std::fs::write(
+            repository.path().join("oversized.dat"),
+            vec![b'x'; MAX_UNTRACKED_REVIEW_FILE_BYTES as usize + 1],
+        )
+        .expect("oversized fixture");
+
+        let diff = untracked_review_diff(&repository.path().to_string_lossy())
+            .await
+            .expect("untracked diff");
+        assert!(diff.diff.contains("binary.dat"));
+        assert!(diff.diff.contains("oversized.dat"));
+        assert!(diff.truncated);
+    }
 }

@@ -142,4 +142,63 @@ mod tests {
             Some("always")
         );
     }
+
+    #[test]
+    fn mode_resolution_handles_partial_fuzzy_and_fallback_catalogs() {
+        assert_eq!(
+            super::resolve_requested_mode_id(None, "full-access", "default"),
+            None
+        );
+        assert_eq!(
+            super::resolve_requested_mode_id(Some(&json!({})), "full-access", "default"),
+            None
+        );
+
+        let fuzzy = json!({
+            "currentModeId":"custom",
+            "availableModes":[
+                {"id":"custom-plan","name":"Design workflow","description":"Architect a plan"},
+                {"id":"custom-code","name":"Build workflow","description":"Implement changes"}
+            ]
+        });
+        assert_eq!(
+            super::resolve_requested_mode_id(Some(&fuzzy), "full-access", "plan").as_deref(),
+            Some("custom-plan")
+        );
+        assert_eq!(
+            super::resolve_requested_mode_id(Some(&fuzzy), "full-access", "default").as_deref(),
+            Some("custom-code")
+        );
+        assert_eq!(
+            super::resolve_requested_mode_id(Some(&fuzzy), "approval-required", "default")
+                .as_deref(),
+            Some("custom-code")
+        );
+
+        let fallback = json!({
+            "currentModeId":"only-plan",
+            "availableModes":[{"id":"only-plan","name":"Plan"}]
+        });
+        assert_eq!(
+            super::resolve_requested_mode_id(Some(&fallback), "full-access", "default").as_deref(),
+            Some("only-plan")
+        );
+    }
+
+    #[test]
+    fn auto_approval_skips_malformed_and_empty_options() {
+        assert_eq!(
+            super::auto_approved_option_id(&[
+                json!(null),
+                json!({"kind":"allow_always","optionId":"  "}),
+                json!({"kind":"allow_once","optionId":"once"}),
+            ])
+            .as_deref(),
+            Some("once")
+        );
+        assert_eq!(
+            super::auto_approved_option_id(&[json!({"kind":"reject_once","optionId":"no"})]),
+            None
+        );
+    }
 }

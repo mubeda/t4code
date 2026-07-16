@@ -763,4 +763,122 @@ printf '%s' '{"claudeAiOauth":{"accessToken":"keychain-oauth-token","refreshToke
         assert!(session.resets_at.is_none());
         assert!(snapshot.weekly.is_none());
     }
+
+    #[tokio::test]
+    async fn service_refreshes_success_error_missing_and_rate_limited_providers() {
+        let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        let success = ProviderUsageFetcher {
+            provider: ProviderUsageProvider::Claude,
+            fetch: Arc::new(move || {
+                Box::pin(async move {
+                    Ok(ProviderUsageSnapshot {
+                        provider: ProviderUsageProvider::Claude,
+                        status: ProviderUsageStatus::Ok,
+                        session: Some(ProviderUsageWindow {
+                            used_percent: 25,
+                            window_minutes: 300,
+                            resets_at: None,
+                            reset_description: Some("soon".to_owned()),
+                        }),
+                        weekly: None,
+                        updated_at: now,
+                        error: None,
+                        metadata: BTreeMap::new(),
+                    })
+                })
+            }),
+        };
+        let failure = ProviderUsageFetcher {
+            provider: ProviderUsageProvider::Codex,
+            fetch: Arc::new(|| {
+                Box::pin(async { Err(ProviderUsageFetchError::new("fixture failure")) })
+            }),
+        };
+        let service = ProviderUsageService::new(vec![success, failure], Arc::new(move || now));
+
+        let initial = service.read().await;
+        assert_eq!(initial.providers.len(), 2);
+        assert!(
+            initial
+                .providers
+                .iter()
+                .all(|snapshot| snapshot.status == ProviderUsageStatus::Unavailable)
+        );
+
+        let refreshed = service.refresh(None).await;
+        assert_eq!(refreshed.providers[0].status, ProviderUsageStatus::Ok);
+        assert_eq!(refreshed.providers[1].status, ProviderUsageStatus::Error);
+        assert_eq!(
+            refreshed.providers[1].error.as_deref(),
+            Some("fixture failure")
+        );
+
+        let rate_limited = service
+            .refresh(Some(vec![ProviderUsageProvider::Claude]))
+            .await;
+        assert_eq!(rate_limited.providers, refreshed.providers);
+
+        let missing = ProviderUsageService::new(Vec::new(), Arc::new(move || now))
+            .refresh(Some(vec![ProviderUsageProvider::Claude]))
+            .await;
+        assert_eq!(
+            missing.providers[0].status,
+            ProviderUsageStatus::Unavailable
+        );
+        assert_eq!(production_fetchers().len(), 2);
+    }
+
+    #[test]
+    fn staleness_error_and_timestamp_helpers_cover_boundary_values() {
+        let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        let fresh = ProviderUsageSnapshot {
+            provider: ProviderUsageProvider::Claude,
+            status: ProviderUsageStatus::Ok,
+            session: None,
+            weekly: None,
+            updated_at: now,
+            error: None,
+            metadata: BTreeMap::new(),
+        };
+        assert_eq!(
+            apply_staleness(fresh.clone(), now).status,
+            ProviderUsageStatus::Ok
+        );
+        assert_eq!(
+            apply_staleness(
+                fresh,
+                now + time::Duration::milliseconds(STALE_THRESHOLD_MS + 1),
+            )
+            .status,
+            ProviderUsageStatus::Unavailable
+        );
+        let error = error_snapshot(ProviderUsageProvider::Codex, now, "failed");
+        assert_eq!(
+            apply_staleness(error, now).status,
+            ProviderUsageStatus::Error
+        );
+        assert_eq!(unix_timestamp_ms(now), 1_800_000_000_000);
+        assert_eq!(
+            providers(),
+            vec![ProviderUsageProvider::Claude, ProviderUsageProvider::Codex]
+        );
+    }
+
+    #[tokio::test]
+    async fn rpc_reader_ignores_noise_and_reports_remote_messages() {
+        let input =
+            b"not-json\n{\"id\":1,\"result\":{}}\n{\"id\":2,\"error\":{\"message\":\"denied\"}}\n";
+        let mut lines = BufReader::new(&input[..]).lines();
+        let first = read_rpc_result(&mut lines, 1).await.unwrap();
+        assert!(first.get("result").is_some());
+        let second = read_rpc_result(&mut lines, 2).await.unwrap();
+        assert_eq!(rpc_error(&second["error"], "fallback"), "denied");
+
+        let mut empty = BufReader::new(&b""[..]).lines();
+        assert_eq!(
+            read_rpc_result(&mut empty, 3).await.unwrap_err().message,
+            "Codex app-server exited before replying."
+        );
+        assert_eq!(rpc_error(&json!({}), "fallback"), "fallback");
+    }
 }

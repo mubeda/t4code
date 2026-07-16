@@ -339,3 +339,114 @@ impl fmt::Debug for WindowsJob {
         formatter.debug_tuple("WindowsJob").field(&self.0).finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn executable_discovery_handles_absolute_relative_and_overridden_paths() {
+        let overrides = BTreeMap::new();
+        assert!(executable_is_discoverable("/bin/sh", &overrides));
+        assert!(!executable_is_discoverable(
+            "/definitely/missing/t4code-shell",
+            &overrides
+        ));
+
+        let mut isolated = BTreeMap::new();
+        isolated.insert("Path".to_owned(), "/bin".to_owned());
+        assert!(executable_is_discoverable("sh", &isolated));
+        isolated.insert("PATH".to_owned(), "/definitely/missing".to_owned());
+        assert!(!executable_is_discoverable("t4code-shell", &isolated));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn portable_backend_streams_input_output_resize_and_exit() {
+        let backend = PortablePtyBackend;
+        let process = backend
+            .spawn(&PtySpawnInput {
+                shell: "/bin/sh".to_owned(),
+                args: vec![
+                    "-c".to_owned(),
+                    "printf 'ready\\n'; IFS= read -r line; printf 'got:%s\\n' \"$line\"; exit 7"
+                        .to_owned(),
+                ],
+                cwd: std::env::temp_dir(),
+                cols: 80,
+                rows: 24,
+                env: BTreeMap::new(),
+            })
+            .unwrap();
+        assert!(process.pid() > 0);
+        assert!(format!("{process:?}").contains("PortablePtyProcess"));
+
+        let mut output = process.subscribe_output();
+        let mut exit = process.subscribe_exit();
+        process.resize(100, 40).unwrap();
+        process.resize(120, 50).unwrap();
+        process.write("hello from test\n").unwrap();
+
+        let text = tokio::time::timeout(Duration::from_secs(3), async {
+            let mut text = String::new();
+            while !text.contains("got:hello from test") {
+                text.push_str(&output.recv().await.unwrap());
+            }
+            text
+        })
+        .await
+        .unwrap();
+        assert!(text.contains("ready"));
+
+        tokio::time::timeout(Duration::from_secs(3), exit.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            *exit.borrow(),
+            Some(PtyExit {
+                exit_code: Some(7),
+                signal: None,
+            })
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn portable_backend_kills_a_live_process_group() {
+        let process = PortablePtyBackend
+            .spawn(&PtySpawnInput {
+                shell: "/bin/sh".to_owned(),
+                args: vec!["-c".to_owned(), "sleep 30".to_owned()],
+                cwd: std::env::temp_dir(),
+                cols: 80,
+                rows: 24,
+                env: BTreeMap::new(),
+            })
+            .unwrap();
+        let mut exit = process.subscribe_exit();
+
+        process.kill().unwrap();
+        tokio::time::timeout(Duration::from_secs(3), exit.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(exit.borrow().is_some());
+    }
+
+    #[test]
+    fn portable_backend_rejects_a_missing_shell_before_opening_a_pty() {
+        let error = PortablePtyBackend
+            .spawn(&PtySpawnInput {
+                shell: "/definitely/missing/t4code-shell".to_owned(),
+                args: Vec::new(),
+                cwd: std::env::temp_dir(),
+                cols: 80,
+                rows: 24,
+                env: BTreeMap::new(),
+            })
+            .unwrap_err();
+        assert!(error.contains("shell executable was not found"));
+    }
+}

@@ -135,3 +135,68 @@ fn executable_on_path(name: &str) -> Option<PathBuf> {
         .map(|directory| directory.join(name))
         .find(|candidate| candidate.is_file())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn disabled_invalid_and_unsupported_configs_are_bounded() {
+        let runtime = ManagedEndpointRuntime::default();
+
+        assert_eq!(
+            runtime.apply(Value::Null).await.unwrap(),
+            json!({"status":"disabled"})
+        );
+        assert!(
+            runtime
+                .apply(json!({"providerKind":"cloudflare_tunnel"}))
+                .await
+                .unwrap_err()
+                .starts_with("invalid managed endpoint config:")
+        );
+        assert_eq!(
+            runtime
+                .apply(json!({
+                    "providerKind":"future_provider",
+                    "connectorToken":"ignored",
+                    "tunnelId":"tunnel-1",
+                    "tunnelName":"Future tunnel",
+                }))
+                .await
+                .unwrap(),
+            json!({"status":"unsupported","providerKind":"future_provider"})
+        );
+        assert_eq!(
+            runtime
+                .apply(json!({
+                    "providerKind":"cloudflare_tunnel",
+                    "connectorToken":"  ",
+                }))
+                .await
+                .unwrap_err(),
+            "connector token must not be empty"
+        );
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn missing_connector_executable_returns_actionable_status() {
+        let runtime = ManagedEndpointRuntime::default();
+        let status = runtime
+            .apply(json!({
+                "providerKind":"cloudflare_tunnel",
+                "connectorToken":"fixture-token",
+                "tunnelId":"tunnel-1",
+                "tunnelName":"Fixture tunnel",
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(status["providerKind"], "cloudflare_tunnel");
+        assert_eq!(status["tunnelId"], "tunnel-1");
+        assert_eq!(status["tunnelName"], "Fixture tunnel");
+        assert_eq!(status["status"], "failed");
+        assert_eq!(status["reason"], "The relay client is not installed.");
+    }
+}
