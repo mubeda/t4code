@@ -389,6 +389,62 @@ describe("tauriDesktopBridge", () => {
     });
   });
 
+  it("routes the remaining desktop bridge capabilities through Tauri commands", async () => {
+    const harness = installTauriHarness();
+    const bridge = await installBridge();
+    const sshTarget = {
+      alias: "host-1",
+      hostname: "example.test",
+      username: null,
+      port: null,
+    };
+
+    await expect(bridge.getClientSettings()).resolves.toBeNull();
+    await expect(bridge.setClientSettings({} as never)).resolves.toBeNull();
+    await expect(bridge.discoverSshHosts()).resolves.toBeNull();
+    await expect(bridge.disconnectSshEnvironment(sshTarget)).resolves.toBeNull();
+    await expect(bridge.resolveSshPasswordPrompt?.("request-1", "secret")).resolves.toBeNull();
+    await expect(bridge.getServerExposureState()).resolves.toBeNull();
+    await expect(bridge.setServerExposureMode("network-accessible")).resolves.toBeNull();
+    await expect(
+      bridge.setTailscaleServeEnabled({ enabled: true, port: 8443 }),
+    ).resolves.toBeNull();
+    await expect(bridge.getAdvertisedEndpoints()).resolves.toBeNull();
+    await expect(bridge.getWslState()).resolves.toBeNull();
+    await expect(bridge.setWslBackendEnabled(true)).resolves.toBeNull();
+    await expect(bridge.setWslDistro("Ubuntu")).resolves.toBeNull();
+    await expect(bridge.setWslOnly(true)).resolves.toBeNull();
+    await expect(bridge.pickFolder({ initialPath: "/workspace" })).resolves.toBeNull();
+    await expect(bridge.confirm("Continue?")).resolves.toBeNull();
+    await expect(bridge.setTheme("dark")).resolves.toBeNull();
+    await expect(bridge.openExternal("https://example.test")).resolves.toBeNull();
+    await expect(bridge.getUpdateState()).resolves.toBeNull();
+    await expect(bridge.setUpdateChannel("nightly")).resolves.toBeNull();
+
+    const passwordRequests: unknown[] = [];
+    const disposePasswordPrompt = bridge.onSshPasswordPrompt?.((request) =>
+      passwordRequests.push(request),
+    );
+    await Promise.resolve();
+    harness.listeners.get("desktop:ssh-password-prompt")?.({
+      payload: { requestId: "request-1", prompt: "Password" },
+    });
+    expect(passwordRequests).toEqual([{ requestId: "request-1", prompt: "Password" }]);
+    disposePasswordPrompt?.();
+
+    expect(harness.invoke).toHaveBeenCalledWith("desktop_bridge_get_client_settings", undefined);
+    expect(harness.invoke).toHaveBeenCalledWith("desktop_bridge_discover_ssh_hosts", undefined);
+    expect(harness.invoke).toHaveBeenCalledWith("desktop_bridge_disconnect_ssh_environment", {
+      target: sshTarget,
+    });
+    expect(harness.invoke).toHaveBeenCalledWith("desktop_bridge_set_wsl_backend_enabled", {
+      enabled: true,
+    });
+    expect(harness.invoke).toHaveBeenCalledWith("desktop_bridge_set_update_channel", {
+      channel: "nightly",
+    });
+  });
+
   it("wraps Tauri event listeners and tears them down", async () => {
     const harness = installTauriHarness();
     const bridge = await installBridge();
