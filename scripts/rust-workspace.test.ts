@@ -16,13 +16,13 @@ const rustPackages = [
     cargoPackage: "t4code-desktop",
     memberPath: "apps/desktop/src-tauri",
     packageJsonPath: "apps/desktop/package.json",
-    scriptNames: ["build", "dev", "test", "typecheck"],
+    cargoSelectedScriptNames: ["dev", "test", "typecheck"],
   },
   {
     cargoPackage: "t4code-server",
     memberPath: "apps/server",
     packageJsonPath: "apps/server/package.json",
-    scriptNames: ["build", "start", "test", "typecheck"],
+    cargoSelectedScriptNames: ["build", "start", "test", "typecheck"],
   },
 ] as const;
 
@@ -136,7 +136,7 @@ it.layer(NodeServices.layer)("canonical Rust workspace", (it) => {
           yield* fs.readFileString(path.join(repoRoot, rustPackage.packageJsonPath)),
         );
 
-        for (const scriptName of rustPackage.scriptNames) {
+        for (const scriptName of rustPackage.cargoSelectedScriptNames) {
           const script = packageJson.scripts[scriptName] ?? "";
           assert.equal(
             new RegExp(`(?:^|\\s)-p\\s+${rustPackage.cargoPackage}(?:\\s|$)`).test(script),
