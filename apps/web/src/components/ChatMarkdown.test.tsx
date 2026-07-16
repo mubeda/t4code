@@ -128,6 +128,64 @@ async function renderMarkdownUntilHighlighted(text: string, options: RenderOptio
 }
 
 describe("ChatMarkdown", () => {
+  describe("markdown helper edge cases", () => {
+    it("parses task markers only from the requested list-item line", async () => {
+      const { findTaskListMarkerOffset } = await import("./ChatMarkdown");
+
+      expect(findTaskListMarkerOffset("- ordinary\n- [ ] later", 0)).toBeNull();
+      expect(findTaskListMarkerOffset("prefix\n2) [X] task\nnext", 7)).toBe(10);
+    });
+
+    it("flattens React nodes and rejects malformed code blocks", async () => {
+      const { extractCodeBlock, nodeToPlainText } = await import("./ChatMarkdown");
+      const nested = (
+        <code className="language-ts">
+          one
+          <strong>2</strong>
+        </code>
+      );
+
+      expect(nodeToPlainText(nested)).toBe("one2");
+      expect(nodeToPlainText(true)).toBe("");
+      expect(extractCodeBlock(null)).toBeNull();
+      expect(extractCodeBlock([<code key="a">a</code>, <code key="b">b</code>])).toBeNull();
+      expect(extractCodeBlock(<span>not code</span>)).toBeNull();
+      expect(extractCodeBlock(nested)).toEqual({ className: "language-ts", code: "one2" });
+    });
+
+    it("estimates highlight memory and disambiguates duplicate file basenames", async () => {
+      const { buildFileLinkParentSuffixByPath, estimateHighlightedSize } = await import(
+        "./ChatMarkdown"
+      );
+
+      expect(estimateHighlightedSize("12345", "x")).toBe(10);
+      expect(estimateHighlightedSize("x", "12345")).toBe(15);
+
+      const suffixes = buildFileLinkParentSuffixByPath([
+        "file.ts",
+        "./file.ts",
+        "src/a/file.ts",
+        "src/b/file.ts",
+        "src/b/file.ts",
+      ]);
+      expect(suffixes.has("file.ts")).toBe(false);
+      expect(suffixes.get("src/a/file.ts")).toBe("src/a");
+      expect(suffixes.get("src/b/file.ts")).toBe("src/b");
+    });
+
+    it("extracts markdown hrefs and rejects unsupported external hosts", async () => {
+      const { extractMarkdownLinkHrefs, resolveExternalLinkHost } = await import("./ChatMarkdown");
+
+      expect(extractMarkdownLinkHrefs('[one](https://one.test) [two](file:///tmp/two "x")')).toEqual(
+        ["https://one.test", "file:///tmp/two"],
+      );
+      expect(resolveExternalLinkHost(undefined)).toBeNull();
+      expect(resolveExternalLinkHost("mailto:test@example.com")).toBeNull();
+      expect(resolveExternalLinkHost("not a url")).toBeNull();
+      expect(resolveExternalLinkHost("https://example.com/path")).toBe("example.com");
+    });
+  });
+
   describe("basic markdown", () => {
     it("renders paragraphs with inline emphasis inside the chat-markdown wrapper", async () => {
       const markup = await renderMarkdown("Hello **world** and *stars*");
