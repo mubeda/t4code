@@ -1402,7 +1402,8 @@ export function DiagnosticsSettingsPanel() {
           title="Download diagnostic logs"
           description={
             <>
-              Download a redacted ZIP containing <span className="font-mono">server.log</span> and{" "}
+              Download a redacted ZIP containing <span className="font-mono">server.log</span>,{" "}
+              <span className="font-mono">server.trace.ndjson</span>, and{" "}
               <span className="font-mono">frontend.log</span>.
             </>
           }

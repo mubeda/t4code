@@ -62,6 +62,19 @@ export const releasePackageFiles = [
   "packages/contracts/package.json",
 ] as const;
 
+export const releaseRustPackageFiles = [
+  "apps/server/Cargo.toml",
+  "apps/desktop/src-tauri/Cargo.toml",
+] as const;
+
+export const releaseCargoLockFile = "Cargo.lock" as const;
+
+export const releaseVersionFiles = [
+  ...releasePackageFiles,
+  ...releaseRustPackageFiles,
+  releaseCargoLockFile,
+] as const;
+
 interface UpdateReleasePackageVersionsOptions {
   readonly rootDir?: string | undefined;
   readonly copyFile?: FileSystem.FileSystem["copyFile"] | undefined;
@@ -149,6 +162,76 @@ const applyManifestTextStyle = (encoded: string, style: ManifestTextStyle): stri
   return style.finalNewline ? `${content}${style.newline}` : content;
 };
 
+interface CargoVersionReplacement {
+  readonly changed: boolean;
+  readonly content: string;
+}
+
+const cargoVersionLine = /^([ \t]*version[ \t]*=[ \t]*")([^"\r\n]+)("[^\r\n]*)$/m;
+
+const replaceCargoPackageVersion = (source: string, version: string): CargoVersionReplacement => {
+  const packageHeader = /^\[package\][ \t]*\r?$/m.exec(source);
+  if (!packageHeader) throw new Error("Cargo manifest is missing a [package] section.");
+
+  const bodyStart = packageHeader.index + packageHeader[0].length;
+  const followingSource = source.slice(bodyStart);
+  const nextSection = /^\[[^\r\n]+\][ \t]*\r?$/m.exec(followingSource);
+  const bodyEnd = nextSection ? bodyStart + nextSection.index : source.length;
+  const body = source.slice(bodyStart, bodyEnd);
+  const versionLine = cargoVersionLine.exec(body);
+  if (!versionLine || versionLine.index === undefined) {
+    throw new Error("Cargo [package] section is missing a string version.");
+  }
+
+  const currentVersion = versionLine[2]!;
+  if (currentVersion === version) return { changed: false, content: source };
+
+  const valueStart = bodyStart + versionLine.index + versionLine[1]!.length;
+  const valueEnd = valueStart + currentVersion.length;
+  return {
+    changed: true,
+    content: `${source.slice(0, valueStart)}${version}${source.slice(valueEnd)}`,
+  };
+};
+
+const replaceCargoLockVersions = (source: string, version: string): CargoVersionReplacement => {
+  const packageHeaders = Array.from(source.matchAll(/^\[\[package\]\][ \t]*\r?$/gm));
+  const targetNames = new Set(["t4code-desktop", "t4code-server"]);
+  const seenNames = new Set<string>();
+  const replacements: Array<{ readonly start: number; readonly end: number }> = [];
+
+  for (const [index, header] of packageHeaders.entries()) {
+    const bodyStart = header.index! + header[0].length;
+    const bodyEnd = packageHeaders[index + 1]?.index ?? source.length;
+    const body = source.slice(bodyStart, bodyEnd);
+    const name = /^[ \t]*name[ \t]*=[ \t]*"([^"\r\n]+)"[ \t]*$/m.exec(body)?.[1];
+    if (!name || !targetNames.has(name)) continue;
+    if (seenNames.has(name)) throw new Error(`Cargo.lock contains duplicate ${name} packages.`);
+    seenNames.add(name);
+
+    const versionLine = cargoVersionLine.exec(body);
+    if (!versionLine || versionLine.index === undefined) {
+      throw new Error(`Cargo.lock package ${name} is missing a string version.`);
+    }
+    const currentVersion = versionLine[2]!;
+    if (currentVersion === version) continue;
+    const start = bodyStart + versionLine.index + versionLine[1]!.length;
+    replacements.push({ start, end: start + currentVersion.length });
+  }
+
+  const missingNames = Array.from(targetNames).filter((name) => !seenNames.has(name));
+  if (missingNames.length > 0) {
+    throw new Error(`Cargo.lock is missing release packages: ${missingNames.join(", ")}.`);
+  }
+  if (replacements.length === 0) return { changed: false, content: source };
+
+  let content = source;
+  for (const replacement of replacements.toReversed()) {
+    content = `${content.slice(0, replacement.start)}${version}${content.slice(replacement.end)}`;
+  }
+  return { changed: true, content };
+};
+
 export const updateReleasePackageVersions = Effect.fn("updateReleasePackageVersions")(function* (
   version: string,
   options: UpdateReleasePackageVersionsOptions = {},
@@ -209,6 +292,46 @@ export const updateReleasePackageVersions = Effect.fn("updateReleasePackageVersi
     changes.push({
       backupPath: `${filePath}.t4code-${transactionId}.backup`,
       content: applyManifestTextStyle(packageJsonString, style),
+      filePath,
+      tempPath: `${filePath}.t4code-${transactionId}.stage`,
+      backupAttempted: false,
+      backupReady: false,
+      replacementAttempted: false,
+      stageAttempted: false,
+    });
+  }
+
+  for (const relativePath of [...releaseRustPackageFiles, releaseCargoLockFile]) {
+    const filePath = path.join(rootDir, relativePath);
+    const source = yield* fs.readFileString(filePath).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ReleasePackageManifestError({
+            operation: "read",
+            filePath,
+            cause,
+            rollbackFailures: [],
+          }),
+      ),
+    );
+    const replacement = yield* Effect.try({
+      try: () =>
+        relativePath === releaseCargoLockFile
+          ? replaceCargoLockVersions(source, version)
+          : replaceCargoPackageVersion(source, version),
+      catch: (cause) =>
+        new ReleasePackageManifestError({
+          operation: "decode",
+          filePath,
+          cause,
+          rollbackFailures: [],
+        }),
+    });
+    if (!replacement.changed) continue;
+
+    changes.push({
+      backupPath: `${filePath}.t4code-${transactionId}.backup`,
+      content: replacement.content,
       filePath,
       tempPath: `${filePath}.t4code-${transactionId}.stage`,
       backupAttempted: false,
@@ -403,7 +526,7 @@ export const updateReleasePackageVersionsCommand = Command.make(
   "update-release-package-versions",
   {
     version: Argument.string("version").pipe(
-      Argument.withDescription("Release version to write into each releasable package.json."),
+      Argument.withDescription("Release version to write into each releasable package manifest."),
     ),
     root: Flag.string("root").pipe(
       Flag.withDescription("Workspace root used to resolve the release package manifests."),
@@ -421,7 +544,7 @@ export const updateReleasePackageVersionsCommand = Command.make(
       Effect.tap(({ changed }) =>
         changed
           ? Effect.void
-          : Console.log("All package.json versions already match release version."),
+          : Console.log("All release package versions already match release version."),
       ),
       Effect.tap(({ changed }) => (githubOutput ? writeGithubOutput(changed) : Effect.void)),
     ),
