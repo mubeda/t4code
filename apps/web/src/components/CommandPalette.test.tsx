@@ -478,7 +478,15 @@ vi.mock("./ui/tooltip", () => ({
   ),
 }));
 
-import { CommandPalette } from "./CommandPalette";
+import {
+  CommandPalette,
+  buildAddProjectRemoteSourceReadiness,
+  errorMessage,
+  getEnvironmentBrowsePlatform,
+  reduceCommandPaletteUiState,
+  remoteProjectSourcePathHint,
+  sortAddProjectProviderSources,
+} from "./CommandPalette";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Fixtures
@@ -625,6 +633,66 @@ function repositoryInfo(
     ...overrides,
   };
 }
+
+describe("command palette helpers", () => {
+  it("resolves browse platforms including browser and server fallbacks", () => {
+    expect(getEnvironmentBrowsePlatform("linux")).toBe("Linux");
+
+    vi.stubGlobal("navigator", { platform: "FallbackOS" });
+    expect(getEnvironmentBrowsePlatform(null)).toBe("FallbackOS");
+    vi.stubGlobal("navigator", undefined);
+    expect(getEnvironmentBrowsePlatform(undefined)).toBe("");
+    vi.unstubAllGlobals();
+  });
+
+  it("builds and sorts remote provider readiness states", () => {
+    const unavailable = buildAddProjectRemoteSourceReadiness(null);
+    expect(unavailable.github.ready).toBe(false);
+    expect(remoteProjectSourcePathHint("url")).toBe("URL");
+
+    const readiness = buildAddProjectRemoteSourceReadiness(
+      discovery([
+        discoveryProvider({ kind: "github", label: "GitHub" }),
+        discoveryProvider({
+          kind: "gitlab",
+          label: "GitLab",
+          auth: {
+            status: "unauthenticated",
+            account: Option.none(),
+            host: Option.none(),
+            detail: Option.none(),
+          },
+        }),
+      ]),
+    );
+
+    expect(readiness.gitlab.hint).toContain("not authenticated");
+    expect(sortAddProjectProviderSources(readiness)[0]).toBe("github");
+
+    const lastProviderReady = buildAddProjectRemoteSourceReadiness(
+      discovery([discoveryProvider({ kind: "azure-devops", label: "Azure DevOps" })]),
+    );
+    expect(sortAddProjectProviderSources(lastProviderReady)[0]).toBe("azure-devops");
+  });
+
+  it("formats opaque errors and reduces no-op palette intent changes", () => {
+    expect(errorMessage(new Error("   "))).toBe("An error occurred.");
+    expect(errorMessage({ message: "hidden" })).toBe("An error occurred.");
+
+    const closed = { open: false, openIntent: null } as const;
+    expect(reduceCommandPaletteUiState(closed, { _tag: "ClearOpenIntent" })).toBe(closed);
+    expect(reduceCommandPaletteUiState(closed, { _tag: "SetOpen", open: true })).toEqual({
+      open: true,
+      openIntent: null,
+    });
+    expect(
+      reduceCommandPaletteUiState(
+        { open: true, openIntent: { kind: "add-project" } },
+        { _tag: "SetOpen", open: false },
+      ),
+    ).toEqual({ open: false, openIntent: null });
+  });
+});
 
 function success<A>(value: A) {
   return AsyncResult.success<A, never>(value);
