@@ -406,14 +406,19 @@ staticDescribe("CreateWorktreeDialog", () => {
       providers: [
         {
           instanceId: "claude",
+          driver: "claudeAgent",
           displayName: "Claude",
           enabled: true,
           installed: true,
           models: [{ id: "sonnet" }],
         },
-        { instanceId: "disabled", enabled: false, installed: true },
-        { instanceId: "missing", enabled: true, installed: false },
+        { instanceId: "disabled", driver: "codex", enabled: false, installed: true },
+        { instanceId: "missing", driver: "codex", enabled: true, installed: false },
       ],
+      settings: {
+        providers: {},
+        providerInstances: { claude: { driver: "claudeAgent" } },
+      },
     });
 
     const markup = render();
@@ -427,6 +432,46 @@ staticDescribe("CreateWorktreeDialog", () => {
     });
     expect(markup).toContain("Interpreting as:");
     expect(input("Type a name, #1234, or a branch").value).toBe("");
+  });
+
+  it("uses canonical and configured provider names in the Agent selector", () => {
+    testState.serverConfigs.set(ENVIRONMENT_ID, {
+      providers: [
+        { instanceId: "cursor", driver: "cursor", enabled: true, installed: true },
+        { instanceId: "opencode", driver: "opencode", enabled: true, installed: true },
+        { instanceId: "codex", driver: "codex", enabled: true, installed: true },
+        {
+          instanceId: "claudeAgent",
+          driver: "claudeAgent",
+          enabled: true,
+          installed: true,
+        },
+        {
+          instanceId: "codex_personal",
+          driver: "codex",
+          displayName: "Codex",
+          enabled: true,
+          installed: true,
+        },
+      ],
+      settings: {
+        providers: {},
+        providerInstances: {
+          codex_personal: { driver: "codex", displayName: "Codex Personal" },
+        },
+      },
+    });
+
+    const markup = render();
+
+    expect(captured.selects[1]?.items).toEqual([
+      { value: "cursor", label: "Cursor" },
+      { value: "opencode", label: "OpenCode" },
+      { value: "codex", label: "Codex" },
+      { value: "claudeAgent", label: "Claude" },
+      { value: "codex_personal", label: "Codex Personal" },
+    ]);
+    expect(markup).not.toContain("claudeAgent");
   });
 
   it("switches among smart, GitHub, branch, and name inputs and selects branch rows", () => {
@@ -473,15 +518,20 @@ staticDescribe("CreateWorktreeDialog", () => {
     );
     testState.serverConfigs.set(ENVIRONMENT_ID, {
       providers: [
-        { instanceId: "codex", enabled: true, installed: true, models: [] },
+        { instanceId: "codex", driver: "codex", enabled: true, installed: true, models: [] },
         {
           instanceId: "claude",
+          driver: "claudeAgent",
           displayName: null,
           enabled: true,
           installed: true,
           models: [{ id: "opus" }],
         },
       ],
+      settings: {
+        providers: {},
+        providerInstances: { claude: { driver: "claudeAgent" } },
+      },
     });
 
     render(true, PROJECT_ID);
@@ -765,12 +815,17 @@ if (browserRuntime) {
         providers: [
           {
             instanceId: "claude",
+            driver: "claudeAgent",
             displayName: "Claude",
             enabled: true,
             installed: true,
             models: [{ id: "sonnet" }],
           },
         ],
+        settings: {
+          providers: {},
+          providerInstances: { claude: { driver: "claudeAgent" } },
+        },
       });
       const { container, root } = await mountDialog();
 
