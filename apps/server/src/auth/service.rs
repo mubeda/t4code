@@ -1280,6 +1280,126 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn proof_pairings_and_client_access_lifecycle_cover_public_auth_operations() {
+        let service = service();
+        assert!(matches!(
+            service
+                .issue_pairing_with_proof(
+                    owned_scopes(STANDARD_SCOPES),
+                    Some("Proof client".to_owned()),
+                    "   ".to_owned(),
+                )
+                .await,
+            Err(AuthError::InvalidCredential)
+        ));
+        assert!(matches!(
+            service.issue_cloud_pairing(String::new()).await,
+            Err(AuthError::InvalidCredential)
+        ));
+
+        let proof_pairing = service
+            .issue_pairing_with_proof(
+                owned_scopes(STANDARD_SCOPES),
+                Some("Proof client".to_owned()),
+                "proof-thumbprint".to_owned(),
+            )
+            .await
+            .expect("proof pairing should issue");
+        assert!(matches!(
+            service
+                .exchange_bootstrap(
+                    &proof_pairing.credential,
+                    None,
+                    ClientMetadata::default(),
+                    Some("wrong-thumbprint".to_owned()),
+                )
+                .await,
+            Err(AuthError::InvalidCredential)
+        ));
+        let proof_session = service
+            .exchange_bootstrap(
+                &proof_pairing.credential,
+                None,
+                ClientMetadata::default(),
+                Some("proof-thumbprint".to_owned()),
+            )
+            .await
+            .expect("proof pairing should exchange");
+        assert_eq!(
+            proof_session.principal.proof_key_thumbprint.as_deref(),
+            Some("proof-thumbprint")
+        );
+
+        let cloud_pairing = service
+            .issue_cloud_pairing("cloud-thumbprint".to_owned())
+            .await
+            .expect("cloud pairing should issue");
+        assert!(
+            service
+                .list_pairings()
+                .await
+                .iter()
+                .any(|pairing| pairing.id == cloud_pairing.id)
+        );
+        assert!(!service.revoke_pairing("missing-pairing").await.unwrap());
+        assert!(service.revoke_pairing(&cloud_pairing.id).await.unwrap());
+        assert!(!service.revoke_pairing(&cloud_pairing.id).await.unwrap());
+
+        let current = service
+            .exchange_bootstrap("desktop-test-seed", None, ClientMetadata::default(), None)
+            .await
+            .expect("current session should issue");
+        let other = service
+            .exchange_bootstrap("desktop-test-seed", None, ClientMetadata::default(), None)
+            .await
+            .expect("other session should issue");
+        service.mark_connected(&current.principal.session_id).await;
+        let clients = service.list_clients(&current.principal.session_id).await;
+        assert_eq!(clients.len(), 3);
+        assert!(clients[0].current);
+        assert!(clients[0].connected);
+        let (revision, pairings, snapshot_clients) =
+            service.access_snapshot(&current.principal.session_id).await;
+        assert!(revision > 1);
+        assert!(pairings.is_empty());
+        assert_eq!(snapshot_clients.len(), 3);
+        service
+            .mark_disconnected(&current.principal.session_id)
+            .await;
+
+        assert!(matches!(
+            service
+                .revoke_client(&current.principal.session_id, &current.principal.session_id,)
+                .await,
+            Err(AuthError::CurrentSessionRevokeNotAllowed)
+        ));
+        assert!(
+            !service
+                .revoke_client(&current.principal.session_id, "missing-session")
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            service
+                .revoke_other_clients(&current.principal.session_id)
+                .await
+                .expect("other sessions should revoke"),
+            2,
+        );
+        assert_eq!(
+            service
+                .list_clients(&current.principal.session_id)
+                .await
+                .len(),
+            1
+        );
+        assert!(matches!(
+            service.authenticate_token(&other.token).await,
+            Err(AuthError::InvalidCredential)
+        ));
+    }
+
     #[test]
     fn parses_only_unique_known_non_empty_scopes() {
         assert_eq!(
