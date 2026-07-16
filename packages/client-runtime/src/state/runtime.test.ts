@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { EnvironmentId } from "@t4code/contracts";
+import { EnvironmentId, WS_METHODS } from "@t4code/contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -12,6 +12,10 @@ import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
 import {
   environmentRpcKey,
   createAtomCommandScheduler,
+  createEnvironmentRpcCommand,
+  createEnvironmentRpcQueryAtomFamily,
+  createEnvironmentRpcStreamCommand,
+  createEnvironmentRpcSubscriptionAtomFamily,
   createRuntimeCommand,
   executeAtomCommand,
   executeAtomQuery,
@@ -136,6 +140,71 @@ describe("atom command result helpers", () => {
 
     expect(warnings).toEqual(["[atom-command] save failed"]);
     expect(errors).toEqual(["[atom-command] quiet save defected"]);
+  });
+});
+
+describe("environment RPC factory options", () => {
+  it("constructs query, subscription, unary, and stream factories with optional policies", () => {
+    const runtime = Atom.runtime(Layer.empty) as never;
+    const scheduler = createAtomCommandScheduler();
+    const concurrency = {
+      mode: "serial" as const,
+      key: ({ environmentId }: { environmentId: string }) => environmentId,
+    };
+    const target = { environmentId: EnvironmentId.make("environment-1"), input: {} } as never;
+
+    createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "query-defaults",
+      tag: WS_METHODS.previewList,
+    })(target);
+    createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "query-configured",
+      tag: WS_METHODS.previewList,
+      staleTimeMs: 1,
+      idleTtlMs: 2,
+      refreshIntervalMs: 3,
+    })(target);
+
+    createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "subscription-defaults",
+      tag: WS_METHODS.subscribePreviewEvents,
+    })(target);
+    createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "subscription-configured",
+      tag: WS_METHODS.subscribePreviewEvents,
+      idleTtlMs: 0,
+      transform: (stream) => stream,
+    })(target);
+
+    expect(
+      createEnvironmentRpcCommand(runtime, {
+        label: "command-defaults",
+        tag: WS_METHODS.previewRefresh,
+      }),
+    ).toBeDefined();
+    expect(
+      createEnvironmentRpcCommand(runtime, {
+        label: "command-configured",
+        tag: WS_METHODS.previewRefresh,
+        scheduler,
+        concurrency,
+      } as never),
+    ).toBeDefined();
+
+    expect(
+      createEnvironmentRpcStreamCommand(runtime, {
+        label: "stream-defaults",
+        tag: WS_METHODS.gitRunStackedAction,
+      }),
+    ).toBeDefined();
+    expect(
+      createEnvironmentRpcStreamCommand(runtime, {
+        label: "stream-configured",
+        tag: WS_METHODS.gitRunStackedAction,
+        scheduler,
+        concurrency,
+      } as never),
+    ).toBeDefined();
   });
 });
 
