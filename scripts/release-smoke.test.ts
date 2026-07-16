@@ -15,12 +15,14 @@ import {
   type ReleaseSmokeRuntime,
 } from "./release-smoke.ts";
 
-const releasePackageFiles = [
+const releasePackageJsonFiles = [
   "apps/server/package.json",
   "apps/desktop/package.json",
   "apps/web/package.json",
   "packages/contracts/package.json",
 ] as const;
+
+const releaseRustFiles = ["apps/server/Cargo.toml", "apps/desktop/src-tauri/Cargo.toml"] as const;
 
 function makeFixtureRoot(includePatches = true): string {
   const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t4code-release-source-"));
@@ -31,6 +33,14 @@ function makeFixtureRoot(includePatches = true): string {
       NodeFS.writeFileSync(
         filePath,
         `${JSON.stringify({ name: relativePath, version: "1.2.3" })}\n`,
+      );
+    } else if (relativePath.endsWith("Cargo.toml")) {
+      const packageName = relativePath.includes("desktop") ? "t4code-desktop" : "t4code-server";
+      NodeFS.writeFileSync(filePath, `[package]\nname = "${packageName}"\nversion = "1.2.3"\n`);
+    } else if (relativePath === "Cargo.lock") {
+      NodeFS.writeFileSync(
+        filePath,
+        'version = 4\n\n[[package]]\nname = "t4code-desktop"\nversion = "1.2.3"\n\n[[package]]\nname = "t4code-server"\nversion = "1.2.3"\n',
       );
     } else {
       NodeFS.writeFileSync(filePath, `${relativePath}\n`);
@@ -60,7 +70,7 @@ function successfulRuntime(
       const targetRoot = rootIndex >= 0 ? args[rootIndex + 1] : undefined;
       if (args[0]?.endsWith("update-release-package-versions.ts")) {
         assert.ok(targetRoot);
-        for (const relativePath of releasePackageFiles) {
+        for (const relativePath of releasePackageJsonFiles) {
           const filePath = NodePath.join(targetRoot, relativePath);
           const packageJson = JSON.parse(NodeFS.readFileSync(filePath, "utf8")) as Record<
             string,
@@ -71,6 +81,24 @@ function successfulRuntime(
             `${JSON.stringify({ ...packageJson, version: "9.9.9-smoke.0" })}\n`,
           );
         }
+        for (const relativePath of releaseRustFiles) {
+          const filePath = NodePath.join(targetRoot, relativePath);
+          NodeFS.writeFileSync(
+            filePath,
+            NodeFS.readFileSync(filePath, "utf8").replace(
+              /^version\s*=\s*"[^"]+"\s*$/m,
+              'version = "9.9.9-smoke.0"',
+            ),
+          );
+        }
+        const cargoLockPath = NodePath.join(targetRoot, "Cargo.lock");
+        NodeFS.writeFileSync(
+          cargoLockPath,
+          NodeFS.readFileSync(cargoLockPath, "utf8").replace(
+            /(\[\[package\]\]\r?\nname = "t4code-(?:desktop|server)"\r?\nversion = ")[^"]+("\r?$)/gm,
+            (_match, prefix: string, suffix: string) => `${prefix}9.9.9-smoke.0${suffix}`,
+          ),
+        );
         return "";
       }
       return [
@@ -115,6 +143,16 @@ it("copies the complete workspace fixture with optional patches", () => {
     NodeFS.rmSync(target, { recursive: true, force: true });
     NodeFS.rmSync(sourceWithoutPatches, { recursive: true, force: true });
     NodeFS.rmSync(targetWithoutPatches, { recursive: true, force: true });
+  }
+});
+
+it("includes every Rust release version file in the smoke workspace", () => {
+  for (const relativePath of [
+    "apps/server/Cargo.toml",
+    "apps/desktop/src-tauri/Cargo.toml",
+    "Cargo.lock",
+  ]) {
+    assert.include(releaseSmokeWorkspaceFiles as ReadonlyArray<string>, relativePath);
   }
 });
 
