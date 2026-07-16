@@ -1,26 +1,56 @@
 import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId, TurnId } from "@t4code/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import type { Thread } from "../types";
+import type { ChatMessage, Thread } from "../types";
+import type { ComposerImageAttachment } from "../composerDraftStore";
+
+const atomRegistry = vi.hoisted(() => ({
+  get: vi.fn(),
+  subscribe: vi.fn(),
+}));
+
+vi.mock("../rpc/atomRegistry", () => ({
+  appAtomRegistry: atomRegistry,
+}));
+
 import {
   MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
+  buildLocalDraftThread,
   buildExpiredTerminalContextToastCopy,
   buildThreadTurnInterruptInput,
+  cloneComposerImageForRetry,
+  collectUserMessageBlobPreviewUrls,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
+  deriveLockedProvider,
   getStartedThreadModelChangeBlockReason,
   hasServerAcknowledgedLocalDispatch,
+  readFileAsDataUrl,
   reconcileMountedTerminalThreadIds,
   reconcileRetainedMountedThreadIds,
+  revokeBlobPreviewUrl,
+  revokeUserMessagePreviewUrls,
   resolveSendEnvMode,
   shouldWriteThreadErrorToCurrentServerThread,
+  threadHasStarted,
+  waitForStartedServerThread,
 } from "./ChatView.logic";
 
 const environmentId = EnvironmentId.make("environment-local");
 const projectId = ProjectId.make("project-1");
 const threadId = ThreadId.make("thread-1");
 const now = "2026-03-29T00:00:00.000Z";
+
+beforeEach(() => {
+  atomRegistry.get.mockReset();
+  atomRegistry.subscribe.mockReset();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -69,6 +99,231 @@ const readySession = {
   lastError: null,
   updatedAt: "2026-03-29T00:00:10.000Z",
 };
+
+describe("local draft and attachment helpers", () => {
+  it("projects draft routing metadata into a local thread", () => {
+    const result = buildLocalDraftThread(
+      threadId,
+      {
+        threadId,
+        environmentId,
+        projectId,
+        logicalProjectKey: "local:project-1",
+        createdAt: now,
+        runtimeMode: "read-only",
+        interactionMode: "plan",
+        branch: "feature/test",
+        worktreePath: "/tmp/worktree",
+        envMode: "worktree",
+        startFromOrigin: true,
+      },
+      {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.4",
+      },
+    );
+
+    expect(result).toMatchObject({
+      id: threadId,
+      environmentId,
+      projectId,
+      title: "New thread",
+      runtimeMode: "read-only",
+      interactionMode: "plan",
+      branch: "feature/test",
+      worktreePath: "/tmp/worktree",
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+
+  it("revokes only blob image previews and collects the same URLs", () => {
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { revokeObjectURL });
+    const message = {
+      role: "user",
+      attachments: [
+        { type: "text", previewUrl: "blob:not-an-image" },
+        { type: "image", previewUrl: undefined },
+        { type: "image", previewUrl: "https://example.test/image.png" },
+        { type: "image", previewUrl: "blob:first" },
+        { type: "image", previewUrl: "blob:second" },
+      ],
+    } as unknown as ChatMessage;
+
+    revokeBlobPreviewUrl(undefined);
+    revokeBlobPreviewUrl("https://example.test/image.png");
+    revokeUserMessagePreviewUrls({ role: "assistant" } as ChatMessage);
+    revokeUserMessagePreviewUrls(message);
+
+    expect(revokeObjectURL).toHaveBeenCalledTimes(2);
+    expect(revokeObjectURL).toHaveBeenNthCalledWith(1, "blob:first");
+    expect(revokeObjectURL).toHaveBeenNthCalledWith(2, "blob:second");
+    expect(collectUserMessageBlobPreviewUrls({ role: "system" } as ChatMessage)).toEqual([]);
+    expect(collectUserMessageBlobPreviewUrls(message)).toEqual(["blob:first", "blob:second"]);
+  });
+
+  it("leaves blob previews alone when the URL API is unavailable", () => {
+    vi.stubGlobal("URL", undefined);
+    expect(() => revokeBlobPreviewUrl("blob:preview")).not.toThrow();
+  });
+
+  it("clones retry blob URLs while preserving non-blob and failed clones", () => {
+    const file = new File(["image"], "image.png", { type: "image/png" });
+    const image: ComposerImageAttachment = {
+      type: "image",
+      id: "image-1",
+      name: "image.png",
+      mimeType: "image/png",
+      sizeBytes: file.size,
+      previewUrl: "blob:original",
+      file,
+    };
+    const createObjectURL = vi.fn(() => "blob:retry");
+    vi.stubGlobal("URL", { createObjectURL });
+
+    expect(cloneComposerImageForRetry(image)).toEqual({ ...image, previewUrl: "blob:retry" });
+    expect(createObjectURL).toHaveBeenCalledWith(file);
+    expect(cloneComposerImageForRetry({ ...image, previewUrl: "data:image/png;base64,eA==" })).toEqual({
+      ...image,
+      previewUrl: "data:image/png;base64,eA==",
+    });
+
+    createObjectURL.mockImplementation(() => {
+      throw new Error("object URLs disabled");
+    });
+    expect(cloneComposerImageForRetry(image)).toBe(image);
+
+    vi.stubGlobal("URL", undefined);
+    expect(cloneComposerImageForRetry(image)).toBe(image);
+  });
+});
+
+describe("readFileAsDataUrl", () => {
+  class ScriptedFileReader {
+    static outcomes: Array<{ result?: string | ArrayBuffer | null; error?: Error | null }> = [];
+    result: string | ArrayBuffer | null = null;
+    error: Error | null = null;
+    private readonly listeners = new Map<string, () => void>();
+
+    addEventListener(type: string, listener: () => void): void {
+      this.listeners.set(type, listener);
+    }
+
+    readAsDataURL(): void {
+      const outcome = ScriptedFileReader.outcomes.shift() ?? {};
+      this.result = outcome.result ?? null;
+      this.error = outcome.error ?? null;
+      this.listeners.get("error" in outcome ? "error" : "load")?.();
+    }
+  }
+
+  it("resolves string data and rejects non-string reader results", async () => {
+    vi.stubGlobal("FileReader", ScriptedFileReader);
+    const file = new File(["image"], "image.png", { type: "image/png" });
+    ScriptedFileReader.outcomes.push(
+      { result: "data:image/png;base64,aW1hZ2U=" },
+      { result: new ArrayBuffer(1) },
+    );
+
+    await expect(readFileAsDataUrl(file)).resolves.toBe("data:image/png;base64,aW1hZ2U=");
+    await expect(readFileAsDataUrl(file)).rejects.toThrow("Could not read image data.");
+  });
+
+  it("preserves reader errors and supplies a fallback error", async () => {
+    vi.stubGlobal("FileReader", ScriptedFileReader);
+    const file = new File(["image"], "image.png", { type: "image/png" });
+    const failure = new Error("reader failed");
+    ScriptedFileReader.outcomes.push({ error: failure }, { error: null });
+
+    await expect(readFileAsDataUrl(file)).rejects.toBe(failure);
+    await expect(readFileAsDataUrl(file)).rejects.toThrow("Failed to read image.");
+  });
+});
+
+describe("thread lifecycle helpers", () => {
+  it("detects every server-start signal and derives the locked provider fallback", () => {
+    expect(threadHasStarted(undefined)).toBe(false);
+    expect(threadHasStarted(makeThread())).toBe(false);
+    expect(threadHasStarted(makeThread({ messages: [{ id: "message" } as never] }))).toBe(true);
+    expect(threadHasStarted(makeThread({ latestTurn: completedTurn }))).toBe(true);
+    expect(threadHasStarted(makeThread({ session: readySession }))).toBe(true);
+
+    expect(
+      deriveLockedProvider({
+        thread: makeThread(),
+        selectedProvider: "codex",
+        threadProvider: "cursor",
+      }),
+    ).toBeNull();
+    expect(
+      deriveLockedProvider({
+        thread: makeThread({ session: readySession }),
+        selectedProvider: "cursor",
+        threadProvider: "grok",
+      }),
+    ).toBe("codex");
+    expect(
+      deriveLockedProvider({
+        thread: makeThread({
+          session: { ...readySession, providerName: "" as never },
+        }),
+        selectedProvider: "cursor",
+        threadProvider: "grok",
+      }),
+    ).toBe("grok");
+    expect(
+      deriveLockedProvider({
+        thread: makeThread({ messages: [{ id: "message" } as never] }),
+        selectedProvider: "cursor",
+        threadProvider: "",
+      }),
+    ).toBe("cursor");
+    expect(
+      deriveLockedProvider({
+        thread: makeThread({ latestTurn: completedTurn }),
+        selectedProvider: "",
+        threadProvider: null,
+      }),
+    ).toBeNull();
+  });
+
+  it("waits for subscription acknowledgement, immediate refresh, and timeout", async () => {
+    const started = makeThread({ latestTurn: completedTurn });
+    const unsubscribe = vi.fn();
+    let listener: ((thread: Thread | undefined) => void) | undefined;
+    atomRegistry.subscribe.mockImplementation((_atom, nextListener) => {
+      listener = nextListener;
+      return unsubscribe;
+    });
+
+    atomRegistry.get.mockReturnValueOnce(started);
+    await expect(
+      waitForStartedServerThread({ environmentId, threadId }, 50),
+    ).resolves.toBe(true);
+    expect(atomRegistry.subscribe).not.toHaveBeenCalled();
+
+    atomRegistry.get.mockReset();
+    atomRegistry.get.mockReturnValue(undefined);
+    const subscribed = waitForStartedServerThread({ environmentId, threadId }, 50);
+    listener?.(started);
+    await expect(subscribed).resolves.toBe(true);
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+
+    atomRegistry.get.mockReset();
+    atomRegistry.get.mockReturnValueOnce(undefined).mockReturnValueOnce(started);
+    await expect(
+      waitForStartedServerThread({ environmentId, threadId }, 50),
+    ).resolves.toBe(true);
+
+    vi.useFakeTimers();
+    atomRegistry.get.mockReset();
+    atomRegistry.get.mockReturnValue(undefined);
+    const timedOut = waitForStartedServerThread({ environmentId, threadId }, 50);
+    await vi.advanceTimersByTimeAsync(50);
+    await expect(timedOut).resolves.toBe(false);
+  });
+});
 
 describe("buildThreadTurnInterruptInput", () => {
   it("targets the session's active running turn", () => {
