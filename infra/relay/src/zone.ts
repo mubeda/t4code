@@ -11,7 +11,7 @@ import {
   relayPublicDomainForStage,
 } from "./deploymentConfig.ts";
 
-function withLogicalId<Resource extends object>(resource: Resource, logicalId: string): Resource {
+export function withLogicalId<Resource extends object>(resource: Resource, logicalId: string): Resource {
   return new Proxy(resource, {
     has: (target, property) => property === "LogicalId" || property in target,
     get: (target, property, receiver) =>
