@@ -16,7 +16,10 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::cloud::{RelayClientInstallEvent, RelayClientService, RelayClientStatus};
+use crate::{
+    cloud::{RelayClientInstallEvent, RelayClientService, RelayClientStatus},
+    process::configure_background_command,
+};
 
 type ReportFuture = std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
 type InstallReporter = Arc<dyn Fn(RelayClientInstallEvent) -> ReportFuture + Send + Sync>;
@@ -585,10 +588,10 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let output = timeout(
-        VALIDATION_TIMEOUT,
-        Command::new(program).args(args).kill_on_drop(true).output(),
-    )
+    let mut command = Command::new(program);
+    configure_background_command(&mut command);
+    command.args(args).kill_on_drop(true);
+    let output = timeout(VALIDATION_TIMEOUT, command.output())
     .await
     .map_err(|_| RelayInstallError::new(reason, format!("{message}: timed out")))?
     .map_err(|error| RelayInstallError::new(reason, format!("{message}: {error}")))?;

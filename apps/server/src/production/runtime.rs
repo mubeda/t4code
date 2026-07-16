@@ -24,6 +24,7 @@ use crate::{
     observability::BrowserTraceCollector,
     orchestration::{EngineOptions, OrchestrationCommand, OrchestrationEngine, load_snapshot},
     persistence::{Database, Repositories, StatePaths},
+    process::configure_background_command,
     preview::PreviewManager,
     production::{
         connect_mcp::ConnectMcpService,
@@ -543,9 +544,10 @@ fn review_diff_args(ignore_whitespace: bool, target: Option<&str>, three_dot: bo
 }
 
 async fn run_review_diff(cwd: &str, args: Vec<String>) -> Result<String, ReviewError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
+    let mut command = Command::new("git");
+    configure_background_command(&mut command);
+    let output = command
+        .args(["-C", cwd])
         .args(args)
         .output()
         .await
@@ -588,9 +590,10 @@ fn review_source(
 }
 
 async fn untracked_review_diff(cwd: &str) -> Result<UntrackedReviewDiff, ReviewError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
+    let mut command = Command::new("git");
+    configure_background_command(&mut command);
+    let output = command
+        .args(["-C", cwd])
         .args([
             "-c",
             "core.quotePath=false",
