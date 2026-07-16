@@ -619,6 +619,7 @@ mod tests {
     async fn reads_claude_credentials_with_the_expected_macos_keychain_query() {
         use std::os::unix::fs::PermissionsExt;
 
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
         let temporary = tempfile::tempdir().expect("temporary directory");
         let security = temporary.path().join("security");
         std::fs::write(

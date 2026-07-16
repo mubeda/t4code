@@ -8,3 +8,7 @@ pub use runner::{
     OutputMode, ProcessError, ProcessRunInput, ProcessRunOutput, ProcessRunner, TimeoutBehavior,
 };
 pub use shell::{Platform, ShellCandidate, resolve_shell_candidates};
+
+#[cfg(test)]
+pub(crate) static EXTERNAL_PROCESS_TEST_LOCK: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
