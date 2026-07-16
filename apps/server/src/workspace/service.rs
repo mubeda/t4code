@@ -277,3 +277,124 @@ impl WorkspaceService {
         entries::browse(partial_path, cwd).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn service_covers_file_and_directory_lifecycle_edges() {
+        let root = TempDir::new().unwrap();
+        let service = WorkspaceService::new(0);
+
+        assert_eq!(
+            service
+                .write_file(root.path(), "nested/file.txt", "hello")
+                .await
+                .unwrap(),
+            "nested/file.txt"
+        );
+        let read = service
+            .read_file(root.path(), "nested/file.txt")
+            .await
+            .unwrap();
+        assert_eq!(read.contents, "hello");
+        assert_eq!(read.byte_length, 5);
+        assert!(!read.truncated);
+
+        assert_eq!(
+            service
+                .create_entry(root.path(), "empty", EntryKind::Directory)
+                .await
+                .unwrap(),
+            "empty"
+        );
+        assert_eq!(
+            service
+                .create_entry(root.path(), "new/file.rs", EntryKind::File)
+                .await
+                .unwrap(),
+            "new/file.rs"
+        );
+        assert!(matches!(
+            service
+                .create_entry(root.path(), "new/file.rs", EntryKind::File)
+                .await,
+            Err(WorkspaceError::AlreadyExists { .. })
+        ));
+        assert!(matches!(
+            service.read_file(root.path(), "empty").await,
+            Err(WorkspaceError::NotFile { .. })
+        ));
+
+        assert_eq!(
+            service
+                .rename_entry(root.path(), "new/file.rs", "renamed/file.rs")
+                .await
+                .unwrap(),
+            "renamed/file.rs"
+        );
+        assert!(matches!(
+            service.rename_entry(root.path(), "missing", "unused").await,
+            Err(WorkspaceError::NotFound { .. })
+        ));
+        service
+            .write_file(root.path(), "occupied", "occupied")
+            .await
+            .unwrap();
+        assert!(matches!(
+            service
+                .rename_entry(root.path(), "renamed/file.rs", "occupied")
+                .await,
+            Err(WorkspaceError::AlreadyExists { .. })
+        ));
+
+        assert_eq!(
+            service
+                .duplicate_entry(root.path(), "renamed/file.rs")
+                .await
+                .unwrap(),
+            "renamed/file copy.rs"
+        );
+        assert_eq!(
+            service
+                .duplicate_entry(root.path(), "renamed/file.rs")
+                .await
+                .unwrap(),
+            "renamed/file copy 2.rs"
+        );
+        assert!(matches!(
+            service.duplicate_entry(root.path(), "empty").await,
+            Err(WorkspaceError::NotFile { .. })
+        ));
+        assert!(matches!(
+            service.duplicate_entry(root.path(), "missing").await,
+            Err(WorkspaceError::NotFound { .. })
+        ));
+
+        std::fs::write(root.path().join("binary.dat"), b"binary\0payload").unwrap();
+        assert!(matches!(
+            service.read_file(root.path(), "binary.dat").await,
+            Err(WorkspaceError::BinaryFile { .. })
+        ));
+        let browsed = service.browse("./r", Some(root.path())).await.unwrap();
+        assert!(!browsed.entries.is_empty());
+
+        assert_eq!(
+            service
+                .delete_entry(root.path(), "renamed/file copy.rs")
+                .await
+                .unwrap(),
+            "renamed/file copy.rs"
+        );
+        assert_eq!(
+            service.delete_entry(root.path(), "empty").await.unwrap(),
+            "empty"
+        );
+        assert!(matches!(
+            service.delete_entry(root.path(), "missing").await,
+            Err(WorkspaceError::NotFound { .. })
+        ));
+    }
+}
