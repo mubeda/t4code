@@ -3312,3 +3312,163 @@ async fn list_diffs(database: &Database) -> Result<Vec<CheckpointDiffBlob>, Orch
         .await
         .map_err(wrap_persistence)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::persistence::run_migrations;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn unit_build_covers_engine_projection_failure_bootstrap_and_lifecycle_paths() {
+        const CREATED_AT: &str = "2026-07-10T10:00:00.000Z";
+
+        let database = Database::open_in_memory().await.expect("database");
+        database
+            .call(|connection| {
+                run_migrations(connection, None)?;
+                Ok(())
+            })
+            .await
+            .expect("migrations");
+        let hooks = TestHooks::default();
+        hooks.fail_next_projector("projection.projects", Some("project.created"));
+        let engine = OrchestrationEngine::start(
+            database,
+            EngineOptions {
+                queue_capacity: 0,
+                test_hooks: hooks,
+            },
+        )
+        .await
+        .expect("engine starts");
+        let command =
+            |value| serde_json::from_value::<OrchestrationCommand>(value).expect("command decodes");
+
+        let project = json!({
+            "type":"project.create",
+            "commandId":"project",
+            "projectId":"p1",
+            "title":"Project",
+            "workspaceRoot":"C:/repo",
+            "createWorkspaceRootIfMissing":true,
+            "defaultModelSelection":null,
+            "createdAt":CREATED_AT
+        });
+        assert!(matches!(
+            engine.dispatch(command(project.clone())).await,
+            Err(OrchestrationError::InjectedProjectorFailure { .. })
+        ));
+        engine
+            .dispatch(command(project))
+            .await
+            .expect("project retry succeeds");
+
+        let bootstrap_error = engine
+            .dispatch(command(json!({
+                "type":"thread.turn.start",
+                "commandId":"bootstrap-turn",
+                "threadId":"bootstrap-thread",
+                "message":{"messageId":"bootstrap-message","role":"user","text":"build","attachments":[]},
+                "bootstrap":{
+                    "createThread":{
+                        "projectId":"p1",
+                        "title":"Bootstrap",
+                        "modelSelection":{"instanceId":"codex","model":"gpt-5"},
+                        "runtimeMode":"full-access",
+                        "interactionMode":"default",
+                        "branch":null,
+                        "worktreePath":null,
+                        "createdAt":CREATED_AT
+                    },
+                    "prepareWorktree":{
+                        "projectCwd":"C:/repo",
+                        "baseBranch":"main"
+                    }
+                },
+                "createdAt":CREATED_AT
+            })))
+            .await
+            .expect_err("missing bootstrap effects fail closed");
+        assert!(matches!(
+            bootstrap_error,
+            OrchestrationError::Bootstrap {
+                stage: "worktree preparation",
+                ..
+            }
+        ));
+
+        let commands = [
+            json!({"type":"project.meta.update","commandId":"project-meta","projectId":"p1","title":"Renamed","defaultModelSelection":{"instanceId":"codex","model":"gpt-5"}}),
+            json!({"type":"thread.create","commandId":"thread","threadId":"t1","projectId":"p1","title":"Thread","modelSelection":{"instanceId":"codex","model":"gpt-5"},"runtimeMode":"full-access","interactionMode":"default","branch":null,"worktreePath":null,"createdAt":CREATED_AT}),
+            json!({"type":"thread.meta.update","commandId":"thread-meta","threadId":"t1","title":"Thread 2","branch":"main","worktreePath":null}),
+            json!({"type":"thread.runtime-mode.set","commandId":"runtime-mode","threadId":"t1","runtimeMode":"approval-required","createdAt":CREATED_AT}),
+            json!({"type":"thread.interaction-mode.set","commandId":"interaction-mode","threadId":"t1","interactionMode":"plan","createdAt":CREATED_AT}),
+            json!({"type":"thread.turn.start","commandId":"turn-start","threadId":"t1","message":{"messageId":"m-user","role":"user","text":"hello","attachments":[]},"createdAt":CREATED_AT}),
+            json!({"type":"thread.session.set","commandId":"session","threadId":"t1","session":{"threadId":"t1","status":"running","providerName":"codex","providerInstanceId":"codex","runtimeMode":"approval-required","activeTurnId":"turn-1","lastError":null,"updatedAt":CREATED_AT},"createdAt":CREATED_AT}),
+            json!({"type":"thread.message.assistant.delta","commandId":"delta","threadId":"t1","messageId":"m-assistant","delta":"hello","turnId":"turn-1","createdAt":CREATED_AT}),
+            json!({"type":"thread.proposed-plan.upsert","commandId":"plan","threadId":"t1","proposedPlan":{"id":"plan-1","turnId":"turn-1","planMarkdown":"Do it","createdAt":CREATED_AT,"updatedAt":CREATED_AT},"createdAt":CREATED_AT}),
+            json!({"type":"thread.activity.append","commandId":"activity","threadId":"t1","activity":{"id":"activity-1","tone":"tool","kind":"command","summary":"ran","payload":{"requestId":"request-1"},"turnId":"turn-1","createdAt":CREATED_AT},"createdAt":CREATED_AT}),
+            json!({"type":"thread.turn.diff.complete","commandId":"diff","threadId":"t1","turnId":"turn-1","completedAt":CREATED_AT,"checkpointRef":"checkpoint-1","status":"ready","files":[{"path":"a.rs","kind":"modified","additions":2,"deletions":1}],"assistantMessageId":"m-assistant","checkpointTurnCount":1,"createdAt":CREATED_AT}),
+            json!({"type":"thread.message.assistant.complete","commandId":"complete","threadId":"t1","messageId":"m-assistant","turnId":"turn-1","createdAt":CREATED_AT}),
+        ];
+        for value in commands {
+            engine
+                .dispatch(command(value))
+                .await
+                .expect("command succeeds");
+        }
+
+        let mut subscriber = engine.subscribe_events();
+        engine
+            .dispatch(command(json!({
+                "type":"thread.session.stop",
+                "commandId":"session-stop",
+                "threadId":"t1",
+                "createdAt":CREATED_AT
+            })))
+            .await
+            .expect("session stops");
+        assert_eq!(
+            subscriber
+                .recv()
+                .await
+                .expect("streamed event")
+                .event
+                .event_type,
+            "thread.session-stop-requested"
+        );
+
+        let events = engine.read_events(0).await.expect("events");
+        assert!(events.len() >= 18);
+        let snapshot = load_snapshot(&engine.repositories())
+            .await
+            .expect("snapshot");
+        assert_eq!(snapshot.projects[0].title, "Renamed");
+        assert!(
+            snapshot
+                .threads
+                .iter()
+                .any(|thread| thread.thread_id == "t1")
+        );
+        assert!(
+            snapshot
+                .messages
+                .iter()
+                .any(|message| { message.message_id == "m-assistant" && message.text == "hello" })
+        );
+        assert_eq!(snapshot.diffs.len(), 0);
+
+        engine.shutdown().await;
+        assert!(matches!(
+            engine
+                .dispatch(command(json!({
+                    "type":"thread.archive",
+                    "commandId":"after-shutdown",
+                    "threadId":"t1"
+                })))
+                .await,
+            Err(OrchestrationError::Cancelled)
+        ));
+    }
+}

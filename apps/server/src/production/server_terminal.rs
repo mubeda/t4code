@@ -779,3 +779,235 @@ fn format_epoch_ms(value: i128) -> String {
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use crate::{
+        ServerConfig,
+        diagnostics::{ProcessResourceBucket, ProcessResourceSummary},
+        production::control::NativeServerControl,
+        terminal::{PortablePtyBackend, TerminalManagerOptions},
+    };
+
+    use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unit_build_covers_server_terminal_callbacks_payloads_and_wire_adapters() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let temp = tempfile::tempdir().expect("terminal workspace");
+        let terminal = TerminalManager::new(
+            Arc::new(PortablePtyBackend),
+            TerminalManagerOptions {
+                subprocess_poll_interval: Duration::from_millis(20),
+                ..TerminalManagerOptions::default()
+            },
+        );
+        let sampler = Arc::new(NativeProcessSampler::default());
+        let monitor = Arc::new(DiagnosticsMonitor::new(
+            Arc::clone(&sampler),
+            Duration::from_secs(60),
+        ));
+        let usage = ProviderUsageService::new(Vec::new(), Arc::new(OffsetDateTime::now_utc));
+        let relay = RelayClientService::new(
+            || async {
+                RelayClientStatus::Missing {
+                    version: "1.0.0".to_owned(),
+                }
+            },
+            |report| async move {
+                report(RelayClientInstallEvent::Progress {
+                    stage: "checking".to_owned(),
+                })
+                .await?;
+                Ok(RelayClientStatus::Missing {
+                    version: "1.0.0".to_owned(),
+                })
+            },
+        );
+        let control = Arc::new(
+            NativeServerControl::new(ServerConfig::new(temp.path()), json!({"policy":"test"}))
+                .await,
+        );
+        let services =
+            ServerTerminalServices::new(terminal, sampler, monitor, usage, relay, control);
+
+        services
+            .launch_setup_script(SetupScriptLaunch {
+                thread_id: "thread-1".to_owned(),
+                terminal_id: "setup-1".to_owned(),
+                script_id: "script-1".to_owned(),
+                script_name: "Setup".to_owned(),
+                command: "printf setup".to_owned(),
+                cwd: temp.path().to_path_buf(),
+                worktree_path: temp.path().to_path_buf(),
+                env: BTreeMap::new(),
+            })
+            .await
+            .expect("setup script launches");
+        services.close_thread_terminals("thread-1").await;
+
+        let start: TerminalStartPayload = decode_payload(&json!({
+            "threadId":"thread-2",
+            "terminalId":"terminal-2",
+            "cwd":temp.path(),
+            "env":{}
+        }))
+        .expect("terminal start payload");
+        let open = start.into_open(false).expect("default dimensions");
+        assert_eq!((open.cols, open.rows), (120, 30));
+        let missing_dimensions: TerminalStartPayload = decode_payload(&json!({
+            "threadId":"thread-2",
+            "terminalId":"terminal-2",
+            "cwd":temp.path(),
+            "env":{}
+        }))
+        .expect("terminal restart payload");
+        assert!(missing_dimensions.into_open(true).is_err());
+        let attach: TerminalAttachPayload = decode_payload(&json!({
+            "threadId":"thread-2",
+            "terminalId":"terminal-2",
+            "cwd":temp.path(),
+            "cols":80,
+            "rows":24,
+            "env":{"UNIT":"1"},
+            "restartIfNotRunning":true
+        }))
+        .expect("terminal attach payload");
+        let attach = attach.into_attach();
+        assert_eq!(attach.cols, Some(80));
+        assert!(attach.restart_if_not_running);
+        assert!(decode_payload::<TerminalStartPayload>(&json!({})).is_err());
+
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let usage_value = provider_usage_to_wire(ProviderUsageResult {
+            read_at: now,
+            is_fetching: true,
+            providers: vec![
+                ProviderUsageSnapshot {
+                    provider: ProviderUsageProvider::Claude,
+                    status: ProviderUsageStatus::Ok,
+                    session: Some(ProviderUsageWindow {
+                        used_percent: 25,
+                        window_minutes: 300,
+                        resets_at: Some(now),
+                        reset_description: Some("soon".to_owned()),
+                    }),
+                    weekly: None,
+                    updated_at: now,
+                    error: None,
+                    metadata: BTreeMap::new(),
+                },
+                ProviderUsageSnapshot {
+                    provider: ProviderUsageProvider::Codex,
+                    status: ProviderUsageStatus::Error,
+                    session: None,
+                    weekly: None,
+                    updated_at: now,
+                    error: Some("unavailable".to_owned()),
+                    metadata: BTreeMap::from([("source".to_owned(), "test".to_owned())]),
+                },
+            ],
+        });
+        assert_eq!(usage_value["providers"][0]["provider"], "claude");
+        assert_eq!(usage_value["providers"][1]["status"], "error");
+
+        let history = resource_history_to_wire(ProcessResourceHistory {
+            read_at_ms: 0,
+            window_ms: 60_000,
+            bucket_ms: 1_000,
+            sample_interval_ms: 500,
+            retained_sample_count: 2,
+            total_cpu_seconds_approx: 1.5,
+            buckets: vec![ProcessResourceBucket {
+                started_at_ms: 0,
+                ended_at_ms: 1_000,
+                avg_cpu_percent: 5.0,
+                max_cpu_percent: 10.0,
+                max_rss_bytes: 1024,
+                max_process_count: 2,
+            }],
+            top_processes: vec![ProcessResourceSummary {
+                process_key: "1:server".to_owned(),
+                pid: 1,
+                ppid: 0,
+                command: "server".to_owned(),
+                depth: 0,
+                is_server_root: true,
+                first_seen_at_ms: 0,
+                last_seen_at_ms: 1_000,
+                current_cpu_percent: 2.0,
+                avg_cpu_percent: 3.0,
+                max_cpu_percent: 4.0,
+                cpu_seconds_approx: 1.0,
+                current_rss_bytes: 512,
+                max_rss_bytes: 1024,
+                sample_count: 2,
+            }],
+            error: Some("sample failed".to_owned()),
+        });
+        assert_eq!(history["buckets"][0]["maxProcessCount"], 2);
+        assert_eq!(history["error"]["_tag"], "Some");
+
+        assert_eq!(
+            relay_status_to_wire(RelayClientStatus::Available {
+                executable_path: "/tmp/cloudflared".to_owned(),
+                source: "managed".to_owned(),
+                version: "1".to_owned(),
+            })["status"],
+            "available"
+        );
+        assert_eq!(
+            relay_status_to_wire(RelayClientStatus::Unsupported {
+                platform: "plan9".to_owned(),
+                arch: "mips".to_owned(),
+                version: "1".to_owned(),
+            })["status"],
+            "unsupported"
+        );
+        assert_eq!(
+            relay_event_to_wire(RelayClientInstallEvent::Progress {
+                stage: "download".to_owned()
+            })["type"],
+            "progress"
+        );
+        assert_eq!(
+            relay_event_to_wire(RelayClientInstallEvent::Complete {
+                status: RelayClientStatus::Missing {
+                    version: "1".to_owned()
+                }
+            })["type"],
+            "complete"
+        );
+        assert_eq!(
+            terminal_metadata_to_wire(TerminalMetadataEvent::Remove {
+                thread_id: "thread".to_owned(),
+                terminal_id: "terminal".to_owned(),
+            })["type"],
+            "remove"
+        );
+        assert_eq!(effect_none()["_tag"], "None");
+        assert_eq!(effect_some(json!(1))["value"], 1);
+        assert_eq!(effect_option(Some(2))["value"], 2);
+        assert_eq!(effect_option::<u8>(None)["_tag"], "None");
+        assert_eq!(invalid_request("bad")["_tag"], "RpcRequestInvalid");
+        assert_eq!(format_epoch_ms(i128::MAX), "1970-01-01T00:00:00Z");
+        assert!(format_time(now).contains("1970-01-01"));
+
+        assert!(matches!(
+            services.relay.resolve().await,
+            RelayClientStatus::Missing { .. }
+        ));
+        assert!(
+            !services
+                .relay
+                .install()
+                .await
+                .expect("relay install events")
+                .is_empty()
+        );
+        services.shutdown().await;
+    }
+}
