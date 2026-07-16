@@ -254,6 +254,66 @@ const PROJECT_GROUPING_MODE_LABELS: Record<SidebarProjectGroupingMode, string> =
 const SIDEBAR_ICON_ACTION_BUTTON_CLASS =
   "inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring";
 
+export function handleSidebarNavigationKeyDown(input: {
+  readonly event: Pick<
+    globalThis.KeyboardEvent,
+    "defaultPrevented" | "repeat" | "preventDefault" | "stopPropagation"
+  >;
+  readonly resolveCommand: () => string | null;
+  readonly orderedThreadKeys: readonly string[];
+  readonly currentThreadKey: string | null;
+  readonly jumpThreadKeys: readonly string[];
+  readonly threadByKey: ReadonlyMap<string, SidebarThreadSummary>;
+  readonly navigateToThread: (threadRef: ScopedThreadRef) => void;
+}): boolean {
+  if (input.event.defaultPrevented || input.event.repeat) {
+    return false;
+  }
+
+  const command = input.resolveCommand();
+  const traversalDirection = threadTraversalDirectionFromCommand(command);
+  const targetThreadKey =
+    traversalDirection !== null
+      ? resolveAdjacentThreadId({
+          threadIds: input.orderedThreadKeys,
+          currentThreadId: input.currentThreadKey,
+          direction: traversalDirection,
+        })
+      : (() => {
+          const jumpIndex = threadJumpIndexFromCommand(command ?? "");
+          return jumpIndex === null ? null : (input.jumpThreadKeys[jumpIndex] ?? null);
+        })();
+  if (!targetThreadKey) {
+    return false;
+  }
+
+  const targetThread = input.threadByKey.get(targetThreadKey);
+  if (!targetThread) {
+    return false;
+  }
+
+  input.event.preventDefault();
+  input.event.stopPropagation();
+  input.navigateToThread(scopeThreadRef(targetThread.environmentId, targetThread.id));
+  return true;
+}
+
+export function handleSidebarSelectionMouseDown(input: {
+  readonly hasSelection: boolean;
+  readonly target: EventTarget | null;
+  readonly clearSelection: () => void;
+}): boolean {
+  if (!input.hasSelection) {
+    return false;
+  }
+  const target = input.target instanceof HTMLElement ? input.target : null;
+  if (!shouldClearThreadSelectionOnMouseDown(target)) {
+    return false;
+  }
+  input.clearSelection();
+  return true;
+}
+
 function SidebarThreadDetailPrewarmer({ threadRef }: { readonly threadRef: ScopedThreadRef }) {
   useEnvironmentThread(threadRef.environmentId, threadRef.threadId);
   return null;
@@ -4023,54 +4083,19 @@ export default function Sidebar() {
 
   useEffect(() => {
     const onWindowKeyDown = (event: globalThis.KeyboardEvent) => {
-      const shortcutContext = getCurrentSidebarShortcutContext();
-
-      if (event.defaultPrevented || event.repeat) {
-        return;
-      }
-
-      const command = resolveShortcutCommand(event, keybindings, {
-        platform,
-        context: shortcutContext,
+      handleSidebarNavigationKeyDown({
+        event,
+        resolveCommand: () =>
+          resolveShortcutCommand(event, keybindings, {
+            platform,
+            context: getCurrentSidebarShortcutContext(),
+          }),
+        orderedThreadKeys: orderedSidebarThreadKeys,
+        currentThreadKey: routeThreadKey,
+        jumpThreadKeys: threadJumpThreadKeys,
+        threadByKey: sidebarThreadByKey,
+        navigateToThread,
       });
-      const traversalDirection = threadTraversalDirectionFromCommand(command);
-      if (traversalDirection !== null) {
-        const targetThreadKey = resolveAdjacentThreadId({
-          threadIds: orderedSidebarThreadKeys,
-          currentThreadId: routeThreadKey,
-          direction: traversalDirection,
-        });
-        if (!targetThreadKey) {
-          return;
-        }
-        const targetThread = sidebarThreadByKey.get(targetThreadKey);
-        if (!targetThread) {
-          return;
-        }
-
-        event.preventDefault();
-        event.stopPropagation();
-        navigateToThread(scopeThreadRef(targetThread.environmentId, targetThread.id));
-        return;
-      }
-
-      const jumpIndex = threadJumpIndexFromCommand(command ?? "");
-      if (jumpIndex === null) {
-        return;
-      }
-
-      const targetThreadKey = threadJumpThreadKeys[jumpIndex];
-      if (!targetThreadKey) {
-        return;
-      }
-      const targetThread = sidebarThreadByKey.get(targetThreadKey);
-      if (!targetThread) {
-        return;
-      }
-
-      event.preventDefault();
-      event.stopPropagation();
-      navigateToThread(scopeThreadRef(targetThread.environmentId, targetThread.id));
     };
 
     window.addEventListener("keydown", onWindowKeyDown);
@@ -4091,10 +4116,11 @@ export default function Sidebar() {
 
   useEffect(() => {
     const onMouseDown = (event: globalThis.MouseEvent) => {
-      if (!useThreadSelectionStore.getState().hasSelection()) return;
-      const target = event.target instanceof HTMLElement ? event.target : null;
-      if (!shouldClearThreadSelectionOnMouseDown(target)) return;
-      clearSelection();
+      handleSidebarSelectionMouseDown({
+        hasSelection: useThreadSelectionStore.getState().hasSelection(),
+        target: event.target,
+        clearSelection,
+      });
     };
 
     window.addEventListener("mousedown", onMouseDown);
