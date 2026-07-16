@@ -5,6 +5,7 @@ mod auth;
 pub mod checkpointing;
 pub mod cloud;
 mod config;
+pub mod diagnostic_bundle;
 pub mod diagnostics;
 pub mod git;
 mod http;
@@ -77,7 +78,7 @@ pub async fn run_cli() -> Result<(), RunError> {
         output.insert("token".to_owned(), json!(access.credential));
         output.insert("pairingUrl".to_owned(), json!(access.pairing_url));
     }
-    println!("{}", startup_output);
+    println!("{startup_output}");
     if open_browser {
         open::that_detached(browser_target).map_err(RunError::OpenBrowser)?;
     }

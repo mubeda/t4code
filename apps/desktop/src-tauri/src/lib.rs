@@ -69,19 +69,17 @@ pub fn run() {
             window::configure_application_menu(app.handle())?;
             window::restore_main_window_state(app.handle())?;
 
-            if !cfg!(debug_assertions) {
-                let app_handle = app.handle().clone();
-                let backend = app.state::<backend::BackendSupervisor>().inner().clone();
-                tauri::async_runtime::spawn(async move {
-                    match backend.start_default(app_handle).await {
-                        Ok(_config) => {}
-                        Err(error) => {
-                            tracing::error!("failed to start Tauri desktop backend: {error}");
-                            backend.record_error(error);
-                        }
+            let app_handle = app.handle().clone();
+            let backend = app.state::<backend::BackendSupervisor>().inner().clone();
+            tauri::async_runtime::spawn(async move {
+                match backend.start_default(app_handle).await {
+                    Ok(_config) => {}
+                    Err(error) => {
+                        tracing::error!("failed to start Tauri desktop backend: {error}");
+                        backend.record_error(error);
                     }
-                });
-            }
+                }
+            });
             Ok(())
         })
         .invoke_handler(desktop_bridge_commands!(bridge_invoke_handler))

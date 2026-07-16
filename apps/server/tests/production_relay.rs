@@ -199,6 +199,8 @@ fn executable_name() -> &'static str {
 fn native_fixture() -> PathBuf {
     if cfg!(windows) {
         PathBuf::from(std::env::var_os("COMSPEC").expect("COMSPEC"))
+    } else if cfg!(target_os = "macos") {
+        PathBuf::from("/usr/bin/true")
     } else {
         PathBuf::from("/bin/true")
     }

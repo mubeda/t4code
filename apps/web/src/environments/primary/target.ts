@@ -143,6 +143,12 @@ export function isLoopbackHostname(hostname: string): boolean {
 
 function resolveHttpRequestBaseUrl(primaryTarget: PrimaryEnvironmentTarget): string {
   const httpBaseUrl = primaryTarget.target.httpBaseUrl;
+  // A desktop-managed bootstrap token is scoped to the native backend that
+  // issued it. Routing through Vite would send that token to the separate web
+  // development server instead, where it is necessarily rejected.
+  if (primaryTarget.source === "desktop-managed") {
+    return httpBaseUrl;
+  }
   const configuredDevServerUrl = import.meta.env.VITE_DEV_SERVER_URL?.trim();
   if (!configuredDevServerUrl) {
     return httpBaseUrl;

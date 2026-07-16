@@ -200,7 +200,7 @@ describe("resolveInitialServerAuthGateState", () => {
     );
   });
 
-  it("uses the vite proxy for desktop-managed loopback auth requests during local dev", async () => {
+  it("uses the managed desktop backend for auth requests during local dev", async () => {
     await installAuthApi({ session: () => unauthenticatedSession(DESKTOP_AUTH) });
     vi.stubEnv("VITE_DEV_SERVER_URL", "http://127.0.0.1:5733");
 
@@ -224,7 +224,7 @@ describe("resolveInitialServerAuthGateState", () => {
       auth: DESKTOP_AUTH,
     });
     expect(resolvePrimaryEnvironmentHttpUrl("/api/auth/session")).toBe(
-      "http://127.0.0.1:5733/api/auth/session",
+      "http://127.0.0.1:3773/api/auth/session",
     );
   });
 

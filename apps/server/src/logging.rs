@@ -9,8 +9,8 @@ use std::{
 use thiserror::Error;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
-const SERVER_LOG_MAX_BYTES: u64 = 4 * 1024 * 1024;
-const SERVER_LOG_BACKUPS: usize = 3;
+pub(crate) const SERVER_LOG_MAX_BYTES: u64 = 4 * 1024 * 1024;
+pub(crate) const SERVER_LOG_BACKUPS: usize = 3;
 const TRUNCATION_MARKER: &[u8] = b"\n[truncated]\n";
 static INITIALIZE_LOCK: Mutex<()> = Mutex::new(());
 static ACTIVE_LOG_WRITER: OnceLock<LogWriter> = OnceLock::new();
@@ -82,6 +82,14 @@ fn backup_path(path: &Path, index: usize) -> PathBuf {
     let mut value = OsString::from(path.as_os_str());
     value.push(format!(".{index}"));
     PathBuf::from(value)
+}
+
+pub(crate) fn retained_server_log_paths(path: &Path) -> Vec<PathBuf> {
+    (1..=SERVER_LOG_BACKUPS)
+        .rev()
+        .map(|index| backup_path(path, index))
+        .chain(std::iter::once(path.to_path_buf()))
+        .collect()
 }
 
 fn remove_if_exists(path: &Path) -> std::io::Result<()> {
@@ -163,6 +171,13 @@ pub enum LoggingError {
 }
 
 pub fn initialize(log_path: &Path) -> Result<Init, LoggingError> {
+    let filter = EnvFilter::try_from_env("T4CODE_LOG")
+        .or_else(|_| EnvFilter::try_from_default_env())
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+    initialize_with_filter(log_path, filter)
+}
+
+fn initialize_with_filter(log_path: &Path, filter: EnvFilter) -> Result<Init, LoggingError> {
     let _guard = INITIALIZE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -185,9 +200,6 @@ pub fn initialize(log_path: &Path) -> Result<Init, LoggingError> {
         return Ok(Init::AlreadyInstalled);
     }
     let file_writer = LogWriter(Arc::new(Mutex::new(file)));
-    let filter = EnvFilter::try_from_env("T4CODE_LOG")
-        .or_else(|_| EnvFilter::try_from_default_env())
-        .unwrap_or_else(|_| EnvFilter::new("info"));
     let stderr = tracing_subscriber::fmt::layer()
         .with_ansi(std::io::stderr().is_terminal())
         .with_writer(std::io::stderr);
@@ -271,13 +283,15 @@ mod tests {
         let log_path = temp.path().join("nested/server.log");
 
         assert_eq!(
-            initialize(&log_path).expect("subscriber initializes"),
+            initialize_with_filter(&log_path, EnvFilter::new("info"))
+                .expect("subscriber initializes"),
             Init::Installed
         );
         tracing::info!(target: "t4code_server_logging_test", "native logging is connected");
         let replacement_path = temp.path().join("replacement/server.log");
         assert_eq!(
-            initialize(&replacement_path).expect("repeated initialization is safe"),
+            initialize_with_filter(&replacement_path, EnvFilter::new("info"))
+                .expect("repeated initialization is safe"),
             Init::AlreadyInstalled
         );
         tracing::info!(target: "t4code_server_logging_test", "native logging moved");

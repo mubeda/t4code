@@ -187,6 +187,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it.effect("resolves repository and architecture defaults from the host", () =>
     Effect.gen(function* () {
       const path = yield* Path.Path;
+      const repoRoot = yield* path.fromFileUrl(new URL("..", import.meta.url));
       const plan = yield* resolveTauriBuildPlan(
         { skipBuild: true },
         { UNUSED: undefined, T4CODE_TAURI_DESKTOP_VERBOSE: "no" },
@@ -198,7 +199,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(plan.target, "appimage");
       assert.equal(plan.bundleDirectoryName, "appimage");
       assert.equal(plan.verbose, false);
-      assert.equal(plan.outputDir, path.resolve("release", "desktop", "linux-arm64"));
+      assert.equal(plan.outputDir, path.join(repoRoot, "release", "desktop", "linux-arm64"));
     }),
   );
 

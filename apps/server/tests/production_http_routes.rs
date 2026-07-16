@@ -7,8 +7,9 @@ use axum::{
 };
 use serde_json::{Value, json};
 use t4code_server::production::http_routes::{
-    AssetHttpResponse, HttpRouteError, HttpRoutesState, JsonOperation, JsonRouteResponse,
-    MAX_JSON_BODY_BYTES, McpHttpResponse, RouteContext, add_routes,
+    AssetHttpResponse, DiagnosticLogsHttpResponse, HttpRouteError, HttpRoutesState, JsonOperation,
+    JsonRouteResponse, MAX_DIAGNOSTIC_BODY_BYTES, MAX_JSON_BODY_BYTES, McpHttpResponse,
+    RouteContext, add_routes,
 };
 use tokio::sync::{Mutex, oneshot};
 use tower::ServiceExt;
@@ -174,6 +175,83 @@ async fn json_routes_reject_oversized_and_malformed_bodies_before_service_dispat
 }
 
 #[tokio::test]
+async fn diagnostic_logs_route_is_bounded_authorized_and_returns_zip_headers() {
+    let authorization_calls = Arc::new(Mutex::new(Vec::new()));
+    let dispatched_logs = Arc::new(Mutex::new(Vec::new()));
+    let mut state = state_with_json_recorder(Arc::clone(&authorization_calls));
+    let handler_calls = Arc::clone(&dispatched_logs);
+    state.diagnostic_logs = Arc::new(move |frontend_log, context| {
+        let calls = Arc::clone(&handler_calls);
+        Box::pin(async move {
+            assert!(!context.cancellation.is_cancelled());
+            calls.lock().await.push(frontend_log);
+            Ok(DiagnosticLogsHttpResponse {
+                filename: "t4code-diagnostics-20260715T123456Z.zip".to_owned(),
+                bytes: b"PK-test-archive".to_vec(),
+            })
+        })
+    });
+    let app = add_routes(Router::new()).with_state(TestState(state));
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/api/diagnostics/logs.zip")
+                .header(header::AUTHORIZATION, "Bearer test-token")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"frontendLog":"client warning"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "application/zip");
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+    assert_eq!(
+        response.headers()[header::CONTENT_DISPOSITION],
+        "attachment; filename=\"t4code-diagnostics-20260715T123456Z.zip\""
+    );
+    assert_eq!(
+        to_bytes(response.into_body(), 1024).await.unwrap().as_ref(),
+        b"PK-test-archive"
+    );
+    assert_eq!(dispatched_logs.lock().await.as_slice(), ["client warning"]);
+    assert!(
+        authorization_calls
+            .lock()
+            .await
+            .iter()
+            .any(|(_, scope, _)| { scope.as_deref() == Some("orchestration:read") })
+    );
+
+    let malformed = app
+        .clone()
+        .oneshot(
+            Request::post("/api/diagnostics/logs.zip")
+                .header(header::AUTHORIZATION, "Bearer test-token")
+                .body(Body::from("{"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+
+    let oversized = app
+        .oneshot(
+            Request::post("/api/diagnostics/logs.zip")
+                .header(header::AUTHORIZATION, "Bearer test-token")
+                .body(Body::from(vec![b'x'; MAX_DIAGNOSTIC_BODY_BYTES + 1]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(dispatched_logs.lock().await.len(), 1);
+}
+
+#[tokio::test]
 async fn assets_and_mcp_use_native_handlers_with_protocol_headers() {
     let mut state = state_with_json_recorder(Arc::new(Mutex::new(Vec::new())));
     state.assets = Arc::new(|token, path, _context| {
@@ -311,6 +389,14 @@ fn state_with_json_recorder(calls: Arc<Mutex<Vec<JsonRecorderCall>>>) -> HttpRou
                     "operation": operation.as_str(),
                     "wire": "unchanged"
                 })))
+            })
+        }),
+        Arc::new(|_frontend_log, _context| {
+            Box::pin(async {
+                Err(HttpRouteError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"message": "Unavailable"}),
+                ))
             })
         }),
         Arc::new(|_token, _path, _context| {

@@ -296,6 +296,12 @@ fn core_http_routes(
             }
         }) as crate::production::http_routes::BoxFuture<_>
     });
+    let diagnostic_runtime = runtime.clone();
+    let diagnostic_logs = Arc::new(move |frontend_log, _context| {
+        let runtime = diagnostic_runtime.clone();
+        Box::pin(async move { runtime.diagnostic_logs(frontend_log).await })
+            as crate::production::http_routes::BoxFuture<_>
+    });
     let asset_runtime = runtime;
     let assets = Arc::new(move |token, path, _context| {
         let runtime = asset_runtime.clone();
@@ -307,7 +313,7 @@ fn core_http_routes(
         Box::pin(async move { connect.mcp_http(method, body, context).await })
             as crate::production::http_routes::BoxFuture<_>
     });
-    HttpRoutesState::new(authorize, json, assets, mcp)
+    HttpRoutesState::new(authorize, json, diagnostic_logs, assets, mcp)
 }
 
 fn authorize_handler(auth: AuthService) -> crate::production::http_routes::AuthorizeHandler {
@@ -343,6 +349,17 @@ fn fallback_http_routes(auth: AuthService) -> HttpRoutesState {
             ))
         }) as crate::production::http_routes::BoxFuture<_>
     });
+    let diagnostic_logs = Arc::new(move |_frontend_log, _context| {
+        Box::pin(async move {
+            Err(HttpRouteError::new(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                serde_json::json!({
+                    "_tag": "NativeRuntimeUnavailableError",
+                    "message": "The native production runtime is unavailable."
+                }),
+            ))
+        }) as crate::production::http_routes::BoxFuture<_>
+    });
     let mcp = Arc::new(move |_method, _body, _context| {
         Box::pin(async move {
             Err(HttpRouteError::new(
@@ -351,7 +368,7 @@ fn fallback_http_routes(auth: AuthService) -> HttpRoutesState {
             ))
         }) as crate::production::http_routes::BoxFuture<_>
     });
-    HttpRoutesState::new(authorize, json, assets, mcp)
+    HttpRoutesState::new(authorize, json, diagnostic_logs, assets, mcp)
 }
 
 impl ServerHandle {

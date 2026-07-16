@@ -32,8 +32,8 @@ const noop = () => undefined;
  * cwd/worktree/runtimeEnv from the host thread's project — the same derivation
  * as ChatView's PersistentThreadTerminalPanel, which is kept private to that
  * file to avoid a ChatView↔CenterTerminalPanel import cycle. Splits/groups are
- * out of scope for v1, so a single-terminal group is synthesized and the
- * split/new handlers are inert.
+ * out of scope for v1, so a single-terminal group is synthesized and those
+ * unsupported controls are omitted.
  */
 export function CenterTerminalPanel({
   threadRef,
@@ -96,9 +96,6 @@ export function CenterTerminalPanel({
       terminalGroups={[{ id: `terminal:${terminalId}`, terminalIds: [terminalId] }]}
       activeTerminalGroupId={`terminal:${terminalId}`}
       focusRequestId={focusRequestId}
-      onSplitTerminal={noop}
-      onSplitTerminalVertical={noop}
-      onNewTerminal={noop}
       onActiveTerminalChange={noop}
       onCloseTerminal={onClose}
       onHeightChange={noop}

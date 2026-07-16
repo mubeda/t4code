@@ -72,6 +72,9 @@ const h = vi.hoisted(() => {
     },
     openInEditorCalls: [] as Array<unknown>,
     openInEditorResult: { _tag: "Success" } as { _tag: string; error?: unknown },
+    frontendLogSnapshot: "captured frontend warning\n",
+    downloadCalls: [] as Array<string>,
+    downloadError: null as unknown,
     reset() {
       h.stateSeeds.length = 0;
       h.setStateCalls.length = 0;
@@ -93,6 +96,9 @@ const h = vi.hoisted(() => {
       h.signalResult = { _tag: "Success", value: { signaled: true, message: Option.none() } };
       h.openInEditorCalls.length = 0;
       h.openInEditorResult = { _tag: "Success" };
+      h.frontendLogSnapshot = "captured frontend warning\n";
+      h.downloadCalls.length = 0;
+      h.downloadError = null;
     },
   };
 
@@ -151,6 +157,18 @@ vi.mock("../../hooks/useCopyToClipboard", () => ({
   }),
 }));
 
+vi.mock("../../diagnostics/frontendLogCapture", () => ({
+  readFrontendLogSnapshot: () => h.frontendLogSnapshot,
+}));
+
+vi.mock("../../diagnostics/downloadDiagnosticLogs", () => ({
+  downloadDiagnosticLogs: async (frontendLog: string) => {
+    h.downloadCalls.push(frontendLog);
+    if (h.downloadError !== null) throw h.downloadError;
+    return "t4code-diagnostics-test.zip";
+  },
+}));
+
 vi.mock("../../state/server", () => ({
   serverEnvironment: {
     signalProcess: { __cmd: "signalProcess" },
@@ -205,13 +223,23 @@ vi.mock("../../state/use-atom-command", () => ({
 vi.mock("./settingsLayout", () => ({
   useRelativeTimeTick: () => Date.now(),
   SettingsPageContainer: (props: AnyProps) => (
-    <div data-testid="settings-page">{props.children as ReactNode}</div>
+    <div data-testid="settings-page" className={props.className as string | undefined}>
+      {props.children as ReactNode}
+    </div>
   ),
   SettingsSection: (props: AnyProps) => (
     <section data-section-title={typeof props.title === "string" ? props.title : "custom"}>
       {props.headerAction as ReactNode}
       {props.children as ReactNode}
     </section>
+  ),
+  SettingsRow: (props: AnyProps) => (
+    <div data-settings-row>
+      {props.title as ReactNode}
+      {props.description as ReactNode}
+      {props.control as ReactNode}
+      {props.children as ReactNode}
+    </div>
   ),
 }));
 
@@ -825,6 +853,56 @@ describe("DiagnosticsSettingsPanel open logs directory", () => {
     await flush();
     expect(h.setStateCalls.map((call) => call.applied)).not.toContain(
       "Unable to open logs folder.",
+    );
+  });
+});
+
+describe("DiagnosticsSettingsPanel diagnostic log download", () => {
+  it("renders the final download section with status-bar clearance", () => {
+    seedAll();
+    const markup = render();
+
+    expect(markup).toContain('class="pb-12"');
+    expect(markup).toContain('data-section-title="Diagnostic logs"');
+    expect(markup).toContain("Download diagnostic logs");
+    expect(markup).toContain("server.log");
+    expect(markup).toContain("frontend.log");
+    expect(markup).toContain("Download logs");
+  });
+
+  it("disables the download action while the archive is being prepared", () => {
+    h.stateSeeds.push({ match: (initial) => initial === "idle", value: "downloading" });
+    seedAll();
+    const markup = render();
+
+    expect(markup).toContain("Preparing logs...");
+    expect(findButton("Download diagnostic logs").disabled).toBe(true);
+  });
+
+  it("downloads the captured frontend snapshot", async () => {
+    seedAll();
+    render();
+
+    (findButton("Download diagnostic logs").onClick as () => void)();
+    await flush();
+
+    expect(h.downloadCalls).toEqual(["captured frontend warning\n"]);
+  });
+
+  it("shows an actionable toast when the archive cannot be downloaded", async () => {
+    h.downloadError = new Error("server unavailable");
+    seedAll();
+    render();
+
+    (findButton("Download diagnostic logs").onClick as () => void)();
+    await flush();
+
+    expect(h.toasts).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        title: "Could not download diagnostic logs",
+        description: "server unavailable",
+      }),
     );
   });
 });

@@ -919,12 +919,12 @@ async fn list_refs_commits_and_ref_lifecycle_round_trip_over_rpc() {
         json!("feature/worktree")
     );
     assert_eq!(
-        PathBuf::from(
+        canonical_path(
             created_worktree["worktree"]["path"]
                 .as_str()
                 .expect("worktree path"),
         ),
-        worktree_path
+        canonical_path(&worktree_path)
     );
     assert!(worktree_path.exists());
 
@@ -1007,12 +1007,12 @@ async fn list_refs_commits_and_ref_lifecycle_round_trip_over_rpc() {
         .find(|reference| reference["name"] == "feature/worktree")
         .expect("worktree ref listed");
     assert_eq!(
-        PathBuf::from(
+        canonical_path(
             worktree_ref["worktreePath"]
                 .as_str()
                 .expect("listed worktree path"),
         ),
-        worktree_path
+        canonical_path(&worktree_path)
     );
 
     request(
@@ -1310,14 +1310,10 @@ async fn clone_pull_and_worktree_lifecycle_round_trip_over_rpc() {
         .lines()
         .filter_map(|line| line.strip_prefix("worktree "))
         .collect::<Vec<_>>();
-    let consumer_git_path = consumer.to_string_lossy().replace('\\', "/");
-    let removed_git_path = worktree_path.to_string_lossy().replace('\\', "/");
     assert_eq!(listed_worktrees.len(), 1);
-    assert!(listed_worktrees[0].eq_ignore_ascii_case(&consumer_git_path));
-    assert!(
-        listed_worktrees
-            .iter()
-            .all(|path| !path.eq_ignore_ascii_case(&removed_git_path))
+    assert_eq!(
+        canonical_path(listed_worktrees[0]),
+        canonical_path(&consumer)
     );
 
     server.shutdown().await;
@@ -1544,6 +1540,10 @@ fn commit_file(cwd: &Path, relative: &str, contents: &str, message: &str) {
 fn local_file_url(path: &Path) -> String {
     let normalized = path.to_string_lossy().replace('\\', "/");
     format!("file:///{}", normalized.trim_start_matches("//?/"))
+}
+
+fn canonical_path(path: impl AsRef<Path>) -> PathBuf {
+    fs::canonicalize(path).expect("canonical test path")
 }
 
 fn relaunch_with_isolated_git_config(test_name: &str) -> bool {

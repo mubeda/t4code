@@ -165,7 +165,7 @@ describe("environmentBootstrap", () => {
     );
   });
 
-  it("uses the vite proxy for desktop-managed loopback descriptor requests during local dev", async () => {
+  it("uses the managed desktop backend for descriptor requests during local dev", async () => {
     vi.stubEnv("VITE_DEV_SERVER_URL", "http://127.0.0.1:5733");
     vi.stubGlobal("window", {
       location: new URL("http://127.0.0.1:5733/"),
@@ -188,7 +188,7 @@ describe("environmentBootstrap", () => {
 
     await expect(resolveInitialPrimaryEnvironmentDescriptor()).resolves.toEqual(BASE_ENVIRONMENT);
     expect(resolvePrimaryEnvironmentHttpUrl("/.well-known/t4code/environment")).toBe(
-      "http://127.0.0.1:5733/.well-known/t4code/environment",
+      "http://127.0.0.1:3773/.well-known/t4code/environment",
     );
   });
 

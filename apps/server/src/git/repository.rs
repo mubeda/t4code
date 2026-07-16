@@ -608,8 +608,7 @@ impl GitRepository {
         cancellation: &CancellationToken,
     ) -> Result<VcsListCommitsResult, GitCommandError> {
         let format = format!(
-            "--pretty=format:%H{0}%h{0}%s{0}%an{0}%at",
-            COMMIT_FIELD_SEPARATOR
+            "--pretty=format:%H{COMMIT_FIELD_SEPARATOR}%h{COMMIT_FIELD_SEPARATOR}%s{COMMIT_FIELD_SEPARATOR}%an{COMMIT_FIELD_SEPARATOR}%at"
         );
         let args = vec![
             "log".into(),

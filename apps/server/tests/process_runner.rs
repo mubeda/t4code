@@ -75,8 +75,8 @@ async fn process_runner_captures_stdout_stderr_stdin_env_and_cwd_precedence() {
     assert_eq!(cwd_only_capture.env, "env-visible");
     assert_eq!(cwd_only_capture.stdin, "stdin-visible");
     assert_eq!(
-        normalize_path(&cwd_only_capture.cwd),
-        normalize_path(cwd_only.to_string_lossy().as_ref())
+        canonical_path(&cwd_only_capture.cwd),
+        canonical_path(&cwd_only)
     );
 
     let mut spawn_override_input = capture_script_input(&capture_script);
@@ -90,8 +90,8 @@ async fn process_runner_captures_stdout_stderr_stdin_env_and_cwd_precedence() {
         .expect("spawn override run");
     let spawn_override_capture = parse_capture_output(&spawn_override_output.stdout);
     assert_eq!(
-        normalize_path(&spawn_override_capture.cwd),
-        normalize_path(spawn_dir.to_string_lossy().as_ref())
+        canonical_path(&spawn_override_capture.cwd),
+        canonical_path(&spawn_dir)
     );
 }
 
@@ -722,6 +722,6 @@ fn escape_powershell_single_quoted(value: &str) -> String {
     value.replace('\'', "''")
 }
 
-fn normalize_path(value: &str) -> String {
-    value.replace('\\', "/")
+fn canonical_path(path: impl AsRef<Path>) -> PathBuf {
+    fs::canonicalize(path).expect("canonical test path")
 }

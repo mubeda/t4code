@@ -172,6 +172,10 @@ interface CapturedLegendProps {
   data: string[];
   keyExtractor: (item: string) => string;
   renderItem: (args: { item: string; index: number }) => unknown;
+  estimatedItemSize: number;
+  initialScrollIndex?: number;
+  drawDistance: number;
+  recycleItems: boolean;
   onLayout: () => void;
   onScroll: () => void;
   className: string;
@@ -545,6 +549,15 @@ describe("ModelPickerContent", () => {
     // The active model row is marked selected.
     const selected = captured.rows.find((row) => row.isSelected);
     expect(selected?.model.slug).toBe("gpt-5");
+  });
+
+  it("keeps the row estimate conservative without recycling picker items", () => {
+    render(buildProps());
+
+    expect(captured.legend[0]?.estimatedItemSize).toBe(48);
+    expect(captured.legend[0]?.initialScrollIndex).toBe(0);
+    expect(captured.legend[0]?.drawDistance).toBe(480);
+    expect(captured.legend[0]?.recycleItems).toBe(false);
   });
 
   it("switches the model list when the sidebar selects another instance", () => {

@@ -7,6 +7,7 @@ import * as Schema from "effect/Schema";
 
 const TauriConfiguration = Schema.fromJsonString(
   Schema.Struct({
+    identifier: Schema.String,
     build: Schema.Struct({ beforeBuildCommand: Schema.String }),
     app: Schema.Struct({
       withGlobalTauri: Schema.Boolean,
@@ -46,6 +47,12 @@ it.layer(NodeServices.layer)("Tauri production hardening", (it) => {
       const desktopPackage = yield* fs.readFileString(
         path.join(repoRoot, "apps/desktop/package.json"),
       );
+      const desktopLib = yield* fs.readFileString(
+        path.join(repoRoot, "apps/desktop/src-tauri/src/lib.rs"),
+      );
+      const relayTracing = yield* fs.readFileString(
+        path.join(repoRoot, "packages/shared/src/relayTracing.ts"),
+      );
 
       for (const obsoletePath of [
         "apps/server-rust",
@@ -66,6 +73,7 @@ it.layer(NodeServices.layer)("Tauri production hardening", (it) => {
       }
 
       assert.equal(tauri.app.withGlobalTauri, false);
+      assert.notMatch(tauri.identifier, /\.app$/i);
       assert.equal(
         /prepare-tauri-node-runtime|server\//.test(tauri.build.beforeBuildCommand),
         false,
@@ -92,6 +100,9 @@ it.layer(NodeServices.layer)("Tauri production hardening", (it) => {
         /resources\/node|server-node_modules|dist\/bin\.mjs/i.test(desktopPackage),
         false,
       );
+      assert.notMatch(desktopLib, /if\s*!cfg!\(debug_assertions\)[\s\S]*?backend\.start_default/);
+      assert.match(desktopLib, /backend\.start_default\(app_handle\)\.await/);
+      assert.notMatch(relayTracing, /from "\.\/observability\.ts"/);
     }),
   );
 });
