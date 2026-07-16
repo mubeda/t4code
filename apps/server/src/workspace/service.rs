@@ -397,4 +397,53 @@ mod tests {
             Err(WorkspaceError::NotFound { .. })
         ));
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn service_maps_concurrency_and_filesystem_failures_to_workspace_errors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = TempDir::new().unwrap();
+        let service = WorkspaceService::default();
+        let blocker = root.path().join("blocker");
+        std::fs::write(&blocker, "not a directory").unwrap();
+
+        for result in [
+            service
+                .write_file(root.path(), "blocker/file.txt", "contents")
+                .await,
+            service
+                .create_entry(root.path(), "blocker/directory", EntryKind::Directory)
+                .await,
+            service
+                .create_entry(root.path(), "blocker/file.txt", EntryKind::File)
+                .await,
+            service
+                .rename_entry(root.path(), "blocker", "blocker/renamed")
+                .await,
+        ] {
+            assert!(matches!(result, Err(WorkspaceError::Operation { .. })));
+        }
+
+        std::fs::write(root.path().join("source.txt"), "copy source").unwrap();
+        let mut source_permissions = std::fs::metadata(root.path().join("source.txt"))
+            .unwrap()
+            .permissions();
+        source_permissions.set_mode(0o000);
+        std::fs::set_permissions(root.path().join("source.txt"), source_permissions).unwrap();
+        let copy_result = service.duplicate_entry(root.path(), "source.txt").await;
+        let mut source_permissions = std::fs::metadata(root.path().join("source.txt"))
+            .unwrap()
+            .permissions();
+        source_permissions.set_mode(0o600);
+        std::fs::set_permissions(root.path().join("source.txt"), source_permissions).unwrap();
+        assert!(matches!(copy_result, Err(WorkspaceError::Operation { .. })));
+
+        let closed = WorkspaceService::default();
+        closed.permits.close();
+        assert!(matches!(
+            closed.browse(".", Some(root.path())).await,
+            Err(WorkspaceError::Cancelled)
+        ));
+    }
 }

@@ -2809,14 +2809,197 @@ async fn wait_for_endpoint(
 #[cfg(test)]
 mod tests {
     use super::{ProviderDriver, ProviderDriverFactory};
-    use crate::server_settings::{ProviderInstanceState, ProvidersState};
+    use crate::{
+        orchestration::engine::{EngineOptions, OrchestrationCommand},
+        persistence::{Database, run_migrations},
+        server_settings::{ProviderInstanceState, ProvidersState},
+    };
     use axum::{
         Json, Router,
         routing::{get, post},
     };
-    use serde_json::json;
+    use serde_json::{Value, json};
+    use std::sync::{Arc, Mutex as StdMutex};
     use tempfile::TempDir;
-    use tokio::{net::TcpListener, time::timeout};
+    use tokio::{net::TcpListener, sync::mpsc, time::timeout};
+
+    #[derive(Default)]
+    struct SupervisorDriverState {
+        launches: usize,
+        starts: usize,
+        sends: Vec<String>,
+        interrupts: usize,
+        approvals: usize,
+        answers: usize,
+        modes: Vec<String>,
+        interaction_modes: Vec<String>,
+        models: Vec<String>,
+        rollbacks: Vec<i64>,
+        shutdowns: usize,
+    }
+
+    struct SupervisorDriver {
+        state: Arc<StdMutex<SupervisorDriverState>>,
+        events: tokio::sync::Mutex<mpsc::Receiver<super::ProviderEvent>>,
+    }
+
+    impl ProviderDriver for SupervisorDriver {
+        fn start(
+            &self,
+        ) -> super::BoxRuntimeFuture<'_, Result<super::StartedSession, super::ProviderRuntimeError>>
+        {
+            Box::pin(async move {
+                self.state.lock().unwrap().starts += 1;
+                Ok(super::StartedSession {
+                    resume_cursor: Some(json!({"sessionId":"unit-session"})),
+                    runtime_payload: Some(json!({"transport":"unit"})),
+                })
+            })
+        }
+
+        fn send(
+            &self,
+            text: String,
+            _: Vec<Value>,
+            _: String,
+        ) -> super::BoxRuntimeFuture<'_, Result<Option<String>, super::ProviderRuntimeError>>
+        {
+            Box::pin(async move {
+                self.state.lock().unwrap().sends.push(text);
+                Ok(Some("unit-turn".to_owned()))
+            })
+        }
+
+        fn interrupt(
+            &self,
+            _: Option<String>,
+        ) -> super::BoxRuntimeFuture<'_, Result<(), super::ProviderRuntimeError>> {
+            Box::pin(async move {
+                self.state.lock().unwrap().interrupts += 1;
+                Ok(())
+            })
+        }
+
+        fn approve(
+            &self,
+            _: String,
+            _: String,
+        ) -> super::BoxRuntimeFuture<'_, Result<(), super::ProviderRuntimeError>> {
+            Box::pin(async move {
+                self.state.lock().unwrap().approvals += 1;
+                Ok(())
+            })
+        }
+
+        fn answer(
+            &self,
+            _: String,
+            _: Value,
+        ) -> super::BoxRuntimeFuture<'_, Result<(), super::ProviderRuntimeError>> {
+            Box::pin(async move {
+                self.state.lock().unwrap().answers += 1;
+                Ok(())
+            })
+        }
+
+        fn set_mode(
+            &self,
+            mode: String,
+        ) -> super::BoxRuntimeFuture<'_, Result<(), super::ProviderRuntimeError>> {
+            Box::pin(async move {
+                self.state.lock().unwrap().modes.push(mode);
+                Ok(())
+            })
+        }
+
+        fn set_interaction_mode(
+            &self,
+            mode: String,
+        ) -> super::BoxRuntimeFuture<'_, Result<(), super::ProviderRuntimeError>> {
+            Box::pin(async move {
+                self.state.lock().unwrap().interaction_modes.push(mode);
+                Ok(())
+            })
+        }
+
+        fn set_model(
+            &self,
+            model: String,
+        ) -> super::BoxRuntimeFuture<'_, Result<(), super::ProviderRuntimeError>> {
+            Box::pin(async move {
+                self.state.lock().unwrap().models.push(model);
+                Ok(())
+            })
+        }
+
+        fn rollback(
+            &self,
+            turn_count: i64,
+        ) -> super::BoxRuntimeFuture<'_, Result<(), super::ProviderRuntimeError>> {
+            Box::pin(async move {
+                self.state.lock().unwrap().rollbacks.push(turn_count);
+                Ok(())
+            })
+        }
+
+        fn next_event(&self) -> super::BoxRuntimeFuture<'_, Option<super::ProviderEvent>> {
+            Box::pin(async move { self.events.lock().await.recv().await })
+        }
+
+        fn shutdown(&self) -> super::BoxRuntimeFuture<'_, Result<(), super::ProviderRuntimeError>> {
+            Box::pin(async move {
+                self.state.lock().unwrap().shutdowns += 1;
+                Ok(())
+            })
+        }
+    }
+
+    struct SupervisorFactory {
+        state: Arc<StdMutex<SupervisorDriverState>>,
+        events: StdMutex<Option<mpsc::Receiver<super::ProviderEvent>>>,
+    }
+
+    impl ProviderDriverFactory for SupervisorFactory {
+        fn create(
+            &self,
+            _: super::ProviderLaunchRequest,
+        ) -> super::BoxRuntimeFuture<'_, Result<Arc<dyn ProviderDriver>, super::ProviderRuntimeError>>
+        {
+            Box::pin(async move {
+                self.state.lock().unwrap().launches += 1;
+                Ok(Arc::new(SupervisorDriver {
+                    state: self.state.clone(),
+                    events: tokio::sync::Mutex::new(
+                        self.events.lock().unwrap().take().expect("event receiver"),
+                    ),
+                }) as Arc<dyn ProviderDriver>)
+            })
+        }
+    }
+
+    async fn supervisor_engine() -> super::OrchestrationEngine {
+        let database = Database::open_in_memory().await.unwrap();
+        database
+            .call(|connection| {
+                run_migrations(connection, None)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let engine = super::OrchestrationEngine::start(database, EngineOptions::default())
+            .await
+            .unwrap();
+        for command in [
+            json!({"type":"project.create","commandId":"project","projectId":"p1","title":"Project","workspaceRoot":"/tmp/project","createdAt":"2026-07-16T00:00:00Z"}),
+            json!({"type":"thread.create","commandId":"thread","threadId":"t1","projectId":"p1","title":"Thread","kind":"workspace","modelSelection":{"instanceId":"codex","model":"gpt-5"},"runtimeMode":"full-access","interactionMode":"default","branch":null,"worktreePath":null,"createdAt":"2026-07-16T00:00:00Z"}),
+        ] {
+            engine
+                .dispatch(serde_json::from_value(command).unwrap())
+                .await
+                .unwrap();
+        }
+        engine
+    }
 
     fn native_launch(temp: &TempDir, provider: &str) -> super::ProviderLaunchRequest {
         super::ProviderLaunchRequest {
@@ -2853,6 +3036,98 @@ mod tests {
         std::fs::set_permissions(&executable, permissions)
             .expect("provider fixture should be executable");
         executable
+    }
+
+    #[tokio::test]
+    async fn unit_supervisor_covers_complete_command_routing_and_shutdown_lifecycle() {
+        let engine = supervisor_engine().await;
+        let state = Arc::new(StdMutex::new(SupervisorDriverState::default()));
+        let (events_tx, events_rx) = mpsc::channel(4);
+        let factory = Arc::new(SupervisorFactory {
+            state: state.clone(),
+            events: StdMutex::new(Some(events_rx)),
+        });
+        let supervisor = super::ProviderRuntimeSupervisor::start(
+            engine.clone(),
+            factory,
+            super::SupervisorOptions::default(),
+        );
+        let temp = TempDir::new().unwrap();
+        let mut launch = native_launch(&temp, "codex");
+        launch.thread_id = "t1".to_owned();
+        launch.cwd = temp.path().to_path_buf();
+        supervisor.launch(launch.clone()).await.unwrap();
+        assert!(matches!(
+            supervisor.launch(launch).await,
+            Err(super::ProviderRuntimeError::SessionAlreadyExists { .. })
+        ));
+
+        for command in [
+            json!({"type":"thread.turn.start","commandId":"turn","threadId":"t1","message":{"messageId":"m1","role":"user","text":"hello","attachments":[]},"modelSelection":{"instanceId":"codex","model":"gpt-5.1"},"runtimeMode":"full-access","interactionMode":"default","createdAt":"2026-07-16T00:00:00Z"}),
+            json!({"type":"thread.turn.interrupt","commandId":"interrupt","threadId":"t1","turnId":"unit-turn","createdAt":"2026-07-16T00:00:00Z"}),
+            json!({"type":"thread.approval.respond","commandId":"approve","threadId":"t1","requestId":"r1","decision":"accept","createdAt":"2026-07-16T00:00:00Z"}),
+            json!({"type":"thread.user-input.respond","commandId":"answer","threadId":"t1","requestId":"r2","answers":{"q":"a"},"createdAt":"2026-07-16T00:00:00Z"}),
+            json!({"type":"thread.runtime-mode.set","commandId":"mode","threadId":"t1","runtimeMode":"approval-required","createdAt":"2026-07-16T00:00:00Z"}),
+            json!({"type":"thread.interaction-mode.set","commandId":"interaction","threadId":"t1","interactionMode":"plan","createdAt":"2026-07-16T00:00:00Z"}),
+            json!({"type":"thread.meta.update","commandId":"model","threadId":"t1","modelSelection":{"instanceId":"codex","model":"gpt-5.2"}}),
+            json!({"type":"thread.checkpoint.revert","commandId":"revert","threadId":"t1","turnCount":2,"createdAt":"2026-07-16T00:00:00Z"}),
+        ] {
+            supervisor
+                .handle_orchestration(serde_json::from_value(command).unwrap())
+                .await
+                .unwrap();
+        }
+
+        let project_command: OrchestrationCommand = serde_json::from_value(json!({
+            "type":"project.create","commandId":"unsupported","projectId":"p2","title":"Project","workspaceRoot":"/tmp/p2","createdAt":"2026-07-16T00:00:00Z"
+        }))
+        .unwrap();
+        assert!(
+            supervisor
+                .handle_orchestration(project_command)
+                .await
+                .is_err()
+        );
+        assert!(
+            supervisor
+                .handle_orchestration(
+                    serde_json::from_value(json!({"type":"thread.turn.interrupt","commandId":"missing","threadId":"missing","turnId":null,"createdAt":"2026-07-16T00:00:00Z"})).unwrap(),
+                )
+                .await
+                .is_err()
+        );
+        supervisor
+            .handle_orchestration(
+                serde_json::from_value(json!({"type":"thread.session.stop","commandId":"stop","threadId":"t1","createdAt":"2026-07-16T00:00:00Z"})).unwrap(),
+            )
+            .await
+            .unwrap();
+        drop(events_tx);
+        supervisor.shutdown().await.unwrap();
+        supervisor.shutdown().await.unwrap();
+        assert!(matches!(
+            supervisor
+                .handle_orchestration(
+                    serde_json::from_value(json!({"type":"thread.session.stop","commandId":"late","threadId":"t1","createdAt":"2026-07-16T00:00:00Z"})).unwrap(),
+                )
+                .await,
+            Err(super::ProviderRuntimeError::Shutdown)
+        ));
+
+        let state = state.lock().unwrap();
+        assert_eq!(state.launches, 1);
+        assert_eq!(state.starts, 1);
+        assert_eq!(state.sends, ["hello"]);
+        assert_eq!(state.interrupts, 1);
+        assert_eq!(state.approvals, 1);
+        assert_eq!(state.answers, 1);
+        assert_eq!(state.modes, ["approval-required"]);
+        assert_eq!(state.interaction_modes, ["plan"]);
+        assert_eq!(state.models, ["gpt-5.1", "gpt-5.2"]);
+        assert_eq!(state.rollbacks, [2]);
+        assert_eq!(state.shutdowns, 1);
+        drop(state);
+        engine.shutdown().await;
     }
 
     #[cfg(unix)]
