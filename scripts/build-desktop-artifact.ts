@@ -449,6 +449,8 @@ const runSpawnPlan = Effect.fn("runTauriSpawnPlan")(function* (
       cwd: plan.cwd,
       env,
       shell: spawnCommand.shell,
+      stdout: "inherit",
+      stderr: "inherit",
     }),
   );
   const exitCode = yield* child.exitCode;
