@@ -118,6 +118,12 @@ mod tailscale;
 mod updates;
 mod window;
 
+pub use bridge::{
+    desktop_bridge_bootstrap_ssh_bearer_session, desktop_bridge_fetch_environment_descriptor,
+    desktop_bridge_fetch_ssh_session_state, desktop_bridge_get_bridge_metadata,
+    desktop_bridge_issue_ssh_web_socket_ticket,
+};
+
 #[cfg(test)]
 const DESKTOP_BRIDGE_COMMAND_NAMES: &[&str] = desktop_bridge_commands!(bridge_command_names);
 
