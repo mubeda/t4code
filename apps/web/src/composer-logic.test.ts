@@ -130,6 +130,22 @@ describe("detectComposerTrigger", () => {
     expect(trigger?.kind).toBe("path");
     expect(trigger?.query).toBe("");
   });
+
+  it("clamps invalid cursors and treats every supported separator as a token boundary", () => {
+    expect(detectComposerTrigger("prefix\n/value", Number.POSITIVE_INFINITY)).toMatchObject({
+      kind: "slash-command",
+      rangeStart: "prefix\n".length,
+    });
+    for (const separator of ["\t", "\r", INLINE_TERMINAL_CONTEXT_PLACEHOLDER]) {
+      const text = `before${separator}@path`;
+      expect(detectComposerTrigger(text, text.length)).toMatchObject({
+        kind: "path",
+        query: "path",
+        rangeStart: `before${separator}`.length,
+      });
+    }
+    expect(detectComposerTrigger("@path", -10)).toBeNull();
+  });
 });
 
 describe("replaceTextRange", () => {
@@ -139,6 +155,11 @@ describe("replaceTextRange", () => {
       text: "hello ",
       cursor: 6,
     });
+  });
+
+  it("clamps reversed and out-of-range boundaries", () => {
+    expect(replaceTextRange("hello", -5, 99, "x")).toEqual({ text: "x", cursor: 1 });
+    expect(replaceTextRange("hello", 4, 2, "x")).toEqual({ text: "hellxo", cursor: 5 });
   });
 });
 
@@ -194,6 +215,19 @@ describe("expandCollapsedComposerCursor", () => {
       expandedCursorAfterSkill,
     );
   });
+
+  it("maps token boundaries, terminal placeholders, and non-finite cursors", () => {
+    const mention = "x @AGENTS.md ";
+    const skill = "x $review-follow-up ";
+    expect(expandCollapsedComposerCursor("", Number.NaN)).toBe(0);
+    expect(expandCollapsedComposerCursor(mention, 2)).toBe(2);
+    expect(expandCollapsedComposerCursor(mention, 3)).toBe("x @AGENTS.md".length);
+    expect(expandCollapsedComposerCursor(skill, 2)).toBe(2);
+    expect(expandCollapsedComposerCursor(skill, 3)).toBe("x $review-follow-up".length);
+    expect(expandCollapsedComposerCursor(INLINE_TERMINAL_CONTEXT_PLACEHOLDER, 0)).toBe(0);
+    expect(expandCollapsedComposerCursor(INLINE_TERMINAL_CONTEXT_PLACEHOLDER, 1)).toBe(1);
+    expect(expandCollapsedComposerCursor("plain", Number.POSITIVE_INFINITY)).toBe(5);
+  });
 });
 
 describe("collapseExpandedComposerCursor", () => {
@@ -248,6 +282,19 @@ describe("collapseExpandedComposerCursor", () => {
     expect(collapseExpandedComposerCursor(text, expandedCursorAfterSkill)).toBe(
       collapsedCursorAfterSkill,
     );
+  });
+
+  it("collapses positions inside each inline token type", () => {
+    const mention = "x @AGENTS.md ";
+    const skill = "x $review-follow-up ";
+    expect(collapseExpandedComposerCursor("", Number.NaN)).toBe(0);
+    expect(collapseExpandedComposerCursor(mention, 2)).toBe(2);
+    expect(collapseExpandedComposerCursor(mention, 3)).toBe(3);
+    expect(collapseExpandedComposerCursor(mention, "x @AGENTS.md".length)).toBe(3);
+    expect(collapseExpandedComposerCursor(skill, 2)).toBe(2);
+    expect(collapseExpandedComposerCursor(skill, 4)).toBe(3);
+    expect(collapseExpandedComposerCursor(INLINE_TERMINAL_CONTEXT_PLACEHOLDER, 0)).toBe(0);
+    expect(collapseExpandedComposerCursor(INLINE_TERMINAL_CONTEXT_PLACEHOLDER, 1)).toBe(1);
   });
 });
 

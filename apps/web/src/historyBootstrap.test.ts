@@ -136,4 +136,82 @@ describe("buildBootstrapInput", () => {
     expect(result.text).toContain("Attached image");
     expect(result.text).toContain("screenshot.png");
   });
+
+  it("summarizes text plus multiple images and caps the attachment name list", () => {
+    const attachments = ["one.png", "two.png", "three.png", "four.png"].map((name, index) => ({
+      type: "image" as const,
+      id: `img-${index}`,
+      name,
+      mimeType: "image/png",
+      sizeBytes: 100,
+    }));
+    const result = buildBootstrapInput(
+      [
+        {
+          id: messageId("u-many-images"),
+          role: "user",
+          text: "Please inspect these.",
+          attachments,
+          createdAt: "2026-02-09T00:00:00.000Z",
+          turnId: null,
+          updatedAt: "2026-02-09T00:00:00.000Z",
+          streaming: false,
+        },
+      ],
+      "Which one fails?",
+      1_500,
+    );
+
+    expect(result.text).toContain("Please inspect these.\n[Attached images: one.png, two.png, three.png (+1 more)]");
+  });
+
+  it("renders empty and text-only messages without attachment summaries", () => {
+    const result = buildBootstrapInput(
+      [
+        {
+          id: messageId("empty"),
+          role: "user",
+          text: "",
+          attachments: [],
+          createdAt: "2026-02-09T00:00:00.000Z",
+          turnId: null,
+          updatedAt: "2026-02-09T00:00:00.000Z",
+          streaming: false,
+        },
+        {
+          id: messageId("answer"),
+          role: "assistant",
+          text: "Text only",
+          createdAt: "2026-02-09T00:00:01.000Z",
+          turnId: null,
+          updatedAt: "2026-02-09T00:00:01.000Z",
+          streaming: false,
+        },
+      ],
+      "continue",
+      1_500,
+    );
+
+    expect(result.text).toContain("USER:\n(empty message)");
+    expect(result.text).toContain("ASSISTANT:\nText only");
+  });
+
+  it("handles sparse transcripts and invalid or fractional budgets", () => {
+    const sparse = new Array(2) as Parameters<typeof buildBootstrapInput>[0];
+    expect(buildBootstrapInput(sparse, "latest", 100)).toEqual({
+      text: "latest",
+      includedCount: 0,
+      omittedCount: 2,
+      truncated: true,
+    });
+
+    expect(buildBootstrapInput([], "latest", Number.NaN)).toEqual({
+      text: "l",
+      includedCount: 0,
+      omittedCount: 0,
+      truncated: true,
+    });
+    expect(buildBootstrapInput([], "latest", 3.9).text).toBe("lat");
+    expect(buildBootstrapInput([], "latest", 0).text).toBe("l");
+  });
 });

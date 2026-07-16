@@ -51,6 +51,8 @@ describe("uiStateStore pure functions", () => {
 
     expect(next.threadLastVisitedAtById[threadId]).toBe("2026-02-25T12:29:59.999Z");
     expect(markThreadUnread(next, threadId, null)).toBe(next);
+    expect(markThreadUnread(next, threadId, "not-a-date")).toBe(next);
+    expect(markThreadUnread(next, threadId, "2026-02-25T12:30:00.000Z")).toBe(next);
   });
 
   it("resolves project expansion from logical, physical, and legacy preference keys", () => {
@@ -79,6 +81,7 @@ describe("uiStateStore pure functions", () => {
       "environment-b:/repo": false,
     });
     expect(setProjectExpanded(next, keys, false)).toBe(next);
+    expect(setProjectExpanded(next, "logical", true).projectExpandedById.logical).toBe(true);
   });
 
   it("reorders from the current atom-derived project order", () => {
@@ -114,6 +117,7 @@ describe("uiStateStore pure functions", () => {
     expect(reorderProjects(state, currentOrder, ["env-local:proj-a"], ["env-local:proj-a"])).toBe(
       state,
     );
+    expect(reorderProjects(state, currentOrder, [], ["env-local:proj-b"])).toBe(state);
   });
 
   it("stores only collapsed changed-file turns", () => {
@@ -129,6 +133,12 @@ describe("uiStateStore pure functions", () => {
       setThreadChangedFilesExpanded(collapsed, threadId, "turn-1", true)
         .threadChangedFilesExpandedById,
     ).toEqual({});
+
+    const twoTurns = setThreadChangedFilesExpanded(collapsed, threadId, "turn-2", false);
+    expect(
+      setThreadChangedFilesExpanded(twoTurns, threadId, "turn-1", true)
+        .threadChangedFilesExpandedById,
+    ).toEqual({ [threadId]: { "turn-2": false } });
   });
 
   it("stores the endpoint preference by stable key", () => {
@@ -210,6 +220,22 @@ describe("parsePersistedState", () => {
         legacyProjectCwdPreferenceKey("/repo/b"),
       ]),
     ).toBe(false);
+  });
+
+  it("sanitizes malformed records and changed-file collections", () => {
+    const parsed = parsePersistedState({
+      projectExpandedById: null as never,
+      projectOrder: null as never,
+      threadLastVisitedAtById: null as never,
+      threadChangedFilesExpandedById: {
+        "": { turn: false },
+        thread: null as never,
+        empty: { expanded: true, invalid: "no" as never, "": false },
+      },
+      defaultAdvertisedEndpointKey: "",
+    });
+
+    expect(parsed).toEqual(makeUiState());
   });
 });
 
@@ -305,5 +331,20 @@ describe("uiStateStore persistence", () => {
       localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}",
     ) as PersistedUiState;
     expect(resolveProjectExpanded(persisted.projectExpandedById ?? {}, ["unknown"])).toBe(true);
+  });
+
+  it("omits fully expanded changed-file maps and tolerates missing browser storage", () => {
+    persistState(
+      makeUiState({
+        threadChangedFilesExpandedById: { thread: { turn: true } },
+      }),
+    );
+    const persisted = JSON.parse(
+      localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}",
+    ) as PersistedUiState;
+    expect(persisted.threadChangedFilesExpandedById).toEqual({});
+
+    vi.unstubAllGlobals();
+    expect(() => persistState(makeUiState())).not.toThrow();
   });
 });
