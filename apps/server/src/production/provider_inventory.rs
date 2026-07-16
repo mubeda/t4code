@@ -15,6 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     git::{OutputPolicy, ProcessRequest, ProcessRunner},
+    process::configure_background_command_wrap,
     production::provider_runtime::{
         provider_launch_program, resolve_provider_executable,
         sanitize_provider_subprocess_environment,
@@ -1104,6 +1105,7 @@ async fn probe_local_opencode(
 
 fn supervised_command(command: Command) -> CommandWrap {
     let mut command = CommandWrap::from(command);
+    configure_background_command_wrap(&mut command);
     command.wrap(KillOnDrop);
     #[cfg(windows)]
     command.wrap(JobObject);

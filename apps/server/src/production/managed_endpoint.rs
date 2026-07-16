@@ -4,6 +4,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::{process::Child, sync::Mutex};
 
+use crate::process::configure_background_command;
+
 use super::connect_mcp::EndpointRuntime;
 
 #[derive(Clone, Default)]
@@ -90,6 +92,7 @@ impl ManagedEndpointRuntime {
             return Ok(failed_status(&config, "The relay client is not installed."));
         };
         let mut command = tokio::process::Command::new(executable);
+        configure_background_command(&mut command);
         command
             .args(["tunnel", "run"])
             .env("TUNNEL_TOKEN", &config.connector_token)

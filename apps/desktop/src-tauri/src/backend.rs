@@ -17,6 +17,7 @@ use t4code_server::{
     DESKTOP_SHUTDOWN_TOKEN_HEADER as SERVER_BACKEND_SHUTDOWN_TOKEN_HEADER, ServerConfig,
     ServerRuntime,
 };
+use t4code_server::process::{configure_background_command, configure_background_std_command};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt as TokioAsyncWriteExt},
@@ -720,6 +721,7 @@ async fn start_managed_backend(
             bootstrap_line,
         } => {
             let mut command = Command::new(program);
+            configure_background_command(&mut command);
             command
                 .args(args)
                 .stdin(Stdio::piped())
@@ -1163,10 +1165,10 @@ fn parse_wsl_distro_entries(raw: &str) -> Vec<WslDistroEntry> {
 }
 
 fn run_wsl_command(distro: &str, args: &[&str]) -> Result<String, String> {
-    let output = std::process::Command::new("wsl.exe")
-        .arg("-d")
-        .arg(distro)
-        .arg("--")
+    let mut command = std::process::Command::new("wsl.exe");
+    configure_background_std_command(&mut command);
+    let output = command
+        .args(["-d", distro, "--"])
         .args(args)
         .output()
         .map_err(|error| format!("Could not run wsl.exe for distro {distro}: {error}"))?;
@@ -1182,7 +1184,9 @@ fn run_wsl_command(distro: &str, args: &[&str]) -> Result<String, String> {
 }
 
 fn list_wsl_distros() -> Result<Vec<WslDistroEntry>, String> {
-    let output = std::process::Command::new("wsl.exe")
+    let mut command = std::process::Command::new("wsl.exe");
+    configure_background_std_command(&mut command);
+    let output = command
         .args(["-l", "-v"])
         .output()
         .map_err(|error| format!("Could not list WSL distributions: {error}"))?;

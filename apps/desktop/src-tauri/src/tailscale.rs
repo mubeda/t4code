@@ -1,6 +1,7 @@
 use serde_json::Value;
 use std::time::Duration;
 use tokio::process::Command;
+use t4code_server::process::configure_background_command;
 
 const DEFAULT_TAILSCALE_SERVE_PORT: u16 = 443;
 const TAILSCALE_STATUS_TIMEOUT: Duration = Duration::from_millis(1_500);
@@ -90,7 +91,9 @@ pub fn build_tailscale_https_base_url(
 }
 
 pub async fn read_tailscale_status() -> Result<TailscaleStatus, String> {
-    let child = Command::new(tailscale_command())
+    let mut command = Command::new(tailscale_command());
+    configure_background_command(&mut command);
+    let child = command
         .args(["status", "--json"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

@@ -6,6 +6,9 @@ use std::net::Ipv4Addr;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
+#[cfg(windows)]
+use crate::process::configure_background_command;
+
 pub(crate) const SCAN_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(any(windows, target_os = "macos"))]
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
@@ -65,6 +68,7 @@ fn normalize(mut listeners: Vec<Listener>) -> Vec<Listener> {
 #[cfg(windows)]
 async fn platform_listeners(cancellation: &CancellationToken) -> Vec<Listener> {
     let mut command = tokio::process::Command::new("netstat.exe");
+    configure_background_command(&mut command);
     command.args(["-ano", "-p", "tcp"]).kill_on_drop(true);
     let output = tokio::select! {
         () = cancellation.cancelled() => return Vec::new(),
