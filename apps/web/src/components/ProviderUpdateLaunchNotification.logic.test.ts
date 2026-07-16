@@ -58,16 +58,17 @@ function provider(input: {
   readonly updateCommand?: string | null;
   readonly updateState?: ServerProvider["updateState"];
   readonly advisoryStatus?: NonNullable<ServerProvider["versionAdvisory"]>["status"];
+  readonly checkedAt?: string;
 }): ServerProvider {
   const result: ServerProvider = {
     instanceId: input.instanceId ?? instanceId(String(input.driver)),
     driver: input.driver,
     enabled: input.enabled ?? true,
     installed: true,
-    version: input.version ?? "1.0.0",
+    version: "version" in input ? input.version : "1.0.0",
     status: "ready",
     auth: { status: "authenticated" },
-    checkedAt,
+    checkedAt: input.checkedAt ?? checkedAt,
     models: [],
     slashCommands: [],
     skills: [],
@@ -1324,6 +1325,146 @@ describe("provider update launch notification logic", () => {
           fallbackLabel: "Local",
         }),
       ).toBe("WSL");
+    });
+
+    it("covers representative selection, snapshot failures, and single-provider fallbacks", () => {
+      const defaultCodex = provider({ driver: driver("codex"), instanceId: instanceId("codex") });
+      const personalCodex = provider({
+        driver: driver("codex"),
+        instanceId: instanceId("codex_personal"),
+        checkedAt: laterCheckedAt,
+      });
+      expect(collectProviderUpdateCandidates([defaultCodex, personalCodex])[0]?.instanceId).toBe(
+        "codex",
+      );
+
+      const oldCustom = provider({
+        driver: driver("custom"),
+        instanceId: instanceId("custom_old"),
+        checkedAt,
+      });
+      const newCustom = provider({
+        driver: driver("custom"),
+        instanceId: instanceId("custom_new"),
+        checkedAt: laterCheckedAt,
+      });
+      expect(collectProviderUpdateCandidates([newCustom, oldCustom])[0]?.instanceId).toBe(
+        "custom_new",
+      );
+      expect(collectProviderUpdateCandidates([oldCustom, newCustom])[0]?.instanceId).toBe(
+        "custom_new",
+      );
+
+      const runningCustom = provider({
+        driver: driver("custom"),
+        updateState: {
+          status: "running",
+          startedAt: checkedAt,
+          finishedAt: null,
+          message: "running",
+          output: null,
+        },
+      });
+      expect(getSingleProviderUpdateProgressToastView(runningCustom).title).toBe("Updating custom");
+      expect(
+        getSingleProviderUpdateProgressToastView(
+          provider({
+            driver: driver("custom"),
+            updateState: terminalState("unchanged", "old"),
+          }),
+        ).title,
+      ).toBe("custom still needs an update");
+      expect(
+        getSingleProviderUpdateProgressToastView(
+          provider({
+            driver: driver("custom"),
+            version: null,
+            latestVersion: null,
+            advisoryStatus: "current",
+            updateState: terminalState("succeeded", "done"),
+          }),
+        ).title,
+      ).toBe("custom updated");
+      expect(
+        getSingleProviderUpdateProgressToastView(
+          provider({
+            driver: driver("custom"),
+            latestVersion: null,
+            advisoryStatus: "current",
+            updateState: terminalState("failed", "nope"),
+          }),
+        ).title,
+      ).toBe("custom update failed");
+
+      expect(firstFailedProviderUpdateMessage([])).toBeNull();
+      expect(firstFailedProviderUpdateMessage([AsyncResult.failure(Cause.fail("opaque"))])).toBe(
+        "Provider update failed.",
+      );
+      expect(
+        collectUpdatedProviderSnapshots({
+          results: [
+            AsyncResult.failure(Cause.fail("offline")),
+            AsyncResult.success({ providers: [newCustom, { ...newCustom, checkedAt }] }),
+          ],
+          providerInstanceIds: new Set([newCustom.instanceId]),
+        }),
+      ).toEqual([newCustom]);
+      expect(firstRejectedProviderUpdateMessage([])).toBeNull();
+    });
+
+    it("resolves every terminal result and live-pill row status", () => {
+      const group: LocalEnvironmentUpdateGroup = {
+        environmentId: "env" as EnvironmentId,
+        label: "Local",
+        isPrimary: true,
+        isSettling: false,
+        candidates: [updateCandidate({ driver: driver("custom") })],
+        providers: [],
+      };
+      const result = (phase: "failed" | "unchanged"): ProviderUpdateToastView => ({
+        phase,
+        type: phase === "failed" ? "error" : "warning",
+        title: phase,
+        description: `${phase} details`,
+      });
+      expect(
+        resolveEnvironmentUpdateRowStatus({
+          group,
+          error: undefined,
+          result: result("failed"),
+          pill: null,
+          isPending: false,
+        }),
+      ).toEqual({ kind: "failed", text: "failed details" });
+      expect(
+        resolveEnvironmentUpdateRowStatus({
+          group,
+          error: undefined,
+          result: result("unchanged"),
+          pill: null,
+          isPending: false,
+        }),
+      ).toEqual({ kind: "unchanged", text: "unchanged details" });
+      for (const [tone, kind] of [
+        ["error", "failed"],
+        ["warning", "unchanged"],
+        ["loading", "loading"],
+      ] as const) {
+        expect(
+          resolveEnvironmentUpdateRowStatus({
+            group,
+            error: undefined,
+            result: undefined,
+            pill: {
+              key: tone,
+              tone,
+              title: tone,
+              description: `${tone} details`,
+            },
+            isPending: false,
+          }).kind,
+        ).toBe(kind);
+      }
     });
   });
 });

@@ -426,4 +426,71 @@ describe("instance-scoped model selection", () => {
       instanceId: "codex",
     });
   });
+
+  it("covers duplicate custom models and empty instance fallbacks", () => {
+    const serverCustom = {
+      ...provider({ instanceId: "codex", models: [] }),
+      models: [
+        {
+          slug: "server-custom",
+          name: "Server custom",
+          isCustom: true,
+          capabilities: {},
+        },
+      ],
+    } satisfies ServerProvider;
+    const duplicateSettings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      providerInstances: {
+        [ProviderInstanceId.make("codex")]: {
+          driver: ProviderDriverKind.make("codex"),
+          config: { customModels: ["server-custom", 123, "local-custom"] },
+        },
+      },
+    } as unknown as UnifiedSettings;
+    expect(
+      getAppModelOptionsForInstance(
+        duplicateSettings,
+        deriveProviderInstanceEntries([serverCustom])[0]!,
+      ).map((option) => option.slug),
+    ).toEqual(["server-custom", "local-custom"]);
+
+    const empty = provider({ instanceId: "codex", models: [] });
+    expect(
+      resolveAppModelSelectionForInstance(
+        empty.instanceId,
+        {
+          ...DEFAULT_UNIFIED_SETTINGS,
+          providerInstances: {},
+          providers: {} as UnifiedSettings["providers"],
+        },
+        [empty],
+        null,
+      ),
+    ).toBeNull();
+  });
+
+  it("uses default selections and handles providers without a default model", () => {
+    const noSelection = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      textGenerationModelSelection: undefined,
+    } as unknown as UnifiedSettings;
+    expect(resolveAppModelSelectionState(noSelection, [])).toMatchObject({ instanceId: "codex" });
+
+    const custom = provider({
+      provider: ProviderDriverKind.make("custom"),
+      instanceId: "custom",
+      models: [],
+    });
+    expect(
+      resolveAppModelSelectionState(
+        {
+          ...noSelection,
+          providerInstances: {},
+          providers: {} as UnifiedSettings["providers"],
+        },
+        [custom],
+      ),
+    ).toEqual({ instanceId: ProviderInstanceId.make("custom"), model: "" });
+  });
 });
