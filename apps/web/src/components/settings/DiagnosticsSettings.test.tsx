@@ -879,6 +879,7 @@ describe("DiagnosticsSettingsPanel diagnostic log download", () => {
     expect(markup).toContain('data-section-title="Diagnostic logs"');
     expect(markup).toContain("Download diagnostic logs");
     expect(markup).toContain("server.log");
+    expect(markup).toContain("server.trace.ndjson");
     expect(markup).toContain("frontend.log");
     expect(markup).toContain("Download logs");
   });

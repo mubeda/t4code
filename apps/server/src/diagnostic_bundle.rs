@@ -15,8 +15,10 @@ use crate::{
 
 const FRONTEND_LOG_MAX_BYTES: usize = 512 * 1024;
 const SERVER_LOG_ENTRY: &str = "server.log";
+const SERVER_TRACE_ENTRY: &str = "server.trace.ndjson";
 const FRONTEND_LOG_ENTRY: &str = "frontend.log";
 const EMPTY_SERVER_LOG: &str = "No retained server logs were found.\n";
+const EMPTY_SERVER_TRACE: &str = "No retained server trace records were found.\n";
 const EMPTY_FRONTEND_LOG: &str = "No frontend warnings or errors were captured.\n";
 
 #[derive(Clone)]
@@ -67,6 +69,10 @@ fn build_bundle(
     generated_at: OffsetDateTime,
 ) -> Result<DiagnosticBundle, DiagnosticBundleError> {
     let server_log = collect_server_logs(logs_dir)?;
+    let server_trace = collect_retained_logs(
+        &logs_dir.join(SERVER_TRACE_ENTRY),
+        EMPTY_SERVER_TRACE,
+    )?;
     let mut frontend_log = if frontend_log.trim().is_empty() {
         EMPTY_FRONTEND_LOG.to_owned()
     } else {
@@ -85,6 +91,12 @@ fn build_bundle(
         .map_err(DiagnosticBundleError::Zip)?;
     writer
         .write_all(server_log.as_bytes())
+        .map_err(DiagnosticBundleError::Write)?;
+    writer
+        .start_file(SERVER_TRACE_ENTRY, options)
+        .map_err(DiagnosticBundleError::Zip)?;
+    writer
+        .write_all(server_trace.as_bytes())
         .map_err(DiagnosticBundleError::Write)?;
     writer
         .start_file(FRONTEND_LOG_ENTRY, options)
@@ -111,15 +123,24 @@ fn build_bundle(
 }
 
 fn collect_server_logs(logs_dir: &Path) -> Result<String, DiagnosticBundleError> {
-    let active_log = logs_dir.join(SERVER_LOG_ENTRY);
+    collect_retained_logs(&logs_dir.join(SERVER_LOG_ENTRY), EMPTY_SERVER_LOG)
+}
+
+fn collect_retained_logs(
+    active_log: &Path,
+    empty_message: &str,
+) -> Result<String, DiagnosticBundleError> {
     let mut combined = String::new();
-    for path in retained_server_log_paths(&active_log) {
+    for path in retained_server_log_paths(active_log) {
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
         let Some(contents) = read_bounded_if_present(&path)? else {
             continue;
         };
+        if contents.trim().is_empty() {
+            continue;
+        }
         if !combined.is_empty() {
             combined.push('\n');
         }
@@ -130,7 +151,7 @@ fn collect_server_logs(logs_dir: &Path) -> Result<String, DiagnosticBundleError>
         }
     }
     if combined.is_empty() {
-        Ok(EMPTY_SERVER_LOG.to_owned())
+        Ok(empty_message.to_owned())
     } else {
         Ok(combined)
     }

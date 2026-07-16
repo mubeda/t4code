@@ -7,7 +7,10 @@ import * as Schema from "effect/Schema";
 import { parse as parseToml, type TomlTable } from "smol-toml";
 
 const PackageJson = Schema.fromJsonString(
-  Schema.Struct({ scripts: Schema.Record(Schema.String, Schema.String) }),
+  Schema.Struct({
+    version: Schema.optional(Schema.String),
+    scripts: Schema.Record(Schema.String, Schema.String),
+  }),
 );
 const decodePackageJson = Schema.decodeUnknownEffect(PackageJson);
 
@@ -134,6 +137,11 @@ it.layer(NodeServices.layer)("canonical Rust workspace", (it) => {
 
         const packageJson = yield* decodePackageJson(
           yield* fs.readFileString(path.join(repoRoot, rustPackage.packageJsonPath)),
+        );
+        assert.equal(
+          childPackage.version,
+          packageJson.version,
+          `${rustPackage.memberPath}/Cargo.toml version must match ${rustPackage.packageJsonPath}`,
         );
 
         for (const scriptName of rustPackage.cargoSelectedScriptNames) {
