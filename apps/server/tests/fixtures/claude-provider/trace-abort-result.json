@@ -1,0 +1,84 @@
+{
+  "threadId": "provider-thread-1",
+  "turnId": "turn-4",
+  "startup": {
+    "sessionId": "sdk-session-abort",
+    "runtimeMode": "full-access"
+  },
+  "messages": [
+    {
+      "type": "stream_event",
+      "session_id": "sdk-session-abort",
+      "uuid": "stream-abort-thread",
+      "parent_tool_use_id": null,
+      "event": {
+        "type": "message_start",
+        "message": {
+          "id": "msg-abort-thread"
+        }
+      }
+    },
+    {
+      "type": "result",
+      "subtype": "error_during_execution",
+      "is_error": false,
+      "errors": ["Error: Request was aborted."],
+      "stop_reason": "tool_use",
+      "session_id": "sdk-session-abort",
+      "uuid": "result-abort"
+    }
+  ],
+  "expectedEvents": [
+    {
+      "type": "session.started",
+      "threadId": "provider-thread-1",
+      "payload": {
+        "message": "Claude session started.",
+        "resume": {
+          "sessionId": "sdk-session-abort"
+        }
+      }
+    },
+    {
+      "type": "session.configured",
+      "threadId": "provider-thread-1",
+      "payload": {
+        "permissionMode": "bypassPermissions",
+        "cwd": null
+      }
+    },
+    {
+      "type": "session.state.changed",
+      "threadId": "provider-thread-1",
+      "payload": {
+        "state": "ready"
+      }
+    },
+    {
+      "type": "turn.started",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-4",
+      "payload": {
+        "input": "hello"
+      }
+    },
+    {
+      "type": "thread.started",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-4",
+      "payload": {
+        "providerThreadId": "msg-abort-thread"
+      }
+    },
+    {
+      "type": "turn.completed",
+      "threadId": "provider-thread-1",
+      "turnId": "turn-4",
+      "payload": {
+        "state": "interrupted",
+        "errorMessage": "Error: Request was aborted.",
+        "stopReason": "tool_use"
+      }
+    }
+  ]
+}

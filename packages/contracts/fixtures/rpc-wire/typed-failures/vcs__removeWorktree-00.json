@@ -1,0 +1,21 @@
+{
+  "_tag": "Exit",
+  "requestId": "900719925474099312345",
+  "exit": {
+    "_tag": "Failure",
+    "cause": [
+      {
+        "_tag": "Fail",
+        "error": {
+          "_tag": "GitCommandError",
+          "operation": "rK ",
+          "command": ".<cmN07N:W",
+          "cwd": "~Z",
+          "exitCode": 9.80908925027372e-45,
+          "stdoutLength": -2.802596928649634e-44,
+          "detail": "val"
+        }
+      }
+    ]
+  }
+}

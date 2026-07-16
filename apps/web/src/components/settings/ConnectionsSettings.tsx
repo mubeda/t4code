@@ -29,19 +29,19 @@ import {
   type DesktopServerExposureState,
   type DesktopWslState,
   type EnvironmentId,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import {
   connectionStatusText,
   RelayConnectionRegistration,
   RelayConnectionTarget,
-} from "@t3tools/client-runtime/connection";
-import { findErrorTraceId } from "@t3tools/client-runtime/errors";
+} from "@t4code/client-runtime/connection";
+import { findErrorTraceId } from "@t4code/client-runtime/errors";
 import {
   isAtomCommandInterrupted,
   settlePromise,
   squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
-import type { RelayClientEnvironmentRecord } from "@t3tools/contracts/relay";
+} from "@t4code/client-runtime/state/runtime";
+import type { RelayClientEnvironmentRecord } from "@t4code/contracts/relay";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
@@ -1643,7 +1643,7 @@ function ConfiguredCloudLinkRow({ canManageRelay }: { readonly canManageRelay: b
   const reportUpdateFailure = (cause: unknown) => {
     const message = cause instanceof Error ? cause.message : "Could not update T4 Connect access.";
     const traceId = findErrorTraceId(cause);
-    console.error("[t3-connect] Could not update T4 Connect", { message, traceId, cause });
+    console.error("[t4code-connect] Could not update T4 Connect", { message, traceId, cause });
     setOperationError(traceId ? `${message} Trace ID: ${traceId}` : message);
     toastManager.add({
       type: "error",
@@ -1842,7 +1842,7 @@ function ConfiguredCloudRemoteEnvironmentRows({
     const message =
       cause instanceof Error ? cause.message : "Could not connect the T4 Connect environment.";
     const traceId = findErrorTraceId(cause);
-    console.error("[t3-connect] Could not connect environment", { message, traceId, cause });
+    console.error("[t4code-connect] Could not connect environment", { message, traceId, cause });
     toastManager.add({
       type: "error",
       title: "Could not connect environment",

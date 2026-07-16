@@ -2,12 +2,23 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
 import {
+  GitCommandError,
+  GitManagerError,
+  GitManagerServiceError,
   VcsCreateWorktreeInput,
   GitPreparePullRequestThreadInput,
+  GitPullRequestMaterializationError,
   GitRunStackedActionResult,
   GitRunStackedActionInput,
   GitResolvePullRequestResult,
+  TextGenerationError,
 } from "./git.ts";
+import { SourceControlProviderError } from "./sourceControl.ts";
+import {
+  expectDecodeFailure,
+  expectEncodeFailure,
+  makeInvalidClassInstance,
+} from "./test/schemaAssertions.ts";
 
 const decodeCreateWorktreeInput = Schema.decodeUnknownSync(VcsCreateWorktreeInput);
 const decodePreparePullRequestThreadInput = Schema.decodeUnknownSync(
@@ -16,6 +27,8 @@ const decodePreparePullRequestThreadInput = Schema.decodeUnknownSync(
 const decodeRunStackedActionInput = Schema.decodeUnknownSync(GitRunStackedActionInput);
 const decodeRunStackedActionResult = Schema.decodeUnknownSync(GitRunStackedActionResult);
 const decodeResolvePullRequestResult = Schema.decodeUnknownSync(GitResolvePullRequestResult);
+const decodeManagerServiceError = Schema.decodeUnknownSync(GitManagerServiceError);
+const encodeManagerServiceError = Schema.encodeUnknownSync(GitManagerServiceError);
 
 describe("VcsCreateWorktreeInput", () => {
   it("accepts omitted newRefName for existing-refName worktrees", () => {
@@ -124,5 +137,101 @@ describe("GitRunStackedActionResult", () => {
     if (parsed.toast.cta.kind === "run_action") {
       expect(parsed.toast.cta.action.kind).toBe("create_pr");
     }
+  });
+});
+
+describe("git errors", () => {
+  const errors = [
+    new GitCommandError({
+      operation: "status",
+      command: "git status --short",
+      cwd: "/repo",
+      argumentCount: 2,
+      exitCode: 128,
+      stderrLength: 20,
+      detail: "not a repository",
+    }),
+    new TextGenerationError({
+      operation: "commit message",
+      detail: "model unavailable",
+    }),
+    new GitManagerError({
+      operation: "refresh",
+      cwd: "/repo",
+      detail: "repository state unavailable",
+      cause: "io failure",
+    }),
+    new GitPullRequestMaterializationError({
+      cwd: "/repo",
+      pullRequestNumber: 42,
+      headRepository: null,
+      headBranch: "feature/pr",
+      localBranch: "codex/pr-42",
+      cause: "fetch failed",
+    }),
+  ] as const;
+
+  it("constructs every git tagged error and preserves optional diagnostics", () => {
+    expect(errors.map((error) => error.message)).toEqual([
+      "Git command failed in status (/repo): not a repository",
+      "Text generation failed in commit message: model unavailable",
+      "Git manager failed in refresh: repository state unavailable",
+      "Failed to materialize pull request #42 branch feature/pr as codex/pr-42.",
+    ]);
+    expect(errors[0].argumentCount).toBe(2);
+    expect(errors[0].outputLength).toBeUndefined();
+    expect(errors[1].cause).toBeUndefined();
+  });
+
+  it("round-trips every manager service error alternative", () => {
+    const sourceControlError = new SourceControlProviderError({
+      provider: "github",
+      operation: "resolve",
+      cwd: "/repo",
+      detail: "not found",
+    });
+    for (const error of [...errors, sourceControlError]) {
+      const encoded = encodeManagerServiceError(error);
+      const decoded = decodeManagerServiceError(encoded);
+      expect(decoded._tag).toBe(error._tag);
+    }
+  });
+
+  it("reports invalid pull request numbers on decode and encode", () => {
+    const invalid = {
+      _tag: "GitPullRequestMaterializationError",
+      cwd: "/repo",
+      pullRequestNumber: 0,
+      headRepository: null,
+      headBranch: "feature/pr",
+      localBranch: "codex/pr-0",
+      cause: "fetch failed",
+    };
+    const expectedPath = {
+      paths: [["pullRequestNumber"]],
+      containsTag: "InvalidValue" as const,
+    };
+    const decodeExpected = {
+      ...expectedPath,
+      rootTag: "Encoding" as const,
+    };
+    const encodeExpected = { ...expectedPath, rootTag: "Composite" as const };
+    expectDecodeFailure(GitPullRequestMaterializationError, invalid, decodeExpected);
+    expectEncodeFailure(
+      GitPullRequestMaterializationError,
+      makeInvalidClassInstance(GitPullRequestMaterializationError.prototype, invalid),
+      encodeExpected,
+    );
+  });
+
+  it("reports invalid worktree paths on decode and encode", () => {
+    const invalid = { cwd: "/repo", refName: "main", path: "" };
+    const expected = {
+      rootTag: "Composite" as const,
+      paths: [["path"]],
+      containsTag: "InvalidValue" as const,
+    };
+    expectDecodeFailure(VcsCreateWorktreeInput, invalid, expected);
+    expectEncodeFailure(VcsCreateWorktreeInput, invalid, expected);
   });
 });

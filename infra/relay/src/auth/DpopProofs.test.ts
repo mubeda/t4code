@@ -98,7 +98,9 @@ describe("DpopProofReplay", () => {
   });
 
   it.effect("retains the prune cutoff and database failure", () => {
-    const cause = new Error("database unavailable");
+    const cause = new Error(
+      "database unavailable at https://database.example.test/?credential=secret token-secret",
+    );
     const fakeDb = {
       delete: (table: unknown) => {
         expect(table).toBe(relayDpopProofs);
@@ -117,7 +119,11 @@ describe("DpopProofReplay", () => {
         operation: "prune-expired",
       });
       expect(Date.parse(error.expiresBefore ?? "")).not.toBeNaN();
-      expect(error.cause).toBe(cause);
+      expect(error.cause).toBe("database-error");
+      expect(error.message).toBe(
+        "Failed to persist DPoP proof replay state during 'prune-expired'",
+      );
+      expect(error.message).not.toContain(error.expiresBefore ?? "");
     }).pipe(
       Effect.provide(DpopProofs.layer.pipe(Layer.provide(Layer.succeed(RelayDb.RelayDb, fakeDb)))),
     );

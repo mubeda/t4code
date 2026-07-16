@@ -1,0 +1,890 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "kind": "snapshot",
+      "snapshot": {
+        "snapshotSequence": 2147483628,
+        "projects": [
+          {
+            "id": "*SuPA",
+            "title": "=Ptj",
+            "workspaceRoot": "[$JqJK5",
+            "repositoryIdentity": {
+              "canonicalKey": "vc;k@mZ.iOOZ",
+              "locator": {
+                "source": "git-remote",
+                "remoteName": "AKa`Lax0wL",
+                "remoteUrl": "9q`'~"
+              },
+              "rootPath": "T7k`iPE",
+              "displayName": "3b",
+              "name": "UI7w`hkIXo2"
+            },
+            "defaultModelSelection": null,
+            "scripts": [
+              {
+                "id": "3Ly)+t;*",
+                "name": "},6*[<qsqO",
+                "command": "YW5$&:/tc'E",
+                "icon": "configure",
+                "runOnWorktreeCreate": false,
+                "previewUrl": "KBk`2XARq"
+              },
+              {
+                "id": "='(d@PA",
+                "name": "kt{^%HHN",
+                "command": "dv:A5\\mEqD",
+                "icon": "build",
+                "runOnWorktreeCreate": false
+              },
+              {
+                "id": "8o5M",
+                "name": "bW 0*oU&Xtol",
+                "command": "`R8",
+                "icon": "debug",
+                "runOnWorktreeCreate": false,
+                "previewUrl": "VP=$S@ZRszG|"
+              },
+              {
+                "id": "okU7_mP(PX0v",
+                "name": "1",
+                "command": "YZr'[A",
+                "icon": "configure",
+                "runOnWorktreeCreate": true
+              },
+              {
+                "id": "4",
+                "name": "GB}",
+                "command": "^@c{0M^+9",
+                "icon": "build",
+                "runOnWorktreeCreate": true,
+                "previewUrl": ",,A}}5"
+              },
+              {
+                "id": "SpSgM=K@lH0z",
+                "name": "=p[7",
+                "command": "*6\"@qb\"8",
+                "icon": "lint",
+                "runOnWorktreeCreate": true,
+                "previewUrl": "q:PL#3r3,J7C",
+                "autoOpenPreview": true
+              },
+              {
+                "id": "tj",
+                "name": "O'Bvz0(,)-",
+                "command": "2nk=O",
+                "icon": "debug",
+                "runOnWorktreeCreate": false
+              },
+              {
+                "id": ")>W",
+                "name": "UYz$*",
+                "command": "a5W.",
+                "icon": "build",
+                "runOnWorktreeCreate": true,
+                "autoOpenPreview": true
+              },
+              {
+                "id": "*1",
+                "name": "r\"hI",
+                "command": "@g])cZ3C",
+                "icon": "play",
+                "runOnWorktreeCreate": true,
+                "autoOpenPreview": true
+              },
+              {
+                "id": "u*lv(%=I*q=",
+                "name": "[",
+                "command": "j&Y=",
+                "icon": "build",
+                "runOnWorktreeCreate": true,
+                "previewUrl": "]"
+              }
+            ],
+            "createdAt": "",
+            "updatedAt": "c"
+          },
+          {
+            "id": ".m",
+            "title": "eCWwIcUuqOB",
+            "workspaceRoot": "RK/l",
+            "defaultModelSelection": null,
+            "scripts": [
+              {
+                "id": ".'Wh4G",
+                "name": "$vCZt",
+                "command": "A;e\\0xef;qk[",
+                "icon": "play",
+                "runOnWorktreeCreate": false,
+                "previewUrl": "!|WsoJ5hD`)U",
+                "autoOpenPreview": false
+              },
+              {
+                "id": "{N~P",
+                "name": "SRnjA",
+                "command": "y^xj=Bed",
+                "icon": "play",
+                "runOnWorktreeCreate": false
+              }
+            ],
+            "createdAt": "J8 )Rh:2r4",
+            "updatedAt": "*_"
+          },
+          {
+            "id": "3=o19/v\\",
+            "title": "\"Y@Ng/SBy",
+            "workspaceRoot": "\"}K\",6x*T]5",
+            "repositoryIdentity": {
+              "canonicalKey": "]QN&hk&=r",
+              "locator": {
+                "source": "git-remote",
+                "remoteName": "jp6O\\+D",
+                "remoteUrl": "o-MinH]5O"
+              },
+              "rootPath": "PQoexY =EY",
+              "provider": "EJ",
+              "owner": "cNmw.",
+              "name": "Q}bWxM"
+            },
+            "defaultModelSelection": {
+              "instanceId": "DPh2W1_",
+              "model": "nOz",
+              "options": [
+                {
+                  "id": "Ihv.Bf1{\"Hs",
+                  "value": "kMKB]1D{;q"
+                }
+              ]
+            },
+            "scripts": [
+              {
+                "id": ",`'V!(W5G'V",
+                "name": "_0#'/",
+                "command": "7P",
+                "icon": "build",
+                "runOnWorktreeCreate": true,
+                "previewUrl": "!{*6N-"
+              },
+              {
+                "id": "*_]~;#$~Y_",
+                "name": "FH",
+                "command": "Csx",
+                "icon": "build",
+                "runOnWorktreeCreate": true
+              },
+              {
+                "id": "53",
+                "name": "zV7Hd)}AQQ\"",
+                "command": "bHbKj.qA-",
+                "icon": "lint",
+                "runOnWorktreeCreate": true
+              },
+              {
+                "id": "y!",
+                "name": "~qa@++6N",
+                "command": "%N",
+                "icon": "configure",
+                "runOnWorktreeCreate": true,
+                "previewUrl": "TXgK=qok"
+              },
+              {
+                "id": "K*",
+                "name": "3%",
+                "command": "ZSZj",
+                "icon": "test",
+                "runOnWorktreeCreate": false,
+                "previewUrl": "[lU:`t55-.mR",
+                "autoOpenPreview": false
+              }
+            ],
+            "createdAt": "$;B&7",
+            "updatedAt": ""
+          },
+          {
+            "id": "7G9@i@\\",
+            "title": "'dY%^R-]qM6",
+            "workspaceRoot": "0T$l.fvN^2",
+            "defaultModelSelection": {
+              "instanceId": "X_",
+              "model": "YJG",
+              "options": [
+                {
+                  "id": "SeG,NjTHOwDz",
+                  "value": "TW?"
+                },
+                {
+                  "id": "e!xAZ|Y",
+                  "value": true
+                },
+                {
+                  "id": "*G\\J;kG",
+                  "value": "6r13T"
+                },
+                {
+                  "id": "[`tvt",
+                  "value": false
+                },
+                {
+                  "id": "y[@Bp)h?r.Q",
+                  "value": "]Y`z^DaL`G["
+                }
+              ]
+            },
+            "scripts": [
+              {
+                "id": "({Q>Gj9I",
+                "name": "m},7cB\\",
+                "command": "d?qZ1UH.Q",
+                "icon": "test",
+                "runOnWorktreeCreate": false,
+                "autoOpenPreview": true
+              },
+              {
+                "id": "&*vP\"LD=hy:",
+                "name": "u",
+                "command": "$u2Xu`>rF",
+                "icon": "build",
+                "runOnWorktreeCreate": true,
+                "previewUrl": "_SmIXK"
+              },
+              {
+                "id": "2?ACzL",
+                "name": "^\"}WCg",
+                "command": "\"7lP+HZ50uSC",
+                "icon": "play",
+                "runOnWorktreeCreate": true,
+                "previewUrl": "p)_8[|",
+                "autoOpenPreview": true
+              },
+              {
+                "id": "I.Q",
+                "name": "Nc7^6LD}",
+                "command": "E+C-]-",
+                "icon": "build",
+                "runOnWorktreeCreate": true,
+                "autoOpenPreview": false
+              },
+              {
+                "id": "m9+AKUq5",
+                "name": "Y",
+                "command": "/",
+                "icon": "play",
+                "runOnWorktreeCreate": true
+              },
+              {
+                "id": "Y;6xiJWA$e",
+                "name": ":[x",
+                "command": "Lv[",
+                "icon": "lint",
+                "runOnWorktreeCreate": true
+              },
+              {
+                "id": "y`ytN1#I(J",
+                "name": "y].o8R$",
+                "command": "<ZiwW",
+                "icon": "lint",
+                "runOnWorktreeCreate": true
+              },
+              {
+                "id": ".JjPsDSURbLr",
+                "name": "C_",
+                "command": "h{'p;Kbd",
+                "icon": "build",
+                "runOnWorktreeCreate": true
+              },
+              {
+                "id": "|",
+                "name": "}ZUe",
+                "command": "e",
+                "icon": "configure",
+                "runOnWorktreeCreate": true
+              },
+              {
+                "id": "^}wyA",
+                "name": "L^b=Jf<",
+                "command": "0j",
+                "icon": "configure",
+                "runOnWorktreeCreate": false,
+                "previewUrl": ".,M)"
+              }
+            ],
+            "createdAt": "V_t",
+            "updatedAt": "T J4C"
+          },
+          {
+            "id": "BjEO3",
+            "title": "s=le",
+            "workspaceRoot": "6",
+            "defaultModelSelection": {
+              "instanceId": "T_3-2_2_",
+              "model": "('s*;s\\-fN[",
+              "options": [
+                {
+                  "id": "/Vsog",
+                  "value": false
+                },
+                {
+                  "id": "cav",
+                  "value": "gzaI-tq.kU;>"
+                },
+                {
+                  "id": "/\\vC_~XU4D",
+                  "value": false
+                },
+                {
+                  "id": "%u1]^Y~U&\"^z",
+                  "value": false
+                },
+                {
+                  "id": "Hpy\"<|!(@Px6",
+                  "value": "`-"
+                },
+                {
+                  "id": "a!",
+                  "value": false
+                },
+                {
+                  "id": "#_4=qHd@a",
+                  "value": true
+                },
+                {
+                  "id": "yHK'}o",
+                  "value": true
+                }
+              ]
+            },
+            "scripts": [
+              {
+                "id": "uv$JpE_JZ0",
+                "name": "f{-E]Z",
+                "command": "A:j",
+                "icon": "lint",
+                "runOnWorktreeCreate": true
+              },
+              {
+                "id": "1uR|[@",
+                "name": ":+zd]8s8}D5",
+                "command": "UkP",
+                "icon": "play",
+                "runOnWorktreeCreate": true,
+                "previewUrl": "/K$[!pK>",
+                "autoOpenPreview": false
+              },
+              {
+                "id": "V[;qx`.",
+                "name": "(/s+L|;Z",
+                "command": "M9UF)$URO)",
+                "icon": "debug",
+                "runOnWorktreeCreate": false
+              },
+              {
+                "id": "^}py*",
+                "name": "^'}:S+",
+                "command": ";S(",
+                "icon": "play",
+                "runOnWorktreeCreate": false,
+                "previewUrl": "k"
+              },
+              {
+                "id": "Zqj4\"",
+                "name": "!L:",
+                "command": "vit",
+                "icon": "configure",
+                "runOnWorktreeCreate": true,
+                "previewUrl": "AURSq<W"
+              },
+              {
+                "id": "bL-",
+                "name": "np^e!c>!8e",
+                "command": "d",
+                "icon": "debug",
+                "runOnWorktreeCreate": false
+              },
+              {
+                "id": "Fq|W,V|<7*}",
+                "name": "768HN<S",
+                "command": "Busal^|{",
+                "icon": "build",
+                "runOnWorktreeCreate": true,
+                "previewUrl": "~4V_.uP",
+                "autoOpenPreview": false
+              },
+              {
+                "id": "v<F",
+                "name": "h",
+                "command": "/\\Eb4N '}:",
+                "icon": "lint",
+                "runOnWorktreeCreate": true
+              },
+              {
+                "id": "s!Z$O$og0C^",
+                "name": "r1UF_k;",
+                "command": "=a#H;e`B",
+                "icon": "debug",
+                "runOnWorktreeCreate": true
+              },
+              {
+                "id": "@1/h}<+Hm\\",
+                "name": "z'9",
+                "command": "D4t9F",
+                "icon": "debug",
+                "runOnWorktreeCreate": false,
+                "previewUrl": "1ns5K"
+              }
+            ],
+            "createdAt": "f0#7vVB",
+            "updatedAt": "QG"
+          },
+          {
+            "id": "`OTx=JM^",
+            "title": "o^P?17O7,'s",
+            "workspaceRoot": "UBW` ?@l/c\\O",
+            "defaultModelSelection": {
+              "instanceId": "RC",
+              "model": "*LUje__\\",
+              "options": [
+                {
+                  "id": ":VL.",
+                  "value": true
+                },
+                {
+                  "id": "k$'3Ffq",
+                  "value": false
+                },
+                {
+                  "id": "wzbXO&h#|41h",
+                  "value": "[epaS{/5^{5"
+                },
+                {
+                  "id": "iGcis`6&Y.2{",
+                  "value": "}Q'{tUf"
+                },
+                {
+                  "id": "8Dh",
+                  "value": "c$g6!sP-6M3"
+                },
+                {
+                  "id": "2KaJQ4M",
+                  "value": "4e`$"
+                },
+                {
+                  "id": "\"1b'1ck",
+                  "value": true
+                },
+                {
+                  "id": "lk`70nE",
+                  "value": "\\TkMdJzH"
+                },
+                {
+                  "id": "_jT$4FbR4;tO",
+                  "value": false
+                },
+                {
+                  "id": ",`w3lv",
+                  "value": false
+                }
+              ]
+            },
+            "scripts": [],
+            "createdAt": "y7Z$+r",
+            "updatedAt": "FHL`I"
+          },
+          {
+            "id": "I_xka",
+            "title": "\"kd=ce(D",
+            "workspaceRoot": "=V?",
+            "defaultModelSelection": null,
+            "scripts": [
+              {
+                "id": "]U/s.FT<[Q&",
+                "name": "(f",
+                "command": "yLjxcy7:",
+                "icon": "play",
+                "runOnWorktreeCreate": true
+              },
+              {
+                "id": "u}iccT+4]",
+                "name": "%>oSu",
+                "command": "('Ost",
+                "icon": "play",
+                "runOnWorktreeCreate": true,
+                "autoOpenPreview": false
+              },
+              {
+                "id": "(G<EoK",
+                "name": "Z]xo",
+                "command": "o>L\"KJ{V6U",
+                "icon": "build",
+                "runOnWorktreeCreate": true,
+                "previewUrl": "k;"
+              }
+            ],
+            "createdAt": "W2>",
+            "updatedAt": ">P09'PJ"
+          },
+          {
+            "id": "yB}j",
+            "title": ";F_aU\"741[=s",
+            "workspaceRoot": "oS|tfU",
+            "repositoryIdentity": null,
+            "defaultModelSelection": null,
+            "scripts": [
+              {
+                "id": "e).[;P",
+                "name": "2$(P(",
+                "command": "F&x*>/KLl",
+                "icon": "configure",
+                "runOnWorktreeCreate": true,
+                "previewUrl": "o/bFdRYB",
+                "autoOpenPreview": true
+              },
+              {
+                "id": "K9RKyHc",
+                "name": "&:%Py!LP",
+                "command": "BO#m-9xe\\",
+                "icon": "configure",
+                "runOnWorktreeCreate": true
+              }
+            ],
+            "createdAt": "hWa4GMq",
+            "updatedAt": "t_F7'S"
+          },
+          {
+            "id": "(x5Wz|xO*yt:",
+            "title": "<em13C",
+            "workspaceRoot": "S\\-cKs.8sbak",
+            "defaultModelSelection": null,
+            "scripts": [
+              {
+                "id": "g*kfu",
+                "name": "mMI",
+                "command": "&)61HI",
+                "icon": "debug",
+                "runOnWorktreeCreate": true
+              },
+              {
+                "id": "}7/OA",
+                "name": "h",
+                "command": "H+/",
+                "icon": "test",
+                "runOnWorktreeCreate": true,
+                "previewUrl": "K[IS&N",
+                "autoOpenPreview": false
+              },
+              {
+                "id": "P{",
+                "name": "'AGHGseZ`",
+                "command": "4pK;>U",
+                "icon": "test",
+                "runOnWorktreeCreate": true,
+                "autoOpenPreview": false
+              }
+            ],
+            "createdAt": "7",
+            "updatedAt": "4"
+          }
+        ],
+        "threads": [
+          {
+            "id": "GZmezI~,jI",
+            "projectId": "gsNx2m'",
+            "title": "bFR7UHek",
+            "modelSelection": {
+              "instanceId": "FMle_92T_-U",
+              "model": "X",
+              "options": [
+                {
+                  "id": "zfJ!T",
+                  "value": false
+                },
+                {
+                  "id": "_N+}!",
+                  "value": true
+                },
+                {
+                  "id": "Zf&UgtBS",
+                  "value": "N703g@y:h:P!"
+                },
+                {
+                  "id": "GfJg",
+                  "value": true
+                },
+                {
+                  "id": "]eD2v.=<M",
+                  "value": true
+                },
+                {
+                  "id": ",\"|%|-",
+                  "value": false
+                },
+                {
+                  "id": "G",
+                  "value": true
+                },
+                {
+                  "id": "EkOKZg/&8\"",
+                  "value": true
+                },
+                {
+                  "id": "5i+-",
+                  "value": "b%1siQn"
+                },
+                {
+                  "id": "Tn^/P",
+                  "value": "ow7Yy:["
+                }
+              ]
+            },
+            "runtimeMode": "auto-accept-edits",
+            "interactionMode": "plan",
+            "kind": "workspace",
+            "branch": "\"_}Yo>:bv",
+            "worktreePath": null,
+            "latestTurn": null,
+            "createdAt": "",
+            "updatedAt": "@KPS+M~1",
+            "archivedAt": null,
+            "session": {
+              "threadId": "*PfH0l",
+              "status": "interrupted",
+              "providerName": "|MzlvE86\\[Y",
+              "providerInstanceId": "z38_0L--",
+              "runtimeMode": "approval-required",
+              "activeTurnId": "`",
+              "lastError": null,
+              "updatedAt": ""
+            },
+            "latestUserMessageAt": null,
+            "hasPendingApprovals": false,
+            "hasPendingUserInput": false,
+            "hasActionableProposedPlan": true
+          },
+          {
+            "id": "\\G%",
+            "projectId": "m @;",
+            "title": "ko[",
+            "modelSelection": {
+              "instanceId": "In6t__9--9",
+              "model": "AFFZpvB7Os58",
+              "options": [
+                {
+                  "id": "@l",
+                  "value": true
+                },
+                {
+                  "id": "NDow1#'G{qGb",
+                  "value": "&d_?i-xa"
+                },
+                {
+                  "id": "pX{g1ul",
+                  "value": "Z"
+                },
+                {
+                  "id": "__8pb",
+                  "value": "V\\^%'\">YQM"
+                },
+                {
+                  "id": "N<4",
+                  "value": ")o<\"c!N`"
+                },
+                {
+                  "id": "c(7?}",
+                  "value": true
+                }
+              ]
+            },
+            "runtimeMode": "approval-required",
+            "interactionMode": "plan",
+            "branch": "j",
+            "worktreePath": null,
+            "latestTurn": null,
+            "createdAt": "N=C%N?z$2",
+            "updatedAt": "$A,VF1`dg",
+            "archivedAt": "</a",
+            "session": {
+              "threadId": "vJS`mT",
+              "status": "interrupted",
+              "providerName": "wN'X",
+              "providerInstanceId": "pm--IDM-",
+              "runtimeMode": "auto-accept-edits",
+              "activeTurnId": null,
+              "lastError": null,
+              "updatedAt": "+4c$>yhfs"
+            },
+            "latestUserMessageAt": null,
+            "hasPendingApprovals": false,
+            "hasPendingUserInput": true,
+            "hasActionableProposedPlan": true
+          },
+          {
+            "id": "A\"FG1z",
+            "projectId": "I?5`)8nWntE",
+            "title": "AFW{5%[&0",
+            "modelSelection": {
+              "instanceId": "DB-i_8_-YX",
+              "model": "KZ'2==",
+              "options": [
+                {
+                  "id": "xS;;3ocE",
+                  "value": "X|@:E)4"
+                },
+                {
+                  "id": "28nY{rYi<:",
+                  "value": true
+                }
+              ]
+            },
+            "runtimeMode": "auto-accept-edits",
+            "interactionMode": "plan",
+            "branch": "B!8M*;$",
+            "worktreePath": "c<5Q%PD#",
+            "latestTurn": {
+              "turnId": ">kPL]eQEF.8",
+              "state": "error",
+              "requestedAt": "apu1UNNN",
+              "startedAt": "b",
+              "completedAt": null,
+              "assistantMessageId": null,
+              "sourceProposedPlan": {
+                "threadId": "gH3",
+                "planId": "!"
+              }
+            },
+            "createdAt": "Yd,",
+            "updatedAt": "1<rJ'[?O",
+            "archivedAt": null,
+            "session": null,
+            "latestUserMessageAt": null,
+            "hasPendingApprovals": true,
+            "hasPendingUserInput": false,
+            "hasActionableProposedPlan": true
+          },
+          {
+            "id": "as",
+            "projectId": "L",
+            "title": "4",
+            "modelSelection": {
+              "instanceId": "i4pvo6Jqi",
+              "model": "5.",
+              "options": [
+                {
+                  "id": "|6ZXU",
+                  "value": false
+                },
+                {
+                  "id": "eLaVB<",
+                  "value": "UK>#$F1z"
+                },
+                {
+                  "id": "6AThEJ^7%)t",
+                  "value": false
+                },
+                {
+                  "id": "Z8",
+                  "value": false
+                },
+                {
+                  "id": "<'4",
+                  "value": true
+                },
+                {
+                  "id": "(\\>mV1A*gwA",
+                  "value": false
+                },
+                {
+                  "id": "i791?/Rma|",
+                  "value": "NbI"
+                },
+                {
+                  "id": "1",
+                  "value": true
+                }
+              ]
+            },
+            "runtimeMode": "full-access",
+            "interactionMode": "default",
+            "kind": "workspace",
+            "branch": null,
+            "worktreePath": null,
+            "latestTurn": {
+              "turnId": "5y",
+              "state": "error",
+              "requestedAt": "&>",
+              "startedAt": "q",
+              "completedAt": "tyNw|.?ky",
+              "assistantMessageId": null
+            },
+            "createdAt": "oyr;Wf@J+",
+            "updatedAt": "m5XU23'>\"",
+            "archivedAt": "P-N5z>#Yd ",
+            "session": {
+              "threadId": "|a}G03",
+              "status": "starting",
+              "providerName": "8tzq}7",
+              "providerInstanceId": "J-AL_-09",
+              "runtimeMode": "auto-accept-edits",
+              "activeTurnId": null,
+              "lastError": null,
+              "updatedAt": ":C8T4"
+            },
+            "latestUserMessageAt": "c~4&_V",
+            "hasPendingApprovals": true,
+            "hasPendingUserInput": true,
+            "hasActionableProposedPlan": false
+          },
+          {
+            "id": "(nNam{W*,-",
+            "projectId": "(-p",
+            "title": "H*b*W_,V",
+            "modelSelection": {
+              "instanceId": "b6-1__n_",
+              "model": "Ozf4LLEB;",
+              "options": [
+                {
+                  "id": "\\JAyVo.b",
+                  "value": ".W]bBp"
+                },
+                {
+                  "id": "S:YP{.k$",
+                  "value": "s]%RVx0"
+                },
+                {
+                  "id": "1(tHB",
+                  "value": false
+                },
+                {
+                  "id": "]#?",
+                  "value": "x'GX(^Ee"
+                }
+              ]
+            },
+            "runtimeMode": "auto-accept-edits",
+            "interactionMode": "default",
+            "branch": "zVbxtbwg",
+            "worktreePath": null,
+            "latestTurn": null,
+            "createdAt": "6\\n.tW+$",
+            "updatedAt": "I/K:b4e<",
+            "archivedAt": "f\\2A\\3`",
+            "session": {
+              "threadId": "2J[Db}.",
+              "status": "ready",
+              "providerName": "'nHa#l\\",
+              "runtimeMode": "full-access",
+              "activeTurnId": "r ^9fn`",
+              "lastError": null,
+              "updatedAt": "J\\nU)xcK"
+            },
+            "latestUserMessageAt": null,
+            "hasPendingApprovals": true,
+            "hasPendingUserInput": true,
+            "hasActionableProposedPlan": true
+          }
+        ],
+        "updatedAt": "#"
+      }
+    }
+  ]
+}

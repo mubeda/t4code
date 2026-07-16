@@ -1,9 +1,26 @@
-import { CheckpointRef, EnvironmentId, MessageId, TurnId } from "@t3tools/contracts";
-import { createRef, type ComponentProps, type ReactNode, type Ref } from "react";
+import { CheckpointRef, EnvironmentId, MessageId, TurnId } from "@t4code/contracts";
+import { act, createRef, type ComponentProps, type ReactNode, type Ref } from "react";
 import type { WorkLogEntry } from "../../session-logic";
 import { renderToStaticMarkup } from "react-dom/server";
-import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
+import { createRoot, type Root } from "react-dom/client";
+import { Window } from "happy-dom";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { LegendListRef } from "@legendapp/list/react";
+
+let MessagesTimelineComponent: typeof import("./MessagesTimeline").MessagesTimeline | null = null;
+const SLOW_MESSAGES_TIMELINE_IMPORT_TIMEOUT_MS = 60_000;
+
+const h = vi.hoisted(() => ({
+  legendListProps: null as Record<string, unknown> | null,
+}));
+let domWindow: Window | null = null;
+
+interface MountedTree {
+  readonly container: HTMLDivElement;
+  readonly root: Root;
+}
+
+const mountedTrees: MountedTree[] = [];
 
 vi.mock("@legendapp/list/react", async () => {
   const legendListTestId = "legend-list";
@@ -44,6 +61,7 @@ vi.mock("@legendapp/list/react", async () => {
         };
     ref?: Ref<LegendListRef>;
   }) => {
+    h.legendListProps = props as unknown as Record<string, unknown>;
     if (props.anchoredEndSpace) {
       props.anchoredEndSpace.onSizeChanged?.(240);
       props.anchoredEndSpace.onReady?.({ anchorIndex: props.anchoredEndSpace.anchorIndex });
@@ -129,49 +147,47 @@ vi.mock("@pierre/diffs/react", () => {
   return { FileDiff: MockFileDiff };
 });
 
-function matchMedia() {
-  return {
-    matches: false,
-    addEventListener: () => {},
-    removeEventListener: () => {},
-  };
-}
+beforeEach(async () => {
+  domWindow = new Window({ url: "https://t4code.test/" });
+  vi.stubGlobal("window", domWindow);
+  vi.stubGlobal("document", domWindow.document);
+  vi.stubGlobal("navigator", domWindow.navigator);
+  vi.stubGlobal("localStorage", domWindow.localStorage);
+  vi.stubGlobal("Node", domWindow.Node);
+  vi.stubGlobal("Element", domWindow.Element);
+  vi.stubGlobal("HTMLElement", domWindow.HTMLElement);
+  vi.stubGlobal("Event", domWindow.Event);
+  vi.stubGlobal("MouseEvent", domWindow.MouseEvent);
+  vi.stubGlobal("KeyboardEvent", domWindow.KeyboardEvent);
+  vi.stubGlobal("CustomEvent", domWindow.CustomEvent);
+  vi.stubGlobal("customElements", domWindow.customElements);
+  vi.stubGlobal("MutationObserver", domWindow.MutationObserver);
+  vi.stubGlobal("ResizeObserver", domWindow.ResizeObserver);
+  vi.stubGlobal("getComputedStyle", domWindow.getComputedStyle.bind(domWindow));
+  vi.stubGlobal("requestAnimationFrame", domWindow.requestAnimationFrame.bind(domWindow));
+  vi.stubGlobal("cancelAnimationFrame", domWindow.cancelAnimationFrame.bind(domWindow));
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  MessagesTimelineComponent ??= (await import("./MessagesTimeline")).MessagesTimeline;
+}, SLOW_MESSAGES_TIMELINE_IMPORT_TIMEOUT_MS);
 
-beforeAll(() => {
-  const classList = {
-    add: () => {},
-    remove: () => {},
-    toggle: () => {},
-    contains: () => false,
-  };
-
-  vi.stubGlobal("localStorage", {
-    getItem: () => null,
-    setItem: () => {},
-    removeItem: () => {},
-    clear: () => {},
-  });
-  vi.stubGlobal("window", {
-    matchMedia,
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    requestAnimationFrame: (callback: FrameRequestCallback) => {
-      callback(0);
-      return 0;
-    },
-    cancelAnimationFrame: () => {},
-    desktopBridge: undefined,
-  });
-  vi.stubGlobal("document", {
-    documentElement: {
-      classList,
-      offsetHeight: 0,
-    },
-  });
+afterEach(async () => {
+  for (const mounted of mountedTrees.splice(0)) {
+    await act(async () => mounted.root.unmount());
+    mounted.container.remove();
+  }
+  document.body.replaceChildren();
+  vi.restoreAllMocks();
+  domWindow?.close();
+  domWindow = null;
+  vi.unstubAllGlobals();
 });
 
 const ACTIVE_THREAD_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
 const MESSAGE_CREATED_AT = "2026-03-17T19:12:28.000Z";
+
+async function loadMessagesTimeline() {
+  return MessagesTimelineComponent ?? (await import("./MessagesTimeline")).MessagesTimeline;
+}
 
 function buildProps() {
   return {
@@ -264,7 +280,7 @@ describe("MessagesTimeline", () => {
   });
 
   it("anchors a sent attachment message using its measured height", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const MessagesTimeline = await loadMessagesTimeline();
     const onAnchorReady = vi.fn();
     const onAnchorSizeChanged = vi.fn();
     const firstEntry = buildUserTimelineEntry("First prompt.");
@@ -454,16 +470,16 @@ describe("MessagesTimeline", () => {
               createdAt: "2026-03-17T19:12:28.000Z",
               label: "Updated files",
               tone: "tool",
-              changedFiles: ["C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts"],
+              changedFiles: ["C:/Users/mike/dev-stuff/t4code/apps/web/src/session-logic.ts"],
             },
           },
         ]}
-        workspaceRoot="C:/Users/mike/dev-stuff/t3code"
+        workspaceRoot="C:/Users/mike/dev-stuff/t4code"
       />,
     );
 
-    expect(markup).toContain("t3code/apps/web/src/session-logic.ts");
-    expect(markup).not.toContain("C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts");
+    expect(markup).toContain("t4code/apps/web/src/session-logic.ts");
+    expect(markup).not.toContain("C:/Users/mike/dev-stuff/t4code/apps/web/src/session-logic.ts");
   });
 
   it("renders review comment contexts as structured cards instead of raw tags", async () => {
@@ -702,8 +718,26 @@ type MessagesTimelineProps = ComponentProps<typeof import("./MessagesTimeline").
 async function renderTimeline(
   props: Partial<MessagesTimelineProps> & Pick<MessagesTimelineProps, "timelineEntries">,
 ) {
-  const { MessagesTimeline } = await import("./MessagesTimeline");
+  const MessagesTimeline = await loadMessagesTimeline();
+  h.legendListProps = null;
   return renderToStaticMarkup(<MessagesTimeline {...buildProps()} {...props} />);
+}
+
+async function mountTimeline(
+  props: Partial<MessagesTimelineProps> & Pick<MessagesTimelineProps, "timelineEntries">,
+): Promise<HTMLDivElement> {
+  const MessagesTimeline = await loadMessagesTimeline();
+  h.legendListProps = null;
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  mountedTrees.push({ container, root });
+  await act(async () => root.render(<MessagesTimeline {...buildProps()} {...props} />));
+  return container;
+}
+
+async function click(element: HTMLElement): Promise<void> {
+  await act(async () => element.click());
 }
 
 describe("MessagesTimeline assistant rows", () => {
@@ -1329,5 +1363,296 @@ describe("MessagesTimeline minimap", () => {
     });
 
     expect(markup).not.toContain('data-testid="timeline-minimap"');
+  });
+
+  it("drives pointer, keyboard, scroll, and strip visibility behavior", async () => {
+    const onManualNavigation = vi.fn();
+    const onIsAtEndChange = vi.fn();
+    const scrollToIndex = vi.fn();
+    const state = {
+      isNearEnd: false,
+      scroll: 10,
+      scrollLength: 100,
+      positionAtIndex: (index: number) => (index === 0 ? 0 : 220),
+      sizeAtIndex: (index: number) => (index === 0 ? 40 : Number.NaN),
+    };
+    const listRef = {
+      current: {
+        getState: () => state,
+        scrollToIndex,
+      },
+    } as unknown as React.RefObject<LegendListRef | null>;
+    const secondUser = {
+      ...buildUserTimelineEntry("Second question"),
+      id: "entry-user-2",
+      message: {
+        ...buildUserTimelineEntry("Second question").message,
+        id: MessageId.make("message-user-2"),
+      },
+    };
+
+    const container = await mountTimeline({
+      listRef,
+      onManualNavigation,
+      onIsAtEndChange,
+      contentInsetEndAdjustment: -4,
+      timelineEntries: [
+        buildUserTimelineEntry("First question"),
+        buildAssistantTimelineEntry({
+          id: "entry-assistant-1",
+          messageId: "message-assistant-1",
+          text: "First answer",
+        }),
+        secondUser,
+      ],
+    });
+
+    const strips = Array.from(container.querySelectorAll<HTMLElement>("[data-minimap-strip]"));
+    await act(async () => {
+      const onScroll = h.legendListProps?.onScroll;
+      if (typeof onScroll === "function") onScroll();
+    });
+
+    expect(onIsAtEndChange).toHaveBeenCalledWith(false);
+    expect(strips[0]?.dataset.inView).toBe("true");
+    expect(strips[1]?.dataset.inView).toBe("false");
+
+    const minimap = container.querySelector<HTMLButtonElement>(
+      'button[aria-label^="Jump to message:"]',
+    );
+    expect(minimap).not.toBeNull();
+    vi.spyOn(minimap!, "getBoundingClientRect").mockReturnValue({
+      top: 100,
+      height: 100,
+    } as DOMRect);
+
+    await act(async () => minimap!.focus());
+    expect(minimap?.getAttribute("aria-label")).toContain("First question");
+
+    const arrowDown = new KeyboardEvent("keydown", {
+      key: "ArrowDown",
+      bubbles: true,
+      cancelable: true,
+    });
+    await act(async () => minimap!.dispatchEvent(arrowDown));
+    expect(arrowDown.defaultPrevented).toBe(true);
+    expect(minimap?.getAttribute("aria-label")).toContain("Second question");
+
+    for (const key of ["Enter", " "]) {
+      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      await act(async () => minimap!.dispatchEvent(event));
+      expect(event.defaultPrevented).toBe(true);
+    }
+
+    const mouseDown = new MouseEvent("mousedown", {
+      clientY: 190,
+      bubbles: true,
+      cancelable: true,
+    });
+    await act(async () => minimap!.dispatchEvent(mouseDown));
+    expect(mouseDown.defaultPrevented).toBe(true);
+    await act(async () =>
+      minimap!.dispatchEvent(
+        new MouseEvent("click", { clientY: 190, bubbles: true, cancelable: true }),
+      ),
+    );
+
+    expect(onManualNavigation).toHaveBeenCalledTimes(3);
+    expect(scrollToIndex).toHaveBeenCalledWith({ index: 2, animated: true, viewOffset: 24 });
+    expect(document.activeElement).not.toBe(minimap);
+  });
+});
+
+describe("MessagesTimeline mounted interactions", () => {
+  it("expands regular image attachments and reverts from their user message", async () => {
+    const onImageExpand = vi.fn();
+    const onRevertUserMessage = vi.fn();
+    const entry = buildUserTimelineEntry("Review these screenshots");
+    const messageId = entry.message.id;
+    const timelineEntry = {
+      ...entry,
+      message: {
+        ...entry.message,
+        attachments: [
+          {
+            type: "image" as const,
+            id: "image-previewable",
+            name: "screen.png",
+            mimeType: "image/png",
+            sizeBytes: 12,
+            previewUrl: "data:image/png;base64,AA==",
+          },
+          {
+            type: "image" as const,
+            id: "image-without-preview",
+            name: "missing.png",
+            mimeType: "image/png",
+            sizeBytes: 0,
+            previewUrl: "",
+          },
+        ],
+      },
+    };
+
+    const container = await mountTimeline({
+      timelineEntries: [timelineEntry],
+      revertTurnCountByUserMessageId: new Map([[messageId, 0]]),
+      onImageExpand,
+      onRevertUserMessage,
+    });
+    const preview = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Preview screen.png"]',
+    );
+    const revert = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Revert to this message"]',
+    );
+    expect(preview).not.toBeNull();
+    expect(revert).not.toBeNull();
+
+    await click(preview!);
+    await click(revert!);
+
+    expect(container.textContent).toContain("missing.png");
+    expect(onImageExpand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        index: 0,
+        images: [{ name: "screen.png", src: "data:image/png;base64,AA==" }],
+      }),
+    );
+    expect(onRevertUserMessage).toHaveBeenCalledWith(messageId);
+  });
+
+  it("expands a folded turn and opens its rendered diff action", async () => {
+    const onOpenTurnDiff = vi.fn();
+    const assistantMessageId = MessageId.make("message-assistant-actions");
+    const container = await mountTimeline({
+      timelineEntries: [
+        buildUserTimelineEntry("Run it"),
+        buildWorkTimelineEntry("work-action", {
+          turnId: TURN_ID,
+          label: "MCP call completed",
+          itemType: "mcp_tool_call",
+          command: "display command",
+          rawCommand: "raw command --verbose",
+          detail: "Returned data",
+          changedFiles: ["/repo/src/a.ts", "/repo/src/b.ts"],
+          toolData: { query: "status" },
+        }),
+        buildAssistantTimelineEntry({
+          id: "entry-assistant-actions",
+          messageId: "message-assistant-actions",
+          text: "Done",
+          turnId: TURN_ID,
+        }),
+      ],
+      latestTurn: {
+        turnId: TURN_ID,
+        state: "completed",
+        startedAt: MESSAGE_CREATED_AT,
+        completedAt: LATER_CREATED_AT,
+      },
+      turnDiffSummaryByAssistantMessageId: new Map([
+        [
+          assistantMessageId,
+          {
+            turnId: TURN_ID,
+            checkpointTurnCount: 1,
+            checkpointRef: CheckpointRef.make("checkpoint-actions"),
+            status: "ready" as const,
+            files: [{ path: "src/a.ts", kind: "modified", additions: 0, deletions: 0 }],
+            assistantMessageId,
+            completedAt: LATER_CREATED_AT,
+          },
+        ],
+      ]),
+      onOpenTurnDiff,
+    });
+
+    const fold = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) =>
+        button.getAttribute("aria-expanded") === "false" && button.textContent?.includes("Worked"),
+    );
+    expect(fold).toBeDefined();
+    expect(container.textContent).not.toContain("display command");
+    await click(fold!);
+    expect(fold?.getAttribute("aria-expanded")).toBe("true");
+    expect(container.textContent).toContain("display command");
+
+    const viewDiff = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "View diff",
+    );
+    expect(viewDiff).toBeDefined();
+    await click(viewDiff!);
+    expect(onOpenTurnDiff).toHaveBeenCalledWith(TURN_ID, "src/a.ts");
+  });
+
+  it("toggles a work row with Enter and Space while preventing their defaults", async () => {
+    const container = await mountTimeline({
+      activeTurnInProgress: true,
+      timelineEntries: [
+        buildWorkTimelineEntry("work-keyboard", {
+          label: "Inspect",
+          itemType: "mcp_tool_call",
+          toolData: { value: 1 },
+          rawCommand: "inspect --raw",
+          changedFiles: ["src/changed.ts"],
+        }),
+      ],
+    });
+    const workRow = container.querySelector<HTMLElement>(
+      'div[role="button"][aria-label^="Inspect"]',
+    );
+    expect(workRow).not.toBeNull();
+    expect(workRow?.querySelector("pre")).toBeNull();
+
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    await act(async () => workRow!.dispatchEvent(enter));
+    expect(enter.defaultPrevented).toBe(true);
+    expect(workRow?.querySelector("pre")?.textContent).toContain('"value": 1');
+
+    const space = new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true });
+    await act(async () => workRow!.dispatchEvent(space));
+    expect(space.defaultPrevented).toBe(true);
+    expect(workRow?.querySelector("pre")).toBeNull();
+
+    const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    await act(async () => workRow!.dispatchEvent(escape));
+    expect(escape.defaultPrevented).toBe(false);
+    expect(workRow?.querySelector("pre")).toBeNull();
+  });
+
+  it("preserves the work-group anchor while toggling hidden entries", async () => {
+    const scrollToOffset = vi.fn();
+    const listRef = {
+      current: {
+        getState: () => ({ scroll: 50 }),
+        scrollToOffset,
+      },
+    } as unknown as React.RefObject<LegendListRef | null>;
+    const container = await mountTimeline({
+      listRef,
+      timelineEntries: [
+        buildWorkTimelineEntry("work-1", { label: "One", command: "echo one" }),
+        buildWorkTimelineEntry("work-2", { label: "Two", command: "echo two" }),
+        buildWorkTimelineEntry("work-3", { label: "Three", command: "echo three" }),
+      ],
+    });
+    const toggle = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) =>
+        button.getAttribute("aria-expanded") === "false" &&
+        button.textContent?.includes("previous tool call"),
+    );
+    expect(toggle).toBeDefined();
+    const anchor = toggle?.closest<HTMLElement>("[data-timeline-row-id]");
+    expect(anchor).not.toBeNull();
+    vi.spyOn(anchor!, "getBoundingClientRect")
+      .mockReturnValueOnce({ bottom: 100 } as DOMRect)
+      .mockReturnValueOnce({ bottom: 115 } as DOMRect);
+
+    await click(toggle!);
+
+    expect(scrollToOffset).toHaveBeenCalledWith({ offset: 65, animated: false });
+    expect(toggle?.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle?.textContent).toContain("Show fewer");
   });
 });

@@ -1,8 +1,6 @@
 @import "tailwindcss";
 
 @custom-variant dark (&:is(.dark, .dark *));
-/* Window Controls Overlay: active when Electron exposes native titlebar control geometry. */
-@custom-variant wco (&:is(.wco, .wco *));
 
 :root {
   --app-scrollbar-width: 6px;
@@ -335,19 +333,6 @@ pre,
 code {
   font-family:
     "SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace;
-}
-
-/* Window drag region (frameless titlebar) */
-.drag-region {
-  -webkit-app-region: drag;
-}
-
-.drag-region button,
-.drag-region input,
-.drag-region textarea,
-.drag-region select,
-.drag-region a {
-  -webkit-app-region: no-drag;
 }
 
 /* Scrollbar styling */

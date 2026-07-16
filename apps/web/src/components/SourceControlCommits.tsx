@@ -1,4 +1,4 @@
-import type { ScopedThreadRef, VcsCommit } from "@t3tools/contracts";
+import type { ScopedThreadRef, VcsCommit } from "@t4code/contracts";
 import { ChevronDownIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 

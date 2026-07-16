@@ -9,15 +9,21 @@ import {
   type SourceControlPublishRepositoryResult,
   type VcsPullResult,
   type VcsStatusResult,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 import type { Dispatch, ReactElement, ReactNode, SetStateAction } from "react";
+import * as React from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 type EffectCallback = () => void | (() => void);
+
+const browserRuntime =
+  typeof document !== "undefined" && typeof document.createElement === "function";
+const staticDescribe = browserRuntime ? describe.skip : describe;
 
 const hooks = vi.hoisted(() => {
   let cursor = 0;
@@ -238,25 +244,6 @@ const testState = vi.hoisted(() => {
   };
 });
 
-vi.mock("react", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("react")>();
-  return {
-    ...actual,
-    useCallback: hooks.useCallback,
-    useMemo: hooks.useMemo,
-    useRef: hooks.useRef,
-    useState: hooks.useState,
-    useEffect: hooks.useEffect.bind(hooks),
-    useLayoutEffect: hooks.useLayoutEffect.bind(hooks),
-    useEffectEvent: hooks.useEffectEvent,
-    useDeferredValue: hooks.useDeferredValue,
-  };
-});
-
-vi.mock("react/compiler-runtime", () => ({
-  c: hooks.useMemoCache,
-}));
-
 vi.mock("@effect/atom-react", () => ({
   useAtomValue: (atom: unknown) =>
     atom !== null &&
@@ -325,6 +312,7 @@ vi.mock("~/state/entities", () => ({
 }));
 
 vi.mock("~/composerDraftStore", () => ({
+  DraftId: { make: (value: string) => value },
   useComposerDraftStore: <T,>(selector: (store: Record<string, unknown>) => T): T =>
     selector({
       getDraftSession: () => testState.draftThread,
@@ -367,6 +355,8 @@ vi.mock("~/components/ui/button", () => ({
         data-slot="button"
         data-disabled={props.disabled ? "true" : undefined}
         aria-label={props["aria-label"]}
+        disabled={props.disabled}
+        onClick={props.onClick}
       >
         {props.children}
       </button>
@@ -471,7 +461,16 @@ vi.mock("~/components/ui/textarea", () => ({
 vi.mock("~/components/ui/input", () => ({
   Input: (props: CapturedInputProps) => {
     captured.inputs.push(props);
-    return <input data-slot="input" id={props.id} defaultValue={props.value} />;
+    return (
+      <input
+        data-slot="input"
+        id={props.id}
+        value={props.value}
+        disabled={props.disabled}
+        readOnly={typeof document === "undefined"}
+        onChange={props.onChange}
+      />
+    );
   },
 }));
 
@@ -488,7 +487,25 @@ vi.mock("~/components/ui/group", () => ({
   GroupSeparator: () => <hr />,
 }));
 
-import GitActionsControl from "./GitActionsControl";
+if (!browserRuntime) {
+  vi.doMock("react", async () => {
+    const actual = await vi.importActual<typeof import("react")>("react");
+    return {
+      ...actual,
+      useCallback: hooks.useCallback,
+      useMemo: hooks.useMemo,
+      useRef: hooks.useRef,
+      useState: hooks.useState,
+      useEffect: hooks.useEffect.bind(hooks),
+      useLayoutEffect: hooks.useLayoutEffect.bind(hooks),
+      useEffectEvent: hooks.useEffectEvent,
+      useDeferredValue: hooks.useDeferredValue,
+    };
+  });
+  vi.doMock("react/compiler-runtime", () => ({ c: hooks.useMemoCache }));
+}
+
+const { default: GitActionsControl } = await import("./GitActionsControl");
 
 const ENVIRONMENT_ID = EnvironmentId.make("env-1");
 const THREAD_REF: ScopedThreadRef = {
@@ -628,6 +645,22 @@ function buttonByText(text: string): CapturedButtonProps | undefined {
   );
 }
 
+function requiredButtonByText(text: string): CapturedButtonProps {
+  const match = buttonByText(text);
+  expect(match, `Expected button: ${text}`).toBeDefined();
+  if (!match) throw new Error(`Missing button: ${text}`);
+  return match;
+}
+
+function requiredHandler<T extends (...args: never[]) => unknown>(
+  value: unknown,
+  label: string,
+): T {
+  expect(value, `Expected handler: ${label}`).toBeTypeOf("function");
+  if (typeof value !== "function") throw new Error(`Missing handler: ${label}`);
+  return value as T;
+}
+
 function menuItemByText(text: string): CapturedMenuItemProps | undefined {
   return (captured.menuItems as CapturedMenuItemProps[]).find((item) =>
     collectText(item.children).includes(text),
@@ -710,7 +743,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("trigger rendering", () => {
+staticDescribe("trigger rendering", () => {
   it("renders nothing without a git cwd", () => {
     const markup = render(buildProps({ gitCwd: null }));
     expect(markup).toBe("");
@@ -720,6 +753,12 @@ describe("trigger rendering", () => {
     const markup = render(buildProps({ hideTrigger: true }));
     expect(markup).not.toContain("Git actions");
     expect(markup).not.toContain("Initialize Git");
+  });
+
+  it("does not refresh status when no active environment is selected", () => {
+    render(buildProps({ activeThreadRef: null }));
+    (captured.menus[0] as CapturedMenuProps).onOpenChange?.(true);
+    expect(testState.refreshVcsStatus).not.toHaveBeenCalled();
   });
 
   it("shows the Initialize Git button when the folder is not a repository", () => {
@@ -770,7 +809,7 @@ describe("trigger rendering", () => {
   });
 });
 
-describe("quick action", () => {
+staticDescribe("quick action", () => {
   it("shows a disabled hint popover while a git action is running", () => {
     testState.isGitActionRunning = true;
     const markup = render();
@@ -834,6 +873,18 @@ describe("quick action", () => {
         title: "Pull failed",
         description: "pull failed badly",
       }),
+    );
+  });
+
+  it("describes a pull without a named upstream", async () => {
+    testState.gitStatus = status({ behindCount: 1 });
+    testState.pullAction.run.mockResolvedValue(success(pullResult({ upstreamRef: null })));
+    render();
+    buttonByText("Pull")?.onClick?.(clickEvent());
+    await flushPromises();
+    expect(testState.toast.update).toHaveBeenCalledWith(
+      "toast-1",
+      expect.objectContaining({ description: "Updated feature/test from upstream" }),
     );
   });
 
@@ -925,6 +976,28 @@ describe("quick action", () => {
     );
   });
 
+  it("uses a generic message for opaque PR link failures", async () => {
+    testState.localApi = { shell: { openExternal: vi.fn() } };
+    testState.openPullRequestLink.mockRejectedValue("opaque browser failure");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    testState.gitStatus = status({
+      pr: {
+        number: 8,
+        title: "Open PR",
+        url: "https://example.com/pr/8",
+        baseRef: "main",
+        headRef: "feature/test",
+        state: "open",
+      },
+    });
+    render();
+    buttonByText("View PR")?.onClick?.(clickEvent());
+    await flushPromises();
+    expect(testState.toast.add).toHaveBeenCalledWith(
+      expect.objectContaining({ description: "An error occurred." }),
+    );
+  });
+
   it("runs the commit-push-pr stack when the worktree has changes", async () => {
     testState.gitStatus = status({
       hasWorkingTreeChanges: true,
@@ -950,7 +1023,7 @@ describe("quick action", () => {
   });
 });
 
-describe("git actions menu", () => {
+staticDescribe("git actions menu", () => {
   it("refreshes vcs status when the menu opens", () => {
     render();
     (captured.menus[0] as CapturedMenuProps).onOpenChange?.(true);
@@ -992,6 +1065,32 @@ describe("git actions menu", () => {
     });
     const markup = render();
     expect(markup).toContain("Commit local changes before creating a pull request.");
+  });
+
+  it("explains change-request restrictions for dirty and detached branches", () => {
+    testState.gitStatus = status({
+      hasWorkingTreeChanges: true,
+      workingTree: {
+        files: [{ path: "dirty.ts", insertions: 1, deletions: 0 }],
+        insertions: 1,
+        deletions: 0,
+      },
+      aheadCount: 1,
+    });
+    let markup = render();
+    expect(markup).toContain("Commit local changes before creating a pull request.");
+
+    testState.gitStatus = status({ refName: null, aheadCount: 1 });
+    markup = render();
+    expect(markup).toContain("Detached HEAD: checkout a refName before creating a pull request.");
+  });
+
+  it("explains behind-upstream change requests", () => {
+    testState.gitStatus = status({ aheadCount: 1, behindCount: 1 });
+    const markup = render();
+    expect(markup).toContain(
+      "Branch is behind upstream. Pull/rebase before creating a pull request.",
+    );
   });
 
   it("marks all items busy while an action runs", () => {
@@ -1062,7 +1161,7 @@ describe("git actions menu", () => {
   });
 });
 
-describe("commit dialog", () => {
+staticDescribe("commit dialog", () => {
   const changedStatus = () =>
     status({
       hasWorkingTreeChanges: true,
@@ -1222,7 +1321,7 @@ function findNativeButtons(tree: unknown): NativeElement[] {
   return found;
 }
 
-describe("default branch confirmation", () => {
+staticDescribe("default branch confirmation", () => {
   function openConfirmation(): string {
     testState.gitStatus = status({ isDefaultRef: true, refName: "main", aheadCount: 1 });
     render();
@@ -1264,7 +1363,7 @@ describe("default branch confirmation", () => {
   });
 });
 
-describe("stacked action results", () => {
+staticDescribe("stacked action results", () => {
   async function runPush(): Promise<void> {
     testState.gitStatus = status({ aheadCount: 1 });
     render();
@@ -1350,6 +1449,62 @@ describe("stacked action results", () => {
     ).actionProps;
     actionProps.onClick();
     expect(openExternal).toHaveBeenCalledWith("https://example.com/pr/9");
+  });
+
+  it("keeps an open-PR success action inert when the local API is unavailable", async () => {
+    testState.stackedAction.run.mockResolvedValue(
+      success(
+        stackedResult({
+          toast: {
+            title: "PR created",
+            cta: { kind: "open_pr", label: "Open PR", url: "https://example.com/pr/10" },
+          },
+        }),
+      ),
+    );
+    await runPush();
+    const successUpdate = testState.toast.update.mock.calls.find(
+      ([, options]) => (options as { type?: string }).type === "success",
+    );
+    if (!successUpdate) throw new Error("Expected the success toast containing the PR CTA");
+    const actionProps = (
+      successUpdate[1] as {
+        actionProps?: { children: string; onClick: () => void };
+      }
+    ).actionProps;
+    expect(actionProps).toBeDefined();
+    if (!actionProps) throw new Error("Expected the Open PR action props");
+    expect(actionProps.children).toBe("Open PR");
+    actionProps.onClick();
+    expect(testState.toast.close).not.toHaveBeenCalled();
+  });
+
+  it("leaves thread metadata alone when no branch update or active thread exists", async () => {
+    testState.stackedAction.run.mockResolvedValue(success(stackedResult()));
+    testState.gitStatus = status({ aheadCount: 1 });
+    render(buildProps({ activeThreadRef: null }));
+    menuItemByText("Push")?.onClick?.();
+    await flushPromises();
+    expect(testState.updateThreadMetadata).not.toHaveBeenCalled();
+    expect(testState.setDraftThreadContext).not.toHaveBeenCalled();
+  });
+
+  it("does not persist a branch that already matches the server thread", async () => {
+    testState.serverThread = { branch: "feature/auto", worktreePath: "/wt" };
+    testState.stackedAction.run.mockResolvedValue(
+      success(stackedResult({ branch: { status: "created", name: "feature/auto" } })),
+    );
+    await runPush();
+    expect(testState.updateThreadMetadata).not.toHaveBeenCalled();
+  });
+
+  it("does not persist a branch when the draft already matches", async () => {
+    testState.draftThread = { branch: "feature/auto", worktreePath: null, envMode: "local" };
+    testState.stackedAction.run.mockResolvedValue(
+      success(stackedResult({ branch: { status: "created", name: "feature/auto" } })),
+    );
+    await runPush();
+    expect(testState.setDraftThreadContext).not.toHaveBeenCalled();
   });
 
   it("persists a newly created branch to the server thread", async () => {
@@ -1513,7 +1668,7 @@ describe("stacked action results", () => {
   });
 });
 
-describe("status refresh on focus", () => {
+staticDescribe("status refresh on focus", () => {
   it("debounces window focus and visibility refreshes", () => {
     const { window: windowStub, document: documentStub } = stubWindow();
     render();
@@ -1583,7 +1738,7 @@ describe("status refresh on focus", () => {
   });
 });
 
-describe("publish repository dialog", () => {
+staticDescribe("publish repository dialog", () => {
   function readyDiscovery(): SourceControlDiscoveryResult {
     return discovery([
       discoveryProvider({ kind: "github", label: "GitHub" }),
@@ -1623,6 +1778,19 @@ describe("publish repository dialog", () => {
     expect(markup).toContain(
       "Provider status unavailable. Open Settings -&gt; Source Control and rescan.",
     );
+  });
+
+  it("ignores unsupported discovery providers", () => {
+    testState.discovery = discovery([
+      discoveryProvider({ kind: "github", label: "GitHub" }),
+      discoveryProvider({ kind: "gitea" as never, label: "Gitea" }),
+    ]);
+    testState.gitStatus = status({ hasPrimaryRemote: false, hasUpstream: false });
+    render();
+    buttonByText("Publish repository")?.onClick?.(clickEvent());
+    const markup = rerender();
+    expect(markup).toContain("GitHub");
+    expect(markup).not.toContain("Gitea");
   });
 
   it("falls back to a generic hint when an unauthenticated provider has no detail", () => {
@@ -1680,6 +1848,50 @@ describe("publish repository dialog", () => {
     expect(markup).toContain("octo/demo");
   });
 
+  it("selects another ready provider and prefills its authenticated account", () => {
+    testState.discovery = discovery([
+      discoveryProvider({ kind: "github", label: "GitHub" }),
+      discoveryProvider({
+        kind: "gitlab",
+        label: "GitLab",
+        auth: {
+          status: "authenticated",
+          account: Option.some("team"),
+          host: Option.none(),
+          detail: Option.none(),
+        },
+      }),
+    ]);
+    testState.gitStatus = status({ hasPrimaryRemote: false, hasUpstream: false });
+    render();
+    buttonByText("Publish repository")?.onClick?.(clickEvent());
+    rerender();
+    const providerGroup = (captured.radioGroups as CapturedRadioGroupProps[]).find(
+      (group) => group["aria-labelledby"] === "publish-provider-cards-label",
+    );
+    providerGroup?.onValueChange?.("gitlab");
+    rerender();
+    buttonByText("Next")?.onClick?.(clickEvent());
+    const tree = publishDialogTree();
+    const repositoryInput = findNativeByProp(tree, "id", "publish-repository-path");
+    expect(repositoryInput?.props["value"]).toBe("team/");
+  });
+
+  it("keeps invalid and pending publication submissions inert", async () => {
+    openPublishDialog();
+    buttonByText("Next")?.onClick?.(clickEvent());
+    rerender();
+    expect(buttonByText("Publish")?.disabled).toBe(true);
+    buttonByText("Publish")?.onClick?.(clickEvent());
+    await flushPromises();
+    expect(testState.publishAction.run).not.toHaveBeenCalled();
+
+    testState.publishAction.isPending = true;
+    const markup = rerender();
+    expect(markup).toContain("Publishing repository to GitHub");
+    expect(buttonByText("Publishing...")?.disabled).toBe(true);
+  });
+
   it("describes a remote_added publish result and opens the repo page", async () => {
     testState.publishAction.run.mockResolvedValue(
       success(publishResultFixture({ status: "remote_added" })),
@@ -1726,6 +1938,22 @@ describe("publish repository dialog", () => {
     expect(testState.publishAction.run).toHaveBeenCalledTimes(1);
   });
 
+  it("ignores non-Enter keys in the repository field", async () => {
+    openPublishDialog();
+    buttonByText("Next")?.onClick?.(clickEvent());
+    rerender();
+    const tree = publishDialogTree();
+    const repositoryInput = findNativeByProp(tree, "id", "publish-repository-path");
+    const preventDefault = vi.fn();
+    (repositoryInput?.props["onKeyDown"] as ((event: unknown) => void) | undefined)?.({
+      key: "Escape",
+      preventDefault,
+    });
+    await flushPromises();
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(testState.publishAction.run).not.toHaveBeenCalled();
+  });
+
   it("shows publish failures inline", async () => {
     testState.publishAction.run.mockResolvedValue(failure("name already taken"));
     openPublishDialog();
@@ -1742,6 +1970,24 @@ describe("publish repository dialog", () => {
     const markup = rerender();
     expect(markup).toContain("Publish failed");
     expect(markup).toContain("name already taken");
+  });
+
+  it("shows a generic message for opaque publish failures", async () => {
+    testState.publishAction.run.mockResolvedValue(
+      AsyncResult.failure(Cause.fail("opaque publish failure")),
+    );
+    openPublishDialog();
+    buttonByText("Next")?.onClick?.(clickEvent());
+    rerender();
+    const tree = publishDialogTree();
+    const repositoryInput = findNativeByProp(tree, "id", "publish-repository-path");
+    (repositoryInput?.props["onChange"] as ((event: unknown) => void) | undefined)?.({
+      target: { value: "octo/demo" },
+    });
+    rerender();
+    buttonByText("Publish")?.onClick?.(clickEvent());
+    await flushPromises();
+    expect(rerender()).toContain("An error occurred.");
   });
 
   it("stays quiet when publishing is interrupted", async () => {
@@ -1783,6 +2029,46 @@ describe("publish repository dialog", () => {
     protocolGroup?.onValueChange?.("https");
     const updated = rerender();
     expect(updated).toContain("HTTPS");
+  });
+
+  it("does not open a published repository without a local API", async () => {
+    testState.publishAction.run.mockResolvedValue(
+      success(publishResultFixture({ status: "remote_added" })),
+    );
+    openPublishDialog();
+    buttonByText("Next")?.onClick?.(clickEvent());
+    rerender();
+    const tree = publishDialogTree();
+    const repositoryInput = requiredNativeByProp(tree, "id", "publish-repository-path");
+    requiredHandler<(event: unknown) => void>(
+      repositoryInput.props["onChange"],
+      "publish repository input change",
+    )({
+      target: { value: "octo/demo" },
+    });
+    rerender();
+    const publishButton = requiredButtonByText("Publish");
+    requiredHandler<NonNullable<CapturedButtonProps["onClick"]>>(
+      publishButton.onClick,
+      "Publish click",
+    )(clickEvent());
+    await flushPromises();
+    rerender();
+    const openButton = requiredButtonByText("Open on GitHub");
+    requiredHandler<NonNullable<CapturedButtonProps["onClick"]>>(
+      openButton.onClick,
+      "Open on GitHub click",
+    )(clickEvent());
+    expect(testState.toast.close).not.toHaveBeenCalled();
+  });
+
+  it("preserves state when receiving a redundant open notification", () => {
+    openPublishDialog();
+    buttonByText("Next")?.onClick?.(clickEvent());
+    rerender();
+    const dialog = captured.dialogs.at(-1) as CapturedDialogProps | undefined;
+    dialog?.onOpenChange?.(true);
+    expect(rerender()).toContain("Visibility");
   });
 
   it("navigates to source control settings from a not-ready provider", () => {
@@ -1882,4 +2168,107 @@ function findNativeByProp(
   };
   visit(tree);
   return match;
+}
+
+function requiredNativeByProp(
+  tree: unknown,
+  prop: string,
+  value: unknown,
+): { type: unknown; props: Record<string, unknown> } {
+  const match = findNativeByProp(tree, prop, value);
+  expect(match, `Expected native element with ${prop}=${String(value)}`).not.toBeNull();
+  if (!match) throw new Error(`Missing native element with ${prop}=${String(value)}`);
+  return match;
+}
+
+if (browserRuntime) {
+  describe("GitActionsControl browser interactions", () => {
+    beforeEach(() => {
+      (
+        globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+      ).IS_REACT_ACT_ENVIRONMENT = true;
+    });
+
+    function requiredElement<T extends Element>(container: ParentNode, selector: string): T {
+      const element = container.querySelector<T>(selector);
+      if (!element) throw new Error(`Missing DOM element: ${selector}`);
+      return element;
+    }
+
+    function requiredButton(container: ParentNode, label: string): HTMLButtonElement {
+      const match = Array.from(container.querySelectorAll("button")).find(
+        (candidate) => candidate.textContent?.trim() === label,
+      );
+      if (!match) throw new Error(`Missing DOM button: ${label}`);
+      return match;
+    }
+
+    async function dispatch(element: Element, event: Event): Promise<void> {
+      await React.act(async () => {
+        element.dispatchEvent(event);
+      });
+    }
+
+    async function click(container: ParentNode, label: string): Promise<void> {
+      const target = requiredButton(container, label);
+      await React.act(async () => target.click());
+    }
+
+    async function setInputValue(input: HTMLInputElement, value: string): Promise<void> {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      if (!setter) throw new Error("HTMLInputElement.value setter is unavailable");
+      setter.call(input, value);
+      await dispatch(input, new Event("input", { bubbles: true, cancelable: true }));
+    }
+
+    async function mountControl(): Promise<{
+      container: HTMLDivElement;
+      root: Root;
+    }> {
+      testState.discovery = discovery([discoveryProvider({ kind: "github", label: "GitHub" })]);
+      testState.gitStatus = status({ hasPrimaryRemote: false, hasUpstream: false });
+      const container = document.createElement("div");
+      document.body.append(container);
+      const root = createRoot(container);
+      await React.act(async () => {
+        root.render(<GitActionsControl {...buildProps()} />);
+      });
+      return { container, root };
+    }
+
+    it.each([
+      [" upstream ", "upstream"],
+      ["   ", "origin"],
+    ])(
+      "normalizes an explicitly changed advanced remote %j to %j",
+      async (enteredRemote, expectedRemote) => {
+        const { container, root } = await mountControl();
+        await click(container, "Publish repository");
+        await click(container, "Next");
+        await click(container, "Advanced");
+
+        const remoteInput = requiredElement<HTMLInputElement>(container, "#publish-remote-name");
+        expect(remoteInput.value).toBe("origin");
+        await setInputValue(remoteInput, enteredRemote);
+        expect(remoteInput.value).toBe(enteredRemote);
+        expect(remoteInput.value).not.toBe("origin");
+
+        const repositoryInput = requiredElement<HTMLInputElement>(
+          container,
+          "#publish-repository-path",
+        );
+        await setInputValue(repositoryInput, "octo/demo");
+        expect(repositoryInput.value).toBe("octo/demo");
+        await click(container, "Publish");
+        await React.act(async () => flushPromises());
+
+        expect(testState.publishAction.run).toHaveBeenCalledWith(
+          expect.objectContaining({ remoteName: expectedRemote, repository: "octo/demo" }),
+        );
+
+        await React.act(async () => root.unmount());
+        container.remove();
+      },
+    );
+  });
 }

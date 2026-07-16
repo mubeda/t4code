@@ -1,4 +1,4 @@
-import type { VcsStagingArea, VcsStatusResult, VcsWorkingTreeFileStatus } from "@t3tools/contracts";
+import type { VcsStagingArea, VcsStatusResult, VcsWorkingTreeFileStatus } from "@t4code/contracts";
 
 export interface WorkingTreeFile {
   readonly path: string;

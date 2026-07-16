@@ -68,8 +68,8 @@ export function detectComposerTrigger(
   if (linePrefix.startsWith("/")) {
     const commandMatch = /^\/(\S*)$/.exec(linePrefix);
     if (commandMatch) {
-      const commandQuery = commandMatch[1] ?? "";
-      if (commandQuery.toLowerCase() === "model") {
+      const commandQuery = commandMatch[1] as string;
+      if (commandQuery === "model") {
         return {
           kind: "slash-model",
           query: "",
@@ -85,11 +85,11 @@ export function detectComposerTrigger(
       };
     }
 
-    const modelMatch = /^\/model(?:\s+(.*))?$/.exec(linePrefix);
+    const modelMatch = /^\/model\s+(.*)$/.exec(linePrefix);
     if (modelMatch) {
       return {
         kind: "slash-model",
-        query: (modelMatch[1] ?? "").trim(),
+        query: (modelMatch[1] as string).trim(),
         rangeStart: lineStart,
         rangeEnd: cursor,
       };
@@ -98,7 +98,7 @@ export function detectComposerTrigger(
 
   const wsCheck = isWhitespaceChar ?? isWhitespace;
   let tokenIdx = cursor - 1;
-  while (tokenIdx >= 0 && !wsCheck(text[tokenIdx] ?? "")) {
+  while (tokenIdx >= 0 && !wsCheck(text[tokenIdx] as string)) {
     tokenIdx -= 1;
   }
   const tokenStart = tokenIdx + 1;

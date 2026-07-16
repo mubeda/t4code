@@ -1,8 +1,12 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it as effectIt } from "@effect/vitest";
-import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { HostProcessEnvironment, HostProcessPlatform } from "@t4code/shared/hostProcess";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   extractPathFromShellOutput,
@@ -25,6 +29,36 @@ import {
   type WindowsShellEnvironmentReader,
 } from "./shell.ts";
 
+const temporaryDirectories: Array<string> = [];
+
+const createTemporaryDirectory = (): string => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t4code-shell-"));
+  temporaryDirectories.push(directory);
+  return directory;
+};
+
+const createWorkspaceTemporaryDirectory = (): string => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(process.cwd(), ".t4code-shell-"));
+  temporaryDirectories.push(directory);
+  return directory;
+};
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    const parent = NodePath.dirname(directory);
+    const base = NodePath.basename(directory);
+    const isSystemTemporaryDirectory =
+      parent === NodePath.resolve(NodeOS.tmpdir()) && base.startsWith("t4code-shell-");
+    const isWorkspaceTemporaryDirectory =
+      parent === process.cwd() && base.startsWith(".t4code-shell-");
+    if (!isSystemTemporaryDirectory && !isWorkspaceTemporaryDirectory) {
+      throw new Error(`Refusing to remove unexpected test directory: ${directory}`);
+    }
+    NodeFS.rmSync(directory, { recursive: true, force: true });
+  }
+  vi.restoreAllMocks();
+});
+
 const withWindowsEnvironmentMocks = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
   readEnvironment: WindowsShellEnvironmentReader,
@@ -39,7 +73,7 @@ describe("extractPathFromShellOutput", () => {
   it("extracts the path between capture markers", () => {
     expect(
       extractPathFromShellOutput(
-        "__T3CODE_PATH_START__\n/opt/homebrew/bin:/usr/bin\n__T3CODE_PATH_END__\n",
+        "__T4CODE_PATH_START__\n/opt/homebrew/bin:/usr/bin\n__T4CODE_PATH_END__\n",
       ),
     ).toBe("/opt/homebrew/bin:/usr/bin");
   });
@@ -47,13 +81,18 @@ describe("extractPathFromShellOutput", () => {
   it("ignores shell startup noise around the capture markers", () => {
     expect(
       extractPathFromShellOutput(
-        "Welcome to fish\n__T3CODE_PATH_START__\n/opt/homebrew/bin:/usr/bin\n__T3CODE_PATH_END__\nBye\n",
+        "Welcome to fish\n__T4CODE_PATH_START__\n/opt/homebrew/bin:/usr/bin\n__T4CODE_PATH_END__\nBye\n",
       ),
     ).toBe("/opt/homebrew/bin:/usr/bin");
   });
 
   it("returns null when the markers are missing", () => {
     expect(extractPathFromShellOutput("/opt/homebrew/bin /usr/bin")).toBeNull();
+  });
+
+  it("returns null for a missing end marker or an empty captured path", () => {
+    expect(extractPathFromShellOutput("__T4CODE_PATH_START__/usr/bin")).toBeNull();
+    expect(extractPathFromShellOutput("__T4CODE_PATH_START__\n \n__T4CODE_PATH_END__")).toBeNull();
   });
 });
 
@@ -65,7 +104,7 @@ describe("readPathFromLoginShell", () => {
         args: ReadonlyArray<string>,
         options: { encoding: "utf8"; timeout: number },
       ) => string
-    >(() => "__T3CODE_ENV_PATH_START__\n/a:/b\n__T3CODE_ENV_PATH_END__\n");
+    >(() => "__T4CODE_ENV_PATH_START__\n/a:/b\n__T4CODE_ENV_PATH_END__\n");
 
     expect(readPathFromLoginShell("/opt/homebrew/bin/fish", execFile)).toBe("/a:/b");
     expect(execFile).toHaveBeenCalledTimes(1);
@@ -83,8 +122,8 @@ describe("readPathFromLoginShell", () => {
     expect(args).toHaveLength(2);
     expect(args?.[0]).toBe("-ilc");
     expect(args?.[1]).toContain("printenv PATH || true");
-    expect(args?.[1]).toContain("__T3CODE_ENV_PATH_START__");
-    expect(args?.[1]).toContain("__T3CODE_ENV_PATH_END__");
+    expect(args?.[1]).toContain("__T4CODE_ENV_PATH_START__");
+    expect(args?.[1]).toContain("__T4CODE_ENV_PATH_END__");
     expect(options).toEqual({ encoding: "utf8", timeout: 5000 });
   });
 });
@@ -122,6 +161,27 @@ describe("readPathFromLaunchctl", () => {
 });
 
 describe("readEnvironmentFromLoginShell", () => {
+  it("does not launch a shell when no variables are requested", () => {
+    const execFile = vi.fn(() => "unexpected");
+    expect(readEnvironmentFromLoginShell("/bin/sh", [], execFile)).toEqual({});
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it("rejects variable names that cannot be safely embedded in a shell command", () => {
+    const execFile = vi.fn(() => "unexpected");
+    expect(() => readEnvironmentFromLoginShell("/bin/sh", ["PATH; rm"], execFile)).toThrow(
+      "Unsupported environment variable name",
+    );
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it("ignores captures with missing markers", () => {
+    const execFile = vi.fn(() =>
+      ["__T4CODE_ENV_PATH_START__", "/usr/bin", "__T4CODE_ENV_OTHER_END__"].join("\n"),
+    );
+    expect(readEnvironmentFromLoginShell("/bin/sh", ["PATH", "OTHER"], execFile)).toEqual({});
+  });
+
   it("extracts multiple environment variables from a login shell command", () => {
     const execFile = vi.fn<
       (
@@ -131,12 +191,12 @@ describe("readEnvironmentFromLoginShell", () => {
       ) => string
     >(() =>
       [
-        "__T3CODE_ENV_PATH_START__",
+        "__T4CODE_ENV_PATH_START__",
         "/a:/b",
-        "__T3CODE_ENV_PATH_END__",
-        "__T3CODE_ENV_SSH_AUTH_SOCK_START__",
+        "__T4CODE_ENV_PATH_END__",
+        "__T4CODE_ENV_SSH_AUTH_SOCK_START__",
         "/tmp/secretive.sock",
-        "__T3CODE_ENV_SSH_AUTH_SOCK_END__",
+        "__T4CODE_ENV_SSH_AUTH_SOCK_END__",
       ].join("\n"),
     );
 
@@ -156,11 +216,11 @@ describe("readEnvironmentFromLoginShell", () => {
       ) => string
     >(() =>
       [
-        "__T3CODE_ENV_PATH_START__",
+        "__T4CODE_ENV_PATH_START__",
         "/a:/b",
-        "__T3CODE_ENV_PATH_END__",
-        "__T3CODE_ENV_SSH_AUTH_SOCK_START__",
-        "__T3CODE_ENV_SSH_AUTH_SOCK_END__",
+        "__T4CODE_ENV_PATH_END__",
+        "__T4CODE_ENV_SSH_AUTH_SOCK_START__",
+        "__T4CODE_ENV_SSH_AUTH_SOCK_END__",
       ].join("\n"),
     );
 
@@ -177,7 +237,7 @@ describe("readEnvironmentFromLoginShell", () => {
         options: { encoding: "utf8"; timeout: number },
       ) => string
     >(() =>
-      ["__T3CODE_ENV_CUSTOM_VAR_START__", "  padded value  ", "__T3CODE_ENV_CUSTOM_VAR_END__"].join(
+      ["__T4CODE_ENV_CUSTOM_VAR_START__", "  padded value  ", "__T4CODE_ENV_CUSTOM_VAR_END__"].join(
         "\n",
       ),
     );
@@ -199,6 +259,29 @@ describe("listLoginShellCandidates", () => {
   it("falls back to the platform default when no shells are available", () => {
     expect(listLoginShellCandidates("linux", undefined, "")).toEqual(["/bin/bash"]);
   });
+
+  it("has no platform fallback on Windows and removes repeated candidates", () => {
+    expect(listLoginShellCandidates("win32", " pwsh.exe ", "pwsh.exe")).toEqual(["pwsh.exe"]);
+    expect(listLoginShellCandidates("win32", " ", " ")).toEqual([]);
+  });
+
+  it("reads the current user shell when the caller omits it", () => {
+    const candidates = listLoginShellCandidates("darwin", undefined);
+    expect(candidates.at(-1)).toBe("/bin/zsh");
+  });
+
+  it("falls back when the OS user lookup fails", async () => {
+    vi.resetModules();
+    vi.doMock("node:os", () => ({
+      ...NodeOS,
+      userInfo: () => {
+        throw new Error("user lookup failed");
+      },
+    }));
+    const isolatedShell = await import("./shell.ts");
+    expect(isolatedShell.listLoginShellCandidates("linux", undefined)).toEqual(["/bin/bash"]);
+    vi.doUnmock("node:os");
+  });
 });
 
 describe("mergePathEntries", () => {
@@ -213,9 +296,37 @@ describe("mergePathEntries", () => {
       "C:\\Tools;C:\\Windows;C:\\Git",
     );
   });
+
+  it("ignores missing, blank, and duplicate entries", () => {
+    expect(mergePathEntries(undefined, undefined, "linux")).toBeUndefined();
+    expect(mergePathEntries(" :/usr/bin:: ", " /usr/bin:/opt/bin ", "linux")).toBe(
+      "/usr/bin:/opt/bin",
+    );
+  });
 });
 
 describe("readEnvironmentFromWindowsShell", () => {
+  it("does not launch PowerShell when no variables are requested", () => {
+    const execFile = vi.fn(() => "unexpected");
+    expect(readEnvironmentFromWindowsShell([], execFile)).toEqual({});
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it("rejects variable names that cannot be safely embedded in PowerShell", () => {
+    const execFile = vi.fn(() => "unexpected");
+    expect(() => readEnvironmentFromWindowsShell(["PATH;Write-Host"], execFile)).toThrow(
+      "Unsupported environment variable name",
+    );
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it("supports an omitted options object with an explicit executor", () => {
+    const execFile = vi.fn(() => "__T4CODE_ENV_PATH_START__\nC:\\Tools\n__T4CODE_ENV_PATH_END__");
+    expect(readEnvironmentFromWindowsShell(["PATH"], undefined, execFile)).toEqual({
+      PATH: "C:\\Tools",
+    });
+  });
+
   it("extracts environment variables from a PowerShell command", () => {
     const execFile = vi.fn<
       (
@@ -225,7 +336,7 @@ describe("readEnvironmentFromWindowsShell", () => {
       ) => string
     >(
       () =>
-        "__T3CODE_ENV_PATH_START__\nC:\\Users\\testuser\\AppData\\Roaming\\npm\n__T3CODE_ENV_PATH_END__\n",
+        "__T4CODE_ENV_PATH_START__\nC:\\Users\\testuser\\AppData\\Roaming\\npm\n__T4CODE_ENV_PATH_END__\n",
     );
 
     expect(readEnvironmentFromWindowsShell(["PATH"], execFile)).toEqual({
@@ -247,11 +358,18 @@ describe("readEnvironmentFromWindowsShell", () => {
       ) => string
     >(
       () =>
-        "__T3CODE_ENV_FNM_DIR_START__\r\nC:\\Users\\testuser\\AppData\\Roaming\\fnm\r\n__T3CODE_ENV_FNM_DIR_END__\r\n",
+        "__T4CODE_ENV_FNM_DIR_START__\r\nC:\\Users\\testuser\\AppData\\Roaming\\fnm\r\n__T4CODE_ENV_FNM_DIR_END__\r\n",
     );
 
     expect(readEnvironmentFromWindowsShell(["FNM_DIR"], execFile)).toEqual({
       FNM_DIR: "C:\\Users\\testuser\\AppData\\Roaming\\fnm",
+    });
+  });
+
+  it("omits requested variables that are absent from successful PowerShell output", () => {
+    const execFile = vi.fn(() => "__T4CODE_ENV_PATH_START__\nC:\\Tools\n__T4CODE_ENV_PATH_END__\n");
+    expect(readEnvironmentFromWindowsShell(["PATH", "FNM_DIR"], execFile)).toEqual({
+      PATH: "C:\\Tools",
     });
   });
 
@@ -262,7 +380,7 @@ describe("readEnvironmentFromWindowsShell", () => {
         args: ReadonlyArray<string>,
         options: { encoding: "utf8"; timeout: number },
       ) => string
-    >(() => "__T3CODE_ENV_PATH_START__\nC:\\Tools\n__T3CODE_ENV_PATH_END__\n");
+    >(() => "__T4CODE_ENV_PATH_START__\nC:\\Tools\n__T4CODE_ENV_PATH_END__\n");
 
     expect(readEnvironmentFromWindowsShell(["PATH"], { loadProfile: true }, execFile)).toEqual({
       PATH: "C:\\Tools",
@@ -286,7 +404,7 @@ describe("readEnvironmentFromWindowsShell", () => {
       if (file === "pwsh.exe") {
         throw new Error("spawn pwsh.exe ENOENT");
       }
-      return "__T3CODE_ENV_PATH_START__\nC:\\Tools\n__T3CODE_ENV_PATH_END__\n";
+      return "__T4CODE_ENV_PATH_START__\nC:\\Tools\n__T4CODE_ENV_PATH_END__\n";
     });
 
     expect(readEnvironmentFromWindowsShell(["PATH"], execFile)).toEqual({
@@ -300,6 +418,14 @@ describe("readEnvironmentFromWindowsShell", () => {
       encoding: "utf8",
       timeout: 5000,
     });
+  });
+
+  it("returns an empty environment when both PowerShell executables fail", () => {
+    const execFile = vi.fn(() => {
+      throw new Error("shell unavailable");
+    });
+    expect(readEnvironmentFromWindowsShell(["PATH"], execFile)).toEqual({});
+    expect(execFile).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -321,6 +447,11 @@ describe("mergePathValues", () => {
       "/usr/local/bin:/usr/bin:/USR/BIN",
     );
   });
+
+  it("returns undefined for missing or quote-only paths and skips empty entries", () => {
+    expect(mergePathValues(undefined, undefined, "darwin")).toBeUndefined();
+    expect(mergePathValues('"";;', " ;C:\\Tools; ", "win32")).toBe("C:\\Tools");
+  });
 });
 
 describe("resolveKnownWindowsCliDirs", () => {
@@ -339,6 +470,14 @@ describe("resolveKnownWindowsCliDirs", () => {
       "C:\\Users\\testuser\\.bun\\bin",
       "C:\\Users\\testuser\\scoop\\shims",
     ]);
+  });
+
+  it("omits absent and whitespace-only environment roots", () => {
+    expect(resolveKnownWindowsCliDirs({ APPDATA: " ", USERPROFILE: "C:\\Users\\dev" })).toEqual([
+      "C:\\Users\\dev\\.bun\\bin",
+      "C:\\Users\\dev\\scoop\\shims",
+    ]);
+    expect(resolveKnownWindowsCliDirs({})).toEqual([]);
   });
 });
 
@@ -381,11 +520,11 @@ effectIt.layer(NodeServices.layer)("resolveSpawnCommand", (it) => {
     }),
   );
 
-  it.effect("escapes the executable and arguments for Windows command shims", () =>
+  it.effect("invokes Windows command shims through cmd.exe without shell mode", () =>
     Effect.gen(function* () {
       const command = yield* resolveSpawnCommand(
         "vp",
-        ["run", "value & calc", "%PATH%", 'quote"value'],
+        ["run", "value & calc", "%PATH%", "caret^value", 'quote"value'],
         { env: { PATH: "", PATHEXT: ".COM;.EXE;.BAT;.CMD" } },
       ).pipe(
         Effect.provideService(HostProcessPlatform, "win32"),
@@ -395,14 +534,21 @@ effectIt.layer(NodeServices.layer)("resolveSpawnCommand", (it) => {
         ),
       );
 
-      expect(command.shell).toBe(true);
-      expect(command.args).toEqual([]);
-      expect(command.command).not.toContain(" & ");
-      expect(command.command).toContain("^&");
-      expect(command.command).toContain('^"run^"');
-      expect(command.command).toContain('^"value^ ^&^ calc^"');
-      expect(command.command).toContain('^"^%PATH^%^"');
-      expect(command.command).toContain('^"quote\\^"value^"');
+      expect(command.shell).toBe(false);
+      expect(command.command).toBe("cmd.exe");
+      expect(command.args).toEqual([
+        "/d",
+        "/s",
+        "/v:off",
+        "/c",
+        "call",
+        "C:\\Program Files\\npm & tools\\vp.cmd",
+        "run",
+        "value & calc",
+        "^^%PATH^^%",
+        "caret^^^^value",
+        'quote"value',
+      ]);
     }),
   );
 
@@ -570,6 +716,242 @@ effectIt.layer(NodeServices.layer)("resolveWindowsEnvironment", (it) => {
         FNM_DIR: "C:\\Users\\testuser\\AppData\\Roaming\\fnm",
       });
       expect(commandAvailable).toHaveBeenCalledTimes(1);
+    }),
+  );
+});
+
+effectIt.layer(NodeServices.layer)("shell service defaults", (it) => {
+  it.effect("provides the default environment readers and command checker", () =>
+    Effect.gen(function* () {
+      expect(yield* WindowsShellEnvironment).toBe(readEnvironmentFromWindowsShell);
+      expect(yield* CommandAvailability).toBe(isCommandAvailable);
+      expect(typeof (yield* SpawnExecutableResolution)).toBe("function");
+    }),
+  );
+});
+
+effectIt.layer(NodeServices.layer)("default spawn executable resolution", (it) => {
+  it.effect("resolves Windows PATH, PATHEXT, quoting, explicit paths, and non-files", () =>
+    Effect.gen(function* () {
+      if ((yield* HostProcessPlatform) !== "win32") return;
+
+      const directory = createTemporaryDirectory();
+      const commandPath = NodePath.join(directory, "unicode tool.CMD");
+      const directoryPath = NodePath.join(directory, "folder.CMD");
+      NodeFS.writeFileSync(commandPath, "");
+      NodeFS.mkdirSync(directoryPath);
+
+      const resolveExecutable = yield* SpawnExecutableResolution;
+      const environment = {
+        Path: ` ;"${directory}"; `,
+        PATHEXT: "cmd; .EXE; ;CMD",
+      };
+
+      expect(resolveExecutable("unicode tool", "win32", environment)).toBe(commandPath);
+      expect(resolveExecutable(commandPath, "win32", environment)).toBe(commandPath);
+      expect(resolveExecutable(directoryPath, "win32", environment)).toBeUndefined();
+      expect(
+        resolveExecutable("missing", "win32", { path: directory, PATHEXT: " ; " }),
+      ).toBeUndefined();
+    }),
+  );
+
+  it.effect("resolves POSIX executables from direct and quoted PATH values", () =>
+    Effect.gen(function* () {
+      const directory = createWorkspaceTemporaryDirectory();
+      const commandPath = NodePath.join(directory, "tool");
+      NodeFS.writeFileSync(commandPath, "#!/bin/sh\n");
+      NodeFS.chmodSync(commandPath, 0o755);
+      const posixCommand = commandPath.replaceAll("\\", "/");
+      const relativePosixDirectory = NodePath.relative(process.cwd(), directory).replaceAll(
+        "\\",
+        "/",
+      );
+
+      const resolveExecutable = yield* SpawnExecutableResolution;
+      expect(resolveExecutable(posixCommand, "linux", {})).toBe(posixCommand);
+      expect(resolveExecutable("tool", "darwin", { PATH: ` :"${relativePosixDirectory}"` })).toBe(
+        `${relativePosixDirectory}/tool`,
+      );
+      expect(resolveExecutable(`${relativePosixDirectory}/missing`, "linux", {})).toBeUndefined();
+    }),
+  );
+});
+
+effectIt.layer(NodeServices.layer)("default POSIX executable access", (it) => {
+  it.effect("treats an access error as a non-executable file", () =>
+    Effect.gen(function* () {
+      vi.resetModules();
+      vi.doMock("node:fs", () => ({
+        ...NodeFS,
+        statSync: () => ({ isFile: () => true }),
+        accessSync: () => {
+          throw new Error("permission denied");
+        },
+      }));
+      const isolatedShell = yield* Effect.promise(() => import("./shell.ts"));
+      const resolveExecutable = yield* isolatedShell.SpawnExecutableResolution;
+      expect(resolveExecutable("/virtual/tool", "linux", {})).toBeUndefined();
+      vi.doUnmock("node:fs");
+    }),
+  );
+});
+
+describe("default Windows environment executor", () => {
+  it("uses the Node child-process boundary when no executor is supplied", async () => {
+    const execFileSync = vi.fn(
+      () => "__T4CODE_ENV_PATH_START__\nC:\\Default\n__T4CODE_ENV_PATH_END__\n",
+    );
+    vi.resetModules();
+    vi.doMock("node:child_process", async () => ({
+      ...(await vi.importActual<typeof import("node:child_process")>("node:child_process")),
+      execFileSync,
+    }));
+    const isolatedShell = await import("./shell.ts");
+
+    expect(isolatedShell.readEnvironmentFromWindowsShell(["PATH"])).toEqual({
+      PATH: "C:\\Default",
+    });
+    expect(execFileSync).toHaveBeenCalledTimes(1);
+    vi.doUnmock("node:child_process");
+  });
+});
+
+effectIt.layer(NodeServices.layer)("resolveCommandPath platform behavior", (it) => {
+  it.effect("resolves Windows commands from PATH and explicit paths", () =>
+    Effect.gen(function* () {
+      const directory = createTemporaryDirectory();
+      const commandPath = NodePath.join(directory, "tool.CMD");
+      NodeFS.writeFileSync(commandPath, "");
+
+      expect(
+        yield* resolveCommandPath("tool", {
+          env: { Path: ` ;"${directory}"`, PATHEXT: "CMD" },
+        }).pipe(Effect.provideService(HostProcessPlatform, "win32")),
+      ).toBe(commandPath);
+      expect(
+        yield* resolveCommandPath(commandPath, { env: { PATHEXT: ".CMD" } }).pipe(
+          Effect.provideService(HostProcessPlatform, "win32"),
+        ),
+      ).toBe(commandPath);
+    }),
+  );
+
+  it.effect("reports missing Windows paths, directories, and commands", () =>
+    Effect.gen(function* () {
+      const directory = createTemporaryDirectory();
+      const directoryCandidate = NodePath.join(directory, "folder.CMD");
+      NodeFS.mkdirSync(directoryCandidate);
+
+      for (const [command, env] of [
+        [directoryCandidate, { PATHEXT: ".CMD" }],
+        ["missing", { path: directory, PATHEXT: ".CMD" }],
+      ] as const) {
+        const result = yield* resolveCommandPath(command, { env }).pipe(
+          Effect.provideService(HostProcessPlatform, "win32"),
+          Effect.result,
+        );
+        expect(result._tag).toBe("Failure");
+      }
+    }),
+  );
+
+  it.effect("uses the injected host environment when options omit env", () =>
+    Effect.gen(function* () {
+      const result = yield* resolveCommandPath("missing").pipe(
+        Effect.provideService(HostProcessPlatform, "win32"),
+        Effect.provideService(HostProcessEnvironment, { PATH: "", PATHEXT: ".CMD" }),
+        Effect.result,
+      );
+      expect(result._tag).toBe("Failure");
+    }),
+  );
+
+  it.effect("reports a missing command when no PATH spelling exists", () =>
+    Effect.gen(function* () {
+      const result = yield* resolveCommandPath("missing", { env: {} }).pipe(
+        Effect.provideService(HostProcessPlatform, "linux"),
+        Effect.result,
+      );
+      expect(result._tag).toBe("Failure");
+    }),
+  );
+
+  it.effect("resolves a direct POSIX executable", () =>
+    Effect.gen(function* () {
+      const directory = createTemporaryDirectory();
+      const commandPath = NodePath.join(directory, "tool");
+      NodeFS.writeFileSync(commandPath, "#!/bin/sh\n");
+      NodeFS.chmodSync(commandPath, 0o755);
+
+      expect(
+        yield* resolveCommandPath(commandPath, { env: {} }).pipe(
+          Effect.provideService(HostProcessPlatform, "linux"),
+        ),
+      ).toBe(commandPath);
+    }),
+  );
+});
+
+effectIt.layer(NodeServices.layer)("resolveSpawnCommand platform behavior", (it) => {
+  it.effect("passes POSIX commands and arguments through without a shell", () =>
+    Effect.gen(function* () {
+      const args = ["--label", "space and ünicode"];
+      const resolved = yield* resolveSpawnCommand("/usr/bin/tool", args).pipe(
+        Effect.provideService(HostProcessPlatform, "darwin"),
+      );
+      expect(resolved).toEqual({ command: "/usr/bin/tool", args, shell: false });
+      expect(resolved.args).not.toBe(args);
+    }),
+  );
+
+  it.effect("honors ComSpec and COMSPEC for Windows batch files", () =>
+    Effect.gen(function* () {
+      const withMixedCase = yield* resolveSpawnCommand("tool.bat", [], {
+        env: { ComSpec: "C:\\Windows\\custom-cmd.exe" },
+      }).pipe(Effect.provideService(HostProcessPlatform, "win32"));
+      const withUpperCase = yield* resolveSpawnCommand("tool.cmd", [], {
+        env: { COMSPEC: "C:\\Windows\\legacy-cmd.exe" },
+      }).pipe(Effect.provideService(HostProcessPlatform, "win32"));
+
+      expect(withMixedCase.command).toBe("C:\\Windows\\custom-cmd.exe");
+      expect(withUpperCase.command).toBe("C:\\Windows\\legacy-cmd.exe");
+    }),
+  );
+
+  it.effect("uses the host environment when no command environment is supplied", () =>
+    Effect.gen(function* () {
+      let receivedEnvironment: NodeJS.ProcessEnv | undefined;
+      yield* resolveSpawnCommand("tool.exe", []).pipe(
+        Effect.provideService(HostProcessPlatform, "win32"),
+        Effect.provideService(HostProcessEnvironment, { PATH: "C:\\Host" }),
+        Effect.provideService(SpawnExecutableResolution, (_command, _platform, env) => {
+          receivedEnvironment = env;
+          return "C:\\Host\\tool.exe";
+        }),
+      );
+      expect(receivedEnvironment).toEqual({ PATH: "C:\\Host" });
+    }),
+  );
+});
+
+effectIt.layer(NodeServices.layer)("resolveWindowsEnvironment failure handling", (it) => {
+  it.effect("returns an empty patch when both isolated environment probes fail", () =>
+    Effect.gen(function* () {
+      const readEnvironment = vi.fn(() => {
+        throw new Error("PowerShell failed");
+      });
+      const commandAvailable = vi.fn(() => Effect.succeed(false));
+
+      expect(
+        yield* withWindowsEnvironmentMocks(
+          resolveWindowsEnvironment({}),
+          readEnvironment,
+          commandAvailable,
+        ),
+      ).toEqual({});
+      expect(readEnvironment).toHaveBeenCalledTimes(2);
+      expect(commandAvailable).toHaveBeenCalledWith("node", { env: {} });
     }),
   );
 });

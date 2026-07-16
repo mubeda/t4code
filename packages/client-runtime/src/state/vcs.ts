@@ -1,5 +1,5 @@
-import { type VcsStatusResult, WS_METHODS } from "@t3tools/contracts";
-import { applyGitStatusStreamEvent } from "@t3tools/shared/git";
+import { type VcsStatusResult, WS_METHODS } from "@t4code/contracts";
+import { applyGitStatusStreamEvent } from "@t4code/shared/git";
 import * as Stream from "effect/Stream";
 import { Atom } from "effect/unstable/reactivity";
 

@@ -22,15 +22,15 @@ describe("rewriteMarkdownFileUriHref", () => {
   it("normalizes file uri hrefs for windows drive paths", () => {
     expect(
       rewriteMarkdownFileUriHref(
-        "file:///D:/Programme/t3code/apps/web/src/components/chat/OpenInPicker.tsx#L69",
+        "file:///D:/Programme/t4code/apps/web/src/components/chat/OpenInPicker.tsx#L69",
       ),
-    ).toBe("D:/Programme/t3code/apps/web/src/components/chat/OpenInPicker.tsx#L69");
+    ).toBe("D:/Programme/t4code/apps/web/src/components/chat/OpenInPicker.tsx#L69");
   });
 
   it("unwraps angle-bracketed file uri hrefs", () => {
     expect(
-      rewriteMarkdownFileUriHref(" <file:///D:/Programme/t3code/apps/web/src/markdown-links.ts> "),
-    ).toBe("D:/Programme/t3code/apps/web/src/markdown-links.ts");
+      rewriteMarkdownFileUriHref(" <file:///D:/Programme/t4code/apps/web/src/markdown-links.ts> "),
+    ).toBe("D:/Programme/t4code/apps/web/src/markdown-links.ts");
   });
 });
 
@@ -78,11 +78,11 @@ describe("resolveMarkdownFileLinkTarget", () => {
   it("formats tooltip display paths relative to the cwd when possible", () => {
     expect(
       resolveMarkdownFileLinkMeta(
-        "file:///C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts#L501",
-        "C:/Users/mike/dev-stuff/t3code",
+        "file:///C:/Users/mike/dev-stuff/t4code/apps/web/src/session-logic.ts#L501",
+        "C:/Users/mike/dev-stuff/t4code",
       ),
     ).toMatchObject({
-      displayPath: "t3code/apps/web/src/session-logic.ts:501",
+      displayPath: "t4code/apps/web/src/session-logic.ts:501",
       workspaceRelativePath: "apps/web/src/session-logic.ts",
     });
   });
@@ -90,12 +90,12 @@ describe("resolveMarkdownFileLinkTarget", () => {
   it("formats tooltip display paths relative to the cwd for slash-prefixed windows paths", () => {
     expect(
       resolveMarkdownFileLinkMeta(
-        "/C:/Users/mike/dev-stuff/t3code/apps/web/src/components/chat/MessagesTimeline.virtualization.browser.tsx",
-        "C:/Users/mike/dev-stuff/t3code",
+        "/C:/Users/mike/dev-stuff/t4code/apps/web/src/components/chat/MessagesTimeline.virtualization.browser.tsx",
+        "C:/Users/mike/dev-stuff/t4code",
       ),
     ).toMatchObject({
       displayPath:
-        "t3code/apps/web/src/components/chat/MessagesTimeline.virtualization.browser.tsx",
+        "t4code/apps/web/src/components/chat/MessagesTimeline.virtualization.browser.tsx",
       workspaceRelativePath:
         "apps/web/src/components/chat/MessagesTimeline.virtualization.browser.tsx",
     });
@@ -110,17 +110,17 @@ describe("resolveMarkdownFileLinkTarget", () => {
   it("normalizes slash-prefixed windows drive paths before resolving", () => {
     expect(
       resolveMarkdownFileLinkTarget(
-        "/D:/Programme/t3code/apps/web/src/components/chat/OpenInPicker.tsx#L69",
+        "/D:/Programme/t4code/apps/web/src/components/chat/OpenInPicker.tsx#L69",
       ),
-    ).toBe("D:/Programme/t3code/apps/web/src/components/chat/OpenInPicker.tsx:69");
+    ).toBe("D:/Programme/t4code/apps/web/src/components/chat/OpenInPicker.tsx:69");
   });
 
   it("resolves angle-bracketed windows drive paths", () => {
     expect(
       resolveMarkdownFileLinkTarget(
-        "</D:/Programme/t3code/apps/web/src/components/ChatMarkdown.tsx:1>",
+        "</D:/Programme/t4code/apps/web/src/components/ChatMarkdown.tsx:1>",
       ),
-    ).toBe("D:/Programme/t3code/apps/web/src/components/ChatMarkdown.tsx:1");
+    ).toBe("D:/Programme/t4code/apps/web/src/components/ChatMarkdown.tsx:1");
   });
 
   it("does not treat app routes as file links", () => {

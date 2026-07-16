@@ -1,5 +1,5 @@
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { EnvironmentId, ThreadId, type VcsStatusResult } from "@t3tools/contracts";
+import { scopeThreadRef } from "@t4code/client-runtime/environment";
+import { EnvironmentId, ThreadId, type VcsStatusResult } from "@t4code/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import type { Dispatch, ReactElement, SetStateAction } from "react";
@@ -836,6 +836,19 @@ describe("SourceControlPanel", () => {
       expect.objectContaining({ title: "Action failed", description: "commit exploded" }),
     );
     expect(testState.clearDraft).not.toHaveBeenCalled();
+
+    testState.runAction.mockResolvedValueOnce(
+      AsyncResult.failure(Cause.fail("stream completion was rejected")),
+    );
+    buttonsByText("Commit (1)")[0]?.onClick?.();
+    await flushPromises();
+    expect(testState.toast.update).toHaveBeenLastCalledWith(
+      "toast-1",
+      expect.objectContaining({
+        title: "Action failed",
+        description: "stream completion was rejected",
+      }),
+    );
 
     testState.runAction.mockResolvedValueOnce(AsyncResult.failure(Cause.interrupt(1)));
     buttonsByText("Commit (1)")[0]?.onClick?.();

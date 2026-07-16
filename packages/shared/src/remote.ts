@@ -4,6 +4,12 @@ const PAIRING_TOKEN_PARAM = "token";
 const HOSTED_PAIRING_HOST_PARAM = "host";
 const HOSTED_PAIRING_LABEL_PARAM = "label";
 const SUPPORTED_REMOTE_BACKEND_PROTOCOLS = new Set(["http:", "https:", "ws:", "wss:"]);
+const EXPLICIT_SCHEME_PATTERN = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//;
+const RFC_SCHEME_PREFIX_PATTERN = /^([A-Za-z][A-Za-z0-9+.-]*):/;
+const BARE_HOST_WITH_PORT_PATTERN = /^[A-Za-z0-9.-]+:\d+$/;
+const BARE_IPV6_AUTHORITY_PATTERN = /^\[[^\]]+\](?::\d+)?$/;
+const WINDOWS_DRIVE_PATH_PATTERN = /^[A-Za-z]:/;
+const DOT_RELATIVE_PATH_PATTERN = /^\.\.?(?:[\\/]|$)/;
 
 const readHashParams = (url: URL): URLSearchParams =>
   new URLSearchParams(url.hash.startsWith("#") ? url.hash.slice(1) : url.hash);
@@ -72,31 +78,83 @@ export type RemotePairingTargetError = typeof RemotePairingTargetError.Type;
 const hasSupportedRemoteBackendProtocol = (url: URL): boolean =>
   SUPPORTED_REMOTE_BACKEND_PROTOCOLS.has(url.protocol);
 
+const isLocalPath = (value: string): boolean =>
+  WINDOWS_DRIVE_PATH_PATTERN.test(value) ||
+  /^\/(?!\/)/.test(value) ||
+  DOT_RELATIVE_PATH_PATTERN.test(value);
+
+const hasAuthority = (value: string, authorityStart: number): boolean => {
+  const remainder = value.slice(authorityStart);
+  const separatorIndex = remainder.search(/[/?#]/);
+  const authority = separatorIndex === -1 ? remainder : remainder.slice(0, separatorIndex);
+  return authority.length > 0;
+};
+
+const leadingAuthorityToken = (value: string): string => {
+  const separatorIndex = value.search(/[/?#]/);
+  return separatorIndex === -1 ? value : value.slice(0, separatorIndex);
+};
+
+const parseRemoteBaseUrl = (value: string, source: RemoteBackendUrlInvalidError["source"]): URL => {
+  try {
+    return new URL(value);
+  } catch (cause) {
+    throw new RemoteBackendUrlInvalidError({ source, cause });
+  }
+};
+
 const normalizeRemoteBaseUrl = (
   rawValue: string,
   source: RemoteBackendUrlInvalidError["source"],
 ): URL => {
   const trimmed = rawValue.trim();
-  if (!trimmed) {
-    throw new RemoteBackendUrlMissingError();
+  let normalizedInput: string;
+
+  if (trimmed.includes("\\")) {
+    throw new RemoteBackendUrlInvalidError({ source });
   }
 
-  const normalizedInput =
-    /^[a-zA-Z][a-zA-Z\d+-]*:\/\//.test(trimmed) || trimmed.startsWith("//")
-      ? trimmed
-      : `https://${trimmed}`;
-  let url: URL;
-  try {
-    url = new URL(normalizedInput);
-  } catch (cause) {
-    throw new RemoteBackendUrlInvalidError({ source, cause });
+  if (trimmed.startsWith("//")) {
+    if (!hasAuthority(trimmed, 2)) {
+      throw new RemoteBackendUrlInvalidError({ source });
+    }
+    normalizedInput = `https:${trimmed}`;
+  } else {
+    const authority = leadingAuthorityToken(trimmed);
+    const isBareAuthority =
+      BARE_IPV6_AUTHORITY_PATTERN.test(authority) || BARE_HOST_WITH_PORT_PATTERN.test(authority);
+    if (isLocalPath(trimmed) && !isBareAuthority) {
+      throw new RemoteBackendUrlInvalidError({ source });
+    }
+
+    const explicitSchemeMatch = EXPLICIT_SCHEME_PATTERN.exec(trimmed);
+    if (explicitSchemeMatch) {
+      const protocol = `${explicitSchemeMatch[1]!.toLowerCase()}:`;
+      if (!SUPPORTED_REMOTE_BACKEND_PROTOCOLS.has(protocol)) {
+        throw new RemoteBackendUrlInvalidError({ source, protocol });
+      }
+      if (!hasAuthority(trimmed, explicitSchemeMatch[0].length)) {
+        throw new RemoteBackendUrlInvalidError({ source });
+      }
+      normalizedInput = trimmed;
+    } else {
+      if (isBareAuthority) {
+        normalizedInput = `https://${trimmed}`;
+      } else if (authority.includes(":")) {
+        const schemeMatch = RFC_SCHEME_PREFIX_PATTERN.exec(authority);
+        const protocol = schemeMatch ? `${schemeMatch[1]!.toLowerCase()}:` : undefined;
+        throw new RemoteBackendUrlInvalidError({
+          source,
+          protocol:
+            protocol && !SUPPORTED_REMOTE_BACKEND_PROTOCOLS.has(protocol) ? protocol : undefined,
+        });
+      } else {
+        normalizedInput = `https://${trimmed}`;
+      }
+    }
   }
-  if (!hasSupportedRemoteBackendProtocol(url)) {
-    throw new RemoteBackendUrlInvalidError({
-      source,
-      protocol: url.protocol,
-    });
-  }
+
+  const url = parseRemoteBaseUrl(normalizedInput, source);
   url.pathname = "/";
   url.search = "";
   url.hash = "";

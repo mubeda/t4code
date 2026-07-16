@@ -1,0 +1,14 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "_tag": "First",
+      "value": 1
+    },
+    {
+      "_tag": "Second",
+      "value": "two"
+    }
+  ]
+}

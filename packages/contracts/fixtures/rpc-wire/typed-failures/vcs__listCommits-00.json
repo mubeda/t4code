@@ -1,0 +1,22 @@
+{
+  "_tag": "Exit",
+  "requestId": "900719925474099312345",
+  "exit": {
+    "_tag": "Failure",
+    "cause": [
+      {
+        "_tag": "Fail",
+        "error": {
+          "_tag": "GitCommandError",
+          "operation": "nameu",
+          "command": "#M/:!Eps",
+          "cwd": "",
+          "exitCode": 3.4028214381443282e38,
+          "stdoutLength": -3.4028183957828877e38,
+          "detail": "sl",
+          "cause": "undefined"
+        }
+      }
+    ]
+  }
+}

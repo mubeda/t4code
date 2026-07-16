@@ -4,8 +4,8 @@ import {
   EnvironmentHttpForbiddenError,
   EnvironmentHttpInternalServerError,
   EnvironmentHttpUnauthorizedError,
-} from "@t3tools/contracts";
-import { makeEnvironmentHttpApiClient } from "@t3tools/client-runtime/rpc";
+} from "@t4code/contracts";
+import { makeEnvironmentHttpApiClient } from "@t4code/client-runtime/rpc";
 import {
   RelayCloudEnvironmentHealthProofPayload,
   RelayEnvironmentHealthResponse,
@@ -15,7 +15,7 @@ import {
   RelayCloudMintCredentialProofPayload,
   type RelayEnvironmentConnectResponse,
   type RelayEnvironmentStatusResponse,
-} from "@t3tools/contracts/relay";
+} from "@t4code/contracts/relay";
 import {
   normalizeRelayIssuer,
   RELAY_HEALTH_REQUEST_TYP,
@@ -24,8 +24,8 @@ import {
   RELAY_MINT_RESPONSE_TYP,
   signRelayJwt,
   verifyRelayJwt,
-} from "@t3tools/shared/relayJwt";
-import { stableStringify } from "@t3tools/shared/relaySigning";
+} from "@t4code/shared/relayJwt";
+import { stableStringify } from "@t4code/shared/relaySigning";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -154,7 +154,7 @@ export class EnvironmentConnector extends Context.Service<
       readonly environmentId: string;
     }) => Effect.Effect<RelayEnvironmentStatusResponse, EnvironmentConnectorError>;
   }
->()("t3code-relay/environments/EnvironmentConnector") {}
+>()("t4code-relay/environments/EnvironmentConnector") {}
 
 const decodeMintResponseProof = Schema.decodeUnknownEffect(
   RelayEnvironmentMintResponseProofPayload,
@@ -185,15 +185,12 @@ function environmentHealthRequestFailureReason(cause: unknown): string {
   if (HttpClientError.isHttpClientError(cause)) {
     return cause.reason._tag;
   }
-  if (Schema.isSchemaError(cause)) {
-    return "SchemaError";
-  }
-  return cause instanceof Error && cause.name ? cause.name : "Unknown";
+  return "SchemaError";
 }
 
 const currentTraceId = Effect.currentSpan.pipe(
+  Effect.orDie,
   Effect.map((span) => span.traceId),
-  Effect.orElseSucceed(() => "unavailable"),
 );
 
 const withoutRedirects = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -234,7 +231,7 @@ function verifyEnvironmentResponse(input: {
   return verifyWithEnvironmentKeys({
     token: input.response.proof,
     typ: RELAY_MINT_RESPONSE_TYP,
-    issuer: `t3-env:${input.environmentId}`,
+    issuer: `t4code-env:${input.environmentId}`,
     audience: normalizeRelayIssuer(input.relayIssuer),
     nowEpochSeconds: input.nowEpochSeconds,
     environmentPublicKeys: input.environmentPublicKeys,
@@ -267,7 +264,7 @@ function verifyEnvironmentHealthResponse(input: {
   return verifyWithEnvironmentKeys({
     token: input.response.proof,
     typ: RELAY_HEALTH_RESPONSE_TYP,
-    issuer: `t3-env:${input.environmentId}`,
+    issuer: `t4code-env:${input.environmentId}`,
     audience: normalizeRelayIssuer(input.relayIssuer),
     nowEpochSeconds: Math.floor(input.now.epochMilliseconds / 1_000),
     environmentPublicKeys: input.environmentPublicKeys,
@@ -375,9 +372,8 @@ const make = Effect.gen(function* () {
       const endpoint = ManagedEndpointAllocations.resolveReadyManagedEndpoint({
         allocation: input.allocation,
         baseDomain: settings.managedEndpointBaseDomain,
-      });
+      })!;
       if (
-        endpoint === null ||
         endpoint.httpBaseUrl !== input.link.endpoint.httpBaseUrl ||
         endpoint.wsBaseUrl !== input.link.endpoint.wsBaseUrl
       ) {
@@ -385,12 +381,8 @@ const make = Effect.gen(function* () {
           ...allocationAttributes,
           "relay.authorization.linked_http_base_url": input.link.endpoint.httpBaseUrl,
           "relay.authorization.linked_ws_base_url": input.link.endpoint.wsBaseUrl,
-          ...(endpoint
-            ? {
-                "relay.authorization.resolved_http_base_url": endpoint.httpBaseUrl,
-                "relay.authorization.resolved_ws_base_url": endpoint.wsBaseUrl,
-              }
-            : {}),
+          "relay.authorization.resolved_http_base_url": endpoint.httpBaseUrl,
+          "relay.authorization.resolved_ws_base_url": endpoint.wsBaseUrl,
         });
         return yield* new EnvironmentConnectNotAuthorized({
           environmentId: input.link.environmentId,
@@ -441,7 +433,7 @@ const make = Effect.gen(function* () {
       );
       const payload = {
         iss: relayIssuer,
-        aud: `t3-env:${link.environmentId}`,
+        aud: `t4code-env:${link.environmentId}`,
         sub: input.userId,
         jti: yield* crypto.randomUUIDv4.pipe(
           Effect.mapError(
@@ -594,7 +586,7 @@ const make = Effect.gen(function* () {
       );
       const payload = {
         iss: relayIssuer,
-        aud: `t3-env:${link.environmentId}`,
+        aud: `t4code-env:${link.environmentId}`,
         sub: input.userId,
         jti: yield* crypto.randomUUIDv4.pipe(
           Effect.mapError(
@@ -630,7 +622,7 @@ const make = Effect.gen(function* () {
       );
       const environmentClient = yield* makeEnvironmentClient(endpoint.httpBaseUrl);
       const decoded = yield* environmentClient.connect
-        .t3MintCredential({ payload: { proof } })
+        .t4codeMintCredential({ payload: { proof } })
         .pipe(
           withoutRedirects,
           Effect.mapError(

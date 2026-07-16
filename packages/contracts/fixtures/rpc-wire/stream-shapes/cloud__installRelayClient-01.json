@@ -1,0 +1,15 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "type": "complete",
+      "status": {
+        "status": "unsupported",
+        "platform": "__looku",
+        "arch": "8",
+        "version": ""
+      }
+    }
+  ]
+}

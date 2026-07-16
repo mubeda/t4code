@@ -1,0 +1,26 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "threadId": "U x-",
+      "tabId": "nstr",
+      "createdAt": "&",
+      "type": "resized",
+      "snapshot": {
+        "threadId": "$rz$|!ux",
+        "tabId": "|y({",
+        "navStatus": {
+          "_tag": "LoadFailed",
+          "url": "]P_jHfn$0D.",
+          "title": "DUgO$",
+          "code": -12,
+          "description": "b:e"
+        },
+        "canGoBack": true,
+        "canGoForward": false,
+        "updatedAt": "!S}e#$}$}&"
+      }
+    }
+  ]
+}

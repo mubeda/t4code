@@ -1,5 +1,8 @@
 # Plan 03 — Staged / Unstaged Index Model
 
+> Status: archival. This shipped plan preserves its original paths and commands.
+> Use [Current Scripts](../../../reference/scripts.md) for supported commands.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax. Read [00-overview.md](./00-overview.md) first. **Depends on Plans 01 + 02** (the panel, the list, the `status` field, and the porcelain helpers must already exist).
 
 **Goal:** Replace the panel's single "select files to commit" list with Orca's real git-index model: separate **Staged Changes**, **Changes** (unstaged), and **Untracked Files** sections, each with `Stage All` / `Unstage` / `Discard`, backed by real `git add` / `git restore`. Commit commits the **staged** set.
@@ -87,7 +90,7 @@ export type VcsDiscardFilesInput = typeof VcsDiscardFilesInput.Type;
 
 - [ ] **Step 3: Typecheck contracts + commit**
 
-Run: `pnpm --filter @t3tools/contracts exec tsc --noEmit` → PASS.
+Run: `pnpm --filter @t4code/contracts exec tsc --noEmit` → PASS.
 
 ```bash
 git add packages/contracts/src/git.ts
@@ -149,7 +152,7 @@ In `RpcGroup.make(...)` (line 684+), after `WsVcsInitRpc` (line 720):
 
 - [ ] **Step 4: Typecheck + commit**
 
-Run: `pnpm --filter @t3tools/contracts exec tsc --noEmit` → PASS.
+Run: `pnpm --filter @t4code/contracts exec tsc --noEmit` → PASS.
 
 ```bash
 git add packages/contracts/src/rpc.ts
@@ -206,7 +209,7 @@ it.effect("splits staged and unstaged changes into areas and stages selected fil
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `pnpm --filter @t3tools/server exec vp test run apps/server/src/vcs/GitVcsDriverCore.test.ts`
+Run: `pnpm --filter @t4code/server exec vp test run apps/server/src/vcs/GitVcsDriverCore.test.ts`
 Expected: FAIL — `file.area` is `undefined`; `driver.stageFiles` does not exist.
 
 - [ ] **Step 3: Split the numstat by area in `readStatusDetailsLocal`**
@@ -265,7 +268,7 @@ for (const filePath of changedFilesWithoutNumstat) {
 files.sort((a, b) => a.area.localeCompare(b.area) || a.path.localeCompare(b.path));
 ```
 
-> This replaces the previous `fileStatMap` merge (which summed staged+unstaged into one entry). Remove the now-unused `fileStatMap` declaration. Totals (`insertions`/`deletions`) remain the sum across all areas — unchanged behavior for `workingTree.insertions/deletions`. Import `VcsStagingArea` (type) from `@t3tools/contracts` alongside `VcsWorkingTreeFileStatus`.
+> This replaces the previous `fileStatMap` merge (which summed staged+unstaged into one entry). Remove the now-unused `fileStatMap` declaration. Totals (`insertions`/`deletions`) remain the sum across all areas — unchanged behavior for `workingTree.insertions/deletions`. Import `VcsStagingArea` (type) from `@t4code/contracts` alongside `VcsWorkingTreeFileStatus`.
 
 - [ ] **Step 4: Add the git primitives for staging**
 
@@ -363,8 +366,8 @@ const discardFiles: GitManager["Service"]["discardFiles"] = Effect.fn("discardFi
 
 - [ ] **Step 7: Run the driver test to verify it passes; typecheck server**
 
-Run: `pnpm --filter @t3tools/server exec vp test run apps/server/src/vcs/GitVcsDriverCore.test.ts` → PASS.
-Run: `pnpm --filter @t3tools/server exec tsc --noEmit` → PASS.
+Run: `pnpm --filter @t4code/server exec vp test run apps/server/src/vcs/GitVcsDriverCore.test.ts` → PASS.
+Run: `pnpm --filter @t4code/server exec tsc --noEmit` → PASS.
 
 > The Plan 02 status test asserts `byPath.get("tracked.ts") === "modified"`. With the area split, a purely unstaged modification still yields one `"unstaged"` entry for `tracked.ts` — the assertion holds. If any existing server test asserted a unique-by-path `files` array, update it to account for two entries when a file is both staged and unstaged.
 
@@ -426,8 +429,8 @@ In the dispatch map (after the `vcsPull` handler, line 1482), add (each mutation
 
 - [ ] **Step 3: Typecheck + a server boot smoke test**
 
-Run: `pnpm --filter @t3tools/server exec tsc --noEmit` → PASS.
-Run: `pnpm --filter @t3tools/server exec vp test run apps/server/src/server.test.ts` → PASS (this exercises the ws layer; every RPC in `WsRpcGroup` must have a scope + handler, so a missing wiring fails here).
+Run: `pnpm --filter @t4code/server exec tsc --noEmit` → PASS.
+Run: `pnpm --filter @t4code/server exec vp test run apps/server/src/server.test.ts` → PASS (this exercises the ws layer; every RPC in `WsRpcGroup` must have a scope + handler, so a missing wiring fails here).
 
 - [ ] **Step 4: Commit**
 
@@ -495,7 +498,7 @@ describe("staging action hooks", () => {
 });
 ```
 
-Run: `pnpm --filter @t3tools/web exec vp test run --project unit apps/web/src/state/sourceControlActions.stage.test.ts` → FAIL (not exported).
+Run: `pnpm --filter @t4code/web exec vp test run --project unit apps/web/src/state/sourceControlActions.stage.test.ts` → FAIL (not exported).
 
 - [ ] **Step 3: Add the three hooks**
 
@@ -526,7 +529,7 @@ const ACTION_OPERATION = {
 } as const satisfies Record<SourceControlActionKind, VcsActionOperation>;
 ```
 
-> `VcsActionOperation` is a union in `@t3tools/client-runtime/state/vcs`. If `tsc` reports that `"stage_files"` / `"unstage_files"` / `"discard_files"` are not assignable, add them to the `VcsActionOperation` union at its definition (search `packages/client-runtime/src/state/vcsAction.ts` for `VcsActionOperation`). This is a one-line union extension.
+> `VcsActionOperation` is a union in `@t4code/client-runtime/state/vcs`. If `tsc` reports that `"stage_files"` / `"unstage_files"` / `"discard_files"` are not assignable, add them to the `VcsActionOperation` union at its definition (search `packages/client-runtime/src/state/vcsAction.ts` for `VcsActionOperation`). This is a one-line union extension.
 
 Then add the hooks (after `useVcsPullAction`):
 
@@ -581,8 +584,8 @@ export function useVcsDiscardAction(scope: SourceControlActionScope) {
 
 - [ ] **Step 5: Run the hook test + typecheck; commit**
 
-Run: `pnpm --filter @t3tools/web exec vp test run --project unit apps/web/src/state/sourceControlActions.stage.test.ts` → PASS.
-Run: `pnpm --filter @t3tools/web exec tsgo --noEmit` → PASS.
+Run: `pnpm --filter @t4code/web exec vp test run --project unit apps/web/src/state/sourceControlActions.stage.test.ts` → PASS.
+Run: `pnpm --filter @t4code/web exec tsgo --noEmit` → PASS.
 
 ```bash
 git add packages/client-runtime/src/state/vcs.ts apps/web/src/state/sourceControlActions.ts apps/web/src/lib/sourceControlActions.ts apps/web/src/state/sourceControlActions.stage.test.ts
@@ -632,7 +635,7 @@ Run it → FAIL (`groupFilesByArea` undefined).
 `apps/web/src/components/SourceControlPanel.logic.ts` — extend the type + mapper and add the grouper:
 
 ```ts
-import type { VcsStagingArea, VcsStatusResult, VcsWorkingTreeFileStatus } from "@t3tools/contracts";
+import type { VcsStagingArea, VcsStatusResult, VcsWorkingTreeFileStatus } from "@t4code/contracts";
 
 export interface WorkingTreeFile {
   readonly path: string;
@@ -749,7 +752,7 @@ export function SourceControlSection(props: SourceControlSectionProps) {
 }
 ```
 
-Run: `pnpm --filter @t3tools/web exec tsgo --noEmit` → PASS.
+Run: `pnpm --filter @t4code/web exec tsgo --noEmit` → PASS.
 
 > If `size="icon-xs"` is not a valid `Button` size, use the token `GitActionsControl.tsx` uses (it calls `size="icon-xs"` at its dropdown trigger, so it is valid).
 
@@ -849,8 +852,8 @@ const primaryDisabled =
 
 - [ ] **Step 2: Typecheck + web tests**
 
-Run: `pnpm --filter @t3tools/web exec tsgo --noEmit` → PASS.
-Run: `pnpm --filter @t3tools/web exec vp test run --project unit` → PASS.
+Run: `pnpm --filter @t4code/web exec tsgo --noEmit` → PASS.
+Run: `pnpm --filter @t4code/web exec vp test run --project unit` → PASS.
 
 - [ ] **Step 3: Manual verification**
 

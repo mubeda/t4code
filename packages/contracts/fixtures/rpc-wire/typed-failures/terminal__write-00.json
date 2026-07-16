@@ -1,0 +1,29 @@
+{
+  "_tag": "Exit",
+  "requestId": "900719925474099312345",
+  "exit": {
+    "_tag": "Failure",
+    "cause": [
+      {
+        "_tag": "Fail",
+        "error": {
+          "_tag": "TerminalHistoryError",
+          "operation": "truncate",
+          "threadId": "",
+          "terminalId": "ref",
+          "cause": [
+            "_l+x<;",
+            "%|G;0&)20{",
+            false,
+            8716772170075465,
+            "A",
+            false,
+            "ntHodG",
+            true,
+            null
+          ]
+        }
+      }
+    ]
+  }
+}

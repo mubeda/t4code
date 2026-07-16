@@ -1,5 +1,5 @@
 {
-  "name": "@t3tools/contracts",
+  "name": "@t4code/contracts",
   "version": "0.1.1",
   "private": true,
   "files": [
@@ -21,6 +21,8 @@
     }
   },
   "scripts": {
+    "generate:rust-auth-fixtures": "node scripts/export-rust-auth-fixtures.ts",
+    "generate:rust-rpc-fixtures": "node scripts/export-rust-rpc-fixtures.ts",
     "typecheck": "tsgo --noEmit",
     "test": "vp test run"
   },
@@ -29,6 +31,8 @@
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "fast-check": "^4.8.0",
     "vite-plus": "catalog:"
   }
 }

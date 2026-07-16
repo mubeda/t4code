@@ -1,0 +1,6 @@
+{
+  "_tag": "EnvironmentInternalError",
+  "code": "internal_error",
+  "reason": "internal_error",
+  "traceId": "fixture-trace-internal"
+}

@@ -22,11 +22,11 @@ import {
   type ResolvedKeybindingsConfig,
   type ServerProvider,
   ThreadId,
-} from "@t3tools/contracts";
-import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
-import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
-import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
+} from "@t4code/contracts";
+import { DEFAULT_UNIFIED_SETTINGS } from "@t4code/contracts/settings";
+import { scopedThreadKey, scopeThreadRef } from "@t4code/client-runtime/environment";
+import type { EnvironmentConnectionPresentation } from "@t4code/client-runtime/connection";
+import { serializeComposerFileLink } from "@t4code/shared/composerTrigger";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -424,7 +424,10 @@ function flushQueuedEffects(): void {
 /** Re-run every executed effect: simulates a controlled re-render pass. */
 function reflushExecutedEffects(): void {
   for (const effect of Array.from(h.executed)) {
-    effect();
+    const cleanup = effect();
+    if (typeof cleanup === "function") {
+      h.cleanups.push(cleanup as () => void);
+    }
   }
 }
 
@@ -519,7 +522,14 @@ const codexProvider: ServerProvider = {
       scope: "project",
       enabled: true,
     },
-    { name: "docs", path: "/skills/docs", enabled: true },
+    { name: "docs", path: "/skills/docs", enabled: true, invocation: "slash" },
+  ],
+  agents: [
+    {
+      name: "code-reviewer",
+      description: "Review changes with a dedicated agent",
+      model: "gpt-5.4",
+    },
   ],
 };
 
@@ -915,6 +925,7 @@ describe("ChatComposer rendering", () => {
     expect(select["value"]).toBe("approval-required");
     const picker = findCapture("ProviderModelPicker");
     expect(picker["lockedProvider"]).toBeNull();
+    expect(picker["lockToActiveInstance"]).toBe(true);
 
     // Path search targets nothing while no path trigger is active.
     const pathSearch = findCapture("useComposerPathSearch")["target"] as Record<string, unknown>;
@@ -1056,6 +1067,17 @@ describe("ChatComposer rendering", () => {
     const { markup } = renderComposer({ isPreparingWorktree: true });
     expect(markup).toContain("Preparing worktree...");
   });
+
+  it("forwards interrupt and plan implementation primary actions", () => {
+    const { spies } = renderComposer({ phase: "running", showPlanFollowUpPrompt: true });
+    const actions = lastCapture("ComposerPrimaryActions");
+
+    (actions["onInterrupt"] as () => void)();
+    (actions["onImplementPlanInNewThread"] as () => void)();
+
+    expect(spies.onInterrupt).toHaveBeenCalledOnce();
+    expect(spies.onImplementPlanInNewThread).toHaveBeenCalledOnce();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1166,6 +1188,32 @@ describe("ChatComposer attachments", () => {
     // Removing the last annotation empties the draft, which the store drops.
     expect(draftOf(threadRef)?.previewAnnotations ?? []).toEqual([]);
   });
+
+  it("expands the image attached to a preview annotation", () => {
+    draftStore().addImages(threadRef, [makeImage({ id: "ann-image" })]);
+    draftStore().setPreviewAnnotations(threadRef, [
+      {
+        id: "ann-image",
+        pageUrl: "http://localhost:3000/",
+        pageTitle: "Preview",
+        comment: "Inspect this",
+        elements: [],
+        regions: [],
+        strokes: [],
+        styleChanges: [],
+        screenshot: null,
+        createdAt: now,
+      },
+    ]);
+
+    const { spies } = renderComposer();
+    const annotationCards = findCapture("ComposerPreviewAnnotationCards");
+    (annotationCards["onExpandImage"] as (id: string) => void)("ann-image");
+
+    expect(spies.onExpandImage).toHaveBeenCalledWith(
+      expect.objectContaining({ index: 0, images: expect.any(Array) }),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1220,6 +1268,7 @@ describe("ChatComposer command menu", () => {
       "slash:plan",
       "slash:default",
       "provider-slash-command:codex:review",
+      "provider-agent:codex:code-reviewer",
     ]);
     expect(menu["groupSlashCommandSections"]).toBe(true);
     expect(menu["emptyStateText"]).toBe("No matching command.");
@@ -1413,6 +1462,27 @@ describe("ChatComposer menu selection", () => {
     expect(draftOf(threadRef)?.prompt).toBe("$refactor ");
   });
 
+  it("uses provider-native slash invocation for slash skills", () => {
+    seedPrompt("$doc");
+    renderComposer();
+    setEditorSnapshot("$doc", 4);
+    const menu = findCapture("ComposerCommandMenu");
+    const onSelect = menu["onSelect"] as (item: Record<string, unknown>) => void;
+    const items = menu["items"] as Array<Record<string, unknown>>;
+
+    onSelect(items[0]!);
+
+    expect(draftOf(threadRef)?.prompt).toBe("/docs ");
+  });
+
+  it("inserts an explicit provider-agent instruction", () => {
+    const { onSelect, items } = renderSlashMenu("/code");
+
+    onSelect(items.find((item) => item["id"] === "provider-agent:codex:code-reviewer")!);
+
+    expect(draftOf(threadRef)?.prompt).toBe("Use the code-reviewer agent to ");
+  });
+
   it("routes custom answers through the pending input callback instead of the store", () => {
     seedPrompt("$ref");
     const { spies } = renderComposer({
@@ -1545,9 +1615,33 @@ describe("ChatComposer prompt changes", () => {
     onChange(`${INLINE_TERMINAL_CONTEXT_PLACEHOLDER} tai`, 4, 4, false, ["ctx-1"]);
     expect(draftOf(threadRef)?.terminalContexts.map((entry) => entry.id)).toEqual(["ctx-1"]);
 
+    // Unknown editor ids are discarded while known contexts retain editor order.
+    onChange(`${INLINE_TERMINAL_CONTEXT_PLACEHOLDER} tai`, 4, 4, false, ["missing", "ctx-1"]);
+    expect(draftOf(threadRef)?.terminalContexts.map((entry) => entry.id)).toEqual(["ctx-1"]);
+
     // Editor dropped the placeholder: the store follows.
     onChange("tail", 4, 4, false, []);
     expect(draftOf(threadRef)?.terminalContexts).toEqual([]);
+  });
+
+  it("removes terminal chips by id and ignores stale removal requests", () => {
+    const first = makeTerminalContext("ctx-first");
+    const second = { ...makeTerminalContext("ctx-second"), terminalId: "term-2" };
+    draftStore().setTerminalContexts(threadRef, [first, second]);
+    seedPrompt(
+      `${INLINE_TERMINAL_CONTEXT_PLACEHOLDER} ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER} tail`,
+    );
+    renderComposer();
+    const remove = editorProps()["onRemoveTerminalContext"] as (id: string) => void;
+
+    remove("missing");
+    expect(draftOf(threadRef)?.terminalContexts.map((entry) => entry.id)).toEqual([
+      "ctx-first",
+      "ctx-second",
+    ]);
+
+    remove("ctx-second");
+    expect(draftOf(threadRef)?.terminalContexts.map((entry) => entry.id)).toEqual(["ctx-first"]);
   });
 
   it("routes edits to the pending input callback while a question is active", () => {

@@ -1,0 +1,20 @@
+{
+  "_tag": "Exit",
+  "requestId": "900719925474099312345",
+  "exit": {
+    "_tag": "Failure",
+    "cause": [
+      {
+        "_tag": "Fail",
+        "error": {
+          "_tag": "GitCommandError",
+          "operation": "qnJ_P1AFC",
+          "command": ">p/3KSm`=C",
+          "cwd": "yg@u!<*G.k",
+          "argumentCount": -6.754994743921187e-31,
+          "detail": "$"
+        }
+      }
+    ]
+  }
+}

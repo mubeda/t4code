@@ -1,0 +1,8 @@
+{
+  "fixtures": [
+    "inventory-snapshot.json",
+    "rollback.json",
+    "trace-question-resolved.json",
+    "trace-session.json"
+  ]
+}

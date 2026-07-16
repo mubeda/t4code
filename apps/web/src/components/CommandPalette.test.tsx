@@ -12,20 +12,20 @@ import type {
   SourceControlDiscoveryResult,
   SourceControlProviderDiscoveryItem,
   SourceControlRepositoryInfo,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import {
   EnvironmentId,
   PRIMARY_LOCAL_ENVIRONMENT_ID,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
-} from "@t3tools/contracts";
-import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
+} from "@t4code/contracts";
+import { DEFAULT_CLIENT_SETTINGS } from "@t4code/contracts/settings";
 import type {
   EnvironmentProject,
   EnvironmentThreadShell,
-} from "@t3tools/client-runtime/state/shell";
-import { createModelSelection } from "@t3tools/shared/model";
+} from "@t4code/client-runtime/state/shell";
+import { createModelSelection } from "@t4code/shared/model";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";

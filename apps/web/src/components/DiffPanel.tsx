@@ -3,9 +3,9 @@ import { useParams } from "@tanstack/react-router";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
-import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
-import type { ScopedThreadRef, TurnId } from "@t3tools/contracts";
+} from "@t4code/client-runtime/state/runtime";
+import { safeErrorLogAttributes } from "@t4code/client-runtime/errors";
+import type { ScopedThreadRef, TurnId } from "@t4code/contracts";
 import {
   ArrowRightIcon,
   CheckIcon,
@@ -23,7 +23,11 @@ import { type DraftId } from "../composerDraftStore";
 import { openDiffFilePrimaryAction } from "../diffFileActions";
 import { useCheckpointDiff } from "~/lib/checkpointDiffState";
 import { cn } from "~/lib/utils";
-import { selectThreadDiffPanelSelection, useDiffPanelStore } from "../diffPanelStore";
+import {
+  selectThreadDiffPanelRefreshRequest,
+  selectThreadDiffPanelSelection,
+  useDiffPanelStore,
+} from "../diffPanelStore";
 import { useTheme } from "../hooks/useTheme";
 import {
   buildFileDiffRenderKey,
@@ -202,6 +206,9 @@ export default function DiffPanel({ mode = "inline", composerDraftTarget }: Diff
   const diffSelection = useDiffPanelStore((state) =>
     selectThreadDiffPanelSelection(state.byThreadKey, routeThreadRef),
   );
+  const gitRefreshRequestId = useDiffPanelStore((state) =>
+    selectThreadDiffPanelRefreshRequest(state.gitRefreshRequestByThreadKey, routeThreadRef),
+  );
   const activeThreadId = routeThreadRef?.threadId ?? null;
   const activeThread = useThread(routeThreadRef);
   const activeProjectId = activeThread?.projectId ?? null;
@@ -328,6 +335,10 @@ export default function DiffPanel({ mode = "inline", composerDraftTarget }: Diff
         })
       : null,
   );
+  useEffect(() => {
+    if (gitRefreshRequestId === 0 || selectedTurnId !== null) return;
+    branchDiffPreview.refresh();
+  }, [branchDiffPreview.refresh, gitRefreshRequestId, selectedTurnId]);
   const selectedGitSource = branchDiffPreview.data?.sources.find(
     (source) => source.kind === (selectedGitScope === "unstaged" ? "working-tree" : "branch-range"),
   );

@@ -3,7 +3,7 @@ import {
   ProviderInstanceId,
   type ResolvedKeybindingsConfig,
   type ServerProvider,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import type { Dispatch, SetStateAction } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -172,6 +172,10 @@ interface CapturedLegendProps {
   data: string[];
   keyExtractor: (item: string) => string;
   renderItem: (args: { item: string; index: number }) => unknown;
+  estimatedItemSize: number;
+  initialScrollIndex?: number;
+  drawDistance: number;
+  recycleItems: boolean;
   onLayout: () => void;
   onScroll: () => void;
   className: string;
@@ -475,6 +479,54 @@ beforeEach(() => {
 });
 
 describe("ModelPickerContent", () => {
+  it.each(["codex", "claude", "cursor", "opencode", "grok"])(
+    "locks a %s chat panel to its creating provider instance",
+    (activeProvider) => {
+      const providerEntries = ["codex", "claude", "cursor", "opencode", "grok"].map((provider) =>
+        entry({
+          instanceId: provider,
+          driverKind: driver(provider),
+          displayName: provider,
+        }),
+      );
+      const modelOptionsByInstance = new Map(
+        providerEntries.map((providerEntry) => [
+          providerEntry.instanceId,
+          [
+            {
+              slug: `${providerEntry.instanceId}-model`,
+              name: `${providerEntry.displayName} Model`,
+            },
+          ],
+        ]),
+      );
+      const onInstanceModelChange = vi.fn();
+
+      const markup = render(
+        buildProps({
+          activeInstanceId: id(activeProvider),
+          model: `${activeProvider}-model`,
+          lockToActiveInstance: true,
+          instanceEntries: providerEntries,
+          modelOptionsByInstance,
+          onInstanceModelChange,
+        }),
+      );
+
+      expect(markup).not.toContain('data-testid="sidebar"');
+      expect(captured.combobox[0]?.items).toEqual([`${activeProvider}:${activeProvider}-model`]);
+      expect(renderedRowKeys()).toEqual([`${activeProvider}:${activeProvider}-model`]);
+
+      captured.input[0]?.onChange({ target: { value: "model" } });
+      rerender();
+      expect(renderedRowKeys()).toEqual([`${activeProvider}:${activeProvider}-model`]);
+
+      const foreignProvider = activeProvider === "codex" ? "claude" : "codex";
+      captured.combobox[0]?.onValueChange(`${foreignProvider}:${foreignProvider}-model`);
+      expect(onInstanceModelChange).not.toHaveBeenCalled();
+    },
+  );
+
   it("renders only ready instances' models for the active instance", () => {
     const markup = render(buildProps());
 
@@ -497,6 +549,15 @@ describe("ModelPickerContent", () => {
     // The active model row is marked selected.
     const selected = captured.rows.find((row) => row.isSelected);
     expect(selected?.model.slug).toBe("gpt-5");
+  });
+
+  it("keeps the row estimate conservative without recycling picker items", () => {
+    render(buildProps());
+
+    expect(captured.legend[0]?.estimatedItemSize).toBe(48);
+    expect(captured.legend[0]?.initialScrollIndex).toBe(0);
+    expect(captured.legend[0]?.drawDistance).toBe(480);
+    expect(captured.legend[0]?.recycleItems).toBe(false);
   });
 
   it("switches the model list when the sidebar selects another instance", () => {

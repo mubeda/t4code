@@ -4,7 +4,7 @@ import {
   PRIMARY_LOCAL_ENVIRONMENT_ID,
   type DesktopBridge,
   type DesktopSshEnvironmentTarget,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import { afterEach, vi } from "vite-plus/test";
 import * as Data from "effect/Data";
@@ -21,14 +21,14 @@ import {
   PlatformConnectionSource,
   PrimaryEnvironmentAuth,
   SshEnvironmentGateway,
-} from "@t3tools/client-runtime/platform";
+} from "@t4code/client-runtime/platform";
 import {
   ConnectionBlockedError,
   ConnectionTransientError,
   Connectivity,
   Wakeups,
-} from "@t3tools/client-runtime/connection";
-import { EnvironmentRpcRequestObserver } from "@t3tools/client-runtime/rpc";
+} from "@t4code/client-runtime/connection";
+import { EnvironmentRpcRequestObserver } from "@t4code/client-runtime/rpc";
 
 // ── Controllable mock state ──────────────────────────────────────────
 const pf = vi.hoisted(() => ({
@@ -96,7 +96,7 @@ vi.mock("./storage", async () => {
   return { connectionStorageLayer: Layer.empty };
 });
 
-vi.mock("@t3tools/client-runtime/relay", async () => {
+vi.mock("@t4code/client-runtime/relay", async () => {
   const Stream = await import("effect/Stream");
   return {
     managedRelaySessionAtom: { _tag: "managedRelaySessionAtom" },
@@ -104,12 +104,12 @@ vi.mock("@t3tools/client-runtime/relay", async () => {
   };
 });
 
-vi.mock("@t3tools/client-runtime/environment", () => ({
+vi.mock("@t4code/client-runtime/environment", () => ({
   fetchRemoteEnvironmentDescriptor: (_input: { httpBaseUrl: string }) =>
     Effect.succeed(pf.descriptor),
 }));
 
-vi.mock("@t3tools/client-runtime/authorization", () => ({
+vi.mock("@t4code/client-runtime/authorization", () => ({
   bootstrapRemoteBearerSession: (_input: unknown) => Effect.succeed(pf.bearerAccess),
 }));
 

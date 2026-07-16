@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { ThreadId } from "@t3tools/contracts";
+import { scopeThreadRef } from "@t4code/client-runtime/environment";
+import { ThreadId } from "@t4code/contracts";
 import { DraftId } from "./composerDraftStore";
 
 import {
   buildDraftThreadRouteParams,
   buildThreadRouteParams,
+  missingRouteThreadRedirectDelay,
   resolveThreadRouteRef,
   resolveThreadRouteTarget,
   shouldRedirectMissingRouteThread,
@@ -68,6 +69,23 @@ describe("threadRoutes", () => {
 });
 
 describe("shouldRedirectMissingRouteThread", () => {
+  it("delays a live missing-thread redirect so newly created threads can materialize", () => {
+    expect(
+      missingRouteThreadRedirectDelay({
+        shellStatus: "live",
+        routeThreadExists: false,
+        environmentHasServerThreads: true,
+      }),
+    ).toBe(1_000);
+    expect(
+      missingRouteThreadRedirectDelay({
+        shellStatus: "live",
+        routeThreadExists: true,
+        environmentHasServerThreads: true,
+      }),
+    ).toBeNull();
+  });
+
   it("redirects when a live snapshot lacks the thread but has other server threads", () => {
     expect(
       shouldRedirectMissingRouteThread({

@@ -1,0 +1,22 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "type": "upsert",
+      "terminal": {
+        "threadId": "\"eCz\\xP(d",
+        "terminalId": "Gf9^GNTbY",
+        "cwd": "!\"",
+        "worktreePath": "Sz",
+        "status": "exited",
+        "pid": 1796050164,
+        "exitCode": null,
+        "exitSignal": 2147483634,
+        "hasRunningSubprocess": true,
+        "label": "gumentto",
+        "updatedAt": "^Ix&"
+      }
+    }
+  ]
+}

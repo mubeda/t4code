@@ -65,7 +65,8 @@ export type ProviderOptionSelection = typeof ProviderOptionSelection.Type;
  */
 const LegacyProviderOptionSelectionsObject = Schema.Record(Schema.String, Schema.Unknown);
 
-const ProviderOptionSelectionsFromLegacyObject = LegacyProviderOptionSelectionsObject.pipe(
+/** @internal Compatibility schema for migrating pre-v3 object-shaped provider options. */
+export const LegacyProviderOptionSelections = LegacyProviderOptionSelectionsObject.pipe(
   Schema.decodeTo(
     Schema.Array(ProviderOptionSelection),
     SchemaTransformation.transformOrFail({
@@ -89,7 +90,7 @@ const ProviderOptionSelectionsFromLegacyObject = LegacyProviderOptionSelectionsO
  */
 export const ProviderOptionSelections = Schema.Union([
   Schema.Array(ProviderOptionSelection),
-  ProviderOptionSelectionsFromLegacyObject,
+  LegacyProviderOptionSelections,
 ]);
 export type ProviderOptionSelections = typeof ProviderOptionSelections.Type;
 
@@ -98,7 +99,7 @@ function coerceLegacyOptionsObjectToArray(
 ): ReadonlyArray<ProviderOptionSelection> {
   const entries: Array<ProviderOptionSelection> = [];
   for (const [rawKey, rawValue] of Object.entries(record)) {
-    const id = typeof rawKey === "string" ? rawKey.trim() : "";
+    const id = rawKey.trim();
     if (id.length === 0) continue;
     if (typeof rawValue === "string") {
       const trimmed = rawValue.trim();

@@ -16,8 +16,8 @@
  * this implementation uses a distinct discriminant `kind:"chat-host"` (per the
  * Wave C task body) so exhaustive switches over the surface union stay clean.
  */
-import { scopedThreadKey } from "@t3tools/client-runtime/environment";
-import type { ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import { scopedThreadKey } from "@t4code/client-runtime/environment";
+import type { ScopedThreadRef, ThreadId } from "@t4code/contracts";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
@@ -35,7 +35,7 @@ export type CenterSurface =
 
 const HOST_SURFACE: CenterSurface = { id: HOST_SURFACE_ID, kind: "chat-host" };
 
-const CENTER_PANEL_STORAGE_KEY = "t3code:center-panel-state:v1";
+const CENTER_PANEL_STORAGE_KEY = "t4code:center-panel-state:v1";
 const CENTER_PANEL_STORAGE_VERSION = 1;
 
 export interface ThreadCenterPanelState {

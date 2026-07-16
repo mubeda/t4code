@@ -2,7 +2,7 @@ import type {
   GitRunStackedActionResult,
   GitStackedAction,
   VcsStatusResult,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import {
   buildGitActionProgressStages,
@@ -729,7 +729,7 @@ describe("resolveLiveThreadBranchUpdate", () => {
     expect(
       resolveLiveThreadBranchUpdate({
         threadBranch: "feature/keep",
-        gitStatus: status({ refName: "t3code/bda76797" }),
+        gitStatus: status({ refName: "t4code/bda76797" }),
       }),
     ).toBeNull();
   });
@@ -737,7 +737,7 @@ describe("resolveLiveThreadBranchUpdate", () => {
   it("reconciles a temporary worktree ref to a semantic branch", () => {
     expect(
       resolveLiveThreadBranchUpdate({
-        threadBranch: "t3code/a9628676",
+        threadBranch: "t4code/a9628676",
         gitStatus: status({ refName: "feature/real" }),
       }),
     ).toEqual({ branch: "feature/real" });

@@ -2,16 +2,17 @@ import {
   RelayEnvironmentLinkProofPayload,
   RelayEnvironmentLinkProofInvalidReason,
   type RelayEnvironmentLinkRequest,
-} from "@t3tools/contracts/relay";
+} from "@t4code/contracts/relay";
 import {
   decodeRelayJwt,
   normalizeRelayIssuer,
   RELAY_LINK_PROOF_TYP,
   verifyRelayJwt,
-} from "@t3tools/shared/relayJwt";
+} from "@t4code/shared/relayJwt";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
@@ -19,6 +20,7 @@ import * as DpopProofs from "../auth/DpopProofs.ts";
 import * as RelayTokens from "../auth/RelayTokens.ts";
 import * as EnvironmentCredentials from "./EnvironmentCredentials.ts";
 import * as EnvironmentLinks from "./EnvironmentLinks.ts";
+import * as ManagedEndpointAllocations from "./ManagedEndpointAllocations.ts";
 import * as ManagedEndpointProvider from "./ManagedEndpointProvider.ts";
 import * as RelayConfiguration from "../Config.ts";
 
@@ -66,8 +68,10 @@ export type EnvironmentLinkError =
   | EnvironmentLinkProofExpired
   | EnvironmentLinkProofInvalid
   | DpopProofs.DpopProofReplayPersistenceError
+  | EnvironmentLinks.EnvironmentLinkLookupPersistenceError
   | EnvironmentLinks.EnvironmentLinkUpsertPersistenceError
   | EnvironmentCredentials.EnvironmentCredentialCreatePersistenceError
+  | ManagedEndpointAllocations.ManagedEndpointAllocationPersistenceError
   | ManagedEndpointProvider.ManagedEndpointProviderError;
 
 export class EnvironmentLinker extends Context.Service<
@@ -88,7 +92,7 @@ export class EnvironmentLinker extends Context.Service<
       EnvironmentLinkError
     >;
   }
->()("t3code-relay/environments/EnvironmentLinker") {}
+>()("t4code-relay/environments/EnvironmentLinker") {}
 
 const decodeProof = Schema.decodeUnknownEffect(RelayEnvironmentLinkProofPayload);
 
@@ -135,6 +139,7 @@ function isLoopbackManagedTunnelOrigin(
 const make = Effect.gen(function* () {
   const links = yield* EnvironmentLinks.EnvironmentLinks;
   const credentials = yield* EnvironmentCredentials.EnvironmentCredentials;
+  const allocations = yield* ManagedEndpointAllocations.ManagedEndpointAllocations;
   const managedEndpointProvider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
   const proofReplay = yield* DpopProofs.DpopProofReplay;
   const relayTokens = yield* RelayTokens.RelayTokens;
@@ -178,7 +183,7 @@ const make = Effect.gen(function* () {
           expiresAt: DateTime.formatIso(DateTime.makeUnsafe(candidate.exp * 1_000)),
         });
       }
-      const issuer = `t3-env:${candidate.environmentId}`;
+      const issuer = `t4code-env:${candidate.environmentId}`;
       const relayIssuer = normalizeRelayIssuer(config.relayIssuer);
       const verified = yield* verifyRelayJwt({
         publicKey: candidate.environmentPublicKey,
@@ -280,33 +285,129 @@ const make = Effect.gen(function* () {
           stage: "validate_origin",
         });
       }
-      const provisioned = input.request.managedTunnelsEnabled
-        ? yield* managedEndpointProvider.provision({
-            userId: input.userId,
-            environmentId: verified.environmentId,
-            origin: verified.origin,
-          })
-        : null;
-      const endpoint = provisioned?.endpoint ?? verified.endpoint;
-      if (!isSecureManagedEndpoint(endpoint)) {
-        return yield* new EnvironmentLinkProofInvalid({
+      return yield* allocations.withOperation(
+        {
           userId: input.userId,
           environmentId: verified.environmentId,
-          reason: "endpoint_not_secure",
-          stage: "validate_endpoint",
-        });
-      }
-      yield* links.upsert({ ...input, proof: verified, endpoint });
-      const environmentCredential = yield* credentials.create({
-        environmentId: verified.environmentId,
-        environmentPublicKey: verified.environmentPublicKey,
-      });
-      return {
-        environmentId: verified.environmentId,
-        endpoint,
-        endpointRuntime: provisioned?.runtime ?? null,
-        environmentCredential,
-      };
+          kind: "link",
+        },
+        (ownership) => {
+          let linkPersisted = false;
+          let previousLink: EnvironmentLinks.RelayLinkedEnvironmentRecord | null = null;
+          let provisioned: ManagedEndpointProvider.ManagedEndpointProvisioningResult | null = null;
+          let credentialRotation: EnvironmentCredentials.EnvironmentCredentialRotation | null =
+            null;
+          const compensate = Effect.gen(function* () {
+            if (linkPersisted) {
+              if (credentialRotation !== null) {
+                const rolledBack = yield* credentials.rollbackRotation(credentialRotation);
+                if (!rolledBack) {
+                  return yield* new EnvironmentCredentials.EnvironmentCredentialCreatePersistenceError(
+                    {
+                      stage: "rollback-credential",
+                      environmentId: credentialRotation.environmentId,
+                      credentialId: credentialRotation.credentialId,
+                      cause: new Error("The replacement credential is no longer active"),
+                    },
+                  );
+                }
+              }
+              if (previousLink === null) {
+                yield* links
+                  .revokeForUser({
+                    userId: input.userId,
+                    environmentId: verified.environmentId,
+                  })
+                  .pipe(
+                    Effect.catch(() =>
+                      Effect.logWarning(
+                        "Managed environment link compensation could not revoke link",
+                      ),
+                    ),
+                  );
+              } else {
+                yield* links
+                  .restoreForUser({ userId: input.userId, record: previousLink })
+                  .pipe(
+                    Effect.catch(() =>
+                      Effect.logWarning(
+                        "Managed environment link compensation could not restore prior link",
+                      ),
+                    ),
+                  );
+              }
+              yield* credentials
+                .revokeOrphanedForEnvironment({ environmentId: verified.environmentId })
+                .pipe(
+                  Effect.catch(() =>
+                    Effect.logWarning(
+                      "Managed environment link compensation could not revoke credentials",
+                    ),
+                  ),
+                );
+            }
+            if (provisioned?.endpointDisposition === "created") {
+              yield* managedEndpointProvider
+                .deprovision({
+                  userId: input.userId,
+                  environmentId: verified.environmentId,
+                  ownership,
+                })
+                .pipe(
+                  Effect.catch(() =>
+                    Effect.logWarning(
+                      "Managed environment link compensation could not deprovision endpoint",
+                    ),
+                  ),
+                );
+            }
+          });
+          const workflow = Effect.gen(function* () {
+            previousLink = yield* links.getForUser({
+              userId: input.userId,
+              environmentId: verified.environmentId,
+            });
+            provisioned = input.request.managedTunnelsEnabled
+              ? yield* managedEndpointProvider.provision({
+                  userId: input.userId,
+                  environmentId: verified.environmentId,
+                  origin: verified.origin,
+                  ownership,
+                })
+              : null;
+            const endpoint = provisioned?.endpoint ?? verified.endpoint;
+            if (!isSecureManagedEndpoint(endpoint)) {
+              return yield* new EnvironmentLinkProofInvalid({
+                userId: input.userId,
+                environmentId: verified.environmentId,
+                reason: "endpoint_not_secure",
+                stage: "validate_endpoint",
+              });
+            }
+            const environmentCredential = yield* Effect.uninterruptible(
+              Effect.gen(function* () {
+                linkPersisted = true;
+                yield* links.upsert({ ...input, proof: verified, endpoint });
+                credentialRotation = yield* credentials.rotate({
+                  environmentId: verified.environmentId,
+                  environmentPublicKey: verified.environmentPublicKey,
+                });
+                return credentialRotation.token;
+              }),
+            );
+            yield* Effect.yieldNow;
+            return {
+              environmentId: verified.environmentId,
+              endpoint,
+              endpointRuntime: provisioned?.runtime ?? null,
+              environmentCredential,
+            };
+          });
+          return workflow.pipe(
+            Effect.onExit((exit) => (Exit.isFailure(exit) ? compensate : Effect.void)),
+          );
+        },
+      );
     }),
   });
 });

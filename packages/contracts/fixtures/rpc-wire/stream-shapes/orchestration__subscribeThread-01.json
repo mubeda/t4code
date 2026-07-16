@@ -1,0 +1,28 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "kind": "event",
+      "event": {
+        "sequence": 382259439,
+        "eventId": "Lb/ZGPR'",
+        "aggregateKind": "project",
+        "aggregateId": "jargume",
+        "occurredAt": "",
+        "commandId": "Y9z22",
+        "causationEventId": null,
+        "correlationId": null,
+        "metadata": {
+          "providerTurnId": "to"
+        },
+        "type": "thread.interaction-mode-set",
+        "payload": {
+          "threadId": "Um9$Tt2_E",
+          "interactionMode": "default",
+          "updatedAt": "|("
+        }
+      }
+    }
+  ]
+}

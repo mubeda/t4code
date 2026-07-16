@@ -3,7 +3,7 @@ import {
   scopedThreadKey,
   scopeProjectRef,
   scopeThreadRef,
-} from "@t3tools/client-runtime/environment";
+} from "@t4code/client-runtime/environment";
 import * as Schema from "effect/Schema";
 import {
   defaultInstanceIdForDriver,
@@ -17,9 +17,9 @@ import {
   type ProviderOptionSelection,
   type RuntimeMode,
   type ServerProvider,
-} from "@t3tools/contracts";
-import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
-import { createModelSelection } from "@t3tools/shared/model";
+} from "@t4code/contracts";
+import { DEFAULT_UNIFIED_SETTINGS } from "@t4code/contracts/settings";
+import { createModelSelection } from "@t4code/shared/model";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -1808,6 +1808,7 @@ function serverProvider(input: {
     })),
     slashCommands: [],
     skills: [],
+    agents: [],
   };
 }
 
@@ -3235,5 +3236,105 @@ describe("composerDraftStore hooks", () => {
     );
     expect(state.selectedModel).toBe("gpt-test-a");
     expect(state.modelOptions).toEqual({ codex: [{ id: "fastMode", value: true }] });
+  });
+});
+
+describe("composerDraftStore invalid draft targets", () => {
+  const emptyDraftId = DraftId.make("");
+
+  function expectInvalidTargetDidNotMutate(): void {
+    expect(useComposerDraftStore.getState()).toMatchObject({
+      draftsByThreadKey: {},
+      draftThreadsByThreadKey: {},
+      logicalProjectDraftThreadKeyByLogicalProjectKey: {},
+      stickyModelSelectionByProvider: {},
+      stickyActiveProvider: null,
+    });
+  }
+
+  beforeEach(() => {
+    resetComposerDraftStore();
+  });
+
+  it("leaves model and execution state unchanged for an empty draft identity", () => {
+    const store = useComposerDraftStore.getState();
+
+    store.setPrompt(emptyDraftId, "ignored");
+    expectInvalidTargetDidNotMutate();
+    store.setModelSelection(emptyDraftId, modelSelection(CODEX_DRIVER, "gpt-5.4"));
+    expectInvalidTargetDidNotMutate();
+    store.setModelOptions(emptyDraftId, providerModelOptions({ codex: { fastMode: true } }));
+    expectInvalidTargetDidNotMutate();
+    store.applyStickyState(emptyDraftId);
+    expectInvalidTargetDidNotMutate();
+    store.setProviderModelOptions(emptyDraftId, CODEX_DRIVER, [{ id: "fastMode", value: true }]);
+    expectInvalidTargetDidNotMutate();
+    store.setRuntimeMode(emptyDraftId, "full-access");
+    expectInvalidTargetDidNotMutate();
+    store.setInteractionMode(emptyDraftId, "plan");
+    expectInvalidTargetDidNotMutate();
+    store.setDraftThreadContext(emptyDraftId, { branch: "ignored" });
+    expectInvalidTargetDidNotMutate();
+  });
+
+  it("ignores attachment and context operations for an empty draft identity", () => {
+    const store = useComposerDraftStore.getState();
+    const image = makeImage({ id: "ignored-image", previewUrl: "blob:ignored" });
+    const terminalContext = makeTerminalContext({ id: "ignored-terminal" });
+
+    store.addImage(emptyDraftId, image);
+    expectInvalidTargetDidNotMutate();
+    store.addImages(emptyDraftId, [image]);
+    expectInvalidTargetDidNotMutate();
+    store.removeImage(emptyDraftId, image.id);
+    expectInvalidTargetDidNotMutate();
+    expect(store.insertTerminalContext(emptyDraftId, "prompt", terminalContext, 0)).toBe(false);
+    expectInvalidTargetDidNotMutate();
+    store.addTerminalContext(emptyDraftId, terminalContext);
+    expectInvalidTargetDidNotMutate();
+    store.addTerminalContexts(emptyDraftId, [terminalContext]);
+    expectInvalidTargetDidNotMutate();
+    store.removeTerminalContext(emptyDraftId, terminalContext.id);
+    expectInvalidTargetDidNotMutate();
+    store.clearTerminalContexts(emptyDraftId);
+    expectInvalidTargetDidNotMutate();
+    expect(store.addElementContext(emptyDraftId, {} as never)).toBe(false);
+    expectInvalidTargetDidNotMutate();
+    store.setElementContexts(emptyDraftId, []);
+    expectInvalidTargetDidNotMutate();
+    store.removeElementContext(emptyDraftId, "element");
+    expectInvalidTargetDidNotMutate();
+    store.clearElementContexts(emptyDraftId);
+    expectInvalidTargetDidNotMutate();
+  });
+
+  it("ignores annotation, review, persistence, and cleanup operations for an empty draft identity", () => {
+    const store = useComposerDraftStore.getState();
+    const annotation = makePreviewAnnotation({ id: "ignored-annotation" });
+
+    store.addPreviewAnnotation(emptyDraftId, annotation);
+    expectInvalidTargetDidNotMutate();
+    store.setPreviewAnnotations(emptyDraftId, [annotation]);
+    expectInvalidTargetDidNotMutate();
+    store.removePreviewAnnotation(emptyDraftId, annotation.id);
+    expectInvalidTargetDidNotMutate();
+    store.addReviewComment(emptyDraftId, {} as never);
+    expectInvalidTargetDidNotMutate();
+    store.setReviewComments(emptyDraftId, []);
+    expectInvalidTargetDidNotMutate();
+    store.removeReviewComment(emptyDraftId, "comment");
+    expectInvalidTargetDidNotMutate();
+    store.clearPersistedAttachments(emptyDraftId);
+    expectInvalidTargetDidNotMutate();
+    store.syncPersistedAttachments(emptyDraftId, []);
+    expectInvalidTargetDidNotMutate();
+    store.clearComposerContent(emptyDraftId);
+    expectInvalidTargetDidNotMutate();
+    store.markDraftThreadPromoting(emptyDraftId);
+    expectInvalidTargetDidNotMutate();
+    store.finalizePromotedDraftThread(emptyDraftId);
+    expectInvalidTargetDidNotMutate();
+    store.clearDraftThread(emptyDraftId);
+    expectInvalidTargetDidNotMutate();
   });
 });

@@ -1,0 +1,78 @@
+{
+  "response": {
+    "models": [
+      {
+        "value": "default",
+        "name": "Auto",
+        "configOptions": []
+      },
+      {
+        "value": "gpt-5.4",
+        "name": "GPT-5.4",
+        "configOptions": [
+          {
+            "type": "select",
+            "currentValue": "medium",
+            "options": [
+              {
+                "name": "Low",
+                "value": "low"
+              },
+              {
+                "name": "Medium",
+                "value": "medium"
+              }
+            ],
+            "category": "thought_level",
+            "id": "reasoning",
+            "name": "Reasoning"
+          }
+        ]
+      }
+    ]
+  },
+  "customModels": ["custom-alpha"],
+  "expected": [
+    {
+      "slug": "default",
+      "name": "Auto",
+      "isCustom": false,
+      "capabilities": {
+        "optionDescriptors": []
+      }
+    },
+    {
+      "slug": "gpt-5.4",
+      "name": "GPT-5.4",
+      "isCustom": false,
+      "capabilities": {
+        "optionDescriptors": [
+          {
+            "id": "reasoning",
+            "label": "Reasoning",
+            "type": "select",
+            "options": [
+              {
+                "id": "low",
+                "label": "Low"
+              },
+              {
+                "id": "medium",
+                "label": "Medium",
+                "isDefault": true
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "slug": "custom-alpha",
+      "name": "custom-alpha",
+      "isCustom": true,
+      "capabilities": {
+        "optionDescriptors": []
+      }
+    }
+  ]
+}

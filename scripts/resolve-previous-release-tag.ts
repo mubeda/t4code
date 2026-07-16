@@ -10,6 +10,7 @@ import * as Stream from "effect/Stream";
 import * as String from "effect/String";
 import { Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { isValidNightlyDate } from "./resolve-nightly-release.ts";
 
 const ReleaseChannel = Schema.Literals(["stable", "nightly"]);
 type ReleaseChannel = typeof ReleaseChannel.Type;
@@ -85,43 +86,48 @@ export class PreviousReleaseTagGitHubOutputAppendError extends Schema.TaggedErro
 }
 
 interface StableVersion {
-  readonly major: number;
-  readonly minor: number;
-  readonly patch: number;
+  readonly major: string;
+  readonly minor: string;
+  readonly patch: string;
   readonly prerelease: ReadonlyArray<string>;
 }
 
 interface NightlyVersion {
-  readonly major: number;
-  readonly minor: number;
-  readonly patch: number;
-  readonly date: number;
-  readonly runNumber: number;
+  readonly major: string;
+  readonly minor: string;
+  readonly patch: string;
+  readonly date: string;
+  readonly runNumber: string;
 }
 
-const parseNumericIdentifier = (identifier: string): number | undefined =>
-  /^\d+$/.test(identifier) ? Number(identifier) : undefined;
+const isNumericIdentifier = (identifier: string): boolean => /^\d+$/.test(identifier);
+
+const compareAscii = (left: string, right: string): number =>
+  left === right ? 0 : left < right ? -1 : 1;
+
+const compareNumericStrings = (left: string, right: string): number =>
+  left.length === right.length ? compareAscii(left, right) : left.length - right.length;
 
 const comparePrereleaseIdentifiers = (left: string, right: string): number => {
-  const leftNumeric = parseNumericIdentifier(left);
-  const rightNumeric = parseNumericIdentifier(right);
+  const leftNumeric = isNumericIdentifier(left);
+  const rightNumeric = isNumericIdentifier(right);
 
-  if (leftNumeric !== undefined && rightNumeric !== undefined) {
-    return leftNumeric - rightNumeric;
+  if (leftNumeric && rightNumeric) {
+    return compareNumericStrings(left, right);
   }
-  if (leftNumeric !== undefined) {
+  if (leftNumeric) {
     return -1;
   }
-  if (rightNumeric !== undefined) {
+  if (rightNumeric) {
     return 1;
   }
-  return left.localeCompare(right);
+  return compareAscii(left, right);
 };
 
 const compareStableVersions = (left: StableVersion, right: StableVersion): number => {
-  if (left.major !== right.major) return left.major - right.major;
-  if (left.minor !== right.minor) return left.minor - right.minor;
-  if (left.patch !== right.patch) return left.patch - right.patch;
+  if (left.major !== right.major) return compareNumericStrings(left.major, right.major);
+  if (left.minor !== right.minor) return compareNumericStrings(left.minor, right.minor);
+  if (left.patch !== right.patch) return compareNumericStrings(left.patch, right.patch);
 
   const leftHasPrerelease = left.prerelease.length > 0;
   const rightHasPrerelease = right.prerelease.length > 0;
@@ -143,12 +149,23 @@ const compareStableVersions = (left: StableVersion, right: StableVersion): numbe
   return 0;
 };
 
+const SEMVER_NUMERIC_IDENTIFIER = "(?:0|[1-9]\\d*)";
+const SEMVER_PRERELEASE_IDENTIFIER = "(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)";
+const STABLE_TAG_PATTERN = new RegExp(
+  `^v(${SEMVER_NUMERIC_IDENTIFIER})\\.(${SEMVER_NUMERIC_IDENTIFIER})\\.(${SEMVER_NUMERIC_IDENTIFIER})` +
+    `(?:-(${SEMVER_PRERELEASE_IDENTIFIER}(?:\\.${SEMVER_PRERELEASE_IDENTIFIER})*))?` +
+    "(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$",
+);
+const NIGHTLY_TAG_PATTERN = new RegExp(
+  `^(?:nightly-)?v(${SEMVER_NUMERIC_IDENTIFIER})\\.(${SEMVER_NUMERIC_IDENTIFIER})\\.(${SEMVER_NUMERIC_IDENTIFIER})` +
+    "-nightly\\.(\\d{8})\\.([1-9]\\d*)$",
+);
+
 const parseStableTag = (tag: string): StableVersion | undefined => {
-  const match = /^v(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(tag);
+  const match = STABLE_TAG_PATTERN.exec(tag);
   if (!match) return undefined;
 
   const [, major, minor, patch, prerelease] = match;
-  if (!major || !minor || !patch) return undefined;
 
   const prereleaseIdentifiers = prerelease ? prerelease.split(".") : [];
   // Nightly tags also start with `v` and carry a `nightly.*` prerelease
@@ -157,36 +174,36 @@ const parseStableTag = (tag: string): StableVersion | undefined => {
   if (prereleaseIdentifiers[0] === "nightly") return undefined;
 
   return {
-    major: Number(major),
-    minor: Number(minor),
-    patch: Number(patch),
+    major: major!,
+    minor: minor!,
+    patch: patch!,
     prerelease: prereleaseIdentifiers,
   };
 };
 
 const compareNightlyVersions = (left: NightlyVersion, right: NightlyVersion): number => {
-  if (left.major !== right.major) return left.major - right.major;
-  if (left.minor !== right.minor) return left.minor - right.minor;
-  if (left.patch !== right.patch) return left.patch - right.patch;
-  if (left.date !== right.date) return left.date - right.date;
-  return left.runNumber - right.runNumber;
+  if (left.major !== right.major) return compareNumericStrings(left.major, right.major);
+  if (left.minor !== right.minor) return compareNumericStrings(left.minor, right.minor);
+  if (left.patch !== right.patch) return compareNumericStrings(left.patch, right.patch);
+  if (left.date !== right.date) return compareAscii(left.date, right.date);
+  return compareNumericStrings(left.runNumber, right.runNumber);
 };
 
 const parseNightlyTag = (tag: string): NightlyVersion | undefined => {
   // Accept both the current `v<semver>` format and the legacy `nightly-v<semver>`
   // format so release note diffs keep working across the tag-format transition.
-  const match = /^(?:nightly-)?v(\d+)\.(\d+)\.(\d+)-nightly\.(\d{8})\.(\d+)$/.exec(tag);
+  const match = NIGHTLY_TAG_PATTERN.exec(tag);
   if (!match) return undefined;
 
   const [, major, minor, patch, date, runNumber] = match;
-  if (!major || !minor || !patch || !date || !runNumber) return undefined;
+  if (!isValidNightlyDate(date!)) return undefined;
 
   return {
-    major: Number(major),
-    minor: Number(minor),
-    patch: Number(patch),
-    date: Number(date),
-    runNumber: Number(runNumber),
+    major: major!,
+    minor: minor!,
+    patch: patch!,
+    date: date!,
+    runNumber: runNumber!,
   };
 };
 
@@ -305,9 +322,12 @@ export const listGitTags = Effect.fn("listGitTags")(function* (cwd = process.cwd
   return stdout.split(/\r?\n/).map(String.trim).filter(String.isNonEmpty);
 });
 
+const writeProcessStdout = process.stdout.write.bind(process.stdout);
+
 export const writePreviousReleaseTagOutput = Effect.fn("writePreviousReleaseTagOutput")(function* (
   previousTag: string | undefined,
   writeGithubOutput: boolean,
+  writeStdout: (entry: string) => void = writeProcessStdout,
 ) {
   const entry = `previous_tag=${previousTag ?? ""}\n`;
 
@@ -333,10 +353,10 @@ export const writePreviousReleaseTagOutput = Effect.fn("writePreviousReleaseTagO
     return;
   }
 
-  process.stdout.write(entry);
+  writeStdout(entry);
 });
 
-const command = Command.make(
+export const resolvePreviousReleaseTagCommand = Command.make(
   "resolve-previous-release-tag",
   {
     channel: Flag.choice("channel", ReleaseChannel.literals).pipe(
@@ -357,10 +377,21 @@ const command = Command.make(
     ),
 ).pipe(Command.withDescription("Resolve the previous release tag for a stable or nightly series."));
 
-if (import.meta.main) {
-  Command.run(command, { version: "0.0.0" }).pipe(
-    Effect.scoped,
-    Effect.provide(NodeServices.layer),
-    NodeRuntime.runMain,
+type MainLauncher = <E, A>(effect: Effect.Effect<A, E, never>) => void;
+
+export const runResolvePreviousReleaseTagMain = (
+  isMain: boolean,
+  launch: MainLauncher = NodeRuntime.runMain,
+) => {
+  if (!isMain) return false;
+
+  launch(
+    Command.run(resolvePreviousReleaseTagCommand, { version: "0.0.0" }).pipe(
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    ),
   );
-}
+  return true;
+};
+
+runResolvePreviousReleaseTagMain(import.meta.main);

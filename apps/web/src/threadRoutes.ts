@@ -1,6 +1,6 @@
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { EnvironmentShellStatus } from "@t3tools/client-runtime/state/shell";
-import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import { scopeThreadRef } from "@t4code/client-runtime/environment";
+import type { EnvironmentShellStatus } from "@t4code/client-runtime/state/shell";
+import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t4code/contracts";
 import type { DraftId } from "./composerDraftStore";
 
 export type ThreadRouteTarget =
@@ -61,6 +61,12 @@ export function shouldRedirectMissingRouteThread(input: MissingRouteThreadRedire
   return (
     input.shellStatus === "live" && !input.routeThreadExists && input.environmentHasServerThreads
   );
+}
+
+export function missingRouteThreadRedirectDelay(
+  input: MissingRouteThreadRedirectInput,
+): number | null {
+  return shouldRedirectMissingRouteThread(input) ? 1_000 : null;
 }
 
 export function resolveThreadRouteTarget(

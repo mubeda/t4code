@@ -1,6 +1,16 @@
-# CI quality gates
+# CI Quality Gates
 
-- `.github/workflows/ci.yml` runs `bun run lint`, `bun run typecheck`, and `bun run test` on pull requests and pushes to `main`.
-- `.github/workflows/release.yml` builds macOS (`arm64` and `x64`), Linux (`x64`), and Windows (`x64`) desktop artifacts from a single `v*.*.*` tag and publishes one GitHub release.
-- The release workflow auto-enables signing only when platform credentials are present. macOS passkey builds additionally require `APPLE_TEAM_ID` and the `MACOS_PROVISIONING_PROFILE` secret; Windows uses Azure Trusted Signing. Without the core signing credentials, it still releases unsigned artifacts.
-- See [Release Checklist](./release.md) for the full release/signing setup checklist.
+`.github/workflows/ci.yml` runs on pull requests and pushes to `main`.
+
+- Check job: installs Node/Vite+, Rust, and Tauri Linux prerequisites; runs
+  `vp check`, workspace typechecking, and a Tauri desktop build.
+- Test job: installs the same Node/Rust prerequisites and runs all package test
+  scripts, including the Tauri host and native server Rust suites.
+- Release-smoke job: validates release version rewriting, nightly metadata, and
+  lockfile regeneration without publishing.
+
+The release workflow builds Tauri installers on native runners: macOS arm64,
+macOS Intel, Linux x64, and Windows x64. See [Release Checklist](./release.md).
+
+Node.js in CI runs frontend builds, TypeScript checks, and repository scripts.
+Release artifacts contain only the Tauri/Rust application and built web assets.

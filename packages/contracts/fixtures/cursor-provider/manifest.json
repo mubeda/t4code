@@ -1,0 +1,10 @@
+{
+  "fixtures": [
+    "about-authenticated.json",
+    "capabilities.json",
+    "config-updates.json",
+    "model-discovery.json",
+    "trace-approval.json",
+    "trace-cancel.json"
+  ]
+}

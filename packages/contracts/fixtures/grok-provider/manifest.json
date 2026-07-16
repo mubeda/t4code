@@ -1,0 +1,8 @@
+{
+  "fixtures": [
+    "probe-snapshot.json",
+    "trace-cancel.json",
+    "trace-user-input-after-response.json",
+    "trace-user-input-before-response.json"
+  ]
+}

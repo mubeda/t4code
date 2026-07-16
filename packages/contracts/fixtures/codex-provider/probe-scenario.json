@@ -1,0 +1,201 @@
+{
+  "cwd": "/tmp/project",
+  "initializeRequest": {
+    "clientInfo": {
+      "name": "t4code_desktop",
+      "title": "T4Code Desktop",
+      "version": "0.1.1"
+    },
+    "capabilities": {
+      "experimentalApi": true
+    }
+  },
+  "initializeResponse": {
+    "userAgent": "mock-codex-app-server",
+    "codexHome": "/tmp/codex-home",
+    "platformFamily": "unix",
+    "platformOs": "linux"
+  },
+  "accountResponse": {
+    "account": {
+      "type": "chatgpt",
+      "email": "mock@example.com",
+      "planType": "plus"
+    },
+    "requiresOpenaiAuth": false
+  },
+  "modelListFirst": {
+    "data": [
+      {
+        "model": "gpt-5.3-codex",
+        "displayName": "gpt-5.3-codex",
+        "supportedReasoningEfforts": [
+          {
+            "reasoningEffort": "low"
+          },
+          {
+            "reasoningEffort": "medium"
+          },
+          {
+            "reasoningEffort": "high"
+          }
+        ],
+        "defaultReasoningEffort": "medium",
+        "serviceTiers": [
+          {
+            "id": "priority",
+            "name": "Priority",
+            "description": "Priority capacity"
+          }
+        ],
+        "defaultServiceTier": "priority"
+      }
+    ],
+    "nextCursor": "cursor-2"
+  },
+  "modelListSecond": {
+    "data": [],
+    "nextCursor": null
+  },
+  "skillsResponse": {
+    "data": [
+      {
+        "cwd": "/tmp/project",
+        "errors": [],
+        "skills": [
+          {
+            "name": "preview-status",
+            "path": "/tmp/project/.codex/skills/preview-status",
+            "enabled": true,
+            "description": "Reads the current preview status",
+            "scope": "project",
+            "interface": {
+              "displayName": "Preview Status",
+              "shortDescription": "Show preview status"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "expectedSnapshot": {
+    "account": {
+      "account": {
+        "type": "chatgpt",
+        "email": "mock@example.com",
+        "planType": "plus"
+      },
+      "requiresOpenaiAuth": false
+    },
+    "version": "0.1.1",
+    "models": [
+      {
+        "slug": "gpt-5.3-codex",
+        "name": "GPT-5.3-Codex",
+        "isCustom": false,
+        "capabilities": {
+          "optionDescriptors": [
+            {
+              "id": "reasoningEffort",
+              "label": "Reasoning",
+              "type": "select",
+              "options": [
+                {
+                  "id": "low",
+                  "label": "Low"
+                },
+                {
+                  "id": "medium",
+                  "label": "Medium",
+                  "isDefault": true
+                },
+                {
+                  "id": "high",
+                  "label": "High"
+                }
+              ],
+              "currentValue": "medium"
+            },
+            {
+              "id": "serviceTier",
+              "label": "Service Tier",
+              "type": "select",
+              "options": [
+                {
+                  "id": "default",
+                  "label": "Standard"
+                },
+                {
+                  "id": "priority",
+                  "label": "Priority",
+                  "description": "Priority capacity",
+                  "isDefault": true
+                }
+              ],
+              "currentValue": "priority"
+            }
+          ]
+        }
+      },
+      {
+        "slug": "custom-alpha",
+        "name": "custom-alpha",
+        "isCustom": true,
+        "capabilities": {
+          "optionDescriptors": [
+            {
+              "id": "reasoningEffort",
+              "label": "Reasoning",
+              "type": "select",
+              "options": [
+                {
+                  "id": "low",
+                  "label": "Low"
+                },
+                {
+                  "id": "medium",
+                  "label": "Medium",
+                  "isDefault": true
+                },
+                {
+                  "id": "high",
+                  "label": "High"
+                }
+              ],
+              "currentValue": "medium"
+            },
+            {
+              "id": "serviceTier",
+              "label": "Service Tier",
+              "type": "select",
+              "options": [
+                {
+                  "id": "default",
+                  "label": "Standard"
+                },
+                {
+                  "id": "priority",
+                  "label": "Priority",
+                  "description": "Priority capacity",
+                  "isDefault": true
+                }
+              ],
+              "currentValue": "priority"
+            }
+          ]
+        }
+      }
+    ],
+    "skills": [
+      {
+        "name": "preview-status",
+        "path": "/tmp/project/.codex/skills/preview-status",
+        "enabled": true,
+        "description": "Reads the current preview status",
+        "scope": "project",
+        "displayName": "Preview Status",
+        "shortDescription": "Show preview status"
+      }
+    ]
+  }
+}

@@ -15,14 +15,14 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId } from "@t4code/contracts";
 import type {
   ServerProcessDiagnosticsEntry,
   ServerProcessDiagnosticsResult,
   ServerProcessResourceHistoryResult,
   ServerProcessResourceHistorySummary,
   ServerTraceDiagnosticsResult,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 
 type AnyProps = Record<string, unknown>;
 
@@ -47,7 +47,10 @@ const h = vi.hoisted(() => {
     // ── seams ──
     observability: null as { logsDirectoryPath?: string | null } | null,
     availableEditors: [] as ReadonlyArray<unknown>,
-    primaryEnvironment: null as { environmentId: EnvironmentId } | null,
+    primaryEnvironment: null as {
+      environmentId: EnvironmentId;
+      serverConfig?: { environment: { platform: { os: string } } };
+    } | null,
     preferredEditor: "vscode" as string | null,
     isCopied: false,
     copies: [] as Array<{ value: string }>,
@@ -69,6 +72,17 @@ const h = vi.hoisted(() => {
     },
     openInEditorCalls: [] as Array<unknown>,
     openInEditorResult: { _tag: "Success" } as { _tag: string; error?: unknown },
+    frontendLogSnapshot: "captured frontend warning\n",
+    downloadCalls: [] as Array<string>,
+    downloadError: null as unknown,
+    downloadResult: {
+      status: "saved",
+      filename: "t4code-diagnostics-test.zip",
+      path: "C:\\Users\\test\\Downloads\\t4code-diagnostics-test.zip",
+    } as
+      | { status: "saved"; filename: string; path: string }
+      | { status: "downloaded"; filename: string }
+      | { status: "cancelled"; filename: string },
     reset() {
       h.stateSeeds.length = 0;
       h.setStateCalls.length = 0;
@@ -90,6 +104,14 @@ const h = vi.hoisted(() => {
       h.signalResult = { _tag: "Success", value: { signaled: true, message: Option.none() } };
       h.openInEditorCalls.length = 0;
       h.openInEditorResult = { _tag: "Success" };
+      h.frontendLogSnapshot = "captured frontend warning\n";
+      h.downloadCalls.length = 0;
+      h.downloadError = null;
+      h.downloadResult = {
+        status: "saved",
+        filename: "t4code-diagnostics-test.zip",
+        path: "C:\\Users\\test\\Downloads\\t4code-diagnostics-test.zip",
+      };
     },
   };
 
@@ -127,7 +149,7 @@ vi.mock("@effect/atom-react", () => ({
   },
 }));
 
-vi.mock("@t3tools/client-runtime/state/runtime", () => ({
+vi.mock("@t4code/client-runtime/state/runtime", () => ({
   isAtomCommandInterrupted: (result: { _tag?: string; interrupted?: boolean }) =>
     result._tag === "Interrupted" || result.interrupted === true,
   squashAtomCommandFailure: (result: { error?: unknown }) => result.error,
@@ -146,6 +168,18 @@ vi.mock("../../hooks/useCopyToClipboard", () => ({
     isCopied: h.isCopied,
     copyToClipboard: (value: string) => h.copies.push({ value }),
   }),
+}));
+
+vi.mock("../../diagnostics/frontendLogCapture", () => ({
+  readFrontendLogSnapshot: () => h.frontendLogSnapshot,
+}));
+
+vi.mock("../../diagnostics/downloadDiagnosticLogs", () => ({
+  downloadDiagnosticLogs: async (frontendLog: string) => {
+    h.downloadCalls.push(frontendLog);
+    if (h.downloadError !== null) throw h.downloadError;
+    return h.downloadResult;
+  },
 }));
 
 vi.mock("../../state/server", () => ({
@@ -202,13 +236,23 @@ vi.mock("../../state/use-atom-command", () => ({
 vi.mock("./settingsLayout", () => ({
   useRelativeTimeTick: () => Date.now(),
   SettingsPageContainer: (props: AnyProps) => (
-    <div data-testid="settings-page">{props.children as ReactNode}</div>
+    <div data-testid="settings-page" className={props.className as string | undefined}>
+      {props.children as ReactNode}
+    </div>
   ),
   SettingsSection: (props: AnyProps) => (
     <section data-section-title={typeof props.title === "string" ? props.title : "custom"}>
       {props.headerAction as ReactNode}
       {props.children as ReactNode}
     </section>
+  ),
+  SettingsRow: (props: AnyProps) => (
+    <div data-settings-row>
+      {props.title as ReactNode}
+      {props.description as ReactNode}
+      {props.control as ReactNode}
+      {props.children as ReactNode}
+    </div>
   ),
 }));
 
@@ -702,6 +746,18 @@ describe("DiagnosticsSettingsPanel process signals", () => {
     expect(h.toasts).toHaveLength(0);
   });
 
+  it("does not offer SIGINT for Windows environments", () => {
+    h.primaryEnvironment = {
+      environmentId: EnvironmentId.make("environment-1"),
+      serverConfig: { environment: { platform: { os: "windows" } } },
+    };
+    seedAll();
+    render();
+
+    expect(h.triggers.some(({ props }) => props.children === "INT")).toBe(false);
+    expect(h.triggers.some(({ props }) => props.children === "KILL")).toBe(true);
+  });
+
   it("surfaces an info toast when the process already exited (stale descendant)", async () => {
     h.signalResult = {
       _tag: "Success",
@@ -811,5 +867,76 @@ describe("DiagnosticsSettingsPanel open logs directory", () => {
     expect(h.setStateCalls.map((call) => call.applied)).not.toContain(
       "Unable to open logs folder.",
     );
+  });
+});
+
+describe("DiagnosticsSettingsPanel diagnostic log download", () => {
+  it("renders the final download section with status-bar clearance", () => {
+    seedAll();
+    const markup = render();
+
+    expect(markup).toContain('class="pb-12"');
+    expect(markup).toContain('data-section-title="Diagnostic logs"');
+    expect(markup).toContain("Download diagnostic logs");
+    expect(markup).toContain("server.log");
+    expect(markup).toContain("frontend.log");
+    expect(markup).toContain("Download logs");
+  });
+
+  it("disables the download action while the archive is being prepared", () => {
+    h.stateSeeds.push({ match: (initial) => initial === "idle", value: "downloading" });
+    seedAll();
+    const markup = render();
+
+    expect(markup).toContain("Preparing logs...");
+    expect(findButton("Download diagnostic logs").disabled).toBe(true);
+  });
+
+  it("downloads the captured frontend snapshot", async () => {
+    seedAll();
+    render();
+
+    (findButton("Download diagnostic logs").onClick as () => void)();
+    await flush();
+
+    expect(h.downloadCalls).toEqual(["captured frontend warning\n"]);
+    expect(h.toasts).toContainEqual(
+      expect.objectContaining({
+        type: "success",
+        title: "Diagnostic logs saved",
+        description: "C:\\Users\\test\\Downloads\\t4code-diagnostics-test.zip",
+      }),
+    );
+  });
+
+  it("shows an actionable toast when the archive cannot be downloaded", async () => {
+    h.downloadError = new Error("server unavailable");
+    seedAll();
+    render();
+
+    (findButton("Download diagnostic logs").onClick as () => void)();
+    await flush();
+
+    expect(h.toasts).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        title: "Could not download diagnostic logs",
+        description: "server unavailable",
+      }),
+    );
+  });
+
+  it("stays silent when the native save dialog is cancelled", async () => {
+    h.downloadResult = {
+      status: "cancelled",
+      filename: "t4code-diagnostics-test.zip",
+    };
+    seedAll();
+    render();
+
+    (findButton("Download diagnostic logs").onClick as () => void)();
+    await flush();
+
+    expect(h.toasts).toHaveLength(0);
   });
 });

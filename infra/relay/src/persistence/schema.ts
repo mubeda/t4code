@@ -8,6 +8,7 @@ import {
   uniqueIndex,
   varchar,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 export const relayEnvironmentLinks = pgTable(
   "relay_environment_links",
@@ -40,6 +41,8 @@ export const relayManagedEndpointAllocations = pgTable(
     tunnelName: text("tunnel_name").notNull(),
     dnsRecordId: varchar("dns_record_id", { length: 191 }),
     readyAt: varchar("ready_at", { length: 64 }),
+    operationGeneration: integer("operation_generation").notNull().default(0),
+    operationOwnerToken: varchar("operation_owner_token", { length: 64 }),
     createdAt: varchar("created_at", { length: 64 }).notNull(),
     updatedAt: varchar("updated_at", { length: 64 }).notNull(),
   },
@@ -69,6 +72,27 @@ export const relayEnvironmentCredentials = pgTable(
       table.environmentPublicKey,
       table.revokedAt,
     ),
+    uniqueIndex("idx_relay_environment_credentials_active_environment_key")
+      .on(table.environmentId, table.environmentPublicKey)
+      .where(sql`${table.revokedAt} is null`),
+  ],
+);
+
+export const relayEnvironmentOperations = pgTable(
+  "relay_environment_operations",
+  {
+    environmentId: varchar("environment_id", { length: 191 }).notNull(),
+    generation: integer("generation").notNull().default(0),
+    ownerToken: varchar("owner_token", { length: 64 }),
+    ownerUserId: varchar("owner_user_id", { length: 191 }),
+    operationKind: varchar("operation_kind", { length: 32 }),
+    leaseExpiresAt: varchar("lease_expires_at", { length: 64 }),
+    createdAt: varchar("created_at", { length: 64 }).notNull(),
+    updatedAt: varchar("updated_at", { length: 64 }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.environmentId] }),
+    index("idx_relay_environment_operations_lease").on(table.leaseExpiresAt),
   ],
 );
 

@@ -14,16 +14,16 @@
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, ProjectId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+} from "@t4code/client-runtime/state/runtime";
+import type { EnvironmentId, ProjectId, ScopedThreadRef, ThreadId } from "@t4code/contracts";
 import {
   DEFAULT_MODEL,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   ProviderInstanceId,
-} from "@t3tools/contracts";
-import { createModelSelection } from "@t3tools/shared/model";
-import { nextTerminalId } from "@t3tools/shared/terminalLabels";
+} from "@t4code/contracts";
+import { createModelSelection } from "@t4code/shared/model";
+import { nextTerminalId } from "@t4code/shared/terminalLabels";
 import { useCallback } from "react";
 
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";

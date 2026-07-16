@@ -3,6 +3,7 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   CopyIcon,
+  DownloadIcon,
   FolderOpenIcon,
   InfoIcon,
   RefreshCwIcon,
@@ -11,16 +12,18 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
+} from "@t4code/client-runtime/state/runtime";
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import type {
   ServerProcessDiagnosticsEntry,
   ServerProcessResourceHistorySummary,
   ServerProcessSignal,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
+import { downloadDiagnosticLogs } from "../../diagnostics/downloadDiagnosticLogs";
+import { readFrontendLogSnapshot } from "../../diagnostics/frontendLogCapture";
 import { cn } from "../../lib/utils";
 import { resolveAndPersistPreferredEditor } from "../../editorPreferences";
 import { formatRelativeTime } from "../../timestampFormat";
@@ -37,7 +40,12 @@ import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
-import { SettingsPageContainer, SettingsSection, useRelativeTimeTick } from "./settingsLayout";
+import {
+  SettingsPageContainer,
+  SettingsRow,
+  SettingsSection,
+  useRelativeTimeTick,
+} from "./settingsLayout";
 import { useAtomCommand } from "../../state/use-atom-command";
 
 const NUMBER_FORMAT = new Intl.NumberFormat();
@@ -351,29 +359,33 @@ function ProcessNameCell({
 function ProcessSignalActions({
   process,
   isSignaling,
+  supportsInterrupt,
   onSignal,
 }: {
   process: ServerProcessDiagnosticsEntry;
   isSignaling: boolean;
+  supportsInterrupt: boolean;
   onSignal: (pid: number, signal: ServerProcessSignal) => void;
 }) {
   return (
     <div className="flex items-center justify-end gap-1.5">
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <button
-              type="button"
-              disabled={isSignaling}
-              className="text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50"
-              onClick={() => onSignal(process.pid, "SIGINT")}
-            >
-              INT
-            </button>
-          }
-        />
-        <TooltipPopup side="top">Send SIGINT</TooltipPopup>
-      </Tooltip>
+      {supportsInterrupt ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                disabled={isSignaling}
+                className="text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50"
+                onClick={() => onSignal(process.pid, "SIGINT")}
+              >
+                INT
+              </button>
+            }
+          />
+          <TooltipPopup side="top">Send SIGINT</TooltipPopup>
+        </Tooltip>
+      ) : null}
       <Tooltip>
         <TooltipTrigger
           render={
@@ -396,11 +408,13 @@ function ProcessSignalActions({
 function ProcessDiagnosticsTable({
   processes,
   signalingPid,
+  supportsInterrupt,
   onSignal,
   emptyLabel,
 }: {
   processes: ReadonlyArray<ServerProcessDiagnosticsEntry>;
   signalingPid: number | null;
+  supportsInterrupt: boolean;
   onSignal: (pid: number, signal: ServerProcessSignal) => void;
   emptyLabel?: string;
 }) {
@@ -510,6 +524,7 @@ function ProcessDiagnosticsTable({
                 <ProcessSignalActions
                   process={process}
                   isSignaling={signalingPid === process.pid}
+                  supportsInterrupt={supportsInterrupt}
                   onSignal={onSignal}
                 />
               </td>
@@ -809,6 +824,7 @@ export function DiagnosticsSettingsPanel() {
   const availableEditors = useAtomValue(primaryServerAvailableEditorsAtom);
   const primaryEnvironment = usePrimaryEnvironment();
   const environmentId = primaryEnvironment?.environmentId ?? null;
+  const supportsInterrupt = primaryEnvironment?.serverConfig?.environment.platform.os !== "windows";
   const signalServerProcess = useAtomCommand(serverEnvironment.signalProcess, {
     reportFailure: false,
   });
@@ -853,6 +869,7 @@ export function DiagnosticsSettingsPanel() {
   const [isOpeningLogsDirectory, setIsOpeningLogsDirectory] = useState(false);
   const [openLogsDirectoryError, setOpenLogsDirectoryError] = useState<string | null>(null);
   const [signalingPid, setSignalingPid] = useState<number | null>(null);
+  const [downloadStatus, setDownloadStatus] = useState<"idle" | "downloading">("idle");
 
   const openLogsDirectory = useCallback(() => {
     const logsDirectoryPath = observability?.logsDirectoryPath ?? null;
@@ -952,9 +969,40 @@ export function DiagnosticsSettingsPanel() {
   const traceDiagnosticsPartialFailure = data
     ? Option.getOrElse(data.partialFailure, () => false)
     : false;
+  const downloadLogs = useCallback(() => {
+    if (downloadStatus === "downloading") return;
+    setDownloadStatus("downloading");
+    void (async () => {
+      try {
+        const result = await downloadDiagnosticLogs(readFrontendLogSnapshot());
+        if (result.status === "saved") {
+          toastManager.add({
+            type: "success",
+            title: "Diagnostic logs saved",
+            description: result.path,
+          });
+        } else if (result.status === "downloaded") {
+          toastManager.add({
+            type: "success",
+            title: "Diagnostic logs download started",
+            description: result.filename,
+          });
+        }
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: "Could not download diagnostic logs",
+          description:
+            error instanceof Error ? error.message : "Unable to prepare the diagnostic archive.",
+        });
+      } finally {
+        setDownloadStatus("idle");
+      }
+    })();
+  }, [downloadStatus]);
 
   return (
-    <SettingsPageContainer>
+    <SettingsPageContainer className="pb-12">
       <SettingsSection
         title="Live Processes"
         headerAction={
@@ -1007,6 +1055,7 @@ export function DiagnosticsSettingsPanel() {
         <ProcessDiagnosticsTable
           processes={processData?.processes ?? []}
           signalingPid={signalingPid}
+          supportsInterrupt={supportsInterrupt}
           onSignal={signalProcess}
           emptyLabel={
             isProcessInitialLoading
@@ -1346,6 +1395,28 @@ export function DiagnosticsSettingsPanel() {
         ) : (
           <EmptyRows label={isInitialLoading ? "Loading span names..." : "No spans found."} />
         )}
+      </SettingsSection>
+
+      <SettingsSection title="Diagnostic logs">
+        <SettingsRow
+          title="Download diagnostic logs"
+          description={
+            <>
+              Download a redacted ZIP containing <span className="font-mono">server.log</span> and{" "}
+              <span className="font-mono">frontend.log</span>.
+            </>
+          }
+          control={
+            <Button
+              aria-label="Download diagnostic logs"
+              disabled={downloadStatus === "downloading"}
+              onClick={downloadLogs}
+            >
+              <DownloadIcon className="size-3.5" />
+              {downloadStatus === "downloading" ? "Preparing logs..." : "Download logs"}
+            </Button>
+          }
+        />
       </SettingsSection>
     </SettingsPageContainer>
   );

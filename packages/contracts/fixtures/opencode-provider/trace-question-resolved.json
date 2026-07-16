@@ -1,0 +1,13 @@
+[
+  {
+    "type": "user-input.resolved",
+    "threadId": "opencode-thread-1",
+    "turnId": "turn-3",
+    "requestId": "question-1",
+    "payload": {
+      "answers": {
+        "Scope": "Workspace"
+      }
+    }
+  }
+]

@@ -30,7 +30,9 @@ export const WEB_ASSET_CHANNELS = ["latest", "nightly"] as const;
 export type WebAssetChannel = (typeof WEB_ASSET_CHANNELS)[number];
 
 export function resolveWebAssetBrandForChannel(channel: WebAssetChannel): WebAssetBrand {
-  return channel === "nightly" ? "nightly" : "production";
+  if (channel === "latest") return "production";
+  if (channel === "nightly") return "nightly";
+  throw new Error(`Unsupported web asset channel: ${String(channel)}`);
 }
 
 export interface IconOverride {

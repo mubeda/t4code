@@ -1,5 +1,5 @@
-import { EnvironmentId, ThreadId, type ResolvedKeybindingsConfig } from "@t3tools/contracts";
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { EnvironmentId, ThreadId, type ResolvedKeybindingsConfig } from "@t4code/contracts";
+import { scopeThreadRef } from "@t4code/client-runtime/environment";
 import { type ComponentProps, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -313,6 +313,23 @@ describe("ThreadTerminalDrawer single terminal", () => {
     expect(markup).toContain('aria-label="New Terminal"');
     expect(markup).toContain('aria-label="Close Terminal"');
     expect(markup).not.toContain("Group 1");
+  });
+
+  it("omits split and new controls when the host does not support them", () => {
+    const markup = renderToStaticMarkup(
+      <ThreadTerminalDrawer
+        {...drawerProps({
+          onSplitTerminal: undefined as unknown as () => void,
+          onSplitTerminalVertical: undefined as unknown as () => void,
+          onNewTerminal: undefined as unknown as () => void,
+        })}
+      />,
+    );
+
+    expect(markup).not.toContain('aria-label="Split Terminal Horizontally"');
+    expect(markup).not.toContain('aria-label="Split Terminal Vertically"');
+    expect(markup).not.toContain('aria-label="New Terminal"');
+    expect(markup).toContain('aria-label="Close Terminal"');
   });
 
   it("clamps the drawer height between the minimum and the default maximum", () => {

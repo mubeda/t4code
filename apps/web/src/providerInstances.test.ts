@@ -1,4 +1,4 @@
-import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
+import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t4code/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import {
   applyProviderInstanceSettings,
@@ -30,6 +30,7 @@ function provider(input: {
     models: [],
     slashCommands: [],
     skills: [],
+    agents: [],
   };
 }
 
@@ -73,6 +74,27 @@ describe("isProviderInstancePickerVisible", () => {
 });
 
 describe("applyProviderInstanceSettings", () => {
+  it("uses the configured display name instead of a stale snapshot label", () => {
+    const entries = deriveProviderInstanceEntries([
+      provider({
+        provider: ProviderDriverKind.make("codex"),
+        instanceId: "codex_personal",
+        displayName: "Codex",
+      }),
+    ]);
+    const [entry] = applyProviderInstanceSettings(entries, {
+      providerInstances: {
+        [ProviderInstanceId.make("codex_personal")]: {
+          driver: ProviderDriverKind.make("codex"),
+          displayName: "Personal Codex",
+        },
+      },
+      providers: {} as never,
+    });
+
+    expect(entry?.displayName).toBe("Personal Codex");
+  });
+
   it("uses settings when a streamed snapshot still reports a disabled default as enabled", () => {
     const entries = deriveProviderInstanceEntries([
       provider({ provider: ProviderDriverKind.make("codex"), instanceId: "codex" }),

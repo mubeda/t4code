@@ -1,0 +1,82 @@
+{
+  "formatVersion": 1,
+  "present": true,
+  "latestMigrationId": 15,
+  "entries": [
+    {
+      "migrationId": 1,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "OrchestrationEvents"
+    },
+    {
+      "migrationId": 2,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "OrchestrationCommandReceipts"
+    },
+    {
+      "migrationId": 3,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "CheckpointDiffBlobs"
+    },
+    {
+      "migrationId": 4,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProviderSessionRuntime"
+    },
+    {
+      "migrationId": 5,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "Projections"
+    },
+    {
+      "migrationId": 6,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProjectionThreadSessionRuntimeModeColumns"
+    },
+    {
+      "migrationId": 7,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProjectionThreadMessageAttachments"
+    },
+    {
+      "migrationId": 8,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProjectionThreadActivitySequence"
+    },
+    {
+      "migrationId": 9,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProviderSessionRuntimeMode"
+    },
+    {
+      "migrationId": 10,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProjectionThreadsRuntimeMode"
+    },
+    {
+      "migrationId": 11,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "OrchestrationThreadCreatedRuntimeMode"
+    },
+    {
+      "migrationId": 12,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProjectionThreadsInteractionMode"
+    },
+    {
+      "migrationId": 13,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProjectionThreadProposedPlans"
+    },
+    {
+      "migrationId": 14,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProjectionThreadProposedPlanImplementation"
+    },
+    {
+      "migrationId": 15,
+      "createdAt": "2026-01-01 00:00:00",
+      "name": "ProjectionTurnsSourceProposedPlan"
+    }
+  ]
+}

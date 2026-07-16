@@ -1,4 +1,4 @@
-import { createRelayEnvironmentDiscoveryAtoms } from "@t3tools/client-runtime/state/relay";
+import { createRelayEnvironmentDiscoveryAtoms } from "@t4code/client-runtime/state/relay";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 

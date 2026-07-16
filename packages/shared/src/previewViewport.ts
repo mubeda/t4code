@@ -2,8 +2,13 @@ import type {
   PreviewAutomationResizeInput,
   PreviewViewportPresetId,
   PreviewViewportSetting,
-} from "@t3tools/contracts";
-import { PREVIEW_VIEWPORT_PRESET_IDS } from "@t3tools/contracts";
+} from "@t4code/contracts";
+import {
+  PREVIEW_VIEWPORT_MAX_AREA,
+  PREVIEW_VIEWPORT_MAX_DIMENSION,
+  PREVIEW_VIEWPORT_MIN_DIMENSION,
+  PREVIEW_VIEWPORT_PRESET_IDS,
+} from "@t4code/contracts";
 
 export interface PreviewViewportPreset {
   readonly id: PreviewViewportPresetId;
@@ -146,15 +151,52 @@ export const PREVIEW_VIEWPORT_PRESETS: ReadonlyArray<PreviewViewportPreset> =
     ...PREVIEW_VIEWPORT_PRESET_DEFINITIONS[id],
   }));
 
-export function resolvePreviewViewport(
-  input: PreviewAutomationResizeInput,
-): PreviewViewportSetting {
-  if (input.mode === "fill") return { _tag: "fill" };
-  if (input.mode === "preset" && input.preset !== undefined) {
-    const preset = PREVIEW_VIEWPORT_PRESETS.find((candidate) => candidate.id === input.preset);
-    if (!preset) throw new Error(`Unknown preview viewport preset: ${input.preset}`);
-    const landscape = input.orientation === "landscape";
-    const portrait = input.orientation === "portrait";
+function isRuntimeRecord(input: unknown): input is Record<string, unknown> {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(input);
+  return prototype === Object.prototype || prototype === null;
+}
+
+export function resolveRuntimePreviewViewport(input: unknown): PreviewViewportSetting {
+  if (!isRuntimeRecord(input)) {
+    throw new Error("Invalid preview viewport input: expected a record");
+  }
+
+  const mode = input.mode;
+  if (mode !== "fill" && mode !== "preset" && mode !== "freeform") {
+    throw new Error("Invalid preview viewport mode: expected fill, preset, or freeform");
+  }
+
+  const presetId = input.preset;
+  const width = input.width;
+  const height = input.height;
+  const orientation = input.orientation;
+
+  if (mode === "fill") {
+    if (
+      presetId !== undefined ||
+      width !== undefined ||
+      height !== undefined ||
+      orientation !== undefined
+    ) {
+      throw new Error("Fill mode does not accept a preset, dimensions, or orientation");
+    }
+    return { _tag: "fill" };
+  }
+
+  if (mode === "preset") {
+    if (width !== undefined || height !== undefined) {
+      throw new Error("Preset mode requires a preset and does not accept custom dimensions");
+    }
+    if (orientation !== undefined && orientation !== "portrait" && orientation !== "landscape") {
+      throw new Error(`Unknown preview viewport orientation: ${String(orientation)}`);
+    }
+    const preset = PREVIEW_VIEWPORT_PRESETS.find((candidate) => candidate.id === presetId);
+    if (!preset) throw new Error(`Unknown preview viewport preset: ${String(presetId)}`);
+    const landscape = orientation === "landscape";
+    const portrait = orientation === "portrait";
     const nativePortrait = preset.height >= preset.width;
     const shouldSwap = (landscape && nativePortrait) || (portrait && !nativePortrait);
     return {
@@ -164,14 +206,48 @@ export function resolvePreviewViewport(
       presetId: preset.id,
     };
   }
-  if (input.width === undefined || input.height === undefined) {
+
+  if (presetId !== undefined || orientation !== undefined) {
+    throw new Error(
+      "Freeform mode requires width and height and does not accept a preset or orientation",
+    );
+  }
+  if (width === undefined || height === undefined) {
     throw new Error("Custom preview viewport requires width and height");
+  }
+  if (
+    typeof width !== "number" ||
+    typeof height !== "number" ||
+    ![width, height].every(Number.isInteger)
+  ) {
+    throw new Error("Custom preview viewport width and height must be finite integers");
+  }
+  if (
+    [width, height].some(
+      (dimension) =>
+        dimension < PREVIEW_VIEWPORT_MIN_DIMENSION || dimension > PREVIEW_VIEWPORT_MAX_DIMENSION,
+    )
+  ) {
+    throw new Error(
+      `Custom preview viewport dimensions must be between ${PREVIEW_VIEWPORT_MIN_DIMENSION} and ${PREVIEW_VIEWPORT_MAX_DIMENSION}`,
+    );
+  }
+  if (width * height > PREVIEW_VIEWPORT_MAX_AREA) {
+    throw new Error(
+      `Custom preview viewport area must not exceed ${PREVIEW_VIEWPORT_MAX_AREA} pixels`,
+    );
   }
   return {
     _tag: "freeform",
-    width: input.width,
-    height: input.height,
+    width,
+    height,
   };
+}
+
+export function resolvePreviewViewport(
+  input: PreviewAutomationResizeInput,
+): PreviewViewportSetting {
+  return resolveRuntimePreviewViewport(input);
 }
 
 export function previewViewportLabel(viewport: PreviewViewportSetting): string {

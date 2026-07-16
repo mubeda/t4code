@@ -1,0 +1,63 @@
+{
+  "_tag": "Chunk",
+  "requestId": "900719925474099312345",
+  "values": [
+    {
+      "version": 1,
+      "type": "settingsUpdated",
+      "payload": {
+        "settings": {
+          "enableAssistantStreaming": false,
+          "enableProviderUpdateChecks": true,
+          "automaticGitFetchInterval": 30000,
+          "defaultThreadEnvMode": "local",
+          "newWorktreesStartFromOrigin": false,
+          "addProjectBaseDirectory": "",
+          "textGenerationModelSelection": {
+            "instanceId": "codex",
+            "model": "gpt-5.4-mini"
+          },
+          "providers": {
+            "codex": {
+              "enabled": true,
+              "binaryPath": "codex",
+              "homePath": "",
+              "shadowHomePath": "",
+              "customModels": []
+            },
+            "claudeAgent": {
+              "enabled": true,
+              "binaryPath": "claude",
+              "homePath": "",
+              "customModels": [],
+              "launchArgs": ""
+            },
+            "cursor": {
+              "enabled": false,
+              "binaryPath": "agent",
+              "apiEndpoint": "",
+              "customModels": []
+            },
+            "grok": {
+              "enabled": true,
+              "binaryPath": "grok",
+              "customModels": []
+            },
+            "opencode": {
+              "enabled": true,
+              "binaryPath": "opencode",
+              "serverUrl": "",
+              "serverPassword": "",
+              "customModels": []
+            }
+          },
+          "providerInstances": {},
+          "observability": {
+            "otlpTracesUrl": "",
+            "otlpMetricsUrl": ""
+          }
+        }
+      }
+    }
+  ]
+}

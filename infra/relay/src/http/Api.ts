@@ -18,8 +18,8 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import * as HttpTraceContext from "effect/unstable/http/HttpTraceContext";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 import * as HttpApiError from "effect/unstable/httpapi/HttpApiError";
-import { encodeOAuthScope } from "@t3tools/shared/oauthScope";
-import { httpHeaderRedactionLayer } from "@t3tools/shared/httpObservability";
+import { encodeOAuthScope } from "@t4code/shared/oauthScope";
+import { httpHeaderRedactionLayer } from "@t4code/shared/httpObservability";
 
 import {
   RelayApi,
@@ -41,8 +41,8 @@ import {
   type RelayEnvironmentConnectRequest,
   type RelayDpopAccessTokenScope,
   RelayInternalError,
-} from "@t3tools/contracts/relay";
-import { normalizeRelayIssuer } from "@t3tools/shared/relayJwt";
+} from "@t4code/contracts/relay";
+import { normalizeRelayIssuer } from "@t4code/shared/relayJwt";
 
 import * as DpopProofs from "../auth/DpopProofs.ts";
 import * as RelayTokens from "../auth/RelayTokens.ts";
@@ -311,6 +311,29 @@ export const healthApi = HttpApiBuilder.group(
   }),
 );
 
+export const unlinkEnvironment = Effect.fn("relay.api.client.unlink_environment")(
+  function* (input: { readonly userId: string; readonly environmentId: string }) {
+    const links = yield* EnvironmentLinks.EnvironmentLinks;
+    const credentials = yield* EnvironmentCredentials.EnvironmentCredentials;
+    const allocations = yield* ManagedEndpointAllocations.ManagedEndpointAllocations;
+    const managedEndpointProvider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
+
+    return yield* allocations.withOperation({ ...input, kind: "unlink" }, (ownership) =>
+      Effect.gen(function* () {
+        const link = yield* links.getForUser(input);
+        if (link !== null) {
+          yield* links.revokeForUser(input);
+        }
+        yield* credentials.revokeOrphanedForEnvironment({
+          environmentId: input.environmentId,
+        });
+        yield* managedEndpointProvider.deprovision({ ...input, ownership });
+        return { ok: true as const };
+      }),
+    );
+  },
+);
+
 export const clientApi = HttpApiBuilder.group(
   RelayApi,
   "client",
@@ -320,8 +343,9 @@ export const clientApi = HttpApiBuilder.group(
     const relayTokens = yield* RelayTokens.RelayTokens;
     const linker = yield* EnvironmentLinker.EnvironmentLinker;
     const links = yield* EnvironmentLinks.EnvironmentLinks;
-    const managedEndpointProvider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
     const credentials = yield* EnvironmentCredentials.EnvironmentCredentials;
+    const allocations = yield* ManagedEndpointAllocations.ManagedEndpointAllocations;
+    const managedEndpointProvider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
     return handlers
       .handle(
         "listEnvironments",
@@ -429,30 +453,21 @@ export const clientApi = HttpApiBuilder.group(
         Effect.fn("relay.api.client.unlinkEnvironment")(function* (args) {
           const { params } = args;
           const { userId } = yield* RelayClientPrincipal;
-          yield* managedEndpointProvider
-            .deprovision({
-              userId,
-              environmentId: params.environmentId,
-            })
-            .pipe(Effect.catch(() => relayInternalErrorResponse("upstream_unavailable")));
-          const link = yield* links.getForUser({
-            userId,
-            environmentId: params.environmentId,
-          });
-          if (link === null) {
-            return { ok: false };
-          }
-          const unlinked = yield* links.revokeForUser({
-            userId,
-            environmentId: params.environmentId,
-          });
-          if (unlinked) {
-            yield* credentials.revokeForEnvironmentPublicKey({
-              environmentId: link.environmentId,
-              environmentPublicKey: link.environmentPublicKey,
-            });
-          }
-          return { ok: unlinked };
+          return yield* unlinkEnvironment({ userId, environmentId: params.environmentId }).pipe(
+            Effect.provideService(EnvironmentLinks.EnvironmentLinks, links),
+            Effect.provideService(EnvironmentCredentials.EnvironmentCredentials, credentials),
+            Effect.provideService(
+              ManagedEndpointAllocations.ManagedEndpointAllocations,
+              allocations,
+            ),
+            Effect.provideService(
+              ManagedEndpointProvider.ManagedEndpointProvider,
+              managedEndpointProvider,
+            ),
+            Effect.catchTag("ManagedEndpointDeprovisioningFailed", () =>
+              relayInternalErrorResponse("upstream_unavailable"),
+            ),
+          );
         }, mapRelayCommonApiErrors("not_authorized")),
       );
   }),
@@ -860,7 +875,7 @@ const requireDpopPrincipalScope = Effect.fn("relay.api.require_dpop_principal_sc
   return principal.proofKeyThumbprint;
 });
 
-const requireDpopThumbprint = Effect.fn("relay.api.require_dpop_thumbprint")(function* (
+export const requireDpopThumbprint = Effect.fn("relay.api.require_dpop_thumbprint")(function* (
   expectedThumbprint: string,
   options?: {
     readonly expectedAccessToken?: string;
@@ -879,11 +894,13 @@ const requireDpopThumbprint = Effect.fn("relay.api.require_dpop_thumbprint")(fun
     url: url.value.href,
     now,
     expectedThumbprint,
-    ...(options?.expectedAccessToken ? { expectedAccessToken: options.expectedAccessToken } : {}),
+    ...(options?.expectedAccessToken !== undefined
+      ? { expectedAccessToken: options.expectedAccessToken }
+      : {}),
   });
 });
 
-const requireDpopProof = Effect.fn("relay.api.require_dpop_proof")(function* (options?: {
+export const requireDpopProof = Effect.fn("relay.api.require_dpop_proof")(function* (options?: {
   readonly expectedAccessToken?: string;
 }) {
   const request = yield* HttpServerRequest.HttpServerRequest;
@@ -898,7 +915,9 @@ const requireDpopProof = Effect.fn("relay.api.require_dpop_proof")(function* (op
     method: request.method,
     url: url.value.href,
     now,
-    ...(options?.expectedAccessToken ? { expectedAccessToken: options.expectedAccessToken } : {}),
+    ...(options?.expectedAccessToken !== undefined
+      ? { expectedAccessToken: options.expectedAccessToken }
+      : {}),
   });
 });
 

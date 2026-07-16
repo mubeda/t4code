@@ -3,7 +3,7 @@ import {
   isUncPath,
   isWindowsAbsolutePath,
   isWindowsDrivePath,
-} from "@t3tools/shared/path";
+} from "@t4code/shared/path";
 
 const isWindowsPlatform = (platform: string): boolean => {
   return /^win(dows)?/i.test(platform);

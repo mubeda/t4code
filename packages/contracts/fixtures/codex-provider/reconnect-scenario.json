@@ -1,0 +1,38 @@
+{
+  "initialThreadStartRequest": {
+    "cwd": "/tmp/project",
+    "approvalPolicy": "never",
+    "sandbox": "danger-full-access",
+    "model": "gpt-5.3-codex",
+    "serviceTier": null
+  },
+  "initialThreadStartResponse": {
+    "cwd": "/tmp/project",
+    "model": "gpt-5.3-codex",
+    "thread": {
+      "id": "provider-thread-1"
+    }
+  },
+  "resumeRequest": {
+    "threadId": "provider-thread-1",
+    "cwd": "/tmp/project",
+    "approvalPolicy": "never",
+    "sandbox": "danger-full-access",
+    "model": "gpt-5.3-codex",
+    "serviceTier": null
+  },
+  "fallbackThreadStartRequest": {
+    "cwd": "/tmp/project",
+    "approvalPolicy": "never",
+    "sandbox": "danger-full-access",
+    "model": "gpt-5.3-codex",
+    "serviceTier": null
+  },
+  "fallbackThreadStartResponse": {
+    "cwd": "/tmp/project",
+    "model": "gpt-5.3-codex",
+    "thread": {
+      "id": "provider-thread-2"
+    }
+  }
+}

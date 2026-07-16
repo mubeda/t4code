@@ -1,4 +1,9 @@
-import { type TerminalSummary, WS_METHODS } from "@t3tools/contracts";
+import {
+  type TerminalAttachStreamEvent,
+  type TerminalMetadataStreamEvent,
+  type TerminalSummary,
+  WS_METHODS,
+} from "@t4code/contracts";
 import * as Stream from "effect/Stream";
 import { Atom } from "effect/unstable/reactivity";
 
@@ -15,6 +20,24 @@ import {
   applyTerminalMetadataStreamEvent,
   EMPTY_TERMINAL_BUFFER_STATE,
 } from "./terminalSession.ts";
+
+export function accumulateTerminalAttachEvents<E, R>(
+  events: Stream.Stream<TerminalAttachStreamEvent, E, R>,
+) {
+  return events.pipe(
+    Stream.scan(EMPTY_TERMINAL_BUFFER_STATE, applyTerminalAttachStreamEvent),
+    Stream.drop(1),
+  );
+}
+
+export function accumulateTerminalMetadataEvents<E, R>(
+  events: Stream.Stream<TerminalMetadataStreamEvent, E, R>,
+) {
+  return events.pipe(
+    Stream.scan([] as ReadonlyArray<TerminalSummary>, applyTerminalMetadataStreamEvent),
+    Stream.drop(1),
+  );
+}
 
 export function createTerminalEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
@@ -40,9 +63,7 @@ export function createTerminalEnvironmentAtoms<R, E>(
     attach: createEnvironmentSubscriptionAtomFamily(runtime, {
       label: "environment-data:terminal:attach",
       subscribe: (input: EnvironmentRpcInput<typeof WS_METHODS.terminalAttach>) =>
-        subscribe(WS_METHODS.terminalAttach, input).pipe(
-          Stream.scan(EMPTY_TERMINAL_BUFFER_STATE, applyTerminalAttachStreamEvent),
-        ),
+        accumulateTerminalAttachEvents(subscribe(WS_METHODS.terminalAttach, input)),
     }),
     events: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:terminal:events",
@@ -51,9 +72,7 @@ export function createTerminalEnvironmentAtoms<R, E>(
     metadata: createEnvironmentSubscriptionAtomFamily(runtime, {
       label: "environment-data:terminal:metadata",
       subscribe: (_input: null) =>
-        subscribe(WS_METHODS.subscribeTerminalMetadata, {}).pipe(
-          Stream.scan([] as ReadonlyArray<TerminalSummary>, applyTerminalMetadataStreamEvent),
-        ),
+        accumulateTerminalMetadataEvents(subscribe(WS_METHODS.subscribeTerminalMetadata, {})),
     }),
     open: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:terminal:open",

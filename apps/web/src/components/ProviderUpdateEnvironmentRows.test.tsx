@@ -5,7 +5,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import { AsyncResult } from "effect/unstable/reactivity";
 
 import type {
@@ -119,6 +119,7 @@ function provider(updateStatus?: "succeeded"): ServerProvider {
     models: [],
     slashCommands: [],
     skills: [],
+    agents: [],
     versionAdvisory: {
       status: updateStatus ? "current" : "behind_latest",
       currentVersion: updateStatus ? "1.1.0" : "1.0.0",

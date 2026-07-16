@@ -1,0 +1,21 @@
+{
+  "authenticated": true,
+  "auth": {
+    "policy": "remote-reachable",
+    "bootstrapMethods": ["one-time-token"],
+    "sessionMethods": ["browser-session-cookie", "bearer-access-token", "dpop-access-token"],
+    "sessionCookieName": "t4code_session"
+  },
+  "scopes": [
+    "orchestration:read",
+    "orchestration:operate",
+    "terminal:operate",
+    "review:write",
+    "relay:read",
+    "access:read",
+    "access:write",
+    "relay:write"
+  ],
+  "sessionMethod": "browser-session-cookie",
+  "expiresAt": "2026-01-01T01:00:00.000Z"
+}

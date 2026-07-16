@@ -3,14 +3,14 @@ import type {
   EnvironmentId,
   ResolvedKeybindingsConfig,
   ScopedThreadRef,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import { VirtualizedFile, type SelectedLineRange } from "@pierre/diffs";
 import { Editor } from "@pierre/diffs/editor";
 import { EditorProvider, File, type FileOptions, Virtualizer } from "@pierre/diffs/react";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
+} from "@t4code/client-runtime/state/runtime";
 import { ChevronRight, Code2, Eye, FolderTree, Globe2, LoaderCircle } from "lucide-react";
 import * as Schema from "effect/Schema";
 import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -76,7 +76,7 @@ interface FilePreviewPanelProps {
   onPendingChange: (relativePath: string, pending: boolean) => void;
 }
 
-const FILE_EXPLORER_STORAGE_KEY = "t3code.fileExplorerOpen";
+const FILE_EXPLORER_STORAGE_KEY = "t4code.fileExplorerOpen";
 const FILE_SAVE_DEBOUNCE_MS = 500;
 const SAVED_INDICATOR_DURATION_MS = 1500;
 
@@ -285,6 +285,7 @@ function useFileSaveCoordinator({
             input: { cwd, relativePath, contents: nextContents },
           }),
         onConfirmed: (confirmedContents) => {
+          setProjectFileQueryData(environmentId, cwd, relativePath, confirmedContents);
           confirmProjectFileQueryData(environmentId, cwd, relativePath, confirmedContents);
         },
       }),
@@ -392,7 +393,6 @@ function EditableFileSurface({
     () =>
       new Editor<FileCommentAnnotationGroup>({
         onChange: (file, nextLineAnnotations) => {
-          setProjectFileQueryData(environmentId, cwd, relativePath, file.contents);
           saveCoordinator.change(file.contents);
           if (nextLineAnnotations) {
             const remapped = remapFileCommentAnnotations(

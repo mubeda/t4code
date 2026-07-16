@@ -1,0 +1,6 @@
+{
+  "_tag": "EnvironmentRequestInvalidError",
+  "code": "invalid_request",
+  "reason": "invalid_scope",
+  "traceId": "fixture-trace-request-invalid"
+}

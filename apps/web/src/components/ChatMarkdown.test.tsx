@@ -1,46 +1,64 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { beforeAll, describe, expect, it } from "vite-plus/test";
+import { DEFAULT_CLIENT_SETTINGS } from "@t4code/contracts/settings";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { Window } from "happy-dom";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { vi } from "vite-plus/test";
+import { __setClientSettingsForTests } from "../hooks/useSettings";
 
-function matchMedia() {
-  return {
-    matches: false,
-    addEventListener: () => {},
-    removeEventListener: () => {},
-  };
+let ChatMarkdownComponent: typeof import("./ChatMarkdown").default | null = null;
+let domWindow: Window | null = null;
+
+interface MountedTree {
+  readonly container: HTMLDivElement;
+  readonly root: Root;
 }
 
-beforeAll(() => {
-  const classList = {
-    add: () => {},
-    remove: () => {},
-    toggle: () => {},
-    contains: () => false,
-  };
+const mountedTrees: MountedTree[] = [];
 
-  vi.stubGlobal("localStorage", {
-    getItem: () => null,
-    setItem: () => {},
-    removeItem: () => {},
-    clear: () => {},
+beforeEach(async () => {
+  domWindow = new Window({ url: "https://t4code.test/" });
+  vi.stubGlobal("window", domWindow);
+  vi.stubGlobal("document", domWindow.document);
+  vi.stubGlobal("navigator", domWindow.navigator);
+  vi.stubGlobal("localStorage", domWindow.localStorage);
+  vi.stubGlobal("Node", domWindow.Node);
+  vi.stubGlobal("Element", domWindow.Element);
+  vi.stubGlobal("HTMLElement", domWindow.HTMLElement);
+  vi.stubGlobal("HTMLInputElement", domWindow.HTMLInputElement);
+  vi.stubGlobal("HTMLButtonElement", domWindow.HTMLButtonElement);
+  vi.stubGlobal("Event", domWindow.Event);
+  vi.stubGlobal("MouseEvent", domWindow.MouseEvent);
+  vi.stubGlobal("KeyboardEvent", domWindow.KeyboardEvent);
+  vi.stubGlobal("PointerEvent", domWindow.PointerEvent);
+  vi.stubGlobal("CustomEvent", domWindow.CustomEvent);
+  vi.stubGlobal("customElements", domWindow.customElements);
+  vi.stubGlobal("DOMParser", domWindow.DOMParser);
+  vi.stubGlobal("MutationObserver", domWindow.MutationObserver);
+  vi.stubGlobal("ResizeObserver", domWindow.ResizeObserver);
+  vi.stubGlobal("getComputedStyle", domWindow.getComputedStyle.bind(domWindow));
+  vi.stubGlobal("requestAnimationFrame", domWindow.requestAnimationFrame.bind(domWindow));
+  vi.stubGlobal("cancelAnimationFrame", domWindow.cancelAnimationFrame.bind(domWindow));
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  Object.defineProperty(domWindow.HTMLElement.prototype, "getAnimations", {
+    configurable: true,
+    value: () => [],
   });
-  vi.stubGlobal("window", {
-    matchMedia,
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    requestAnimationFrame: (callback: FrameRequestCallback) => {
-      callback(0);
-      return 0;
-    },
-    cancelAnimationFrame: () => {},
-    desktopBridge: undefined,
-  });
-  vi.stubGlobal("document", {
-    documentElement: {
-      classList,
-      offsetHeight: 0,
-    },
-  });
+  ChatMarkdownComponent ??= (await import("./ChatMarkdown")).default;
+}, 30_000);
+
+afterEach(async () => {
+  for (const mounted of mountedTrees.splice(0)) {
+    await act(async () => mounted.root.unmount());
+    mounted.container.remove();
+  }
+  document.body.replaceChildren();
+  __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS);
+  vi.restoreAllMocks();
+  domWindow?.close();
+  domWindow = null;
+  vi.unstubAllGlobals();
 });
 
 interface RenderOptions {
@@ -53,8 +71,29 @@ interface RenderOptions {
 }
 
 async function renderMarkdown(text: string, options: RenderOptions = {}) {
-  const { default: ChatMarkdown } = await import("./ChatMarkdown");
+  const ChatMarkdown = ChatMarkdownComponent ?? (await import("./ChatMarkdown")).default;
   return renderToStaticMarkup(<ChatMarkdown text={text} cwd={options.cwd} {...options} />);
+}
+
+async function mountMarkdown(text: string, options: RenderOptions = {}): Promise<HTMLDivElement> {
+  const ChatMarkdown = ChatMarkdownComponent ?? (await import("./ChatMarkdown")).default;
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  mountedTrees.push({ container, root });
+  await act(async () => root.render(<ChatMarkdown text={text} cwd={options.cwd} {...options} />));
+  return container;
+}
+
+function installClipboard(writeText: (text: string) => Promise<void>): void {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText },
+  });
+}
+
+async function click(element: HTMLElement): Promise<void> {
+  await act(async () => element.click());
 }
 
 /**
@@ -136,6 +175,28 @@ describe("ChatMarkdown", () => {
       const markup = await renderMarkdown("1. [ ] first", { onTaskListChange: () => {} });
 
       expect(markup).toContain('data-task-marker-offset="3"');
+    });
+
+    it("recognizes every supported list marker and ignores ordinary list items", async () => {
+      const text = ["+ [X] plus", "* [ ] star", "2) [x] ordered", "- ordinary"].join("\n");
+      const markup = await renderMarkdown(text, { onTaskListChange: () => {} });
+
+      expect(markup).toContain('data-task-marker-offset="2"');
+      expect(markup).toContain('data-task-marker-offset="13"');
+      expect(markup).toContain('data-task-marker-offset="25"');
+      expect(markup).toContain("ordinary");
+    });
+
+    it("reports the attached task marker when the rendered checkbox changes", async () => {
+      const onTaskListChange = vi.fn();
+      const container = await mountMarkdown("- [ ] alpha", { onTaskListChange });
+      const checkbox = container.querySelector<HTMLInputElement>('input[aria-label="Toggle task"]');
+      expect(checkbox).not.toBeNull();
+
+      await click(checkbox!);
+
+      expect(onTaskListChange).toHaveBeenCalledOnce();
+      expect(onTaskListChange).toHaveBeenCalledWith({ markerOffset: 2, checked: true });
     });
   });
 
@@ -246,6 +307,62 @@ describe("ChatMarkdown", () => {
 
       expect(markup).toContain("chat-markdown-link-favicon");
     });
+
+    it("preserves protocol-relative links and sanitizes unsupported destinations", async () => {
+      const markup = await renderMarkdown(
+        [
+          "[protocol relative](//example.com/path)",
+          "[uppercase](HTTPS://EXAMPLE.COM/UP)",
+          "[telephone](tel:+123456)",
+          "[invalid](https://[invalid)",
+        ].join("\n\n"),
+      );
+
+      expect(markup).toContain('href="//example.com/path"');
+      expect(markup).not.toContain('href="HTTPS://EXAMPLE.COM/UP"');
+      expect(markup).not.toContain('href="tel:+123456"');
+      expect(markup).not.toContain("domain=%5Binvalid");
+    });
+
+    it("computes deeper suffixes and preserves line-only file references", async () => {
+      const markup = await renderMarkdown(
+        [
+          "[first](/repo/alpha/common/src/index.ts:7)",
+          "[second](/repo/beta/common/src/index.ts:9)",
+          "[again](/repo/alpha/common/src/index.ts:7)",
+          "[windows](/C:/repo/src/main.ts:12)",
+        ].join(" and "),
+      );
+
+      expect(markup).toContain("index.ts · alpha/common/src · L7");
+      expect(markup).toContain("index.ts · beta/common/src · L9");
+      expect(markup).toContain("main.ts · L12");
+      expect(markup).not.toContain(":C");
+    });
+
+    it("keeps repeated identical basenames concise", async () => {
+      const markup = await renderMarkdown(
+        "[one](/repo/src/repeated.ts) and [two](/repo/src/repeated.ts)",
+      );
+
+      expect(markup).toContain("repeated.ts");
+      expect(markup).not.toContain("repeated.ts · repo/src");
+    });
+
+    it("records favicon failures and uses the session fallback on the next render", async () => {
+      const text = "[Example](https://fallback.example/path)";
+      const container = await mountMarkdown(text);
+      const image = container.querySelector<HTMLImageElement>(
+        'img[src*="domain=fallback.example"]',
+      );
+      expect(image).not.toBeNull();
+
+      await act(async () => image!.dispatchEvent(new Event("error", { bubbles: true })));
+      const second = await renderMarkdown(text);
+
+      expect(second).toContain("lucide-globe");
+      expect(second).not.toContain("domain=fallback.example");
+    });
   });
 
   describe("tables", () => {
@@ -261,6 +378,31 @@ describe("ChatMarkdown", () => {
       expect(markup).toContain("alpha");
       expect(markup).toContain('aria-label="Collapse table cells"');
       expect(markup).toContain('aria-label="Copy table"');
+    });
+
+    it("starts tables collapsed when line wrapping is disabled", async () => {
+      __setClientSettingsForTests({ ...DEFAULT_CLIENT_SETTINGS, wordWrap: false });
+
+      const markup = await renderMarkdown(
+        ["| Name | Value |", "| ---- | ----- |", "| alpha | 1 |"].join("\n"),
+      );
+
+      expect(markup).toContain('data-expanded="false"');
+      expect(markup).toContain('aria-label="Expand table cells"');
+    });
+
+    it("updates table expansion through the attached table control", async () => {
+      const container = await mountMarkdown(["| A | B |", "| - | - |", "| 1 | 2 |"].join("\n"));
+      const tableContainer = container.querySelector<HTMLElement>(".chat-markdown-table-container");
+      const toggle = container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Collapse table cells"]',
+      );
+      expect(tableContainer).not.toBeNull();
+      expect(toggle).not.toBeNull();
+
+      await click(toggle!);
+      expect(tableContainer?.dataset.expanded).toBe("false");
+      expect(container.querySelector('button[aria-label="Expand table cells"]')).not.toBeNull();
     });
   });
 
@@ -305,6 +447,15 @@ describe("ChatMarkdown", () => {
 
       expect(markup).toContain(">Details</span>");
     });
+
+    it("falls back to the generic label for an empty summary", async () => {
+      const markup = await renderMarkdown(
+        ["<details open>", "<summary></summary>", "", "body", "", "</details>"].join("\n"),
+      );
+
+      expect(markup).toContain(">Details</span>");
+      expect(markup).toContain("body");
+    });
   });
 
   describe("code blocks", () => {
@@ -335,6 +486,23 @@ describe("ChatMarkdown", () => {
       expect(markup).toContain("scripts/build.js");
     });
 
+    it("extracts quoted and unquoted title aliases while ignoring non-file tokens", async () => {
+      const singleQuoted = await renderMarkdown(
+        ["```ts file='src/single.ts'", "const single = true;", "```"].join("\n"),
+      );
+      const unquoted = await renderMarkdown(
+        ["```ts filename=src/plain.ts", "const plain = true;", "```"].join("\n"),
+      );
+      const ignored = await renderMarkdown(
+        ["```ts not-a-file-token", "const ignored = true;", "```"].join("\n"),
+      );
+
+      expect(singleQuoted).toContain("src/single.ts");
+      expect(unquoted).toContain("src/plain.ts");
+      expect(ignored).toContain('aria-label="Language: ts"');
+      expect(ignored).not.toContain("not-a-file-token</span>");
+    });
+
     it("maps gitignore fences to the ini grammar", async () => {
       const markup = await renderMarkdown(["```gitignore", "node_modules/", "```"].join("\n"));
 
@@ -359,6 +527,40 @@ describe("ChatMarkdown", () => {
 
       expect(markup).toContain('data-language="text"');
       expect(markup).toContain("no language here");
+    });
+
+    it("starts code blocks unwrapped when line wrapping is disabled", async () => {
+      __setClientSettingsForTests({ ...DEFAULT_CLIENT_SETTINGS, wordWrap: false });
+
+      const markup = await renderMarkdown(["```ts", "const longLine = true;", "```"].join("\n"));
+
+      expect(markup).toContain('data-wrap="false"');
+      expect(markup).toContain('aria-label="Wrap lines"');
+    });
+
+    it("rerenders wrapping state and copies rendered code through the clipboard", async () => {
+      const writeText = vi.fn(async () => {});
+      installClipboard(writeText);
+      const container = await mountMarkdown(["```ts", "const value = 1;", "```"].join("\n"));
+      const codeBlock = container.querySelector<HTMLElement>(".chat-markdown-codeblock");
+      const wrap = container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Disable line wrap"]',
+      );
+      const copy = container.querySelector<HTMLButtonElement>('button[aria-label="Copy code"]');
+      expect(codeBlock).not.toBeNull();
+      expect(wrap).not.toBeNull();
+      expect(copy).not.toBeNull();
+
+      await click(wrap!);
+      expect(codeBlock?.dataset.wrap).toBe("false");
+      const updatedWrap = container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Wrap lines"]',
+      );
+      expect(updatedWrap?.getAttribute("aria-pressed")).toBe("false");
+
+      await click(copy!);
+      expect(writeText).toHaveBeenCalledWith("const value = 1;\n");
+      expect(container.querySelector('button[aria-label="Copied"]')).not.toBeNull();
     });
 
     it("skips the highlight cache while streaming", async () => {

@@ -8,13 +8,13 @@
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
+} from "@t4code/client-runtime/state/runtime";
 import {
   DEFAULT_MODEL,
   EnvironmentId,
   PRIMARY_LOCAL_ENVIRONMENT_ID,
   ProviderInstanceId,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import { MonitorIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 

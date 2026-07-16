@@ -1,0 +1,1783 @@
+{
+  "formatVersion": 1,
+  "tables": [
+    {
+      "name": "checkpoint_diff_blobs",
+      "columns": [
+        {
+          "position": 0,
+          "name": "thread_id",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 1,
+          "name": "from_turn_count",
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 2,
+          "name": "to_turn_count",
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 3,
+          "name": "diff",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 4,
+          "name": "created_at",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_checkpoint_diff_blobs_thread_to_turn",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 0,
+              "name": "thread_id",
+              "descending": false,
+              "collation": "BINARY"
+            },
+            {
+              "position": 1,
+              "columnId": 2,
+              "name": "to_turn_count",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        },
+        {
+          "name": "sqlite_autoindex_checkpoint_diff_blobs_1",
+          "unique": true,
+          "origin": "u",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 0,
+              "name": "thread_id",
+              "descending": false,
+              "collation": "BINARY"
+            },
+            {
+              "position": 1,
+              "columnId": 1,
+              "name": "from_turn_count",
+              "descending": false,
+              "collation": "BINARY"
+            },
+            {
+              "position": 2,
+              "columnId": 2,
+              "name": "to_turn_count",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        }
+      ],
+      "foreignKeys": []
+    },
+    {
+      "name": "effect_sql_migrations",
+      "columns": [
+        {
+          "position": 0,
+          "name": "migration_id",
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 1,
+          "hidden": 0
+        },
+        {
+          "position": 1,
+          "name": "created_at",
+          "declaredType": "datetime",
+          "notNull": true,
+          "defaultValue": "current_timestamp",
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 2,
+          "name": "name",
+          "declaredType": "VARCHAR(255)",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        }
+      ],
+      "indexes": [],
+      "foreignKeys": []
+    },
+    {
+      "name": "orchestration_command_receipts",
+      "columns": [
+        {
+          "position": 0,
+          "name": "command_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 1,
+          "hidden": 0
+        },
+        {
+          "position": 1,
+          "name": "aggregate_kind",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 2,
+          "name": "aggregate_id",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 3,
+          "name": "accepted_at",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 4,
+          "name": "result_sequence",
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 5,
+          "name": "status",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 6,
+          "name": "error",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_orch_command_receipts_aggregate",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 1,
+              "name": "aggregate_kind",
+              "descending": false,
+              "collation": "BINARY"
+            },
+            {
+              "position": 1,
+              "columnId": 2,
+              "name": "aggregate_id",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        },
+        {
+          "name": "idx_orch_command_receipts_sequence",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 4,
+              "name": "result_sequence",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        },
+        {
+          "name": "sqlite_autoindex_orchestration_command_receipts_1",
+          "unique": true,
+          "origin": "pk",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 0,
+              "name": "command_id",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        }
+      ],
+      "foreignKeys": []
+    },
+    {
+      "name": "orchestration_events",
+      "columns": [
+        {
+          "position": 0,
+          "name": "sequence",
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 1,
+          "hidden": 0
+        },
+        {
+          "position": 1,
+          "name": "event_id",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 2,
+          "name": "aggregate_kind",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 3,
+          "name": "stream_id",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 4,
+          "name": "stream_version",
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 5,
+          "name": "event_type",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 6,
+          "name": "occurred_at",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 7,
+          "name": "command_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 8,
+          "name": "causation_event_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 9,
+          "name": "correlation_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 10,
+          "name": "actor_kind",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 11,
+          "name": "payload_json",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 12,
+          "name": "metadata_json",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_orch_events_command_id",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 7,
+              "name": "command_id",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        },
+        {
+          "name": "idx_orch_events_correlation_id",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 9,
+              "name": "correlation_id",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        },
+        {
+          "name": "idx_orch_events_stream_sequence",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 2,
+              "name": "aggregate_kind",
+              "descending": false,
+              "collation": "BINARY"
+            },
+            {
+              "position": 1,
+              "columnId": 3,
+              "name": "stream_id",
+              "descending": false,
+              "collation": "BINARY"
+            },
+            {
+              "position": 2,
+              "columnId": 0,
+              "name": "sequence",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        },
+        {
+          "name": "idx_orch_events_stream_version",
+          "unique": true,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 2,
+              "name": "aggregate_kind",
+              "descending": false,
+              "collation": "BINARY"
+            },
+            {
+              "position": 1,
+              "columnId": 3,
+              "name": "stream_id",
+              "descending": false,
+              "collation": "BINARY"
+            },
+            {
+              "position": 2,
+              "columnId": 4,
+              "name": "stream_version",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        },
+        {
+          "name": "sqlite_autoindex_orchestration_events_1",
+          "unique": true,
+          "origin": "u",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 1,
+              "name": "event_id",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        }
+      ],
+      "foreignKeys": []
+    },
+    {
+      "name": "projection_pending_approvals",
+      "columns": [
+        {
+          "position": 0,
+          "name": "request_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 1,
+          "hidden": 0
+        },
+        {
+          "position": 1,
+          "name": "thread_id",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 2,
+          "name": "turn_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 3,
+          "name": "status",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 4,
+          "name": "decision",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 5,
+          "name": "created_at",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 6,
+          "name": "resolved_at",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_projection_pending_approvals_thread_status",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 1,
+              "name": "thread_id",
+              "descending": false,
+              "collation": "BINARY"
+            },
+            {
+              "position": 1,
+              "columnId": 3,
+              "name": "status",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        },
+        {
+          "name": "sqlite_autoindex_projection_pending_approvals_1",
+          "unique": true,
+          "origin": "pk",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 0,
+              "name": "request_id",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        }
+      ],
+      "foreignKeys": []
+    },
+    {
+      "name": "projection_projects",
+      "columns": [
+        {
+          "position": 0,
+          "name": "project_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 1,
+          "hidden": 0
+        },
+        {
+          "position": 1,
+          "name": "title",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 2,
+          "name": "workspace_root",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 3,
+          "name": "default_model",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 4,
+          "name": "scripts_json",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 5,
+          "name": "created_at",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 6,
+          "name": "updated_at",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 7,
+          "name": "deleted_at",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_projection_projects_updated_at",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 6,
+              "name": "updated_at",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        },
+        {
+          "name": "sqlite_autoindex_projection_projects_1",
+          "unique": true,
+          "origin": "pk",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 0,
+              "name": "project_id",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        }
+      ],
+      "foreignKeys": []
+    },
+    {
+      "name": "projection_state",
+      "columns": [
+        {
+          "position": 0,
+          "name": "projector",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 1,
+          "hidden": 0
+        },
+        {
+          "position": 1,
+          "name": "last_applied_sequence",
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 2,
+          "name": "updated_at",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        }
+      ],
+      "indexes": [
+        {
+          "name": "sqlite_autoindex_projection_state_1",
+          "unique": true,
+          "origin": "pk",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 0,
+              "name": "projector",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        }
+      ],
+      "foreignKeys": []
+    },
+    {
+      "name": "projection_thread_activities",
+      "columns": [
+        {
+          "position": 0,
+          "name": "activity_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 1,
+          "hidden": 0
+        },
+        {
+          "position": 1,
+          "name": "thread_id",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 2,
+          "name": "turn_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 3,
+          "name": "tone",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 4,
+          "name": "kind",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 5,
+          "name": "summary",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 6,
+          "name": "payload_json",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 7,
+          "name": "created_at",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 8,
+          "name": "sequence",
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_projection_thread_activities_thread_created",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 1,
+              "name": "thread_id",
+              "descending": false,
+              "collation": "BINARY"
+            },
+            {
+              "position": 1,
+              "columnId": 7,
+              "name": "created_at",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        },
+        {
+          "name": "idx_projection_thread_activities_thread_sequence",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 1,
+              "name": "thread_id",
+              "descending": false,
+              "collation": "BINARY"
+            },
+            {
+              "position": 1,
+              "columnId": 8,
+              "name": "sequence",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        },
+        {
+          "name": "sqlite_autoindex_projection_thread_activities_1",
+          "unique": true,
+          "origin": "pk",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 0,
+              "name": "activity_id",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        }
+      ],
+      "foreignKeys": []
+    },
+    {
+      "name": "projection_thread_messages",
+      "columns": [
+        {
+          "position": 0,
+          "name": "message_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 1,
+          "hidden": 0
+        },
+        {
+          "position": 1,
+          "name": "thread_id",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 2,
+          "name": "turn_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 3,
+          "name": "role",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 4,
+          "name": "text",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 5,
+          "name": "is_streaming",
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 6,
+          "name": "created_at",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 7,
+          "name": "updated_at",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 8,
+          "name": "attachments_json",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_projection_thread_messages_thread_created",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 1,
+              "name": "thread_id",
+              "descending": false,
+              "collation": "BINARY"
+            },
+            {
+              "position": 1,
+              "columnId": 6,
+              "name": "created_at",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        },
+        {
+          "name": "sqlite_autoindex_projection_thread_messages_1",
+          "unique": true,
+          "origin": "pk",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 0,
+              "name": "message_id",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        }
+      ],
+      "foreignKeys": []
+    },
+    {
+      "name": "projection_thread_proposed_plans",
+      "columns": [
+        {
+          "position": 0,
+          "name": "plan_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 1,
+          "hidden": 0
+        },
+        {
+          "position": 1,
+          "name": "thread_id",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 2,
+          "name": "turn_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 3,
+          "name": "plan_markdown",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 4,
+          "name": "created_at",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 5,
+          "name": "updated_at",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 6,
+          "name": "implemented_at",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 7,
+          "name": "implementation_thread_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_projection_thread_proposed_plans_thread_created",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 1,
+              "name": "thread_id",
+              "descending": false,
+              "collation": "BINARY"
+            },
+            {
+              "position": 1,
+              "columnId": 4,
+              "name": "created_at",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        },
+        {
+          "name": "sqlite_autoindex_projection_thread_proposed_plans_1",
+          "unique": true,
+          "origin": "pk",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 0,
+              "name": "plan_id",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        }
+      ],
+      "foreignKeys": []
+    },
+    {
+      "name": "projection_thread_sessions",
+      "columns": [
+        {
+          "position": 0,
+          "name": "thread_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 1,
+          "hidden": 0
+        },
+        {
+          "position": 1,
+          "name": "status",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 2,
+          "name": "provider_name",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 3,
+          "name": "provider_session_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 4,
+          "name": "provider_thread_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 5,
+          "name": "active_turn_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 6,
+          "name": "last_error",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 7,
+          "name": "updated_at",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 8,
+          "name": "runtime_mode",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": "'full-access'",
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_projection_thread_sessions_provider_session",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 3,
+              "name": "provider_session_id",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        },
+        {
+          "name": "sqlite_autoindex_projection_thread_sessions_1",
+          "unique": true,
+          "origin": "pk",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 0,
+              "name": "thread_id",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        }
+      ],
+      "foreignKeys": []
+    },
+    {
+      "name": "projection_threads",
+      "columns": [
+        {
+          "position": 0,
+          "name": "thread_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 1,
+          "hidden": 0
+        },
+        {
+          "position": 1,
+          "name": "project_id",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 2,
+          "name": "title",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 3,
+          "name": "model",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 4,
+          "name": "branch",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 5,
+          "name": "worktree_path",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 6,
+          "name": "latest_turn_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 7,
+          "name": "created_at",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 8,
+          "name": "updated_at",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 9,
+          "name": "deleted_at",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 10,
+          "name": "runtime_mode",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": "'full-access'",
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 11,
+          "name": "interaction_mode",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": "'default'",
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_projection_threads_project_id",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 1,
+              "name": "project_id",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        },
+        {
+          "name": "sqlite_autoindex_projection_threads_1",
+          "unique": true,
+          "origin": "pk",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 0,
+              "name": "thread_id",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        }
+      ],
+      "foreignKeys": []
+    },
+    {
+      "name": "projection_turns",
+      "columns": [
+        {
+          "position": 0,
+          "name": "row_id",
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 1,
+          "hidden": 0
+        },
+        {
+          "position": 1,
+          "name": "thread_id",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 2,
+          "name": "turn_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 3,
+          "name": "pending_message_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 4,
+          "name": "assistant_message_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 5,
+          "name": "state",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 6,
+          "name": "requested_at",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 7,
+          "name": "started_at",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 8,
+          "name": "completed_at",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 9,
+          "name": "checkpoint_turn_count",
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 10,
+          "name": "checkpoint_ref",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 11,
+          "name": "checkpoint_status",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 12,
+          "name": "checkpoint_files_json",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 13,
+          "name": "source_proposed_plan_thread_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 14,
+          "name": "source_proposed_plan_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_projection_turns_thread_checkpoint_completed",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 1,
+              "name": "thread_id",
+              "descending": false,
+              "collation": "BINARY"
+            },
+            {
+              "position": 1,
+              "columnId": 9,
+              "name": "checkpoint_turn_count",
+              "descending": false,
+              "collation": "BINARY"
+            },
+            {
+              "position": 2,
+              "columnId": 8,
+              "name": "completed_at",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        },
+        {
+          "name": "idx_projection_turns_thread_requested",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 1,
+              "name": "thread_id",
+              "descending": false,
+              "collation": "BINARY"
+            },
+            {
+              "position": 1,
+              "columnId": 6,
+              "name": "requested_at",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        },
+        {
+          "name": "sqlite_autoindex_projection_turns_1",
+          "unique": true,
+          "origin": "u",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 1,
+              "name": "thread_id",
+              "descending": false,
+              "collation": "BINARY"
+            },
+            {
+              "position": 1,
+              "columnId": 2,
+              "name": "turn_id",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        },
+        {
+          "name": "sqlite_autoindex_projection_turns_2",
+          "unique": true,
+          "origin": "u",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 1,
+              "name": "thread_id",
+              "descending": false,
+              "collation": "BINARY"
+            },
+            {
+              "position": 1,
+              "columnId": 9,
+              "name": "checkpoint_turn_count",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        }
+      ],
+      "foreignKeys": []
+    },
+    {
+      "name": "provider_session_runtime",
+      "columns": [
+        {
+          "position": 0,
+          "name": "thread_id",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 1,
+          "hidden": 0
+        },
+        {
+          "position": 1,
+          "name": "provider_name",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 2,
+          "name": "adapter_key",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 3,
+          "name": "runtime_mode",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": "'full-access'",
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 4,
+          "name": "status",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 5,
+          "name": "last_seen_at",
+          "declaredType": "TEXT",
+          "notNull": true,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 6,
+          "name": "resume_cursor_json",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        },
+        {
+          "position": 7,
+          "name": "runtime_payload_json",
+          "declaredType": "TEXT",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKeyPosition": 0,
+          "hidden": 0
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_provider_session_runtime_provider",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 1,
+              "name": "provider_name",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        },
+        {
+          "name": "idx_provider_session_runtime_status",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 4,
+              "name": "status",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        },
+        {
+          "name": "sqlite_autoindex_provider_session_runtime_1",
+          "unique": true,
+          "origin": "pk",
+          "partial": false,
+          "columns": [
+            {
+              "position": 0,
+              "columnId": 0,
+              "name": "thread_id",
+              "descending": false,
+              "collation": "BINARY"
+            }
+          ]
+        }
+      ],
+      "foreignKeys": []
+    }
+  ],
+  "views": [],
+  "triggers": []
+}

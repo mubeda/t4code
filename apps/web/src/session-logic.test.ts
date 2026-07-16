@@ -4,23 +4,28 @@ import {
   ThreadId,
   TurnId,
   type OrchestrationThreadActivity,
-} from "@t3tools/contracts";
+} from "@t4code/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
+  derivePhase,
   derivePendingApprovals,
   derivePendingUserInputs,
   deriveTimelineEntries,
   deriveWorkLogEntries,
   findLatestProposedPlan,
   findSidebarProposedPlan,
+  formatDuration,
+  formatElapsed,
   hasActionableProposedPlan,
+  inferCheckpointTurnCountByTurnId,
   isLatestTurnSettled,
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
+  workLogEntryIsToolLike,
 } from "./session-logic";
 
 let nextActivityId = 0;
@@ -937,7 +942,7 @@ describe("deriveWorkLogEntries", () => {
   it("preserves MCP server, tool, arguments, and results for expanded display", () => {
     const item = {
       type: "mcpToolCall",
-      server: "t3-code",
+      server: "t4code",
       tool: "preview_status",
       arguments: {},
       status: "completed",
@@ -947,24 +952,24 @@ describe("deriveWorkLogEntries", () => {
       makeActivity({
         id: "mcp-tool-done",
         kind: "tool.completed",
-        summary: "t3-code · preview_status",
+        summary: "t4code · preview_status",
         payload: {
           itemType: "mcp_tool_call",
-          title: "t3-code · preview_status",
+          title: "t4code · preview_status",
           data: { item },
         },
       }),
     ];
 
     const [entry] = deriveWorkLogEntries(activities);
-    expect(entry?.toolTitle).toBe("t3-code · preview_status");
+    expect(entry?.toolTitle).toBe("t4code · preview_status");
     expect(entry?.toolData).toEqual(item);
   });
 
   it("keeps MCP payloads while collapsing lifecycle updates", () => {
     const item = {
       type: "mcpToolCall",
-      server: "t3-code",
+      server: "t4code",
       tool: "preview_snapshot",
       arguments: { interactiveOnly: true },
       status: "completed",
@@ -973,7 +978,7 @@ describe("deriveWorkLogEntries", () => {
       makeActivity({
         id: "mcp-tool-progress",
         kind: "tool.updated",
-        summary: "t3-code · preview_snapshot",
+        summary: "t4code · preview_snapshot",
         payload: {
           itemType: "mcp_tool_call",
           toolCallId: "call-1",
@@ -983,7 +988,7 @@ describe("deriveWorkLogEntries", () => {
       makeActivity({
         id: "mcp-tool-complete",
         kind: "tool.completed",
-        summary: "t3-code · preview_snapshot",
+        summary: "t4code · preview_snapshot",
         payload: {
           itemType: "mcp_tool_call",
           toolCallId: "call-1",
@@ -1684,5 +1689,413 @@ describe("deriveActiveWorkStartedAt", () => {
         "2026-02-27T21:11:00.000Z",
       ),
     ).toBe("2026-02-27T21:11:00.000Z");
+  });
+});
+
+describe("session display helpers", () => {
+  const baseEntry = {
+    id: "entry-1",
+    createdAt: "2026-02-27T21:10:00.000Z",
+    label: "Status",
+    tone: "info" as const,
+  };
+
+  it("classifies every supported tool-like signal", () => {
+    expect(workLogEntryIsToolLike(baseEntry)).toBe(false);
+    expect(workLogEntryIsToolLike({ ...baseEntry, tone: "tool" })).toBe(true);
+    expect(workLogEntryIsToolLike({ ...baseEntry, tone: "thinking" })).toBe(true);
+    expect(workLogEntryIsToolLike({ ...baseEntry, tone: "error" })).toBe(true);
+    expect(workLogEntryIsToolLike({ ...baseEntry, command: "   " })).toBe(false);
+    expect(workLogEntryIsToolLike({ ...baseEntry, command: "git status" })).toBe(true);
+    expect(workLogEntryIsToolLike({ ...baseEntry, requestKind: "file-read" })).toBe(true);
+    expect(workLogEntryIsToolLike({ ...baseEntry, itemType: "command_execution" })).toBe(true);
+  });
+
+  it.each([
+    "File not found: README.md",
+    "No files found",
+    "spawn ENOENT",
+    "No such file or directory",
+    "No such file",
+    "Cannot find path C:\\missing because it does not exist",
+    "CommandNotFoundException",
+    "foo is not recognized as the name of a cmdlet",
+    "The term 'foo' is not recognized",
+    "A parameter cannot be found that matches parameter name Bad",
+    "command not found",
+    "output <exited with exit code 1>",
+    "process exited with exit code 2",
+    "exit code: 3",
+  ])("recognizes actionable failure text: %s", (detail) => {
+    expect(workEntryIndicatesToolFailure({ ...baseEntry, tone: "tool", detail })).toBe(true);
+  });
+
+  it("distinguishes success, neutral, and non-tool rows", () => {
+    const success = {
+      ...baseEntry,
+      tone: "tool" as const,
+      toolLifecycleStatus: "completed" as const,
+    };
+    expect(workEntryIndicatesToolSuccess(success)).toBe(true);
+    expect(workEntryIndicatesToolNeutralStatus(success)).toBe(false);
+
+    for (const entry of [
+      { ...baseEntry, tone: "thinking" as const },
+      { ...baseEntry, tone: "tool" as const, toolLifecycleStatus: "inProgress" as const },
+      { ...baseEntry, tone: "tool" as const, toolLifecycleStatus: "stopped" as const },
+    ]) {
+      expect(workEntryIndicatesToolSuccess(entry)).toBe(false);
+      expect(workEntryIndicatesToolNeutralStatus(entry)).toBe(true);
+    }
+
+    expect(workEntryIndicatesToolFailure({ ...baseEntry, tone: "tool", detail: "" })).toBe(false);
+    expect(workEntryIndicatesToolFailure({ ...baseEntry, tone: "tool", command: "ok" })).toBe(
+      false,
+    );
+    expect(workEntryIndicatesToolFailure(baseEntry)).toBe(false);
+    expect(workEntryIndicatesToolSuccess(baseEntry)).toBe(false);
+    expect(workEntryIndicatesToolNeutralStatus(baseEntry)).toBe(false);
+
+    const failed = {
+      ...baseEntry,
+      tone: "tool" as const,
+      toolLifecycleStatus: "failed" as const,
+    };
+    expect(workEntryIndicatesToolSuccess(failed)).toBe(false);
+    expect(workEntryIndicatesToolNeutralStatus(failed)).toBe(false);
+  });
+
+  it.each([
+    [Number.NaN, "0ms"],
+    [Number.POSITIVE_INFINITY, "0ms"],
+    [-1, "0ms"],
+    [0, "1ms"],
+    [499.4, "499ms"],
+    [999, "999ms"],
+    [1_000, "1.0s"],
+    [9_949, "9.9s"],
+    [9_950, "10s"],
+    [10_000, "10s"],
+    [59_999, "60s"],
+    [60_000, "1m"],
+    [61_000, "1m 1s"],
+    [119_999, "2m"],
+  ])("formats %s milliseconds as %s", (duration, expected) => {
+    expect(formatDuration(duration)).toBe(expected);
+  });
+
+  it("formats elapsed timestamps and rejects incomplete or invalid ranges", () => {
+    expect(formatElapsed("2026-01-01T00:00:00.000Z", undefined)).toBeNull();
+    expect(formatElapsed("invalid", "2026-01-01T00:00:01.000Z")).toBeNull();
+    expect(formatElapsed("2026-01-01T00:00:00.000Z", "invalid")).toBeNull();
+    expect(formatElapsed("2026-01-01T00:00:02.000Z", "2026-01-01T00:00:01.000Z")).toBeNull();
+    expect(formatElapsed("2026-01-01T00:00:00.000Z", "2026-01-01T00:00:01.250Z")).toBe("1.3s");
+  });
+});
+
+describe("malformed orchestration payload handling", () => {
+  it("ignores approvals without complete request identity and kind", () => {
+    const activities = [
+      makeActivity({ kind: "approval.requested", payload: {} }),
+      makeActivity({
+        kind: "approval.requested",
+        payload: { requestId: 4, requestKind: "command" },
+      }),
+      makeActivity({ kind: "approval.requested", payload: { requestId: "missing-kind" } }),
+      makeActivity({
+        kind: "approval.requested",
+        payload: { requestId: "dynamic", requestType: "dynamic_tool_call" },
+      }),
+      makeActivity({
+        kind: "approval.requested",
+        payload: { requestId: "read", requestType: "file_read_approval" },
+      }),
+      makeActivity({
+        kind: "approval.requested",
+        payload: { requestId: "change", requestType: "apply_patch_approval" },
+      }),
+      makeActivity({
+        kind: "approval.requested",
+        payload: { requestId: "unknown", requestType: "unsupported" },
+      }),
+    ];
+
+    expect(derivePendingApprovals(activities)).toEqual([
+      expect.objectContaining({ requestId: "dynamic", requestKind: "command" }),
+      expect.objectContaining({ requestId: "read", requestKind: "file-read" }),
+      expect.objectContaining({ requestId: "change", requestKind: "file-change" }),
+    ]);
+  });
+
+  it("keeps only fully structured user-input questions and options", () => {
+    const activities = [
+      makeActivity({
+        kind: "user-input.requested",
+        payload: { requestId: "not-array", questions: {} },
+      }),
+      makeActivity({
+        kind: "user-input.requested",
+        payload: {
+          requestId: "mixed",
+          questions: [
+            null,
+            { id: 1, header: "Bad", question: "Bad", options: [] },
+            { id: "empty", header: "Empty", question: "Empty?", options: [null, { label: 1 }] },
+            {
+              id: "valid",
+              header: "Choice",
+              question: "Pick one",
+              options: [
+                null,
+                { label: "Broken", description: 7 },
+                { label: "Keep", description: "A valid choice" },
+              ],
+              multiSelect: true,
+            },
+          ],
+        },
+      }),
+    ];
+
+    expect(derivePendingUserInputs(activities)).toEqual([
+      {
+        requestId: "mixed",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        questions: [
+          {
+            id: "valid",
+            header: "Choice",
+            question: "Pick one",
+            options: [{ label: "Keep", description: "A valid choice" }],
+            multiSelect: true,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("ignores null payloads and non-stale provider response failures", () => {
+    const nullPayload = {
+      ...makeActivity({ kind: "approval.requested" }),
+      payload: null,
+    } as unknown as OrchestrationThreadActivity;
+    expect(derivePendingApprovals([nullPayload])).toEqual([]);
+
+    expect(
+      derivePendingUserInputs([
+        makeActivity({
+          kind: "user-input.requested",
+          payload: {
+            requestId: "open",
+            questions: [
+              {
+                id: "question",
+                header: "Choice",
+                question: "Pick one",
+                options: [{ label: "One", description: "First" }],
+              },
+            ],
+          },
+        }),
+        makeActivity({
+          kind: "provider.user-input.respond.failed",
+          payload: { requestId: "open", detail: "temporary transport failure" },
+        }),
+      ]),
+    ).toEqual([
+      expect.objectContaining({
+        requestId: "open",
+        questions: [expect.objectContaining({ multiSelect: false })],
+      }),
+    ]);
+  });
+
+  it("returns no active plan for absent or unusable plan updates", () => {
+    expect(deriveActivePlanState([], undefined)).toBeNull();
+    expect(
+      deriveActivePlanState(
+        [makeActivity({ kind: "turn.plan.updated", payload: { plan: "not-an-array" } })],
+        undefined,
+      ),
+    ).toBeNull();
+    expect(
+      deriveActivePlanState(
+        [
+          makeActivity({
+            kind: "turn.plan.updated",
+            payload: { plan: [null, "bad", { step: 1 }, { step: "Queued", status: "other" }] },
+          }),
+        ],
+        undefined,
+      ),
+    ).toMatchObject({ steps: [{ step: "Queued", status: "pending" }] });
+    expect(
+      deriveActivePlanState(
+        [
+          makeActivity({
+            kind: "turn.plan.updated",
+            payload: { plan: [null, "bad", { step: 1 }] },
+          }),
+        ],
+        undefined,
+      ),
+    ).toBeNull();
+  });
+
+  it("falls back safely when proposed plans or source references are missing", () => {
+    expect(findLatestProposedPlan([], null)).toBeNull();
+    expect(
+      findSidebarProposedPlan({
+        threads: [],
+        latestTurn: {
+          turnId: TurnId.make("turn-missing"),
+          sourceProposedPlan: {
+            threadId: ThreadId.make("thread-missing"),
+            planId: "plan-missing",
+          },
+        },
+        latestTurnSettled: false,
+        threadId: ThreadId.make("thread-active"),
+      }),
+    ).toBeNull();
+    expect(hasActionableProposedPlan(null)).toBe(false);
+    expect(
+      findSidebarProposedPlan({
+        threads: [],
+        latestTurn: null,
+        latestTurnSettled: true,
+        threadId: null,
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("incomplete timing state", () => {
+  it("treats a completed turn with no session as settled", () => {
+    expect(
+      isLatestTurnSettled(
+        {
+          turnId: TurnId.make("turn-complete"),
+          startedAt: "2026-02-27T21:10:00.000Z",
+          completedAt: "2026-02-27T21:10:01.000Z",
+        },
+        null,
+      ),
+    ).toBe(true);
+  });
+
+  it("falls back to the send timestamp when the latest turn has no start", () => {
+    expect(
+      deriveActiveWorkStartedAt(
+        {
+          turnId: TurnId.make("turn-incomplete"),
+          startedAt: null,
+          completedAt: null,
+        },
+        { status: "ready", activeTurnId: null },
+        "2026-02-27T21:11:00.000Z",
+      ),
+    ).toBe("2026-02-27T21:11:00.000Z");
+  });
+
+  it("falls back to the send timestamp when a matching running turn has no recorded start", () => {
+    expect(
+      deriveActiveWorkStartedAt(
+        {
+          turnId: TurnId.make("turn-running"),
+          startedAt: null,
+          completedAt: null,
+        },
+        { status: "running", activeTurnId: TurnId.make("turn-running") },
+        "2026-02-27T21:11:00.000Z",
+      ),
+    ).toBe("2026-02-27T21:11:00.000Z");
+  });
+});
+
+describe("work-log fallback payloads", () => {
+  it("renders non-object payloads without manufacturing tool metadata", () => {
+    const activity = {
+      ...makeActivity({ kind: "tool.completed", summary: "Finished" }),
+      payload: "not-an-object",
+    } as unknown as OrchestrationThreadActivity;
+
+    expect(deriveWorkLogEntries([activity])).toEqual([
+      expect.objectContaining({
+        label: "Finished",
+        sourceActivityKind: "tool.completed",
+        toolLifecycleStatus: "completed",
+      }),
+    ]);
+  });
+
+  it("uses a task summary without repeating empty detail", () => {
+    expect(
+      deriveWorkLogEntries([
+        makeActivity({
+          kind: "task.completed",
+          summary: "Task complete",
+          payload: { summary: "Indexed project", detail: "" },
+        }),
+      ]),
+    ).toEqual([
+      expect.objectContaining({
+        label: "Indexed project",
+        sourceActivityKind: "task.completed",
+      }),
+    ]);
+  });
+
+  it("preserves explicit request kinds and ignores unknown item types", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        kind: "tool.completed",
+        payload: {
+          itemType: "not-a-tool-type",
+          requestKind: "file-change",
+          data: { toolCallId: "  " },
+        },
+      }),
+    ]);
+    expect(entry).toMatchObject({ requestKind: "file-change" });
+    expect(entry?.itemType).toBeUndefined();
+  });
+});
+
+describe("checkpoint and phase helpers", () => {
+  it("numbers checkpoints chronologically and skips sparse array holes", () => {
+    const sparseSummaries: unknown[] = [];
+    sparseSummaries.length = 3;
+    sparseSummaries[0] = {
+      turnId: TurnId.make("turn-later"),
+      completedAt: "2026-01-01T00:00:02.000Z",
+    };
+    sparseSummaries[2] = {
+      turnId: TurnId.make("turn-earlier"),
+      completedAt: "2026-01-01T00:00:01.000Z",
+    };
+
+    expect(sparseSummaries).toHaveLength(3);
+    expect(1 in sparseSummaries).toBe(false);
+    expect(
+      inferCheckpointTurnCountByTurnId(
+        sparseSummaries as unknown as Parameters<typeof inferCheckpointTurnCountByTurnId>[0],
+      ),
+    ).toEqual({
+      "turn-earlier": 1,
+      "turn-later": 2,
+    });
+  });
+
+  it.each([
+    [null, "disconnected"],
+    [{ status: "stopped" }, "disconnected"],
+    [{ status: "interrupted" }, "disconnected"],
+    [{ status: "error" }, "disconnected"],
+    [{ status: "starting" }, "connecting"],
+    [{ status: "running" }, "running"],
+    [{ status: "ready" }, "ready"],
+  ] as const)("maps session %o to %s", (session, expected) => {
+    expect(derivePhase(session as Parameters<typeof derivePhase>[0])).toBe(expected);
   });
 });

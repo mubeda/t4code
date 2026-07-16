@@ -11,8 +11,8 @@ import * as Path from "effect/Path";
 import { HostProcessEnvironment, HostProcessPlatform } from "./hostProcess.ts";
 import * as Context from "effect/Context";
 
-const PATH_CAPTURE_START = "__T3CODE_PATH_START__";
-const PATH_CAPTURE_END = "__T3CODE_PATH_END__";
+const PATH_CAPTURE_START = "__T4CODE_PATH_START__";
+const PATH_CAPTURE_END = "__T4CODE_PATH_END__";
 const SHELL_ENV_NAME_PATTERN = /^[A-Z0-9_]+$/;
 const WINDOWS_PATH_DELIMITER = ";";
 const POSIX_PATH_DELIMITER = ":";
@@ -48,37 +48,44 @@ export class CommandResolutionError extends Data.TaggedError("CommandResolutionE
   readonly reason: "not-found";
 }> {}
 
-const WINDOWS_SHELL_META_CHARS = /([()\][%!^"`<>&|;, *?])/g;
-
 /**
- * Escapes a single argument for `cmd.exe` shell mode (`spawn(..., { shell: true })`
- * on Windows). Node's deprecation warning only applies when shell mode also
- * receives an args array, so callers join the escaped pieces into the command
- * string and pass no separate args.
+ * Escapes a single argv value for `cmd.exe /c call <shim> ...args`.
+ *
+ * Node preserves argv boundaries when launching `cmd.exe`; `cmd` still performs
+ * percent expansion and caret processing while evaluating `call`, so protect
+ * only those characters and let Node quote spaces, quotes, and metacharacters.
  */
-function escapeWindowsShellArg(arg: string): string {
-  // Double up backslashes that precede a double quote, then escape the quote
-  // itself so it survives CommandLineToArgvW.
-  let escaped = arg.replace(/(\\*)"/g, '$1$1\\"');
-  // Double up trailing backslashes so the closing quote is not escaped away.
-  escaped = escaped.replace(/(\\*)$/, "$1$1");
-  // Quote the whole argument so embedded whitespace is preserved.
-  escaped = `"${escaped}"`;
-  // Escape cmd.exe metacharacters so cmd passes them through verbatim.
-  return escaped.replace(WINDOWS_SHELL_META_CHARS, "^$1");
+function escapeWindowsCmdCallArg(arg: string): string {
+  let escaped = "";
+  for (const char of arg) {
+    if (char === "^") {
+      escaped += "^^^^";
+    } else if (char === "%") {
+      escaped += "^^%";
+    } else {
+      escaped += char;
+    }
+  }
+  return escaped;
 }
 
 function buildWindowsShellInvocation(
   command: string,
   args: ReadonlyArray<string>,
+  env: NodeJS.ProcessEnv,
 ): ResolvedSpawnCommand {
-  const commandLine = [escapeWindowsShellArg(command), ...args.map(escapeWindowsShellArg)].join(
-    " ",
-  );
   return {
-    command: commandLine,
-    args: [],
-    shell: true,
+    command: env.ComSpec ?? env.COMSPEC ?? "cmd.exe",
+    args: [
+      "/d",
+      "/s",
+      "/v:off",
+      "/c",
+      "call",
+      escapeWindowsCmdCallArg(command),
+      ...args.map(escapeWindowsCmdCallArg),
+    ],
+    shell: false,
   };
 }
 
@@ -135,7 +142,7 @@ function resolveSpawnExecutableWithNode(
 }
 
 export const SpawnExecutableResolution = Context.Reference<SpawnExecutableResolver>(
-  "@t3tools/shared/shell/SpawnExecutableResolution",
+  "@t4code/shared/shell/SpawnExecutableResolution",
   {
     defaultValue: () => resolveSpawnExecutableWithNode,
   },
@@ -238,11 +245,11 @@ export function mergePathEntries(
 }
 
 function envCaptureStart(name: string): string {
-  return `__T3CODE_ENV_${name}_START__`;
+  return `__T4CODE_ENV_${name}_START__`;
 }
 
 function envCaptureEnd(name: string): string {
-  return `__T3CODE_ENV_${name}_END__`;
+  return `__T4CODE_ENV_${name}_END__`;
 }
 
 function buildEnvironmentCaptureCommand(names: ReadonlyArray<string>): string {
@@ -334,14 +341,14 @@ export type WindowsShellEnvironmentReader = (
 ) => Partial<Record<string, string>>;
 
 export const WindowsShellEnvironment = Context.Reference<WindowsShellEnvironmentReader>(
-  "@t3tools/shared/shell/WindowsShellEnvironment",
+  "@t4code/shared/shell/WindowsShellEnvironment",
   {
     defaultValue: () => readEnvironmentFromWindowsShell,
   },
 );
 
 export const CommandAvailability = Context.Reference<CommandAvailabilityChecker>(
-  "@t3tools/shared/shell/CommandAvailability",
+  "@t4code/shared/shell/CommandAvailability",
   {
     defaultValue: () => isCommandAvailable,
   },
@@ -495,29 +502,23 @@ function resolveCommandCandidates(
 const isExecutableFile = Effect.fn("shell.isExecutableFile")(function* (
   filePath: string,
   platform: NodeJS.Platform,
-  windowsPathExtensions: ReadonlyArray<string>,
-): Effect.fn.Return<boolean, never, FileSystem.FileSystem | Path.Path> {
+): Effect.fn.Return<boolean, never, FileSystem.FileSystem> {
   const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
   const stat = yield* fileSystem.stat(filePath).pipe(Effect.orElseSucceed(() => null));
   if (stat === null || stat.type !== "File") return false;
 
-  if (platform === "win32") {
-    const extension = path.extname(filePath);
-    if (extension.length === 0) return false;
-    return windowsPathExtensions.includes(extension.toUpperCase());
-  }
+  if (platform === "win32") return true;
 
   return canExecuteFile(filePath);
 });
 
 const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlatform")(function* (
   command: string,
-  options: CommandAvailabilityOptions & { readonly platform: NodeJS.Platform },
+  options: { readonly env: NodeJS.ProcessEnv; readonly platform: NodeJS.Platform },
 ): Effect.fn.Return<string, CommandResolutionError, FileSystem.FileSystem | Path.Path> {
   const path = yield* Path.Path;
   const platform = options.platform;
-  const env = options.env ?? process.env;
+  const env = options.env;
   const windowsPathExtensions = platform === "win32" ? resolveWindowsPathExtensions(env) : [];
   const commandCandidates = resolveCommandCandidates(
     command,
@@ -528,7 +529,7 @@ const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlat
 
   if (command.includes("/") || command.includes("\\")) {
     for (const candidate of commandCandidates) {
-      if (yield* isExecutableFile(candidate, platform, windowsPathExtensions)) {
+      if (yield* isExecutableFile(candidate, platform)) {
         return candidate;
       }
     }
@@ -550,7 +551,7 @@ const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlat
   for (const pathEntry of pathEntries) {
     for (const candidate of commandCandidates) {
       const candidatePath = path.join(pathEntry, candidate);
-      if (yield* isExecutableFile(candidatePath, platform, windowsPathExtensions)) {
+      if (yield* isExecutableFile(candidatePath, platform)) {
         return candidatePath;
       }
     }
@@ -592,7 +593,7 @@ export const resolveSpawnCommand = Effect.fn("shell.resolveSpawnCommand")(functi
     return { command: resolvedCommand, args: [...args], shell: false };
   }
 
-  return buildWindowsShellInvocation(resolvedCommand, args);
+  return buildWindowsShellInvocation(resolvedCommand, args, env);
 });
 
 export const isCommandAvailable = Effect.fn("shell.isCommandAvailable")(function* (
@@ -632,13 +633,11 @@ function readWindowsEnvironmentSafely(
 
 function mergeWindowsEnv(
   currentEnv: NodeJS.ProcessEnv,
-  patch: Partial<Record<string, string>>,
+  patch: Readonly<Record<string, string>>,
 ): NodeJS.ProcessEnv {
   const nextEnv: NodeJS.ProcessEnv = { ...currentEnv };
   for (const [key, value] of Object.entries(patch)) {
-    if (value !== undefined) {
-      nextEnv[key] = value;
-    }
+    nextEnv[key] = value;
   }
   return nextEnv;
 }
@@ -655,7 +654,7 @@ export const resolveWindowsEnvironment = Effect.fn("shell.resolveWindowsEnvironm
   const mergedPath = mergePathValues(shellPath, inheritedPath, "win32");
   const knownCliPath = resolveKnownWindowsCliDirs(env).join(WINDOWS_PATH_DELIMITER);
   const baselinePath = mergePathValues(knownCliPath, mergedPath, "win32");
-  const baselinePatch: Partial<NodeJS.ProcessEnv> = baselinePath ? { PATH: baselinePath } : {};
+  const baselinePatch: Record<string, string> = baselinePath ? { PATH: baselinePath } : {};
   const baselineEnv = mergeWindowsEnv(env, baselinePatch);
 
   if (yield* commandAvailable("node", { env: baselineEnv })) {

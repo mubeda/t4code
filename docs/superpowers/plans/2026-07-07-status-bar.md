@@ -1,5 +1,10 @@
 # Status Bar Implementation Plan
 
+> Status: completed and archival. This plan preserves its original TypeScript
+> server paths and commands. Current backend behavior lives in the native Rust
+> server; use [Current Scripts](../../reference/scripts.md) for supported
+> commands.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the approved T4Code-focused Orca-style status bar with Claude/Codex usage, refresh, and a resource manager backed by existing process diagnostics.
