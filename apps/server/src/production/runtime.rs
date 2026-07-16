@@ -714,7 +714,171 @@ const FALLBACK_FAVICON: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewB
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        assets::{AssetIssueRequest, AssetResource},
+        persistence::run_migrations,
+    };
+    use axum::http::{HeaderMap, Uri};
     use tempfile::TempDir;
+
+    fn route_context() -> RouteContext {
+        RouteContext {
+            headers: HeaderMap::new(),
+            uri: Uri::from_static("/test"),
+            cancellation: CancellationToken::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn production_runtime_covers_core_routes_assets_diagnostics_and_shutdown() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let state = TempDir::new().expect("temporary state directory");
+        let config = ServerConfig::new(state.path()).with_bind("127.0.0.1", 0);
+        let database = Database::open_in_memory()
+            .await
+            .expect("in-memory database should open");
+        database
+            .call(|connection| {
+                run_migrations(connection, None)?;
+                Ok(())
+            })
+            .await
+            .expect("database should migrate");
+        let auth = AuthService::new(&config, vec![7_u8; 32]);
+        let runtime = ProductionRuntime::start(&config, database, auth, vec![9_u8; 32])
+            .await
+            .expect("production runtime should start");
+
+        let snapshot = runtime
+            .json(JsonOperation::OrchestrationSnapshot, None, route_context())
+            .await
+            .expect("snapshot route should succeed");
+        assert_eq!(snapshot.status, StatusCode::OK);
+        assert!(snapshot.body.is_object());
+
+        assert!(
+            runtime
+                .json(JsonOperation::OrchestrationDispatch, None, route_context())
+                .await
+                .is_err(),
+            "missing dispatch payload should fail",
+        );
+
+        assert!(
+            runtime
+                .json(
+                    JsonOperation::OrchestrationDispatch,
+                    Some(json!({"_tag":"UnknownCommand"})),
+                    route_context(),
+                )
+                .await
+                .is_err(),
+            "malformed dispatch payload should fail",
+        );
+
+        assert!(
+            runtime
+                .json(JsonOperation::ObservabilityTraces, None, route_context())
+                .await
+                .is_err(),
+            "missing trace payload should fail",
+        );
+        let trace_payload = json!({
+            "resourceSpans": [{
+                "scopeSpans": [{
+                    "spans": [{"name":"runtime-test","traceId":"trace-1","spanId":"span-1"}]
+                }]
+            }]
+        });
+        let trace = runtime
+            .json(
+                JsonOperation::ObservabilityTraces,
+                Some(trace_payload.clone()),
+                route_context(),
+            )
+            .await
+            .expect("trace route should accept payload");
+        assert_eq!(trace.status, StatusCode::ACCEPTED);
+        assert_eq!(runtime.trace_records(), vec![trace_payload]);
+
+        assert!(
+            runtime
+                .json(JsonOperation::ConnectLinkState, None, route_context())
+                .await
+                .is_err(),
+            "connect operation should be owned by its route adapter",
+        );
+        assert!(
+            runtime
+                .asset("invalid-token".to_string(), "missing.png".to_string())
+                .await
+                .is_err(),
+            "invalid asset token should fail",
+        );
+
+        let attachment_id = "runtime-test.png";
+        let attachment_path = config.state_dir().join("attachments").join(attachment_id);
+        tokio::fs::create_dir_all(attachment_path.parent().expect("attachment parent"))
+            .await
+            .expect("attachment directory should create");
+        tokio::fs::write(&attachment_path, b"png-bytes")
+            .await
+            .expect("attachment should write");
+        let issued = runtime
+            .asset_access
+            .issue(AssetIssueRequest {
+                resource: AssetResource::Attachment {
+                    attachment_id: attachment_id.to_string(),
+                },
+                workspace_root: None,
+            })
+            .await
+            .expect("attachment URL should issue");
+        let mut asset_parts = issued.relative_url.rsplitn(2, '/');
+        let asset_path = asset_parts.next().expect("asset filename");
+        let asset_token = asset_parts.next().expect("asset token path");
+        let asset_token = asset_token.rsplit('/').next().expect("asset token");
+        let asset = runtime
+            .asset(asset_token.to_string(), asset_path.to_string())
+            .await
+            .expect("attachment asset should resolve");
+        assert_eq!(asset.content_type, "image/png");
+        assert_eq!(asset.bytes, b"png-bytes");
+
+        let favicon_root = state.path().join("favicon-project");
+        tokio::fs::create_dir_all(&favicon_root)
+            .await
+            .expect("favicon project should create");
+        let issued = runtime
+            .asset_access
+            .issue(AssetIssueRequest {
+                resource: AssetResource::ProjectFavicon {
+                    cwd: favicon_root.to_string_lossy().into_owned(),
+                },
+                workspace_root: None,
+            })
+            .await
+            .expect("fallback favicon URL should issue");
+        let mut asset_parts = issued.relative_url.rsplitn(2, '/');
+        let asset_path = asset_parts.next().expect("favicon filename");
+        let asset_token = asset_parts.next().expect("favicon token path");
+        let asset_token = asset_token.rsplit('/').next().expect("favicon token");
+        let favicon = runtime
+            .asset(asset_token.to_string(), asset_path.to_string())
+            .await
+            .expect("fallback favicon should resolve");
+        assert_eq!(favicon.content_type, "image/svg+xml");
+        assert!(favicon.bytes.starts_with(b"<svg"));
+
+        let diagnostics = runtime
+            .diagnostic_logs("frontend runtime test".to_string())
+            .await
+            .expect("diagnostic bundle should build");
+        assert!(diagnostics.filename.ends_with(".zip"));
+        assert!(diagnostics.bytes.starts_with(b"PK"));
+
+        runtime.shutdown().await;
+    }
 
     #[tokio::test]
     async fn git_review_backend_includes_untracked_files() {
