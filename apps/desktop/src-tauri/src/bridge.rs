@@ -6,12 +6,12 @@ use std::{
     process::Command,
     time::Duration,
 };
+use t4code_server::process::configure_background_std_command;
 use tauri::AppHandle;
 use tauri::Manager;
 use tauri::State;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_opener::OpenerExt;
-use t4code_server::process::configure_background_std_command;
 
 use crate::backend::{BackendRunConfig, BackendSupervisor};
 use crate::config::{
@@ -2224,5 +2224,78 @@ mod tests {
         let request = requests.recv().expect("request should be captured");
         assert!(request.starts_with("POST /api/auth/websocket-ticket HTTP/1.1"));
         assert!(request.contains("authorization: Bearer bearer-token"));
+    }
+
+    #[test]
+    fn tauri_ipc_handlers_preserve_runtime_agnostic_bridge_contracts() {
+        use tauri::test::{INVOKE_KEY, get_ipc_response, mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder()
+            .invoke_handler(tauri::generate_handler![
+                desktop_bridge_get_bridge_metadata,
+                desktop_bridge_fetch_environment_descriptor,
+                desktop_bridge_bootstrap_ssh_bearer_session,
+                desktop_bridge_fetch_ssh_session_state,
+                desktop_bridge_issue_ssh_web_socket_ticket,
+            ])
+            .build(mock_context(noop_assets()))
+            .expect("mock Tauri app");
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview");
+        let invoke = |cmd: &str, body: Value| {
+            get_ipc_response(
+                &webview,
+                tauri::webview::InvokeRequest {
+                    cmd: cmd.to_owned(),
+                    callback: tauri::ipc::CallbackFn(0),
+                    error: tauri::ipc::CallbackFn(1),
+                    url: "tauri://localhost".parse().unwrap(),
+                    body: tauri::ipc::InvokeBody::Json(body),
+                    headers: Default::default(),
+                    invoke_key: INVOKE_KEY.to_owned(),
+                },
+            )
+            .map(|body| body.deserialize::<Value>().unwrap())
+        };
+
+        let metadata = invoke("desktop_bridge_get_bridge_metadata", json!({})).unwrap();
+        assert_eq!(metadata["host"], "tauri");
+
+        for (command, arguments) in [
+            (
+                "desktop_bridge_fetch_environment_descriptor",
+                json!({"httpBaseUrl":"file:///tmp/blocked"}),
+            ),
+            (
+                "desktop_bridge_bootstrap_ssh_bearer_session",
+                json!({
+                    "httpBaseUrl":"file:///tmp/blocked",
+                    "credential":"credential",
+                }),
+            ),
+            (
+                "desktop_bridge_fetch_ssh_session_state",
+                json!({
+                    "httpBaseUrl":"file:///tmp/blocked",
+                    "bearerToken":"bearer-token",
+                }),
+            ),
+            (
+                "desktop_bridge_issue_ssh_web_socket_ticket",
+                json!({
+                    "httpBaseUrl":"file:///tmp/blocked",
+                    "bearerToken":"bearer-token",
+                }),
+            ),
+        ] {
+            let error = invoke(command, arguments).unwrap_err();
+            assert!(
+                error
+                    .as_str()
+                    .is_some_and(|error| error.contains("must use HTTP or HTTPS")),
+                "unexpected validation result for {command}: {error}",
+            );
+        }
     }
 }

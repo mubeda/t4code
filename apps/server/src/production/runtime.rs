@@ -24,8 +24,8 @@ use crate::{
     observability::BrowserTraceCollector,
     orchestration::{EngineOptions, OrchestrationCommand, OrchestrationEngine, load_snapshot},
     persistence::{Database, Repositories, StatePaths},
-    process::configure_background_command,
     preview::PreviewManager,
+    process::configure_background_command,
     production::{
         connect_mcp::ConnectMcpService,
         control::NativeServerControl,
