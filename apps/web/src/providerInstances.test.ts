@@ -74,6 +74,27 @@ describe("isProviderInstancePickerVisible", () => {
 });
 
 describe("applyProviderInstanceSettings", () => {
+  it("uses the configured display name instead of a stale snapshot label", () => {
+    const entries = deriveProviderInstanceEntries([
+      provider({
+        provider: ProviderDriverKind.make("codex"),
+        instanceId: "codex_personal",
+        displayName: "Codex",
+      }),
+    ]);
+    const [entry] = applyProviderInstanceSettings(entries, {
+      providerInstances: {
+        [ProviderInstanceId.make("codex_personal")]: {
+          driver: ProviderDriverKind.make("codex"),
+          displayName: "Personal Codex",
+        },
+      },
+      providers: {} as never,
+    });
+
+    expect(entry?.displayName).toBe("Personal Codex");
+  });
+
   it("uses settings when a streamed snapshot still reports a disabled default as enabled", () => {
     const entries = deriveProviderInstanceEntries([
       provider({ provider: ProviderDriverKind.make("codex"), instanceId: "codex" }),
