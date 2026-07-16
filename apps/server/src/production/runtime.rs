@@ -776,6 +776,124 @@ mod tests {
             "malformed dispatch payload should fail",
         );
 
+        let callback_workspace = state.path().join("callback-workspace");
+        tokio::fs::create_dir_all(&callback_workspace)
+            .await
+            .expect("callback workspace should create");
+        runtime
+            .json(
+                JsonOperation::OrchestrationDispatch,
+                Some(json!({
+                    "type":"project.create",
+                    "commandId":"runtime-project-create",
+                    "projectId":"runtime-project",
+                    "title":"Runtime project",
+                    "workspaceRoot":callback_workspace,
+                    "createdAt":"2026-01-01T00:00:00Z"
+                })),
+                route_context(),
+            )
+            .await
+            .expect("project dispatch should succeed");
+        runtime
+            .json(
+                JsonOperation::OrchestrationDispatch,
+                Some(json!({
+                    "type":"thread.create",
+                    "commandId":"runtime-thread-create",
+                    "threadId":"runtime-thread",
+                    "projectId":"runtime-project",
+                    "title":"Runtime thread",
+                    "modelSelection":{"provider":"codex","model":"auto"},
+                    "runtimeMode":"approval-required",
+                    "interactionMode":"default",
+                    "branch":null,
+                    "worktreePath":null,
+                    "createdAt":"2026-01-01T00:00:00Z"
+                })),
+                route_context(),
+            )
+            .await
+            .expect("thread dispatch should succeed");
+
+        let callbacks = RuntimeEffectCallbacks {
+            repositories: runtime.orchestration.repositories(),
+            provider: runtime.provider_runtime.clone(),
+            terminals: runtime.terminal_services.clone(),
+            workspace: WorkspaceRpc::new(WorkspaceService::default()),
+        };
+        let canonical_callback_workspace =
+            std::fs::canonicalize(&callback_workspace).expect("callback workspace canonical path");
+        assert_eq!(
+            callbacks
+                .workspace_for_thread("runtime-thread")
+                .await
+                .expect("thread workspace should resolve"),
+            Some(process_compatible_path(
+                canonical_callback_workspace.clone()
+            )),
+        );
+        assert_eq!(
+            callbacks
+                .workspace_for_thread("missing-thread")
+                .await
+                .expect("missing thread should resolve"),
+            None,
+        );
+        assert!(
+            callbacks
+                .rollback_provider("missing-thread", 1)
+                .await
+                .is_err()
+        );
+        callbacks
+            .stop_provider("missing-thread")
+            .await
+            .expect("missing provider session should already be stopped");
+        callbacks
+            .refresh_workspace(&callback_workspace)
+            .await
+            .expect("workspace index should refresh");
+        callbacks
+            .close_terminals("runtime-thread")
+            .await
+            .expect("thread terminals should close");
+        callbacks
+            .launch_setup_script(SetupScriptLaunch {
+                thread_id: "runtime-thread".to_owned(),
+                terminal_id: "runtime-setup-terminal".to_owned(),
+                script_id: "runtime-setup".to_owned(),
+                script_name: "Runtime setup".to_owned(),
+                command: "echo coverage".to_owned(),
+                cwd: callback_workspace.clone(),
+                worktree_path: callback_workspace.clone(),
+                env: Default::default(),
+            })
+            .await
+            .expect("setup script should launch");
+        callbacks
+            .close_terminals("runtime-thread")
+            .await
+            .expect("setup terminal should close");
+
+        let asset_context = ProjectionAssetContext {
+            repositories: runtime.orchestration.repositories(),
+        };
+        assert_eq!(
+            asset_context
+                .resolve_workspace_root("runtime-thread")
+                .await
+                .expect("asset workspace should resolve"),
+            Some(process_compatible_path(canonical_callback_workspace)),
+        );
+        assert_eq!(
+            asset_context
+                .resolve_workspace_root("missing-thread")
+                .await
+                .expect("missing asset workspace should resolve"),
+            None,
+        );
+
         assert!(
             runtime
                 .json(JsonOperation::ObservabilityTraces, None, route_context())

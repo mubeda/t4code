@@ -591,3 +591,100 @@ fn trim_newline(bytes: Vec<u8>) -> String {
     }
     text
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, BufReader, duplex};
+
+    #[tokio::test]
+    async fn outbound_notifications_responses_and_close_use_json_rpc_wire_shapes() {
+        let (stdout, _stdout_peer) = duplex(4096);
+        let (stdin_peer, stdin) = duplex(4096);
+        let (stderr, _stderr_peer) = duplex(4096);
+        let (connection, _incoming) =
+            JsonRpcConnection::spawn(stdout, stdin, stderr, ConnectionConfig::default());
+        let mut output = BufReader::new(stdin_peer).lines();
+
+        connection
+            .notify("thread/update", json!({"status":"ready"}))
+            .await
+            .expect("notification should write");
+        assert_eq!(
+            serde_json::from_str::<Value>(
+                &output
+                    .next_line()
+                    .await
+                    .expect("notification should read")
+                    .expect("notification line"),
+            )
+            .expect("notification JSON"),
+            json!({"method":"thread/update","params":{"status":"ready"}}),
+        );
+
+        connection
+            .notify_without_params("initialized")
+            .await
+            .expect("parameterless notification should write");
+        assert_eq!(
+            serde_json::from_str::<Value>(
+                &output
+                    .next_line()
+                    .await
+                    .expect("parameterless notification should read")
+                    .expect("parameterless notification line"),
+            )
+            .expect("parameterless notification JSON"),
+            json!({"method":"initialized"}),
+        );
+
+        connection
+            .respond(json!("request-1"), json!({"accepted":true}))
+            .await
+            .expect("response should write");
+        assert_eq!(
+            serde_json::from_str::<Value>(
+                &output
+                    .next_line()
+                    .await
+                    .expect("response should read")
+                    .expect("response line"),
+            )
+            .expect("response JSON"),
+            json!({"id":"request-1","result":{"accepted":true}}),
+        );
+
+        connection
+            .respond_error(
+                json!(2),
+                JsonRpcErrorShape {
+                    code: -32000,
+                    message: "denied".to_owned(),
+                    data: Some(json!({"retry":false})),
+                },
+            )
+            .await
+            .expect("error response should write");
+        assert_eq!(
+            serde_json::from_str::<Value>(
+                &output
+                    .next_line()
+                    .await
+                    .expect("error response should read")
+                    .expect("error response line"),
+            )
+            .expect("error response JSON"),
+            json!({
+                "id":2,
+                "error":{"code":-32000,"message":"denied","data":{"retry":false}}
+            }),
+        );
+
+        connection.close().await;
+        assert!(matches!(
+            connection.notify("after-close", Value::Null).await,
+            Err(ProtocolError::Closed { reason }) if reason == "closed by runtime"
+        ));
+        connection.close().await;
+    }
+}

@@ -2808,7 +2808,7 @@ async fn wait_for_endpoint(
 
 #[cfg(test)]
 mod tests {
-    use super::ProviderDriverFactory;
+    use super::{ProviderDriver, ProviderDriverFactory};
     use crate::server_settings::{ProviderInstanceState, ProvidersState};
     use axum::{
         Json, Router,
@@ -2872,8 +2872,7 @@ mod tests {
         claude_request.model = Some("claude-sonnet".to_owned());
         claude_request.agent = Some("reviewer".to_owned());
         claude_request.resume_cursor = Some(json!({"sessionId":"claude-session"}));
-        let claude = factory
-            .create(claude_request)
+        let claude = super::ClaudeDriver::spawn(claude_request, factory.attachments.clone())
             .await
             .expect("Claude driver should create");
         assert_eq!(
@@ -2903,6 +2902,18 @@ mod tests {
             .approve("approval-2".to_owned(), "deny".to_owned())
             .await
             .expect("Claude denial should resolve");
+        claude.runtime.lock().await.open_user_input_request(
+            crate::provider::claude::UserInputRequestInput {
+                tool_name: "AskUserQuestion".to_owned(),
+                input: json!({"questions":[{"question":"Continue?"}]}),
+                tool_use_id: "tool-1".to_owned(),
+            },
+            "question-1",
+        );
+        claude
+            .answer("question-1".to_owned(), json!({"answer":"yes"}))
+            .await
+            .expect("Claude user input should resolve");
         claude
             .set_mode("auto-accept-edits".to_owned())
             .await
@@ -2955,6 +2966,18 @@ done
                 .resume_cursor,
             Some(json!({"threadId":"native-codex-thread"})),
         );
+        assert!(
+            !timeout(std::time::Duration::from_secs(2), codex.next_event())
+                .await
+                .expect("Codex event timeout")
+                .expect("Codex startup event")
+                .event_type
+                .is_empty()
+        );
+        codex
+            .set_interaction_mode("plan".to_owned())
+            .await
+            .expect("Codex default interaction mode should be accepted");
         assert!(
             codex
                 .send("hello".to_owned(), Vec::new(), "default".to_owned())
@@ -3023,6 +3046,14 @@ done
                     .expect("ACP driver should start")
                     .resume_cursor
                     .is_some()
+            );
+            assert!(
+                !timeout(std::time::Duration::from_secs(2), driver.next_event())
+                    .await
+                    .expect("ACP event timeout")
+                    .expect("ACP startup event")
+                    .event_type
+                    .is_empty()
             );
             let turn = driver
                 .send("hello".to_owned(), Vec::new(), "default".to_owned())
@@ -3123,6 +3154,10 @@ done
                 .resume_cursor,
             Some(json!({"sessionId":"native-opencode-session"})),
         );
+        driver
+            .set_interaction_mode("plan".to_owned())
+            .await
+            .expect("OpenCode default interaction mode should be accepted");
         assert!(
             driver
                 .send("hello".to_owned(), Vec::new(), "default".to_owned())
