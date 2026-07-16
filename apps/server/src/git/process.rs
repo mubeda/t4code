@@ -8,6 +8,8 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+use crate::process::configure_background_command;
+
 const TRUNCATION_MARKER: &str = "\n\n[truncated]";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -138,6 +140,7 @@ impl ProcessRunner {
     ) -> Result<ProcessOutput, ProcessError> {
         let command_label = request.command.to_string_lossy().into_owned();
         let mut command = Command::new(&request.command);
+        configure_background_command(&mut command);
         command
             .args(&request.args)
             .current_dir(&request.cwd)

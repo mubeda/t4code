@@ -15,6 +15,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::{Child, Command},
 };
+use t4code_server::process::configure_background_command;
 use uuid::Uuid;
 
 const SSH_DIRECTORY_NAME: &str = ".ssh";
@@ -765,6 +766,7 @@ async fn run_remote_ssh_script(
     args.extend(script_args.iter().cloned());
 
     let mut command = Command::new(ssh_command());
+    configure_background_command(&mut command);
     command
         .args(args)
         .envs(build_ssh_child_environment(auth, askpass_launcher))
@@ -896,7 +898,9 @@ async fn issue_remote_pairing_token(
         "-lc".to_string(),
         "t4code auth pairing create --base-dir \"$HOME/.t4code\" --json".to_string(),
     ]);
-    let output = Command::new(ssh_command())
+    let mut command = Command::new(ssh_command());
+    configure_background_command(&mut command);
+    let output = command
         .args(args)
         .envs(build_ssh_child_environment(auth, askpass_launcher))
         .output()
@@ -918,7 +922,9 @@ async fn start_ssh_tunnel(
     auth: &SshAuthOptions,
     askpass_launcher: &Path,
 ) -> Result<Child, String> {
-    let mut child = Command::new(&plan.program)
+    let mut command = Command::new(&plan.program);
+    configure_background_command(&mut command);
+    let mut child = command
         .args(&plan.args)
         .envs(build_ssh_child_environment(auth, askpass_launcher))
         .stdin(std::process::Stdio::null())

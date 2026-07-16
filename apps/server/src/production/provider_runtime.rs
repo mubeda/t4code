@@ -17,6 +17,7 @@ use crate::{
         load_snapshot,
     },
     persistence::{ProviderSessionRuntime, Repositories},
+    process::configure_background_command_wrap,
     production::{
         connect_mcp::ConnectMcpService, operational_logs::ProviderOperationalLog,
         orchestration_effects::process_compatible_path,
@@ -1440,6 +1441,7 @@ fn spawn_child(
         command.envs(&request.environment);
         sanitize_provider_subprocess_environment(command);
     });
+    configure_background_command_wrap(&mut command);
     command.wrap(KillOnDrop);
     #[cfg(windows)]
     command.wrap(JobObject);

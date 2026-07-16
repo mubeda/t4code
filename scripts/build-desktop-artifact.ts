@@ -367,9 +367,6 @@ export const resolveTauriBuildPlan = Effect.fn("resolveTauriBuildPlan")(function
   const bundleDirectoryName = target === "app" ? "macos" : target;
   const bundleDir = path.join(
     repoRoot,
-    "apps",
-    "desktop",
-    "src-tauri",
     "target",
     rustTarget,
     "release",
@@ -449,6 +446,8 @@ const runSpawnPlan = Effect.fn("runTauriSpawnPlan")(function* (
       cwd: plan.cwd,
       env,
       shell: spawnCommand.shell,
+      stdout: "inherit",
+      stderr: "inherit",
     }),
   );
   const exitCode = yield* child.exitCode;

@@ -24,8 +24,12 @@ const TauriConfiguration = Schema.fromJsonString(
 const CapabilityConfiguration = Schema.fromJsonString(
   Schema.Struct({ permissions: Schema.Array(Schema.String) }),
 );
+const DesktopPackageConfiguration = Schema.fromJsonString(
+  Schema.Struct({ scripts: Schema.Struct({ build: Schema.String }) }),
+);
 const decodeTauriConfiguration = Schema.decodeUnknownEffect(TauriConfiguration);
 const decodeCapabilityConfiguration = Schema.decodeUnknownEffect(CapabilityConfiguration);
+const decodeDesktopPackageConfiguration = Schema.decodeUnknownEffect(DesktopPackageConfiguration);
 
 it.layer(NodeServices.layer)("Tauri production hardening", (it) => {
   it.effect("restricts the main WebView and disables production source maps by default", () =>
@@ -100,6 +104,8 @@ it.layer(NodeServices.layer)("Tauri production hardening", (it) => {
         /resources\/node|server-node_modules|dist\/bin\.mjs/i.test(desktopPackage),
         false,
       );
+      const desktopPackageJson = yield* decodeDesktopPackageConfiguration(desktopPackage);
+      assert.match(desktopPackageJson.scripts.build, /@tauri-apps\/cli@2\.11\.4 build$/);
       assert.notMatch(desktopLib, /if\s*!cfg!\(debug_assertions\)[\s\S]*?backend\.start_default/);
       assert.match(desktopLib, /backend\.start_default\(app_handle\)\.await/);
       assert.notMatch(relayTracing, /from "\.\/observability\.ts"/);

@@ -11,8 +11,12 @@ use tokio::{
     sync::Mutex,
 };
 
-use crate::production::provider_runtime::{
-    provider_launch_program, resolve_provider_executable, sanitize_provider_subprocess_environment,
+use crate::{
+    process::configure_background_command,
+    production::provider_runtime::{
+        provider_launch_program, resolve_provider_executable,
+        sanitize_provider_subprocess_environment,
+    },
 };
 
 pub const MIN_MANUAL_REFRESH_MS: i64 = 30_000;
@@ -323,6 +327,7 @@ async fn fetch_codex_usage() -> Result<ProviderUsageSnapshot, ProviderUsageFetch
     })?;
     let (program, prefix_args) = provider_launch_program(&executable);
     let mut command = Command::new(program);
+    configure_background_command(&mut command);
     command
         .args(prefix_args)
         .args(["-s", "read-only", "-a", "untrusted", "app-server"])
