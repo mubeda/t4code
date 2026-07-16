@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
-import { EnvironmentId } from "@t4code/contracts";
+import { EnvironmentId, PRIMARY_LOCAL_ENVIRONMENT_ID } from "@t4code/contracts";
+import { Cause } from "effect";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -233,5 +234,130 @@ describe("AddProjectDialog mounted interactions", () => {
       }),
     );
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("uses the local fallback environment and reports create failures without closing", async () => {
+    testState.primaryEnvironment = null;
+    testState.browseByPath.set("~", {
+      data: { entries: [{ name: ".git", fullPath: "~/.git" }] },
+      isPending: false,
+    });
+    testState.createProject
+      .mockResolvedValueOnce(AsyncResult.failure(Cause.fail(new Error("disk full"))))
+      .mockResolvedValueOnce(AsyncResult.failure(Cause.fail("opaque failure")))
+      .mockResolvedValueOnce(AsyncResult.failure(Cause.interrupt(1)));
+    const onOpenChange = vi.fn();
+    await mount(<AddProjectDialog open onOpenChange={onOpenChange} />);
+
+    await click(buttonWithText("Add project"));
+    await click(buttonWithText("Add project"));
+    await click(buttonWithText("Add project"));
+
+    expect(testState.createProject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environmentId: EnvironmentId.make(PRIMARY_LOCAL_ENVIRONMENT_ID),
+      }),
+    );
+    expect(testState.toasts).toEqual([
+      expect.objectContaining({ type: "error", description: "disk full" }),
+      expect.objectContaining({ type: "error", description: "An error occurred." }),
+    ]);
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it("reports clone failures and keeps a successfully cloned project open when adding fails", async () => {
+    const onOpenChange = vi.fn();
+    await mount(<AddProjectDialog open onOpenChange={onOpenChange} />);
+    const cloneInput = document.querySelector<HTMLInputElement>(
+      'input[placeholder="https://github.com/org/repo.git"]',
+    );
+    expect(cloneInput).not.toBeNull();
+    await changeInput(cloneInput!, "https://example.test/repo.git");
+
+    testState.cloneRepo.mockResolvedValueOnce(
+      AsyncResult.failure(Cause.fail(new Error("network down"))),
+    );
+    await click(buttonWithText("Clone"));
+    testState.cloneRepo.mockResolvedValueOnce(AsyncResult.failure(Cause.fail("opaque clone")));
+    await click(buttonWithText("Clone"));
+    testState.cloneRepo.mockResolvedValueOnce(AsyncResult.failure(Cause.interrupt(1)));
+    await click(buttonWithText("Clone"));
+
+    testState.cloneRepo.mockResolvedValueOnce(AsyncResult.success({ path: "/repos/cloned" }));
+    testState.createProject.mockResolvedValueOnce(
+      AsyncResult.failure(Cause.fail(new Error("cannot register"))),
+    );
+    await click(buttonWithText("Clone"));
+
+    expect(testState.toasts).toEqual([
+      expect.objectContaining({ type: "error", description: "network down" }),
+      expect.objectContaining({ type: "error", description: "An error occurred." }),
+      expect.objectContaining({ type: "error", description: "cannot register" }),
+    ]);
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it("imports multiple scanned repositories, supports deselection, and reports partial success", async () => {
+    testState.browseByPath.set("~", {
+      data: {
+        entries: [
+          { name: "alpha", fullPath: "/repos/alpha" },
+          { name: "beta", fullPath: "/repos/beta" },
+        ],
+      },
+      isPending: false,
+    });
+    for (const path of ["/repos/alpha", "/repos/beta"]) {
+      testState.browseByPath.set(path, {
+        data: { entries: [{ name: ".git", fullPath: `${path}/.git` }] },
+        isPending: false,
+      });
+    }
+    const onOpenChange = vi.fn();
+    await mount(<AddProjectDialog open onOpenChange={onOpenChange} />);
+    const checkboxes = Array.from(
+      document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+    );
+    expect(checkboxes).toHaveLength(2);
+
+    await click(checkboxes[0]!);
+    await click(checkboxes[0]!);
+    expect(checkboxes[0]?.checked).toBe(false);
+    await click(checkboxes[0]!);
+    await click(checkboxes[1]!);
+
+    testState.createProject
+      .mockResolvedValueOnce(AsyncResult.success(undefined))
+      .mockResolvedValueOnce(AsyncResult.failure(Cause.fail("cannot add beta")));
+    await click(buttonWithText("Import 2 selected"));
+    expect(testState.toasts).toContainEqual(
+      expect.objectContaining({ type: "success", title: "Added 1 project" }),
+    );
+    expect(onOpenChange).not.toHaveBeenCalled();
+
+    testState.createProject.mockResolvedValue(AsyncResult.success(undefined));
+    await click(buttonWithText("Import 2 selected"));
+    expect(testState.toasts).toContainEqual(
+      expect.objectContaining({ type: "success", title: "Added 2 projects" }),
+    );
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("renders pending child scans and navigates up without committing a project", async () => {
+    testState.browseByPath.set("~", {
+      data: { entries: [{ name: "pending", fullPath: "/repos/pending" }] },
+      isPending: false,
+    });
+    testState.browseByPath.set("/repos/pending", { isPending: true });
+    const onOpenChange = vi.fn();
+    await mount(<AddProjectDialog open onOpenChange={onOpenChange} />);
+    expect(document.body.textContent).toContain("Scanning pending...");
+
+    const folderInput = document.querySelector<HTMLInputElement>('input:not([placeholder])');
+    expect(folderInput).not.toBeNull();
+    await changeInput(folderInput!, "/repos/pending/");
+    await click(buttonWithText("Up"));
+    expect(folderInput?.value).toBe("/repos/");
+    expect(testState.createProject).not.toHaveBeenCalled();
   });
 });

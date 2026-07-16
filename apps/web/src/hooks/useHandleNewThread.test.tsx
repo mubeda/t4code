@@ -253,7 +253,14 @@ describe("useNewThreadHandler", () => {
       });
     setRoute({ draftId });
     await mount(
-      <NewThreadHarness options={{ branch: null, worktreePath: "X:\\worktrees\\stored" }} />,
+      <NewThreadHarness
+        options={{
+          branch: null,
+          worktreePath: "X:\\worktrees\\stored",
+          envMode: "local",
+          startFromOrigin: true,
+        }}
+      />,
     );
     await clickNewThread();
 
@@ -262,6 +269,7 @@ describe("useNewThreadHandler", () => {
       branch: null,
       worktreePath: "X:\\worktrees\\stored",
       envMode: "worktree",
+      startFromOrigin: true,
     });
   });
 
@@ -294,11 +302,22 @@ describe("useNewThreadHandler", () => {
       logicalProjectDraftThreadKeyByLogicalProjectKey: {},
     });
     setRoute({ draftId });
-    await mount(<NewThreadHarness options={{ envMode: "worktree", startFromOrigin: false }} />);
+    await mount(
+      <NewThreadHarness
+        options={{
+          branch: "feature/reuse",
+          worktreePath: "X:\\worktrees\\active",
+          envMode: "worktree",
+          startFromOrigin: false,
+        }}
+      />,
+    );
     await clickNewThread();
 
     expect(testState.router.navigate).not.toHaveBeenCalled();
     expect(useComposerDraftStore.getState().getDraftSession(draftId)).toMatchObject({
+      branch: "feature/reuse",
+      worktreePath: "X:\\worktrees\\active",
       envMode: "worktree",
       startFromOrigin: false,
     });
@@ -321,13 +340,49 @@ describe("useNewThreadHandler", () => {
     await mount(<NewThreadHarness />);
     await clickNewThread();
 
-    const replacement = useComposerDraftStore.getState().getDraftSessionByProjectRef(projectRef);
+    const replacement = useComposerDraftStore
+      .getState()
+      .getDraftSessionByLogicalProjectKey(scopedProjectKey(projectRef));
     expect(replacement?.draftId).not.toBe(storedDraftId);
     expect(useComposerDraftStore.getState().getDraftSession(storedDraftId)?.promotedTo).toEqual(
       scopeThreadRef(environmentId, storedThreadId),
     );
     expect(testState.router.navigate).toHaveBeenCalledWith(
       expect.objectContaining({ params: { draftId: replacement!.draftId } }),
+    );
+  });
+
+  it("creates a fresh draft when the matching active draft is reached through a server route", async () => {
+    const activeDraftId = "draft-from-server" as never;
+    const activeThreadId = ThreadId.make("thread-from-server");
+    useComposerDraftStore
+      .getState()
+      .setLogicalProjectDraftThreadId(scopedProjectKey(projectRef), projectRef, activeDraftId, {
+        threadId: activeThreadId,
+      });
+    useComposerDraftStore.setState({
+      logicalProjectDraftThreadKeyByLogicalProjectKey: {},
+    });
+    setRoute({ environmentId, threadId: activeThreadId });
+    await mount(<NewThreadHarness />);
+    await clickNewThread();
+
+    const replacement = useComposerDraftStore
+      .getState()
+      .getDraftSessionByLogicalProjectKey(scopedProjectKey(projectRef));
+    expect(replacement?.draftId).not.toBe(activeDraftId);
+    expect(testState.router.navigate).toHaveBeenCalledWith(
+      expect.objectContaining({ params: { draftId: replacement!.draftId } }),
+    );
+  });
+
+  it("treats an empty router match stack as an idle route", async () => {
+    testState.router.state.matches = [];
+    await mount(<NewThreadHarness />);
+    await clickNewThread();
+
+    expect(testState.router.navigate).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "/draft/$draftId" }),
     );
   });
 });
