@@ -177,6 +177,94 @@ async fn opencode_runtime_failure_boundaries_reject_invalid_sessions_and_http_st
 }
 
 #[tokio::test]
+async fn opencode_runtime_maps_transport_loss_across_every_live_operation() {
+    let state = Arc::new(TestServerState::default());
+    let app = Router::new()
+        .route("/session", post(invalid_json_session))
+        .route("/session/{session_id}", get(resume_session))
+        .route("/event", get(subscribe_question_and_permission_events))
+        .with_state(state);
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address: SocketAddr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+    let runtime = OpenCodeSessionRuntime::new_with_options(
+        &format!("http://{address}"),
+        "opencode-transport-thread",
+        "/tmp/project",
+        Some("openai/gpt-5.4"),
+        None,
+        Some("reviewer"),
+    )
+    .expect("runtime");
+
+    assert!(
+        runtime
+            .start()
+            .await
+            .expect_err("invalid JSON must fail")
+            .to_string()
+            .contains("HTTP request failed")
+    );
+    assert_eq!(
+        runtime.resume("transport-session").await.unwrap(),
+        "transport-session"
+    );
+
+    let mut saw_question = false;
+    let mut saw_permission = false;
+    for _ in 0..6 {
+        let event = timeout(Duration::from_secs(2), runtime.next_event())
+            .await
+            .expect("pending request event timeout")
+            .expect("pending request event");
+        saw_question |= event.request_id.as_deref() == Some("transport-question");
+        saw_permission |= event.request_id.as_deref() == Some("transport-permission");
+        if saw_question && saw_permission {
+            break;
+        }
+    }
+    assert!(saw_question && saw_permission);
+
+    server.abort();
+    sleep(Duration::from_millis(25)).await;
+
+    assert!(runtime.start().await.is_err());
+    assert!(runtime.resume("transport-session").await.is_err());
+    assert!(
+        runtime
+            .add_mcp_server("t4code", "http://localhost/mcp", "Bearer token")
+            .await
+            .is_err()
+    );
+    assert!(runtime.send_turn(Some("hello"), Vec::new()).await.is_err());
+    assert!(runtime.send_command("review", "src").await.is_err());
+    assert!(runtime.interrupt_turn().await.is_err());
+    assert!(runtime.rollback_thread(1).await.is_err());
+    assert!(
+        runtime
+            .respond_to_permission("transport-permission", "decline")
+            .await
+            .is_err()
+    );
+    assert!(
+        runtime
+            .respond_to_user_input(
+                "transport-question",
+                json!({
+                    "Scope": ["Workspace", "Session"],
+                    "Notes": "all",
+                    "Ignored": 42,
+                }),
+            )
+            .await
+            .is_err()
+    );
+    runtime.stop().await.expect("stop");
+}
+
+#[tokio::test]
 async fn opencode_runtime_surfaces_and_resolves_permission_requests() {
     let state = Arc::new(TestServerState::default());
     let app = Router::new()
@@ -312,6 +400,23 @@ async fn opencode_runtime_matches_session_and_rollback_traces() {
     assert_eq!(
         serde_json::to_value(rollback).expect("rollback json"),
         fixture("rollback.json")
+    );
+    {
+        let mut messages = state.messages.lock().await;
+        *messages = vec![
+            json!({ "info": { "id": "assistant-1", "role": "assistant" }, "parts": [] }),
+            json!({ "info": { "id": "assistant-2", "role": "assistant" }, "parts": [] }),
+            json!({ "info": { "id": "assistant-3", "role": "assistant" }, "parts": [] }),
+        ];
+    }
+    assert_eq!(
+        runtime
+            .rollback_thread(1)
+            .await
+            .expect("targeted rollback")
+            .turns
+            .len(),
+        2
     );
     runtime.interrupt_turn().await.expect("interrupt");
     assert_eq!(*state.abort_count.lock().await, 1);
@@ -485,6 +590,10 @@ async fn create_session(State(_state): State<Arc<TestServerState>>) -> Json<Valu
 
 async fn invalid_session() -> Json<Value> {
     Json(json!({}))
+}
+
+async fn invalid_json_session() -> &'static str {
+    "not-json"
 }
 
 async fn resume_session(Path(session_id): Path<String>) -> StatusCode {
@@ -663,6 +772,40 @@ async fn subscribe_permission_events(
     Sse::new(stream::iter(vec![Ok(
         Event::default().data(event.to_string())
     )]))
+    .keep_alive(KeepAlive::default())
+}
+
+async fn subscribe_question_and_permission_events(
+    State(_state): State<Arc<TestServerState>>,
+    Query(_query): Query<std::collections::HashMap<String, String>>,
+) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let events = [
+        json!({
+            "type": "question.asked",
+            "properties": {
+                "sessionID": "transport-session",
+                "requestID": "transport-question",
+                "questions": [
+                    { "header": "Scope", "question": "Scope?", "options": [] },
+                    { "header": "Notes", "question": "Notes?", "options": [] },
+                    { "header": "Ignored", "question": "Ignored?", "options": [] }
+                ]
+            }
+        }),
+        json!({
+            "type": "permission.asked",
+            "properties": {
+                "sessionID": "transport-session",
+                "requestID": "transport-permission",
+                "permission": "bash"
+            }
+        }),
+    ];
+    Sse::new(stream::iter(
+        events
+            .into_iter()
+            .map(|event| Ok(Event::default().data(event.to_string()))),
+    ))
     .keep_alive(KeepAlive::default())
 }
 
