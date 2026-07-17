@@ -53,13 +53,14 @@ export function validateAddProjectPath(value: string, platform: string): string 
 }
 
 const supportedGitCloneProtocols = new Set(["http:", "https:", "ssh:", "git:"]);
-const scpStyleGitCloneUrlPattern = /^[^@\s/:]+@[^:\s/]+:[^\s]+$/;
+const scpStyleGitCloneUrlPattern = /^(?:[^@\s/:]+@)?[^@:\s/]+:[^\s]+$/;
 
 export function validateGitCloneUrl(value: string): string | null {
   const url = value.trim();
   if (url.length === 0) return "Enter a Git repository URL.";
   if (url !== value || /\s/.test(url)) return "Enter a valid Git repository URL.";
-  if (scpStyleGitCloneUrlPattern.test(url)) return null;
+  if (isWindowsAbsolutePath(url)) return "Enter a valid Git repository URL.";
+  if (!url.includes("://") && scpStyleGitCloneUrlPattern.test(url)) return null;
 
   try {
     const parsed = new URL(url);
