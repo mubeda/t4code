@@ -120,7 +120,9 @@ describe("editor preference hooks", () => {
   });
 
   it("returns typed failures when the environment or editor is unavailable", async () => {
-    let container = await mount(<Harness environmentId={null} editors={[EditorId.make("vscode")]} />);
+    let container = await mount(
+      <Harness environmentId={null} editors={[EditorId.make("vscode")]} />,
+    );
     let result = (await clickOpen(container)) as { _tag: string; cause: Cause.Cause<unknown> };
     expect(result._tag).toBe("Failure");
     expect(Cause.squash(result.cause)).toMatchObject({
@@ -136,10 +138,7 @@ describe("editor preference hooks", () => {
 
   it("opens with the resolved editor and preserves command failures", async () => {
     const container = await mount(
-      <Harness
-        environmentId={EnvironmentId.make("local")}
-        editors={[EditorId.make("cursor")]}
-      />,
+      <Harness environmentId={EnvironmentId.make("local")} editors={[EditorId.make("cursor")]} />,
     );
     const success = (await clickOpen(container)) as { _tag: string; value?: unknown };
     expect(success).toMatchObject({ _tag: "Success", value: "cursor" });

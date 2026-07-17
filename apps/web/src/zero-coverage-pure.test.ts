@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { EnvironmentId, ThreadId } from "@t4code/contracts";
+import { type AssetCreateUrlResult, EnvironmentId, ThreadId } from "@t4code/contracts";
 import { scopeThreadRef } from "@t4code/client-runtime/environment";
 import {
   AVAILABLE_CONNECTION_STATE,
@@ -45,6 +45,8 @@ import {
 } from "./components/preview/previewActionBus";
 import { isPreviewFocused } from "./lib/previewFocus";
 import { createEnvironmentPresentationAtoms } from "@t4code/client-runtime/state/presentation";
+import type { AtomCommandResult } from "@t4code/client-runtime/state/runtime";
+import type { SupervisorConnectionState } from "@t4code/client-runtime/connection";
 
 const environmentId = EnvironmentId.make("environment-local");
 const threadId = ThreadId.make("thread-1");
@@ -118,9 +120,11 @@ describe("browser preview opening", () => {
   });
 
   it("handles unavailable runtime, asset failures, invalid URLs, and success", async () => {
-    const createAssetUrl = vi.fn(async () =>
-      AsyncResult.success({ relativeUrl: "/assets/file.html" }),
-    );
+    let assetResult: AtomCommandResult<AssetCreateUrlResult, Error> = AsyncResult.success({
+      relativeUrl: "/assets/file.html",
+      expiresAt: 0,
+    });
+    const createAssetUrl = vi.fn(async () => assetResult);
     const openPreview = vi.fn(async () => AsyncResult.success(snapshot as never));
 
     h.previewSupported = false;
@@ -132,12 +136,16 @@ describe("browser preview opening", () => {
       openPreview,
     });
     expect(unavailable._tag).toBe("Failure");
+    if (unavailable._tag !== "Failure") throw new Error("expected unavailable preview failure");
     expect(Cause.squash(unavailable.cause)).toBeInstanceOf(BrowserPreviewUnavailableError);
     expect(createAssetUrl).not.toHaveBeenCalled();
 
     h.previewSupported = true;
     const assetFailure = new Error("asset failed");
-    createAssetUrl.mockResolvedValueOnce(AsyncResult.failure(Cause.fail(assetFailure)));
+    assetResult = AsyncResult.failure(Cause.fail(assetFailure)) as AtomCommandResult<
+      AssetCreateUrlResult,
+      Error
+    >;
     const failed = await openFileInPreview({
       threadRef,
       filePath: "file.html",
@@ -146,9 +154,10 @@ describe("browser preview opening", () => {
       openPreview,
     });
     expect(failed._tag).toBe("Failure");
+    if (failed._tag !== "Failure") throw new Error("expected asset creation failure");
     expect(Cause.squash(failed.cause)).toBe(assetFailure);
 
-    createAssetUrl.mockResolvedValueOnce(AsyncResult.success({ relativeUrl: "http://[" }));
+    assetResult = AsyncResult.success({ relativeUrl: "http://[", expiresAt: 0 });
     const invalid = await openFileInPreview({
       threadRef,
       filePath: "file.html",
@@ -158,6 +167,7 @@ describe("browser preview opening", () => {
     });
     expect(invalid._tag).toBe("Failure");
 
+    assetResult = AsyncResult.success({ relativeUrl: "/assets/file.html", expiresAt: 0 });
     const success = await openFileInPreview({
       threadRef,
       filePath: "folder/file.html",
@@ -246,7 +256,9 @@ describe("preview browser UI helpers", () => {
     expect(isPreviewFocused()).toBe(true);
 
     const detached = document.createElement("button");
-    vi.spyOn(document, "activeElement", "get").mockReturnValueOnce(detached).mockReturnValueOnce(null);
+    vi.spyOn(document, "activeElement", "get")
+      .mockReturnValueOnce(detached)
+      .mockReturnValueOnce(null);
     expect(isPreviewFocused()).toBe(false);
     expect(isPreviewFocused()).toBe(false);
   });
@@ -362,7 +374,12 @@ describe("environment presentation atoms", () => {
       isReady: true,
       entries: new Map([[environmentId, entry("Fallback")]]),
     });
-    const stateAtom = Atom.make(AsyncResult.failure(Cause.fail(new Error("offline"))));
+    const stateAtom = Atom.make(
+      AsyncResult.failure(Cause.fail(new Error("offline"))) as AsyncResult.AsyncResult<
+        SupervisorConnectionState,
+        Error
+      >,
+    );
     const configAtom = Atom.make(null);
     const atoms = createEnvironmentPresentationAtoms({
       catalogValueAtom: catalogAtom,

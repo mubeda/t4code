@@ -162,8 +162,6 @@ describe("resolveMarkdownFileLinkTarget", () => {
   });
 
   it("preserves malformed percent escapes instead of throwing", () => {
-    expect(resolveMarkdownFileLinkTarget("file:///tmp/bad%E0%A4%A.md")).toBe(
-      "/tmp/bad%E0%A4%A.md",
-    );
+    expect(resolveMarkdownFileLinkTarget("file:///tmp/bad%E0%A4%A.md")).toBe("/tmp/bad%E0%A4%A.md");
   });
 });

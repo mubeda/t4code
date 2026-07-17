@@ -48,10 +48,7 @@ vi.mock("effect/unstable/reactivity", async (importOriginal) => {
   const actual = await importOriginal<typeof import("effect/unstable/reactivity")>();
   const make = (value: unknown): TestAtom => {
     const atom: TestAtom = {
-      read:
-        typeof value === "function"
-          ? (value as TestAtom["read"])
-          : () => value,
+      read: typeof value === "function" ? (value as NonNullable<TestAtom["read"]>) : () => value,
       pipe: (...operations) => operations.reduce((current, operation) => operation(current), atom),
     };
     return atom;
@@ -206,10 +203,7 @@ describe("primary server state projections", () => {
       ]),
     });
     h.atomValues.set(`config:${environmentId}`, config);
-    h.atomValues.set(
-      `config-projection:${environmentId}`,
-      AsyncResult.success({ latestEvent }),
-    );
+    h.atomValues.set(`config-projection:${environmentId}`, AsyncResult.success({ latestEvent }));
     h.atomValues.set(`welcome:${environmentId}`, AsyncResult.success(welcome));
 
     expect(readAtom(primaryEnvironmentIdAtom as unknown as TestAtom)).toBe(environmentId);
@@ -345,13 +339,9 @@ describe("query and asset adapters", () => {
     h.atomValues.set("query", AsyncResult.failure(Cause.fail(new Error("Request failed"))));
     expect(useEnvironmentQuery(queryAtom as never).error).toBe("Request failed");
     h.atomValues.set("query", AsyncResult.failure(Cause.fail(new Error("   "))));
-    expect(useEnvironmentQuery(queryAtom as never).error).toBe(
-      "The environment request failed.",
-    );
+    expect(useEnvironmentQuery(queryAtom as never).error).toBe("The environment request failed.");
     h.atomValues.set("query", AsyncResult.failure(Cause.fail("plain failure")));
-    expect(useEnvironmentQuery(queryAtom as never).error).toBe(
-      "The environment request failed.",
-    );
+    expect(useEnvironmentQuery(queryAtom as never).error).toBe("The environment request failed.");
   });
 
   it("resolves single and batched asset URLs across unavailable and failed states", () => {

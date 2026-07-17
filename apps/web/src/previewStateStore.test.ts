@@ -529,9 +529,7 @@ describe("previewStateStore (single-tab)", () => {
       zoomFactor: 1,
       controller: "human",
     });
-    reconcilePreviewServerSessions(ref, [
-      { ...latest, updatedAt: "2026-01-01T00:00:01.000Z" },
-    ]);
+    reconcilePreviewServerSessions(ref, [{ ...latest, updatedAt: "2026-01-01T00:00:01.000Z" }]);
     expect(readThreadPreviewState(ref).sessions[latest.tabId]).toEqual(latest);
 
     applyPreviewDesktopState(ref, latest.tabId, null);

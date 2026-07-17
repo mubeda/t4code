@@ -162,7 +162,9 @@ describe("buildBootstrapInput", () => {
       1_500,
     );
 
-    expect(result.text).toContain("Please inspect these.\n[Attached images: one.png, two.png, three.png (+1 more)]");
+    expect(result.text).toContain(
+      "Please inspect these.\n[Attached images: one.png, two.png, three.png (+1 more)]",
+    );
   });
 
   it("renders empty and text-only messages without attachment summaries", () => {
@@ -197,7 +199,9 @@ describe("buildBootstrapInput", () => {
   });
 
   it("handles sparse transcripts and invalid or fractional budgets", () => {
-    const sparse = new Array(2) as Parameters<typeof buildBootstrapInput>[0];
+    const sparseEntries: unknown[] = [];
+    sparseEntries.length = 2;
+    const sparse = sparseEntries as Parameters<typeof buildBootstrapInput>[0];
     expect(buildBootstrapInput(sparse, "latest", 100)).toEqual({
       text: "latest",
       includedCount: 0,

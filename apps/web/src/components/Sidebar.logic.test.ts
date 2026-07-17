@@ -1100,7 +1100,9 @@ describe("sidebar logic defensive branch coverage", () => {
       interactionMode: "default" as const,
       session: null,
     };
-    expect(hasUnseenCompletion({ ...base, latestTurn: null, lastVisitedAt: "invalid" })).toBe(false);
+    expect(hasUnseenCompletion({ ...base, latestTurn: null, lastVisitedAt: "invalid" })).toBe(
+      false,
+    );
     expect(
       hasUnseenCompletion({
         ...base,
@@ -1144,9 +1146,9 @@ describe("sidebar logic defensive branch coverage", () => {
       }),
     ).toEqual({ envMode: "local" });
     const items = [{ id: "a" }, { id: "b" }];
-    expect(
-      orderItemsByPreferredIds({ items, preferredIds: [], getId: (item) => item.id }),
-    ).toEqual(items);
+    expect(orderItemsByPreferredIds({ items, preferredIds: [], getId: (item) => item.id })).toEqual(
+      items,
+    );
     expect(
       orderItemsByPreferredIds({
         items,

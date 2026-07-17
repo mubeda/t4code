@@ -214,9 +214,9 @@ describe("RelayEnvironmentDiscovery", () => {
     const token = (payload: object) =>
       `${Buffer.from("{}").toString("base64url")}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
 
-    expect(Option.getOrNull(RelayEnvironmentDiscovery.relayAccountId(token({ sub: "user-1" })))).toBe(
-      "user-1",
-    );
+    expect(
+      Option.getOrNull(RelayEnvironmentDiscovery.relayAccountId(token({ sub: "user-1" }))),
+    ).toBe("user-1");
     expect(Option.isNone(RelayEnvironmentDiscovery.relayAccountId(token({})))).toBe(true);
     expect(Option.isNone(RelayEnvironmentDiscovery.relayAccountId(token({ sub: "" })))).toBe(true);
     expect(Option.isNone(RelayEnvironmentDiscovery.relayAccountId("not-a-token"))).toBe(true);
@@ -271,45 +271,47 @@ describe("RelayEnvironmentDiscovery", () => {
     }),
   );
 
-  it.effect("deduplicates offline reports, clears them on recovery, and tracks account changes", () =>
-    Effect.gen(function* () {
-      const harness = yield* makeHarness();
-      yield* Ref.set(harness.clerkToken, relayToken("user-1"));
-      yield* Effect.gen(function* () {
-        const discovery = yield* RelayEnvironmentDiscovery.RelayEnvironmentDiscovery;
-        const requests = yield* Ref.get(harness.statusRequests);
-        yield* Deferred.succeed(
-          requests.get(environments[0]!.environmentId)!,
-          status(environments[0]!, "offline"),
-        );
-        yield* Deferred.succeed(
-          requests.get(environments[1]!.environmentId)!,
-          status(environments[1]!, "online"),
-        );
+  it.effect(
+    "deduplicates offline reports, clears them on recovery, and tracks account changes",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* Ref.set(harness.clerkToken, relayToken("user-1"));
+        yield* Effect.gen(function* () {
+          const discovery = yield* RelayEnvironmentDiscovery.RelayEnvironmentDiscovery;
+          const requests = yield* Ref.get(harness.statusRequests);
+          yield* Deferred.succeed(
+            requests.get(environments[0]!.environmentId)!,
+            status(environments[0]!, "offline"),
+          );
+          yield* Deferred.succeed(
+            requests.get(environments[1]!.environmentId)!,
+            status(environments[1]!, "online"),
+          );
 
-        yield* discovery.refresh;
-        yield* discovery.refresh;
+          yield* discovery.refresh;
+          yield* discovery.refresh;
 
-        yield* Ref.set(harness.clerkToken, relayToken("user-2"));
-        yield* discovery.refresh;
+          yield* Ref.set(harness.clerkToken, relayToken("user-2"));
+          yield* discovery.refresh;
 
-        const recovered = yield* Deferred.make<
-          RelayEnvironmentStatusResponse,
-          ManagedRelay.ManagedRelayClientError
-        >();
-        yield* Deferred.succeed(recovered, status(environments[0]!, "online"));
-        yield* Ref.update(harness.statusRequests, (current) =>
-          new Map(current).set(environments[0]!.environmentId, recovered),
-        );
-        yield* discovery.refresh;
+          const recovered = yield* Deferred.make<
+            RelayEnvironmentStatusResponse,
+            ManagedRelay.ManagedRelayClientError
+          >();
+          yield* Deferred.succeed(recovered, status(environments[0]!, "online"));
+          yield* Ref.update(harness.statusRequests, (current) =>
+            new Map(current).set(environments[0]!.environmentId, recovered),
+          );
+          yield* discovery.refresh;
 
-        expect(
-          (yield* SubscriptionRef.get(discovery.state)).environments.get(
-            environments[0]!.environmentId,
-          )?.availability,
-        ).toBe("online");
-      }).pipe(Effect.provide(harness.layer));
-    }),
+          expect(
+            (yield* SubscriptionRef.get(discovery.state)).environments.get(
+              environments[0]!.environmentId,
+            )?.availability,
+          ).toBe("online");
+        }).pipe(Effect.provide(harness.layer));
+      }),
   );
 
   it.effect("stays offline and ignores wakeups before the first refresh", () =>

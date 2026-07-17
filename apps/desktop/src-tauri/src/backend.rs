@@ -446,13 +446,16 @@ impl BackendSupervisor {
             .last_error = Some(error.into());
     }
 
-    pub async fn start_default(&self, app: AppHandle) -> Result<BackendRunConfig, String> {
+    pub async fn start_default<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+    ) -> Result<BackendRunConfig, String> {
         self.start_default_with_reason(app, "started").await
     }
 
-    async fn start_default_with_reason(
+    async fn start_default_with_reason<R: Runtime>(
         &self,
-        app: AppHandle,
+        app: AppHandle<R>,
         reason: &'static str,
     ) -> Result<BackendRunConfig, String> {
         let mut plans = default_launch_plans(&app)?;
@@ -478,9 +481,9 @@ impl BackendSupervisor {
         Ok(primary_config)
     }
 
-    pub async fn restart_default_if_active(
+    pub async fn restart_default_if_active<R: Runtime>(
         &self,
-        app: AppHandle,
+        app: AppHandle<R>,
     ) -> Result<Option<BackendRunConfig>, String> {
         let is_active = {
             let state = self
@@ -674,8 +677,8 @@ impl BackendSupervisor {
     }
 }
 
-fn emit_backend_ready(
-    app: &AppHandle,
+fn emit_backend_ready<R: Runtime>(
+    app: &AppHandle<R>,
     reason: &'static str,
     bootstraps: Vec<Value>,
 ) -> Result<(), String> {
@@ -2090,6 +2093,20 @@ mod tests {
         assert!(!supervisor.restart_still_desired("missing"));
 
         let plan = BackendLaunchPlan::local(PathBuf::from("C:/state"), local_test_config(4_250));
+        supervisor.schedule_restart(
+            plan.clone(),
+            BackendReadinessConfig::default(),
+            BackendRestartConfig::default(),
+            "missing slot".to_string(),
+        );
+        assert!(
+            supervisor
+                .state
+                .lock()
+                .expect("backend supervisor mutex poisoned")
+                .slots
+                .is_empty()
+        );
         let mut state = supervisor
             .state
             .lock()
@@ -2433,6 +2450,40 @@ mod tests {
                 .ends_with("server-child-wsl-Ubuntu_Test.log")
         );
         assert!(!default_launch_plans(handle).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn mock_runtime_starts_restarts_and_stops_the_default_backend() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let mut context = mock_context(noop_assets());
+        context.config_mut().identifier =
+            format!("com.t4code.backend-tests-{}", std::process::id());
+        let app = mock_builder()
+            .build(context)
+            .expect("mock Tauri app");
+        let base_dir = desktop_base_dir(app.handle()).expect("desktop base directory");
+        let _ = fs::remove_dir_all(&base_dir);
+        let supervisor = BackendSupervisor::new();
+
+        let started = supervisor
+            .start_default(app.handle().clone())
+            .await
+            .expect("default backend should start");
+        assert_ne!(started.port, 0);
+
+        let restarted = supervisor
+            .restart_default_if_active(app.handle().clone())
+            .await
+            .expect("default backend should restart")
+            .expect("active backend should produce a replacement config");
+        assert_ne!(restarted.port, 0);
+
+        supervisor
+            .stop(BackendShutdownConfig::default())
+            .await
+            .expect("default backend should stop");
+        let _ = fs::remove_dir_all(base_dir);
     }
 
     #[test]
@@ -2830,6 +2881,41 @@ mod tests {
         )
         .await
         .expect("already exited child should be accepted");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_managed_backend_terminates_a_live_child() {
+        let process = Command::new("sh")
+            .args(["-c", "exec sleep 30"])
+            .spawn()
+            .expect("fixture child should start");
+        let child = ManagedBackendChild::new(9, local_test_config(1), process);
+        let observed_child = child.clone();
+        assert_eq!(
+            format!("{child:?}"),
+            "ManagedBackendChild { run_id: 9, .. }"
+        );
+
+        stop_managed_backend(
+            ManagedBackend::Child(Box::new(child)),
+            BackendShutdownConfig {
+                timeout: Duration::from_secs(2),
+            },
+        )
+        .await
+        .expect("live child should stop after soft termination");
+
+        assert!(observed_child.stop_requested.load(Ordering::SeqCst));
+        assert!(
+            observed_child
+                .child
+                .lock()
+                .await
+                .try_wait()
+                .expect("child status should remain inspectable")
+                .is_some()
+        );
     }
 
     #[cfg(windows)]

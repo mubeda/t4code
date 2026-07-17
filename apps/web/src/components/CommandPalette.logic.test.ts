@@ -177,7 +177,6 @@ describe("buildThreadActionItems", () => {
             id: ThreadId.make("thread-context"),
             title: "Context thread",
             branch: "feature/context",
-            latestUserMessageAt: null,
             updatedAt: undefined as never,
             createdAt: "2026-03-25T11:00:00.000Z",
           }),

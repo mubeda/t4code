@@ -127,7 +127,7 @@ describe("add project shared logic", () => {
         {
           kind: "github",
           label: "GitHub",
-          status: "unavailable",
+          status: "missing",
           installHint: "Install gh",
           version: Option.none(),
           detail: Option.none(),

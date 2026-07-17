@@ -213,13 +213,11 @@ describe("terminalContext", () => {
     expect(buildTerminalContextPreviewTitle([])).toBeNull();
     expect(buildTerminalContextPreviewTitle([makeContext({ text: "one" })])).toContain("one");
     expect(
-      buildTerminalContextPreviewTitle([
-        makeContext({ text: "one\ntwo\nthree\nfour" }),
-      ]),
+      buildTerminalContextPreviewTitle([makeContext({ text: "one\ntwo\nthree\nfour" })]),
     ).toContain("...");
-    expect(
-      buildTerminalContextPreviewTitle([makeContext({ text: "x".repeat(220) })]),
-    ).toContain(`${"x".repeat(177)}...`);
+    expect(buildTerminalContextPreviewTitle([makeContext({ text: "x".repeat(220) })])).toContain(
+      `${"x".repeat(177)}...`,
+    );
   });
 
   it("normalizes invalid selections and separates multiple context blocks", () => {
@@ -258,9 +256,7 @@ describe("terminalContext", () => {
       contexts: [{ header: "Terminal 1 line 1", body: "" }],
     });
     expect(
-      extractTrailingTerminalContexts(
-        "Prompt\n<terminal_context>\nnoise\n</terminal_context>",
-      ),
+      extractTrailingTerminalContexts("Prompt\n<terminal_context>\nnoise\n</terminal_context>"),
     ).toMatchObject({ contextCount: 0, previewTitle: null, contexts: [] });
   });
 

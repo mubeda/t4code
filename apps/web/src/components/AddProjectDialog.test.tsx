@@ -353,7 +353,7 @@ describe("AddProjectDialog mounted interactions", () => {
     await mount(<AddProjectDialog open onOpenChange={onOpenChange} />);
     expect(document.body.textContent).toContain("Scanning pending...");
 
-    const folderInput = document.querySelector<HTMLInputElement>('input:not([placeholder])');
+    const folderInput = document.querySelector<HTMLInputElement>("input:not([placeholder])");
     expect(folderInput).not.toBeNull();
     await changeInput(folderInput!, "/repos/pending/");
     await click(buttonWithText("Up"));

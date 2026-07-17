@@ -64,7 +64,10 @@ vi.mock("./ui/sidebar", () => {
     SidebarGroup: Container,
     SidebarMenu: Container,
     SidebarMenuButton: ({ isActive, size: _size, ...props }: Record<string, unknown>) => (
-      <button data-active={String(Boolean(isActive))} {...(props as ComponentPropsWithoutRef<"button">)} />
+      <button
+        data-active={String(Boolean(isActive))}
+        {...(props as ComponentPropsWithoutRef<"button">)}
+      />
     ),
     SidebarMenuItem: Container,
     SidebarProvider: ({
@@ -94,7 +97,10 @@ vi.mock("./ui/tooltip", () => ({
   Tooltip: ({ children }: { children?: ReactNode }) => <>{children}</>,
   TooltipPopup: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   TooltipTrigger: ({ children, render }: { children?: ReactNode; render?: ReactNode }) => (
-    <>{render ?? children}{render ? children : null}</>
+    <>
+      {render ?? children}
+      {render ? children : null}
+    </>
   ),
 }));
 
@@ -136,7 +142,13 @@ vi.mock("./ui/empty", () => {
 });
 
 vi.mock("./ui/sheet", () => ({
-  Sheet: ({ children, onOpenChange }: { children?: ReactNode; onOpenChange: (open: boolean) => void }) => {
+  Sheet: ({
+    children,
+    onOpenChange,
+  }: {
+    children?: ReactNode;
+    onOpenChange: (open: boolean) => void;
+  }) => {
     h.sheetOnOpenChange = onOpenChange;
     return <div>{children}</div>;
   },
@@ -160,13 +172,26 @@ vi.mock("./ui/select", () => {
 });
 
 vi.mock("./ui/menu", () => ({
-  Menu: ({ children, onOpenChange }: { children?: ReactNode; onOpenChange?: (open: boolean) => void }) => {
+  Menu: ({
+    children,
+    onOpenChange,
+  }: {
+    children?: ReactNode;
+    onOpenChange?: (open: boolean) => void;
+  }) => {
     h.menuOnOpenChange = onOpenChange ?? null;
     return <div>{children}</div>;
   },
-  MenuItem: ({ children, closeOnClick: _closeOnClick, variant: _variant, ...props }: Record<string, unknown>) => {
+  MenuItem: ({
+    children,
+    closeOnClick: _closeOnClick,
+    variant: _variant,
+    ...props
+  }: Record<string, unknown>) => {
     h.menuItems.push({ children, ...props });
-    return <button {...(props as ComponentPropsWithoutRef<"button">)}>{children as ReactNode}</button>;
+    return (
+      <button {...(props as ComponentPropsWithoutRef<"button">)}>{children as ReactNode}</button>
+    );
   },
   MenuPopup: ({ children, anchor: _anchor, ...props }: Record<string, unknown>) => (
     <div {...(props as ComponentPropsWithoutRef<"div">)}>{children as ReactNode}</div>
@@ -194,10 +219,8 @@ vi.mock("@pierre/diffs/react", () => ({
 }));
 
 vi.mock("@pierre/diffs/worker/worker.js?worker", () => ({
-  default: class MockDiffWorker {
-    constructor() {
-      if (h.workerThrows) throw new Error("worker unavailable");
-    }
+  default: function MockDiffWorker() {
+    if (h.workerThrows) throw new Error("worker unavailable");
   },
 }));
 
@@ -343,10 +366,7 @@ describe("small composer surfaces", () => {
     await rerender(mounted, <ThreadErrorBanner error="Provider failed" />);
     expect(mounted.container.textContent).toContain("Provider failed");
     expect(mounted.container.querySelector("button")).toBeNull();
-    await rerender(
-      mounted,
-      <ThreadErrorBanner error="Provider failed" onDismiss={onDismiss} />,
-    );
+    await rerender(mounted, <ThreadErrorBanner error="Provider failed" onDismiss={onDismiss} />);
     await click(mounted.container.querySelector("button")!);
     expect(onDismiss).toHaveBeenCalledOnce();
   });
@@ -423,7 +443,7 @@ describe("file annotations and context menus", () => {
     expect(onCancel).toHaveBeenCalledTimes(2);
 
     await act(async () => {
-      (h.textareaProps?.onChange as (event: { target: { value: string } }) => void)({
+      (h.textareaProps!.onChange as (event: { target: { value: string } }) => void)({
         target: { value: "  Please change this.  " },
       });
     });
@@ -544,9 +564,8 @@ describe("preview empty and menu surfaces", () => {
       />,
     );
     expect(mounted.container.textContent).toContain("100%");
-    const hardReloadWithoutTab = h.menuItems.find(
-      (item) => item.children === "Hard reload",
-    )?.onClick as (() => void) | undefined;
+    const hardReloadWithoutTab = h.menuItems.find((item) => item.children === "Hard reload")
+      ?.onClick as (() => void) | undefined;
     hardReloadWithoutTab?.();
     expect(previewBridgeMock.hardReload).not.toHaveBeenCalled();
 
@@ -634,7 +653,7 @@ describe("layout and navigation surfaces", () => {
         />,
       );
     }
-    (h.selectProps?.onValueChange as (value: string) => void)("worktree");
+    (h.selectProps!.onValueChange as (value: string) => void)("worktree");
     expect(onEnvModeChange).toHaveBeenCalledWith("worktree");
   });
 
@@ -699,11 +718,11 @@ describe("layout and navigation surfaces", () => {
 
   it("handles desktop menu navigation, shortcut toggles, and resize acceptance", async () => {
     const unsubscribe = vi.fn();
-    let menuAction: ((action: string) => void) | null = null;
+    const menuActions: { current?: (action: string) => void } = {};
     Object.assign(window, {
       desktopBridge: {
         onMenuAction: (listener: (action: string) => void) => {
-          menuAction = listener;
+          menuActions.current = listener;
           return unsubscribe;
         },
       },
@@ -723,8 +742,8 @@ describe("layout and navigation surfaces", () => {
     ];
     const mounted = await mount(<AppSidebarLayout>Workspace</AppSidebarLayout>);
     expect(mounted.container.textContent).toContain("Workspace");
-    menuAction?.("unknown");
-    menuAction?.("open-settings");
+    menuActions.current?.("unknown");
+    menuActions.current?.("open-settings");
     expect(h.navigate).toHaveBeenCalledWith({ to: "/settings" });
 
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "x" }));
@@ -732,8 +751,11 @@ describe("layout and navigation surfaces", () => {
     expect(h.toggleSidebar).toHaveBeenCalledOnce();
 
     const shouldAcceptWidth = (
-      h.sidebarProps?.resizable as {
-        shouldAcceptWidth: (input: { nextWidth: number; wrapper: { clientWidth: number } }) => boolean;
+      h.sidebarProps!.resizable as {
+        shouldAcceptWidth: (input: {
+          nextWidth: number;
+          wrapper: { clientWidth: number };
+        }) => boolean;
       }
     ).shouldAcceptWidth;
     expect(shouldAcceptWidth({ nextWidth: 300, wrapper: { clientWidth: 1_000 } })).toBe(true);
@@ -760,20 +782,21 @@ describe("diff worker provider", () => {
     );
     await act(async () => Promise.resolve());
     expect(mounted.container.textContent).toContain("Diff content");
-    expect((h.workerProviderProps?.poolOptions as { poolSize: number }).poolSize).toBe(6);
+    expect((h.workerProviderProps!.poolOptions as { poolSize: number }).poolSize).toBe(6);
     expect(setRenderOptions).toHaveBeenCalledWith({ theme: "pierre-dark", marker: "keep" });
 
-    const workerFactory = (h.workerProviderProps?.poolOptions as { workerFactory: () => unknown })
+    const workerFactory = (h.workerProviderProps!.poolOptions as { workerFactory: () => unknown })
       .workerFactory;
     expect(workerFactory()).toBeDefined();
     h.workerThrows = true;
     expect(workerFactory).toThrow(DiffWorkerError);
-    expect(() =>
-      new DiffWorkerError({
-        operation: "create-worker",
-        themeName: "pierre-dark",
-        cause: new Error("failure"),
-      }).message,
+    expect(
+      () =>
+        new DiffWorkerError({
+          operation: "create-worker",
+          themeName: "pierre-dark",
+          cause: new Error("failure"),
+        }).message,
     ).not.toThrow();
   });
 

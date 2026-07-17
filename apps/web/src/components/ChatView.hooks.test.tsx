@@ -1415,9 +1415,7 @@ describe("ChatView keydown shortcuts", () => {
     );
     expect(shouldTypeToFocusComposer(makeKeyEvent({ key: "Enter" }) as never)).toBe(false);
     expect(
-      shouldTypeToFocusComposer(
-        makeKeyEvent({ key: "a", path: [new FakeElement(true)] }) as never,
-      ),
+      shouldTypeToFocusComposer(makeKeyEvent({ key: "a", path: [new FakeElement(true)] }) as never),
     ).toBe(false);
     const interactive = new FakeElement(false);
     interactive.closest = (selector: string) => (selector.includes("button") ? interactive : null);
@@ -2196,9 +2194,7 @@ describe("ChatView project script handlers", () => {
     await (header["onDeleteProjectScript"] as (id: string) => Promise<unknown>)("missing");
 
     expect(
-      h.toasts.some(
-        (toast) => (toast as { title?: string }).title === 'Deleted action "Unknown"',
-      ),
+      h.toasts.some((toast) => (toast as { title?: string }).title === 'Deleted action "Unknown"'),
     ).toBe(true);
   });
 
@@ -2217,9 +2213,11 @@ describe("ChatView project script handlers", () => {
     };
 
     expect(
-      await (header["onAddProjectScript"] as (value: Record<string, unknown>) => Promise<{
-        _tag: string;
-      }>)(input),
+      await (
+        header["onAddProjectScript"] as (value: Record<string, unknown>) => Promise<{
+          _tag: string;
+        }>
+      )(input),
     ).toMatchObject({ _tag: "Success" });
     expect(
       await (
@@ -2515,10 +2513,7 @@ describe("ChatView send flows", () => {
         : [],
     );
     expect(messages).toEqual(
-      expect.arrayContaining([
-        "Failed to send message.",
-        "Failed to interrupt the current turn.",
-      ]),
+      expect.arrayContaining(["Failed to send message.", "Failed to interrupt the current turn."]),
     );
   });
 

@@ -307,12 +307,12 @@ describe("desktop update defensive branch coverage", () => {
   });
 
   it("formats every tooltip fallback", () => {
-    expect(
-      getDesktopUpdateButtonTooltip({ ...baseState, status: "available" }),
-    ).toContain("Update available ready");
-    expect(
-      getDesktopUpdateButtonTooltip({ ...baseState, status: "downloading" }),
-    ).toBe("Downloading update");
+    expect(getDesktopUpdateButtonTooltip({ ...baseState, status: "available" })).toContain(
+      "Update available ready",
+    );
+    expect(getDesktopUpdateButtonTooltip({ ...baseState, status: "downloading" })).toBe(
+      "Downloading update",
+    );
     expect(
       getDesktopUpdateButtonTooltip({
         ...baseState,
@@ -320,15 +320,13 @@ describe("desktop update defensive branch coverage", () => {
         availableVersion: "1.1.0",
       }),
     ).toContain("1.1.0 downloaded");
-    expect(
-      getDesktopUpdateButtonTooltip({ ...baseState, status: "downloaded" }),
-    ).toContain("Update ready downloaded");
+    expect(getDesktopUpdateButtonTooltip({ ...baseState, status: "downloaded" })).toContain(
+      "Update ready downloaded",
+    );
     expect(
       getDesktopUpdateButtonTooltip({ ...baseState, status: "error", message: "Offline" }),
     ).toBe("Offline");
-    expect(getDesktopUpdateButtonTooltip({ ...baseState, status: "error" })).toBe(
-      "Update failed",
-    );
+    expect(getDesktopUpdateButtonTooltip({ ...baseState, status: "error" })).toBe("Update failed");
   });
 
   it("rejects blank action errors and distinguishes highlighted retry contexts", () => {

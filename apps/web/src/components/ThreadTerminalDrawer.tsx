@@ -110,10 +110,7 @@ export function runtimeEnvSignature(runtimeEnv: Record<string, string> | undefin
   );
 }
 
-export function normalizeComputedColor(
-  value: string | null | undefined,
-  fallback: string,
-): string {
+export function normalizeComputedColor(value: string | null | undefined, fallback: string): string {
   const normalizedValue = value?.trim().toLowerCase();
   if (
     !normalizedValue ||

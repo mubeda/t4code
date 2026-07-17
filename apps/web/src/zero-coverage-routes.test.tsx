@@ -4,6 +4,7 @@ import { EnvironmentId, ThreadId } from "@t4code/contracts";
 import { act, type ComponentPropsWithoutRef, type ReactElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
+import * as DateTime from "effect/DateTime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const h = vi.hoisted(() => ({
@@ -53,7 +54,11 @@ vi.mock("./components/settings/SettingsPanels", () => ({
 }));
 
 vi.mock("./components/ui/button", () => ({
-  Button: ({ variant: _variant, size: _size, ...props }: ComponentPropsWithoutRef<"button"> & {
+  Button: ({
+    variant: _variant,
+    size: _size,
+    ...props
+  }: ComponentPropsWithoutRef<"button"> & {
     variant?: string;
     size?: string;
   }) => <button {...props} />,
@@ -218,7 +223,8 @@ afterEach(async () => {
 
 describe("settings and pairing routes", () => {
   it("enforces route auth and canonical settings redirects", async () => {
-    const beforeLoad = SettingsRoute.beforeLoad as (input: any) => Promise<void>;
+    const beforeLoad = (SettingsRoute as unknown as { beforeLoad: (input: any) => Promise<void> })
+      .beforeLoad;
     await expect(
       beforeLoad({
         context: { authGateState: { status: "pairing" } },
@@ -246,7 +252,7 @@ describe("settings and pairing routes", () => {
   });
 
   it("restores defaults and routes Escape through history or home", async () => {
-    const Component = SettingsRoute.component as () => ReactElement;
+    const Component = (SettingsRoute as unknown as { component: () => ReactElement }).component;
     h.restoreLabels = ["Theme"];
     h.routeContext = { location: { pathname: "/settings/general" } };
     const mounted = await mount(<Component />);
@@ -285,7 +291,8 @@ describe("settings and pairing routes", () => {
   });
 
   it("selects hosted, authenticated, pending, and regular pairing states", async () => {
-    const beforeLoad = PairRoute.beforeLoad as (input: any) => Promise<unknown>;
+    const beforeLoad = (PairRoute as unknown as { beforeLoad: (input: any) => Promise<unknown> })
+      .beforeLoad;
     await expect(
       beforeLoad({ context: { authGateState: { status: "hosted-pairing" } } }),
     ).resolves.toEqual({ authGateState: { status: "hosted-pairing" } });
@@ -296,7 +303,7 @@ describe("settings and pairing routes", () => {
       beforeLoad({ context: { authGateState: { status: "pairing", auth: "auth" } } }),
     ).resolves.toEqual({ authGateState: { status: "pairing", auth: "auth" } });
 
-    const Component = PairRoute.component as () => ReactElement | null;
+    const Component = (PairRoute as unknown as { component: () => ReactElement | null }).component;
     h.routeContext = { authGateState: null };
     const mounted = await mount(<Component />);
     expect(mounted.container.innerHTML).toBe("");
@@ -311,7 +318,8 @@ describe("settings and pairing routes", () => {
     await click(mounted.container.querySelector("button")!);
     expect(h.navigate).toHaveBeenCalledWith({ to: "/", replace: true });
 
-    const Pending = PairRoute.pendingComponent as () => ReactElement;
+    const Pending = (PairRoute as unknown as { pendingComponent: () => ReactElement })
+      .pendingComponent;
     await rerender(mounted, <Pending />);
     expect(mounted.container.textContent).toContain("Pairing pending");
   });
@@ -395,10 +403,12 @@ describe("center terminal and preview surfaces", () => {
     ];
     await rerender(mounted, renderPanel());
     expect(h.drawerProps).toMatchObject({ cwd: "/custom", worktreePath: "/custom-tree" });
-    (h.drawerProps?.onCloseTerminal as () => void)();
-    (h.drawerProps?.onAddTerminalContext as (value: unknown) => void)({ terminalId: "terminal-1" });
-    (h.drawerProps?.onActiveTerminalChange as () => void)();
-    (h.drawerProps?.onHeightChange as () => void)();
+    (h.drawerProps!.onCloseTerminal as () => void)();
+    (h.drawerProps!.onAddTerminalContext as (value: unknown) => void)({
+      terminalId: "terminal-1",
+    });
+    (h.drawerProps!.onActiveTerminalChange as () => void)();
+    (h.drawerProps!.onHeightChange as () => void)();
     expect(onClose).toHaveBeenCalledOnce();
     expect(onAddTerminalContext).toHaveBeenCalledOnce();
   });
@@ -459,13 +469,13 @@ describe("center terminal and preview surfaces", () => {
 
 describe("browser surface and progress lifecycles", () => {
   it("presents measured browser bounds, reacts to observers, and releases leases", async () => {
-    let resizeCallback: (() => void) | null = null;
+    const resizeCallbacks: { current?: () => void } = {};
     const disconnect = vi.fn();
     vi.stubGlobal(
       "ResizeObserver",
       class {
         constructor(callback: () => void) {
-          resizeCallback = callback;
+          resizeCallbacks.current = callback;
         }
         observe() {}
         disconnect() {
@@ -485,11 +495,8 @@ describe("browser surface and progress lifecycles", () => {
       toJSON: () => ({}),
     });
     const mounted = await mount(<BrowserSurfaceSlot tabId="tab-1" visible className="slot" />);
-    expect(h.lease.present).toHaveBeenCalledWith(
-      { x: 1, y: 3, width: 300, height: 200 },
-      true,
-    );
-    resizeCallback?.();
+    expect(h.lease.present).toHaveBeenCalledWith({ x: 1, y: 3, width: 300, height: 200 }, true);
+    resizeCallbacks.current?.();
     window.dispatchEvent(new Event("resize"));
     window.dispatchEvent(new Event("scroll"));
     expect(h.lease.present.mock.calls.length).toBeGreaterThan(3);
@@ -526,9 +533,9 @@ describe("browser surface and progress lifecycles", () => {
 describe("command palette and provider usage presentation", () => {
   it("provides command-palette actions and reads live DOM state", async () => {
     const open = vi.fn();
-    let captured: (() => void) | null = null;
+    const captured: { current?: () => void } = {};
     const Consumer = () => {
-      captured = useOpenAddProjectCommandPalette();
+      captured.current = useOpenAddProjectCommandPalette();
       return null;
     };
     const mounted = await mount(
@@ -536,7 +543,7 @@ describe("command palette and provider usage presentation", () => {
         <Consumer />
       </OpenAddProjectCommandPaletteProvider>,
     );
-    captured?.();
+    captured.current?.();
     expect(open).toHaveBeenCalledOnce();
     expect(isCommandPaletteOpen()).toBe(false);
     const marker = document.createElement("div");
@@ -554,7 +561,14 @@ describe("command palette and provider usage presentation", () => {
   it("renders provider errors, empty states, and clamped usage bars", async () => {
     const mounted = await mount(
       <ProviderUsagePopover
-        viewModel={{ provider: "codex", status: "Ready", error: null, windows: [] }}
+        viewModel={{
+          provider: "codex",
+          status: "idle",
+          compactLabel: "--",
+          error: null,
+          updatedAt: DateTime.makeUnsafe("2026-07-16T00:00:00.000Z"),
+          windows: [],
+        }}
       />,
     );
     expect(mounted.container.textContent).toContain("Usage windows are unavailable");
@@ -563,31 +577,38 @@ describe("command palette and provider usage presentation", () => {
       <ProviderUsagePopover
         viewModel={{
           provider: "claude",
-          status: "Limited",
+          status: "error",
+          compactLabel: "--",
+          updatedAt: DateTime.makeUnsafe("2026-07-16T00:00:00.000Z"),
           error: "Usage unavailable",
           windows: [
             {
-              key: "short",
+              key: "session",
               label: "5 hours",
               remainingLabel: "0%",
               usedPercent: 150,
               barColorClass: "bar",
+              resetsAt: null,
+              resetDescription: null,
             },
             {
-              key: "long",
+              key: "weekly",
               label: "7 days",
               remainingLabel: "100%",
               usedPercent: -20,
               barColorClass: "bar",
+              resetsAt: null,
+              resetDescription: null,
             },
           ],
         }}
       />,
     );
     expect(mounted.container.textContent).toContain("Usage unavailable");
-    expect(Array.from(mounted.container.querySelectorAll<HTMLElement>(".bar")).map((bar) => bar.style.width)).toEqual([
-      "0%",
-      "100%",
-    ]);
+    expect(
+      Array.from(mounted.container.querySelectorAll<HTMLElement>(".bar")).map(
+        (bar) => bar.style.width,
+      ),
+    ).toEqual(["0%", "100%"]);
   });
 });

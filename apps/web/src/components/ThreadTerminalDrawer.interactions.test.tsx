@@ -646,9 +646,7 @@ describe("TerminalViewport mounted lifecycle", () => {
 
     await act(async () => {
       await mounted.root.render(
-        <TerminalViewport
-          {...viewportProps({ runtimeEnv: { A_VAR: "first", Z_VAR: "last" } })}
-        />,
+        <TerminalViewport {...viewportProps({ runtimeEnv: { A_VAR: "first", Z_VAR: "last" } })} />,
       );
     });
     expect(xtermState.terminals).toHaveLength(1);
@@ -687,9 +685,7 @@ describe("TerminalViewport mounted lifecycle", () => {
     expect(provideTerminalLinks(terminal, 1)?.map((link) => link.text)).toEqual([
       "https://example.test/docs",
     ]);
-    expect(provideTerminalLinks(terminal, 2)?.map((link) => link.text)).toEqual([
-      "src/main.ts:12",
-    ]);
+    expect(provideTerminalLinks(terminal, 2)?.map((link) => link.text)).toEqual(["src/main.ts:12"]);
     expect(provideTerminalLinks(terminal, 3)).toBeUndefined();
     expect(provideTerminalLinks(terminal, 99)).toBeUndefined();
   });
@@ -720,9 +716,7 @@ describe("TerminalViewport mounted lifecycle", () => {
     terminal.bufferLines.push(terminalBufferLine("https://example.test/docs"));
     const [link] = provideTerminalLinks(terminal) ?? [];
 
-    link!.activate(
-      new MouseEvent("click", { metaKey: true, clientX: 24, clientY: 36 }),
-    );
+    link!.activate(new MouseEvent("click", { metaKey: true, clientX: 24, clientY: 36 }));
 
     expect(openTerminalLinkInPreview).toHaveBeenCalledWith(
       expect.objectContaining({

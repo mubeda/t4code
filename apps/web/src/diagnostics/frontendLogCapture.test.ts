@@ -170,7 +170,7 @@ describe("frontend log capture", () => {
     expect(snapshot).toContain("Symbol(symbol)");
     expect(snapshot).toContain("namedFunction");
     expect(snapshot).toContain("[Max depth]");
-    expect(snapshot).not.toContain("\"32\"");
+    expect(snapshot).not.toContain('"32"');
     expect(snapshot).toContain("[Unserializable]");
   });
 

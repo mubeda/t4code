@@ -53,13 +53,23 @@ describe("terminal drawer utilities", () => {
 
   it("normalizes runtime environment order and invalid entries", () => {
     expect(runtimeEnvSignature(undefined)).toBe("");
-    expect(
-      runtimeEnvSignature({ B: "2", A: "1", "": "ignored", INVALID: 1 } as never),
-    ).toBe(JSON.stringify([["A", "1"], ["B", "2"]]));
+    expect(runtimeEnvSignature({ B: "2", A: "1", "": "ignored", INVALID: 1 } as never)).toBe(
+      JSON.stringify([
+        ["A", "1"],
+        ["B", "2"],
+      ]),
+    );
   });
 
   it("uses fallbacks for blank and transparent computed colors", () => {
-    for (const value of [undefined, null, "", " transparent ", "rgba(0, 0, 0, 0)", "rgba(0 0 0 / 0)"]) {
+    for (const value of [
+      undefined,
+      null,
+      "",
+      " transparent ",
+      "rgba(0, 0, 0, 0)",
+      "rgba(0 0 0 / 0)",
+    ]) {
       expect(normalizeComputedColor(value, "fallback")).toBe("fallback");
     }
     expect(normalizeComputedColor(" RGB(1, 2, 3) ", "fallback")).toBe(" RGB(1, 2, 3) ");

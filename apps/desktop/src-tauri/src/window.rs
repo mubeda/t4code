@@ -314,13 +314,34 @@ mod tests {
     fn mock_window_exercises_menu_capture_and_restore_helpers() {
         use tauri::test::{mock_builder, mock_context, noop_assets};
 
+        let mut context = mock_context(noop_assets());
+        context.config_mut().identifier =
+            format!("com.t4code.window-tests-{}", std::process::id());
         let app = mock_builder()
-            .build(mock_context(noop_assets()))
+            .build(context)
             .expect("mock Tauri app");
         let handle = app.handle();
         let window = tauri::WebviewWindowBuilder::new(&app, MAIN_WINDOW_LABEL, Default::default())
             .build()
             .expect("mock webview");
+        let state_path = window_state_path(handle).expect("window state path should resolve");
+        let _ = std::fs::remove_file(&state_path);
+
+        persist_main_window_state(handle).expect("empty mock state should be ignored");
+        restore_main_window_state(handle).expect("missing state should be ignored");
+        write_json_file(
+            &state_path,
+            &json!({
+                "width": 10,
+                "height": 10,
+                "x": null,
+                "y": null,
+                "maximized": false,
+                "fullscreen": false,
+            }),
+        )
+        .expect("invalid state fixture should write");
+        restore_main_window_state(handle).expect("invalid state should be ignored");
 
         assert!(
             window_state_path(handle)
@@ -367,5 +388,6 @@ mod tests {
                 fullscreen: true,
             },
         );
+        let _ = std::fs::remove_file(state_path);
     }
 }

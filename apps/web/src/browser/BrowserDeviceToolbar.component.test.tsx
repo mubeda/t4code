@@ -30,9 +30,9 @@ async function click(element: HTMLElement): Promise<void> {
 
 async function openPreset(label: string): Promise<void> {
   await click(byLabel("Browser device preset"));
-  const item = Array.from(
-    document.querySelectorAll<HTMLElement>("[data-slot='select-item']"),
-  ).find((candidate) => candidate.textContent?.includes(label));
+  const item = Array.from(document.querySelectorAll<HTMLElement>("[data-slot='select-item']")).find(
+    (candidate) => candidate.textContent?.includes(label),
+  );
   expect(item).toBeDefined();
   await click(item!);
 }
