@@ -9,6 +9,8 @@ import { cn } from "~/lib/utils";
 import {
   joinProjectPath,
   validateAddProjectPath,
+  validateGitCloneParentPath,
+  validateGitCloneUrl,
   validateProjectName,
   type AddProjectHostOption,
 } from "./AddProjectDialog.logic";
@@ -91,7 +93,11 @@ function handleArrowNavigation(event: KeyboardEvent<HTMLDivElement>): void {
   const activeButton =
     document.activeElement instanceof HTMLButtonElement ? document.activeElement : null;
 
-  if (event.key === "Enter" && activeButton && buttons.includes(activeButton)) {
+  if (
+    (event.key === "Enter" || event.key === " ") &&
+    activeButton &&
+    buttons.includes(activeButton)
+  ) {
     event.preventDefault();
     activeButton.click();
     return;
@@ -305,6 +311,7 @@ function ParentDirectoryField({
   busy,
   canPick,
   invalid,
+  error,
   onChange,
   onPick,
   onKeyDown,
@@ -314,6 +321,7 @@ function ParentDirectoryField({
   readonly busy: boolean;
   readonly canPick: boolean;
   readonly invalid: boolean;
+  readonly error?: string | null;
   readonly onChange: (path: string) => void;
   readonly onPick: () => void;
   readonly onKeyDown?: (event: KeyboardEvent<HTMLInputElement>) => void;
@@ -348,6 +356,7 @@ function ParentDirectoryField({
           <FolderOpenIcon aria-hidden />
         </Button>
       </div>
+      {error ? <ErrorMessage>{error}</ErrorMessage> : null}
     </div>
   );
 }
@@ -414,7 +423,11 @@ export function AddProjectCloneStep({
   onPickParent,
   onClone,
 }: AddProjectCloneStepProps) {
-  const canSubmit = url.trim().length > 0 && parentDir.trim().length > 0 && !busy;
+  const urlError = validateGitCloneUrl(url);
+  const parentError = validateGitCloneParentPath(parentDir);
+  const visibleUrlError = url.trim().length > 0 ? urlError : null;
+  const visibleParentError = parentDir.trim().length > 0 ? parentError : null;
+  const canSubmit = urlError === null && parentError === null && !busy;
   const onEnter = (event: KeyboardEvent<HTMLInputElement>) =>
     handleInputEnter(event, canSubmit, onClone);
 
@@ -438,7 +451,7 @@ export function AddProjectCloneStep({
           Git URL
         </label>
         <Input
-          aria-invalid={error !== null ? true : undefined}
+          aria-invalid={urlError !== null ? true : undefined}
           autoFocus
           disabled={busy}
           id="add-project-clone-url"
@@ -449,12 +462,14 @@ export function AddProjectCloneStep({
           spellCheck={false}
           value={url}
         />
+        {visibleUrlError ? <ErrorMessage>{visibleUrlError}</ErrorMessage> : null}
       </div>
       <ParentDirectoryField
         busy={busy}
         canPick={canPickParent}
+        error={visibleParentError}
         id="add-project-clone-parent"
-        invalid={error !== null}
+        invalid={parentError !== null}
         onChange={onParentDirChange}
         onKeyDown={onEnter}
         onPick={onPickParent}

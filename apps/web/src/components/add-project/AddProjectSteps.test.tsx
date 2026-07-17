@@ -42,6 +42,12 @@ async function click(element: HTMLElement): Promise<void> {
   await act(async () => element.click());
 }
 
+async function submit(form: HTMLFormElement): Promise<void> {
+  await act(async () => {
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+}
+
 const localHost: AddProjectHostOption = {
   environmentId: EnvironmentId.make("local"),
   label: "Local Mac",
@@ -127,6 +133,37 @@ describe("Add Project presentational steps", () => {
     expect(onOpenClone).toHaveBeenCalledTimes(1);
   });
 
+  it("activates the focused launcher action with Space", async () => {
+    const onOpenClone = vi.fn();
+    await mountLauncher({ onOpenClone });
+    const browse = buttonWithText("Browse folder");
+    const clone = buttonWithText("Clone from URL");
+
+    await keyDown(browse, "ArrowDown");
+    expect(document.activeElement).toBe(clone);
+    await keyDown(clone, " ");
+    expect(onOpenClone).toHaveBeenCalledTimes(1);
+  });
+
+  it("suppresses launcher actions while busy", async () => {
+    const onBrowse = vi.fn();
+    const onOpenClone = vi.fn();
+    const onOpenCreate = vi.fn();
+    await mountLauncher({ busy: true, onBrowse, onOpenClone, onOpenCreate });
+
+    for (const title of ["Browse folder", "Clone from URL", "Create new project"]) {
+      const action = buttonWithText(title);
+      expect(action.disabled).toBe(true);
+      await click(action);
+      await keyDown(action, "Enter");
+      await keyDown(action, " ");
+    }
+    expect(onBrowse).not.toHaveBeenCalled();
+    expect(onOpenClone).not.toHaveBeenCalled();
+    expect(onOpenCreate).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain("↵");
+  });
+
   it("wraps launcher focus at both ends", async () => {
     await mountLauncher();
     const browse = buttonWithText("Browse folder");
@@ -182,6 +219,57 @@ describe("Add Project presentational steps", () => {
     expect(buttonWithText("Clone").disabled).toBe(true);
   });
 
+  it("shows a local error and blocks a non-empty invalid clone URL", async () => {
+    const onClone = vi.fn();
+    await mount(
+      <AddProjectCloneStep
+        url="not-a-url"
+        parentDir="~/projects/"
+        error="Remote clone failed."
+        busy={false}
+        canPickParent
+        onUrlChange={vi.fn()}
+        onParentDirChange={vi.fn()}
+        onPickParent={vi.fn()}
+        onClone={onClone}
+      />,
+    );
+
+    expect(document.body.textContent).toContain("Enter a valid Git repository URL.");
+    expect(document.body.textContent).toContain("Remote clone failed.");
+    expect(buttonWithText("Clone").disabled).toBe(true);
+    const urlInput = document.querySelector<HTMLInputElement>("#add-project-clone-url");
+    if (!urlInput) throw new Error("Missing Git URL input");
+    expect(urlInput.getAttribute("aria-invalid")).toBe("true");
+    await keyDown(urlInput, "Enter");
+    expect(onClone).not.toHaveBeenCalled();
+  });
+
+  it("shows a field error and blocks a relative clone parent", async () => {
+    const onClone = vi.fn();
+    await mount(
+      <AddProjectCloneStep
+        url="git@github.com:openai/codex.git"
+        parentDir="projects"
+        error={null}
+        busy={false}
+        canPickParent
+        onUrlChange={vi.fn()}
+        onParentDirChange={vi.fn()}
+        onPickParent={vi.fn()}
+        onClone={onClone}
+      />,
+    );
+
+    expect(document.body.textContent).toContain("Enter an absolute or home-relative path.");
+    expect(buttonWithText("Clone").disabled).toBe(true);
+    const parentInput = document.querySelector<HTMLInputElement>("#add-project-clone-parent");
+    if (!parentInput) throw new Error("Missing clone parent input");
+    expect(parentInput.getAttribute("aria-invalid")).toBe("true");
+    await keyDown(parentInput, "Enter");
+    expect(onClone).not.toHaveBeenCalled();
+  });
+
   it("submits valid clone fields with Enter", async () => {
     const onClone = vi.fn();
     await mount(
@@ -202,6 +290,31 @@ describe("Add Project presentational steps", () => {
 
     await keyDown(urlInput, "Enter");
     expect(onClone).toHaveBeenCalledTimes(1);
+  });
+
+  it("suppresses clone submission while busy", async () => {
+    const onClone = vi.fn();
+    await mount(
+      <AddProjectCloneStep
+        url="https://github.com/openai/codex.git"
+        parentDir="~/projects/"
+        error={null}
+        busy
+        canPickParent
+        onUrlChange={vi.fn()}
+        onParentDirChange={vi.fn()}
+        onPickParent={vi.fn()}
+        onClone={onClone}
+      />,
+    );
+    const form = document.querySelector("form");
+    const urlInput = document.querySelector<HTMLInputElement>("#add-project-clone-url");
+    if (!(form instanceof HTMLFormElement) || !urlInput) throw new Error("Missing clone form");
+
+    expect(buttonWithText("Cloning…").disabled).toBe(true);
+    await keyDown(urlInput, "Enter");
+    await submit(form);
+    expect(onClone).not.toHaveBeenCalled();
   });
 
   it("shows T4Code create copy and target summary", async () => {
@@ -248,5 +361,29 @@ describe("Add Project presentational steps", () => {
     await click(summary);
     expect(summary.getAttribute("aria-expanded")).toBe("true");
     expect(document.body.textContent).toContain("Parent folder");
+  });
+
+  it("suppresses create submission while busy", async () => {
+    const onCreate = vi.fn();
+    await mount(
+      <AddProjectCreateStep
+        name="demo"
+        parentDir="~/projects/"
+        platform="Linux"
+        error={null}
+        busy
+        canPickParent
+        onNameChange={vi.fn()}
+        onParentDirChange={vi.fn()}
+        onPickParent={vi.fn()}
+        onCreate={onCreate}
+      />,
+    );
+    const form = document.querySelector("form");
+    if (!(form instanceof HTMLFormElement)) throw new Error("Missing create form");
+
+    expect(buttonWithText("Creating…").disabled).toBe(true);
+    await submit(form);
+    expect(onCreate).not.toHaveBeenCalled();
   });
 });

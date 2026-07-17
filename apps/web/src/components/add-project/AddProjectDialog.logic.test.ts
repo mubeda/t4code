@@ -6,6 +6,8 @@ import {
   joinProjectPath,
   shouldUseNativePicker,
   validateAddProjectPath,
+  validateGitCloneParentPath,
+  validateGitCloneUrl,
   validateProjectName,
   type AddProjectHostOption,
 } from "./AddProjectDialog.logic";
@@ -43,6 +45,41 @@ describe("Add Project rules", () => {
     );
     expect(validateAddProjectPath("C:\\code", "Linux")).toBe(
       "Windows-style paths are only supported on Windows.",
+    );
+  });
+
+  it("accepts common remote Git clone URL forms", () => {
+    expect(validateGitCloneUrl("https://github.com/openai/codex.git")).toBeNull();
+    expect(validateGitCloneUrl("http://git.example.com/team/project.git")).toBeNull();
+    expect(validateGitCloneUrl("ssh://git@git.example.com/team/project.git")).toBeNull();
+    expect(validateGitCloneUrl("git://git.example.com/team/project.git")).toBeNull();
+    expect(validateGitCloneUrl("git@github.com:openai/codex.git")).toBeNull();
+  });
+
+  it("rejects whitespace, unsupported schemes, and arbitrary clone URL text", () => {
+    expect(validateGitCloneUrl("")).toBe("Enter a Git repository URL.");
+    expect(validateGitCloneUrl("not-a-url")).toBe("Enter a valid Git repository URL.");
+    expect(validateGitCloneUrl("github.com/openai/codex")).toBe(
+      "Enter a valid Git repository URL.",
+    );
+    expect(validateGitCloneUrl("https://github.com/openai/my repo.git")).toBe(
+      "Enter a valid Git repository URL.",
+    );
+    expect(validateGitCloneUrl("file:///tmp/repository")).toBe("Enter a valid Git repository URL.");
+  });
+
+  it("accepts home-relative, POSIX, and Windows clone parent paths", () => {
+    expect(validateGitCloneParentPath("~/projects")).toBeNull();
+    expect(validateGitCloneParentPath("/srv/projects")).toBeNull();
+    expect(validateGitCloneParentPath("C:\\projects")).toBeNull();
+    expect(validateGitCloneParentPath("\\\\server\\projects")).toBeNull();
+  });
+
+  it("rejects empty and relative clone parent paths", () => {
+    expect(validateGitCloneParentPath("")).toBe("Enter a clone parent folder.");
+    expect(validateGitCloneParentPath("projects")).toBe("Enter an absolute or home-relative path.");
+    expect(validateGitCloneParentPath("./projects")).toBe(
+      "Enter an absolute or home-relative path.",
     );
   });
 

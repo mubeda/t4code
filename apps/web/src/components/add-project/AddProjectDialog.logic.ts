@@ -52,6 +52,45 @@ export function validateAddProjectPath(value: string, platform: string): string 
   return "Enter an absolute or home-relative path.";
 }
 
+const supportedGitCloneProtocols = new Set(["http:", "https:", "ssh:", "git:"]);
+const scpStyleGitCloneUrlPattern = /^[^@\s/:]+@[^:\s/]+:[^\s]+$/;
+
+export function validateGitCloneUrl(value: string): string | null {
+  const url = value.trim();
+  if (url.length === 0) return "Enter a Git repository URL.";
+  if (url !== value || /\s/.test(url)) return "Enter a valid Git repository URL.";
+  if (scpStyleGitCloneUrlPattern.test(url)) return null;
+
+  try {
+    const parsed = new URL(url);
+    if (
+      supportedGitCloneProtocols.has(parsed.protocol) &&
+      parsed.hostname.length > 0 &&
+      parsed.pathname.length > 1
+    ) {
+      return null;
+    }
+  } catch {
+    // The shared validation result below covers malformed URLs.
+  }
+  return "Enter a valid Git repository URL.";
+}
+
+export function validateGitCloneParentPath(value: string): string | null {
+  const path = value.trim();
+  if (path.length === 0) return "Enter a clone parent folder.";
+  if (
+    path === "~" ||
+    path.startsWith("~/") ||
+    path.startsWith("~\\") ||
+    path.startsWith("/") ||
+    isWindowsAbsolutePath(path)
+  ) {
+    return null;
+  }
+  return "Enter an absolute or home-relative path.";
+}
+
 export function joinProjectPath(parent: string, name: string, platform: string): string {
   const normalizedParent = normalizeProjectPathForDispatch(parent);
   const separator = /^win(dows|32)?/i.test(platform) ? "\\" : "/";
