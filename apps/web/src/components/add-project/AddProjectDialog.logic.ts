@@ -19,6 +19,19 @@ export interface AddProjectHostOption {
   readonly nativePickerAvailable: boolean;
 }
 
+export function getEnvironmentBrowsePlatform(os: string | null | undefined): string {
+  if (os === "windows") {
+    return "Win32";
+  }
+  if (os === "darwin") {
+    return "MacIntel";
+  }
+  if (os === "linux") {
+    return "Linux";
+  }
+  return typeof navigator === "undefined" ? "" : navigator.platform;
+}
+
 export function defaultAddProjectParent(value: string | null | undefined): string {
   const trimmed = value?.trim() ?? "";
   return ensureBrowseDirectoryPath(trimmed.length === 0 ? "~/" : trimmed);
@@ -57,7 +70,7 @@ const scpStyleGitCloneUrlPattern = /^(?:[^@\s/:]+@)?[^@:\s/]+:[^\s]+$/;
 
 export function validateGitCloneUrl(value: string): string | null {
   const url = value.trim();
-  if (url.length === 0) return "Enter a Git repository URL.";
+  if (url.length === 0) return "Enter a Git URL.";
   if (url !== value || /\s/.test(url)) return "Enter a valid Git repository URL.";
   if (isWindowsAbsolutePath(url)) return "Enter a valid Git repository URL.";
   if (!url.includes("://") && scpStyleGitCloneUrlPattern.test(url)) return null;

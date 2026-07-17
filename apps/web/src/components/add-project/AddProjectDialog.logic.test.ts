@@ -1,8 +1,9 @@
 import { EnvironmentId } from "@t4code/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   defaultAddProjectParent,
+  getEnvironmentBrowsePlatform,
   joinProjectPath,
   shouldUseNativePicker,
   validateAddProjectPath,
@@ -23,6 +24,16 @@ const localHost: AddProjectHostOption = {
 };
 
 describe("Add Project rules", () => {
+  it("resolves browse platforms including browser and server fallbacks", () => {
+    expect(getEnvironmentBrowsePlatform("linux")).toBe("Linux");
+
+    vi.stubGlobal("navigator", { platform: "FallbackOS" });
+    expect(getEnvironmentBrowsePlatform(null)).toBe("FallbackOS");
+    vi.stubGlobal("navigator", undefined);
+    expect(getEnvironmentBrowsePlatform(undefined)).toBe("");
+    vi.unstubAllGlobals();
+  });
+
   it("uses the environment base directory and falls back to home", () => {
     expect(defaultAddProjectParent(" ~/code ")).toBe("~/code/");
     expect(defaultAddProjectParent("")).toBe("~/");
@@ -70,7 +81,7 @@ describe("Add Project rules", () => {
   });
 
   it("rejects whitespace, unsupported schemes, and arbitrary clone URL text", () => {
-    expect(validateGitCloneUrl("")).toBe("Enter a Git repository URL.");
+    expect(validateGitCloneUrl("")).toBe("Enter a Git URL.");
     expect(validateGitCloneUrl("not-a-url")).toBe("Enter a valid Git repository URL.");
     expect(validateGitCloneUrl("github.com/openai/codex")).toBe(
       "Enter a valid Git repository URL.",

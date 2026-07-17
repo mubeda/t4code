@@ -109,6 +109,7 @@ import {
   RECENT_THREAD_LIMIT,
 } from "./CommandPalette.logic";
 import { AddProjectDialog } from "./AddProjectDialog";
+import { getEnvironmentBrowsePlatform } from "./add-project/AddProjectDialog.logic";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { CommandPaletteResults } from "./CommandPaletteResults";
 import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "./Icons";
@@ -141,19 +142,6 @@ function getLocalFileManagerName(platform: string): string {
     return "Explorer";
   }
   return "Files";
-}
-
-export function getEnvironmentBrowsePlatform(os: string | null | undefined): string {
-  if (os === "windows") {
-    return "Win32";
-  }
-  if (os === "darwin") {
-    return "MacIntel";
-  }
-  if (os === "linux") {
-    return "Linux";
-  }
-  return typeof navigator === "undefined" ? "" : navigator.platform;
 }
 
 interface AddProjectEnvironmentOption {
