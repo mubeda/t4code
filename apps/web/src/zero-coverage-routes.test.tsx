@@ -267,7 +267,7 @@ describe("settings and pairing routes", () => {
     const back = vi.spyOn(window.history, "back").mockImplementation(() => undefined);
     h.canGoBack = true;
     h.routeContext = { location: { pathname: "/settings/providers" } };
-    await rerender(mounted, <Component />);
+    await rerender(mounted, <Component key="providers" />);
     expect(mounted.container.querySelector("button")).toBeNull();
     const prevented = new KeyboardEvent("keydown", {
       key: "Escape",
@@ -327,27 +327,27 @@ describe("settings and pairing routes", () => {
 
 describe("cloud sign-in surfaces", () => {
   it("hides unconfigured and unresolved auth before rendering sign-in or avatar", async () => {
-    const mounted = await mount(<T4CodeConnectSidebarSignIn />);
+    const mounted = await mount(<T4CodeConnectSidebarSignIn key="unconfigured" />);
     expect(mounted.container.innerHTML).toBe("");
 
     h.cloudConfigured = true;
-    await rerender(mounted, <T4CodeConnectSidebarSignIn />);
+    await rerender(mounted, <T4CodeConnectSidebarSignIn key="auth-loading" />);
     expect(mounted.container.innerHTML).toBe("");
 
     h.auth = { isLoaded: true, isSignedIn: false };
     h.authPrompt = <div>Auth dialog</div>;
-    await rerender(mounted, <T4CodeConnectSidebarSignIn />);
+    await rerender(mounted, <T4CodeConnectSidebarSignIn key="signed-out" />);
     await click(mounted.container.querySelector("button")!);
     expect(h.openAuthPrompt).toHaveBeenCalledOnce();
     expect(mounted.container.textContent).toContain("Auth dialog");
 
     h.auth = { isLoaded: true, isSignedIn: true };
-    await rerender(mounted, <T4CodeConnectSidebarSignIn />);
+    await rerender(mounted, <T4CodeConnectSidebarSignIn key="signed-in" />);
     expect(mounted.container.innerHTML).toBe("");
-    await rerender(mounted, <T4CodeConnectSidebarAvatar />);
+    await rerender(mounted, <T4CodeConnectSidebarAvatar key="configured-avatar" />);
     expect(mounted.container.querySelector("[data-user-button]")).not.toBeNull();
     h.cloudConfigured = false;
-    await rerender(mounted, <T4CodeConnectSidebarAvatar />);
+    await rerender(mounted, <T4CodeConnectSidebarAvatar key="unconfigured-avatar" />);
     expect(mounted.container.innerHTML).toBe("");
   });
 });
