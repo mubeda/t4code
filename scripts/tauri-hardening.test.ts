@@ -79,6 +79,56 @@ it.layer(NodeServices.layer)("Tauri production hardening", (it) => {
     }),
   );
 
+  it.effect("keeps only canonical black product-icon assets", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const repoRoot = yield* path.fromFileUrl(new URL("..", import.meta.url));
+
+      for (const legacyPath of ["assets/dev", "assets/nightly"]) {
+        assert.equal(
+          yield* fs.exists(path.join(repoRoot, legacyPath)),
+          false,
+          `${legacyPath} must be absent`,
+        );
+      }
+
+      const publicCopies = [
+        [
+          "assets/prod/t4-black-web-favicon.ico",
+          "apps/web/public/favicon.ico",
+          "apps/marketing/public/favicon.ico",
+        ],
+        [
+          "assets/prod/t4-black-web-favicon-16x16.png",
+          "apps/web/public/favicon-16x16.png",
+          "apps/marketing/public/favicon-16x16.png",
+        ],
+        [
+          "assets/prod/t4-black-web-favicon-32x32.png",
+          "apps/web/public/favicon-32x32.png",
+          "apps/marketing/public/favicon-32x32.png",
+        ],
+        [
+          "assets/prod/t4-black-web-apple-touch-180.png",
+          "apps/web/public/apple-touch-icon.png",
+          "apps/marketing/public/apple-touch-icon.png",
+        ],
+      ] as const;
+
+      for (const [sourcePath, ...copyPaths] of publicCopies) {
+        const source = yield* fs.readFile(path.join(repoRoot, sourcePath));
+        for (const copyPath of copyPaths) {
+          assert.deepEqual(
+            yield* fs.readFile(path.join(repoRoot, copyPath)),
+            source,
+            `${copyPath} must match ${sourcePath}`,
+          );
+        }
+      }
+    }),
+  );
+
   it.effect("restricts the main WebView and disables production source maps by default", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
