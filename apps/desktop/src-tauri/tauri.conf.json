@@ -5,7 +5,7 @@
   "identifier": "com.t4code.desktop",
   "build": {
     "beforeDevCommand": "node ../../scripts/dev-runner.ts dev",
-    "beforeBuildCommand": "vp run --filter @t4code/web build",
+    "beforeBuildCommand": "vp run --filter @t4code/web build && node ../../scripts/apply-web-brand-assets.ts production apps/web/dist",
     "devUrl": "http://localhost:5733",
     "frontendDist": "../../web/dist"
   },

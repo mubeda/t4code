@@ -47,6 +47,26 @@ it.layer(NodeServices.layer)("Tauri production hardening", (it) => {
     }),
   );
 
+  it.effect("applies the production black web icons before bundling the desktop app", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const repoRoot = yield* path.fromFileUrl(new URL("..", import.meta.url));
+      const tauri = yield* decodeTauriConfiguration(
+        yield* fs.readFileString(path.join(repoRoot, "apps/desktop/src-tauri/tauri.conf.json")),
+      );
+
+      assert.match(
+        tauri.build.beforeBuildCommand,
+        /apply-web-brand-assets\.ts production apps\/web\/dist/,
+      );
+      assert.equal(
+        yield* fs.exists(path.join(repoRoot, "assets/prod/t4-black-web-apple-touch-180.png")),
+        true,
+      );
+    }),
+  );
+
   it.effect("restricts the main WebView and disables production source maps by default", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
