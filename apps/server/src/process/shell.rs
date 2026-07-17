@@ -156,6 +156,77 @@ mod tests {
             "C:\\Windows\\System32"
         );
     }
+
+    #[test]
+    fn resolves_windows_candidates_with_powershell_flags_fallbacks_and_deduplication() {
+        let env = BTreeMap::from([
+            ("SystemRoot".to_owned(), "D:\\Windows\\".to_owned()),
+            (
+                "ComSpec".to_owned(),
+                "D:\\Windows\\System32\\cmd.exe".to_owned(),
+            ),
+        ]);
+        let candidates = resolve_shell_candidates(
+            Platform::Windows,
+            Some(" C:/Program Files/PowerShell/pwsh.exe "),
+            &env,
+        );
+
+        assert_eq!(
+            candidates.first(),
+            Some(&ShellCandidate {
+                command: "C:/Program Files/PowerShell/pwsh.exe".to_owned(),
+                args: vec!["-NoLogo".to_owned()],
+            })
+        );
+        assert!(
+            candidates.iter().any(|candidate| {
+                candidate.command == "pwsh.exe" && candidate.args == ["-NoLogo"]
+            })
+        );
+        assert!(candidates.iter().any(|candidate| {
+            candidate.command == "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+                && candidate.args == ["-NoLogo"]
+        }));
+        assert_eq!(
+            candidates
+                .iter()
+                .filter(|candidate| candidate.command == "D:\\Windows\\System32\\cmd.exe")
+                .count(),
+            1
+        );
+        assert_eq!(
+            format_candidate(candidates.first().expect("preferred candidate")),
+            "C:/Program Files/PowerShell/pwsh.exe -NoLogo"
+        );
+    }
+
+    #[test]
+    fn shell_parsing_rejects_empty_values_and_normalizes_platform_basenames() {
+        assert_eq!(parse_shell(Some("  "), Platform::Unix), None);
+        assert_eq!(
+            parse_shell(Some("'zsh' --login"), Platform::Unix),
+            Some("zsh".to_owned())
+        );
+        assert_eq!(
+            parse_shell(Some(" powershell.exe "), Platform::Windows),
+            Some("powershell.exe".to_owned())
+        );
+        assert_eq!(shell_candidate_from_command(" ", Platform::Unix), None);
+        assert_eq!(
+            basename_for_platform("C:/Windows/System32/cmd.exe", Platform::Windows),
+            "cmd.exe"
+        );
+        assert_eq!(
+            basename_for_platform("C:\\Windows\\System32\\cmd.exe", Platform::Unix),
+            "cmd.exe"
+        );
+        assert_eq!(
+            format_candidate(&ShellCandidate::new("sh", std::iter::empty::<&str>())),
+            "sh"
+        );
+        assert_eq!(Platform::current(), Platform::Unix);
+    }
 }
 
 fn windows_system_root(env: &BTreeMap<String, String>) -> String {
