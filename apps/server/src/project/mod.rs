@@ -128,3 +128,63 @@ fn attribute<'a>(element: &'a str, name: &str) -> Option<&'a str> {
     let end = value.find(quoted)?;
     value.get(..end)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn resolver_covers_direct_metadata_missing_and_invalid_icons() {
+        let root = tempfile::tempdir().unwrap();
+        let resolver = ProjectFaviconResolver;
+        assert_eq!(resolver.resolve_path(root.path()).await.unwrap(), None);
+
+        std::fs::create_dir(root.path().join("favicon.svg")).unwrap();
+        std::fs::create_dir_all(root.path().join("public/brand")).unwrap();
+        std::fs::write(
+            root.path().join("index.html"),
+            r#"<LINK REL='shortcut icon' HREF='/brand/logo.svg?v=1#icon'>"#,
+        )
+        .unwrap();
+        std::fs::write(root.path().join("public/brand/logo.svg"), "<svg/>").unwrap();
+        assert!(
+            resolver
+                .resolve_path(root.path())
+                .await
+                .unwrap()
+                .unwrap()
+                .ends_with("public/brand/logo.svg")
+        );
+
+        std::fs::remove_file(root.path().join("public/brand/logo.svg")).unwrap();
+        std::fs::write(
+            root.path().join("index.html"),
+            r#"<link rel="icon" href="../escape">"#,
+        )
+        .unwrap();
+        assert_eq!(resolver.resolve_path(root.path()).await.unwrap(), None);
+
+        assert!(matches!(
+            resolver.resolve_path(&root.path().join("missing")).await,
+            Err(WorkspaceError::RootNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn icon_markup_helpers_cover_quotes_queries_and_invalid_attributes() {
+        assert_eq!(
+            icon_candidates("/icon.svg?x=1#hash"),
+            vec!["public/icon.svg", "icon.svg"]
+        );
+        assert!(icon_candidates("?#").is_empty());
+        assert_eq!(
+            extract_icon_href(
+                r#"<link rel="stylesheet" href="style.css"><link rel='icon' href='icon.png'>"#
+            ),
+            Some("icon.png".to_owned())
+        );
+        assert_eq!(extract_icon_href("<link rel=icon href=icon.png>"), None);
+        assert_eq!(attribute("href='value'", "href"), Some("value"));
+        assert_eq!(attribute("href=value", "href"), None);
+    }
+}
