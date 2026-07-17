@@ -928,3 +928,91 @@ fn now_iso() -> String {
         .format(&Rfc3339)
         .unwrap_or_else(|_| OffsetDateTime::now_utc().unix_timestamp().to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn manager_covers_live_lifecycle_attachments_and_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = TerminalManager::new(
+            Arc::new(PortablePtyBackend),
+            TerminalManagerOptions {
+                history_line_limit: 2,
+                preferred_shell: Some("/bin/sh".to_owned()),
+                subprocess_poll_interval: Duration::ZERO,
+                ..TerminalManagerOptions::default()
+            },
+        );
+
+        let mut metadata = manager.subscribe_metadata().await;
+        assert!(metadata.initial.is_empty());
+        assert!(manager.resize("missing", "missing", 80, 24).await.is_ok());
+        assert!(matches!(
+            manager
+                .attach(TerminalAttachInput::existing("missing", "missing"))
+                .await,
+            Err(TerminalError::NotFound { .. })
+        ));
+
+        let input = TerminalOpenInput::new(
+            "thread-unit",
+            "term-unit",
+            root.path().to_path_buf(),
+            80,
+            24,
+        );
+        let opened = manager.open(input.clone()).await.unwrap();
+        assert_eq!(opened.label, "Terminal unit");
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), metadata.recv())
+                .await
+                .unwrap(),
+            Some(TerminalMetadataEvent::Upsert { .. })
+        ));
+
+        let mut attach_input = TerminalAttachInput::existing("thread-unit", "term-unit");
+        attach_input.cols = Some(100);
+        attach_input.rows = Some(30);
+        let mut attachment = manager.attach(attach_input).await.unwrap();
+        manager.write("thread-unit", "term-unit", "").await.unwrap();
+        manager
+            .resize("thread-unit", "term-unit", 120, 40)
+            .await
+            .unwrap();
+        manager.clear("thread-unit", "term-unit").await.unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), attachment.recv())
+                .await
+                .unwrap(),
+            Some(TerminalEvent::Cleared { .. })
+        ));
+
+        let restarted = manager.restart(input).await.unwrap();
+        assert_eq!(restarted.status, TerminalStatus::Running);
+        manager.close("thread-unit", Some("term-unit")).await;
+        manager.shutdown().await;
+    }
+
+    #[test]
+    fn presentation_helpers_cover_history_and_process_labels() {
+        let mut history = "one\ntwo\nthree\n".to_owned();
+        append_history(&mut history, "four\n", 2);
+        assert_eq!(history, "three\nfour\n");
+        append_history(&mut history, "ignored", 0);
+        assert!(history.is_empty());
+
+        assert_eq!(
+            normalize_child_command_name("[/usr/bin/node.exe --flag]"),
+            Some("node".into())
+        );
+        assert_eq!(
+            normalize_child_command_name("( cargo test )"),
+            Some("cargo".into())
+        );
+        assert_eq!(normalize_child_command_name("[]"), None);
+        assert_eq!(terminal_label("custom"), "custom");
+        assert_eq!(terminal_label("term-"), "term-");
+    }
+}
