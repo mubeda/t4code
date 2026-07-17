@@ -121,8 +121,10 @@ mod tests {
 
     #[test]
     fn owned_builder_inputs_cover_desktop_and_static_configuration() {
-        let config = ServerConfig::new("state".to_owned())
-            .with_static_dir("static".to_owned())
+        let state_dir = "state".to_owned();
+        let static_dir = "static".to_owned();
+        let config = ServerConfig::new(state_dir)
+            .with_static_dir(static_dir)
             .with_desktop("desktop-token".to_owned())
             .expect("desktop config should build");
         assert_eq!(config.mode, ServerMode::Desktop);

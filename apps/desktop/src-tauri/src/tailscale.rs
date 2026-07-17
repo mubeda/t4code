@@ -310,7 +310,7 @@ mod tests {
         let success = executable_script(
             directory.path(),
             "success",
-            &format!("printf '%s' '{}'", TAILSCALE_STATUS_JSON),
+            &format!("printf '%s' '{TAILSCALE_STATUS_JSON}'"),
         );
         assert_eq!(
             read_status_fixture(&success, Duration::from_secs(2))

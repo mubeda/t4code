@@ -2249,12 +2249,9 @@ mod tests {
                 .is_err()
         );
         assert!(
-            desktop_bridge_issue_ssh_web_socket_ticket(
-                base_url.clone(),
-                "token".to_string(),
-            )
-            .await
-            .is_err()
+            desktop_bridge_issue_ssh_web_socket_ticket(base_url.clone(), "token".to_string(),)
+                .await
+                .is_err()
         );
         assert!(
             desktop_bridge_bootstrap_ssh_bearer_session(base_url, "credential".to_string())
@@ -2326,12 +2323,12 @@ mod tests {
         use tauri::test::{INVOKE_KEY, get_ipc_response, mock_builder, mock_context, noop_assets};
 
         let mut context = mock_context(noop_assets());
-        context.config_mut().plugins.0.insert(
-            "updater".to_owned(),
-            json!({"pubkey":"","windows":null}),
-        );
-        context.config_mut().identifier =
-            format!("com.t4code.bridge-tests-{}", std::process::id());
+        context
+            .config_mut()
+            .plugins
+            .0
+            .insert("updater".to_owned(), json!({"pubkey":"","windows":null}));
+        context.config_mut().identifier = format!("com.t4code.bridge-tests-{}", std::process::id());
         let app = mock_builder()
             .manage(BackendSupervisor::new())
             .manage(NativeContextMenuManager::new())
@@ -2409,16 +2406,12 @@ mod tests {
             invoke("desktop_bridge_get_app_branding", json!({})).unwrap()["displayName"]
                 .is_string()
         );
-        let client_settings =
-            invoke("desktop_bridge_get_client_settings", json!({})).unwrap();
+        let client_settings = invoke("desktop_bridge_get_client_settings", json!({})).unwrap();
         assert!(client_settings.is_null() || client_settings.is_object());
         let catalog = invoke("desktop_bridge_get_connection_catalog", json!({})).unwrap();
         assert!(catalog.is_null() || catalog.is_string());
         let _ = invoke("desktop_bridge_discover_ssh_hosts", json!({}));
-        assert_eq!(
-            invoke("desktop_bridge_get_wsl_state", json!({})).unwrap()["enabled"].is_boolean(),
-            true
-        );
+        assert!(invoke("desktop_bridge_get_wsl_state", json!({})).unwrap()["enabled"].is_boolean());
         assert!(
             invoke("desktop_bridge_get_server_exposure_state", json!({}))
                 .unwrap()
@@ -2444,17 +2437,8 @@ mod tests {
             .unwrap(),
             false
         );
-        assert!(
-            invoke(
-                "desktop_bridge_set_theme",
-                json!({"theme":"unsupported"}),
-            )
-            .is_err()
-        );
-        assert!(
-            invoke("desktop_bridge_set_theme", json!({"theme":"dark"}))
-                .is_ok()
-        );
+        assert!(invoke("desktop_bridge_set_theme", json!({"theme":"unsupported"}),).is_err());
+        assert!(invoke("desktop_bridge_set_theme", json!({"theme":"dark"})).is_ok());
         for command in [
             "desktop_bridge_get_update_state",
             "desktop_bridge_check_for_update",
@@ -2492,9 +2476,7 @@ mod tests {
             .is_err(),
             "catalog persistence must fail closed without platform protection",
         );
-        assert!(
-            invoke("desktop_bridge_clear_connection_catalog", json!({})).is_ok()
-        );
+        assert!(invoke("desktop_bridge_clear_connection_catalog", json!({})).is_ok());
         assert!(
             invoke(
                 "desktop_bridge_set_server_exposure_mode",
@@ -2523,13 +2505,7 @@ mod tests {
             )
             .is_ok()
         );
-        assert!(
-            invoke(
-                "desktop_bridge_set_wsl_only",
-                json!({"enabled":true}),
-            )
-            .is_ok()
-        );
+        assert!(invoke("desktop_bridge_set_wsl_only", json!({"enabled":true}),).is_ok());
         assert!(
             invoke(
                 "desktop_bridge_set_update_channel",
@@ -2541,9 +2517,7 @@ mod tests {
             "target": {"alias":"","hostname":"","username":null,"port":null},
             "options": null,
         });
-        assert!(
-            invoke("desktop_bridge_ensure_ssh_environment", invalid_target).is_err()
-        );
+        assert!(invoke("desktop_bridge_ensure_ssh_environment", invalid_target).is_err());
         assert!(
             invoke(
                 "desktop_bridge_disconnect_ssh_environment",
@@ -2634,13 +2608,7 @@ mod tests {
             ))
             .is_err()
         );
-        assert!(
-            invoke(
-                "desktop_bridge_open_external",
-                json!({"url":"not a URL"}),
-            )
-            .is_err()
-        );
+        assert!(invoke("desktop_bridge_open_external", json!({"url":"not a URL"}),).is_err());
 
         for (command, arguments) in [
             (

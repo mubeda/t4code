@@ -131,6 +131,37 @@ fn format_candidate(candidate: &ShellCandidate) -> String {
     }
 }
 
+fn windows_system_root(env: &BTreeMap<String, String>) -> String {
+    env.get("SystemRoot")
+        .or_else(|| env.get("windir"))
+        .map(String::as_str)
+        .unwrap_or("C:\\Windows")
+        .trim()
+        .to_string()
+}
+
+fn windows_powershell_path(env: &BTreeMap<String, String>) -> String {
+    join_windows_path(
+        &windows_system_root(env),
+        &["System32", "WindowsPowerShell", "v1.0", "powershell.exe"],
+    )
+}
+
+fn windows_cmd_path(env: &BTreeMap<String, String>) -> String {
+    join_windows_path(&windows_system_root(env), &["System32", "cmd.exe"])
+}
+
+fn join_windows_path(root: &str, segments: &[&str]) -> String {
+    let mut joined = root.trim_end_matches(['\\', '/']).to_string();
+    for segment in segments {
+        if !joined.is_empty() {
+            joined.push('\\');
+        }
+        joined.push_str(segment.trim_matches(['\\', '/']));
+    }
+    joined
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,35 +258,4 @@ mod tests {
         );
         assert_eq!(Platform::current(), Platform::Unix);
     }
-}
-
-fn windows_system_root(env: &BTreeMap<String, String>) -> String {
-    env.get("SystemRoot")
-        .or_else(|| env.get("windir"))
-        .map(String::as_str)
-        .unwrap_or("C:\\Windows")
-        .trim()
-        .to_string()
-}
-
-fn windows_powershell_path(env: &BTreeMap<String, String>) -> String {
-    join_windows_path(
-        &windows_system_root(env),
-        &["System32", "WindowsPowerShell", "v1.0", "powershell.exe"],
-    )
-}
-
-fn windows_cmd_path(env: &BTreeMap<String, String>) -> String {
-    join_windows_path(&windows_system_root(env), &["System32", "cmd.exe"])
-}
-
-fn join_windows_path(root: &str, segments: &[&str]) -> String {
-    let mut joined = root.trim_end_matches(['\\', '/']).to_string();
-    for segment in segments {
-        if !joined.is_empty() {
-            joined.push('\\');
-        }
-        joined.push_str(segment.trim_matches(['\\', '/']));
-    }
-    joined
 }

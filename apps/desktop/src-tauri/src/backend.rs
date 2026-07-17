@@ -2459,9 +2459,7 @@ mod tests {
         let mut context = mock_context(noop_assets());
         context.config_mut().identifier =
             format!("com.t4code.backend-tests-{}", std::process::id());
-        let app = mock_builder()
-            .build(context)
-            .expect("mock Tauri app");
+        let app = mock_builder().build(context).expect("mock Tauri app");
         let base_dir = desktop_base_dir(app.handle()).expect("desktop base directory");
         let _ = fs::remove_dir_all(&base_dir);
         let supervisor = BackendSupervisor::new();
