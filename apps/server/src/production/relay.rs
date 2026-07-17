@@ -729,6 +729,34 @@ mod tests {
 
     use super::*;
 
+    fn successful_reporter() -> InstallReporter {
+        Arc::new(|_| Box::pin(async { Ok(()) }))
+    }
+
+    async fn spawn_raw_response(response: Vec<u8>) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind response server");
+        let address = listener.local_addr().expect("response server address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = [0_u8; 2048];
+            let _ = socket.read(&mut request).await.expect("read request");
+            socket.write_all(&response).await.expect("write response");
+        });
+        (format!("http://{address}/cloudflared"), server)
+    }
+
+    async fn spawn_body_response(body: &[u8]) -> (String, tokio::task::JoinHandle<()>) {
+        let mut response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(body);
+        spawn_raw_response(response).await
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn native_relay_client_covers_resolution_installation_and_private_helpers() {
@@ -966,5 +994,183 @@ mod tests {
             },
             CLOUDFLARED_VERSION
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn relay_installer_maps_lock_directory_download_and_activation_failures() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let temp = TempDir::new().expect("temp dir");
+        let reporter = successful_reporter();
+
+        let locked_client = NativeRelayClient::new(
+            RelayClientOptions::new(temp.path().join("locked"), "plan9", "mips")
+                .with_search_path(OsString::new()),
+        )
+        .expect("locked client");
+        locked_client.install_permit.close();
+        assert!(
+            locked_client
+                .install(Arc::clone(&reporter))
+                .await
+                .expect_err("closed installer semaphore")
+                .contains("install_locked")
+        );
+
+        let blocking_base = temp.path().join("blocking-base");
+        fs::write(&blocking_base, b"file")
+            .await
+            .expect("blocking base file");
+        let blocked_client = NativeRelayClient::new(
+            RelayClientOptions::new(&blocking_base, "linux", "x64")
+                .with_search_path(OsString::new()),
+        )
+        .expect("blocked client");
+        assert!(
+            blocked_client
+                .install(Arc::clone(&reporter))
+                .await
+                .expect_err("tool directory blocked by file")
+                .contains("write_failed")
+        );
+
+        let client = NativeRelayClient::new(
+            RelayClientOptions::new(temp.path().join("direct"), "linux", "x64")
+                .with_search_path(OsString::new()),
+        )
+        .expect("direct client");
+        let fixture = fs::read("/usr/bin/true").await.expect("true fixture");
+        let checksum = format!("{:x}", Sha256::digest(&fixture));
+        let placeholder_asset = RelayReleaseAsset::new(
+            "http://127.0.0.1:1/unreachable",
+            checksum.clone(),
+            RelayReleaseArchive::Binary,
+        );
+        let parent_file = temp.path().join("parent-file");
+        fs::write(&parent_file, b"file").await.expect("parent file");
+        assert_eq!(
+            client
+                .install_while_locked(
+                    &placeholder_asset,
+                    &parent_file.join("cloudflared"),
+                    &parent_file,
+                    &reporter,
+                )
+                .await
+                .expect_err("temporary directory parent is a file")
+                .reason,
+            "write_failed"
+        );
+
+        let failed_download = temp.path().join("failed-download");
+        assert_eq!(
+            client
+                .download(&placeholder_asset, &failed_download)
+                .await
+                .expect_err("unreachable download")
+                .reason,
+            "download_failed"
+        );
+
+        let (url, server) = spawn_body_response(&fixture).await;
+        let asset = RelayReleaseAsset::new(url, checksum.clone(), RelayReleaseArchive::Binary);
+        let existing_destination = temp.path().join("existing-download");
+        fs::write(&existing_destination, b"existing")
+            .await
+            .expect("existing destination");
+        assert_eq!(
+            client
+                .download(&asset, &existing_destination)
+                .await
+                .expect_err("exclusive download destination")
+                .reason,
+            "write_failed"
+        );
+        server.await.expect("existing destination server");
+
+        let malformed = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nZZ\r\nbroken\r\n0\r\n\r\n".to_vec();
+        let (url, server) = spawn_raw_response(malformed).await;
+        let asset = RelayReleaseAsset::new(url, checksum.clone(), RelayReleaseArchive::Binary);
+        assert_eq!(
+            client
+                .download(&asset, &temp.path().join("malformed-chunk"))
+                .await
+                .expect_err("malformed chunked body")
+                .reason,
+            "download_failed"
+        );
+        server.await.expect("malformed chunk server");
+
+        assert_eq!(
+            verify_checksum(temp.path(), &checksum)
+                .await
+                .expect_err("directories cannot be checksummed")
+                .reason,
+            "validation_failed"
+        );
+
+        let activation_target = temp.path().join("activation-target");
+        fs::create_dir(&activation_target)
+            .await
+            .expect("activation target directory");
+        let activation_temp = temp.path().join("activation-temp");
+        fs::create_dir(&activation_temp)
+            .await
+            .expect("activation temp");
+        let (url, server) = spawn_body_response(&fixture).await;
+        let asset = RelayReleaseAsset::new(url, checksum.clone(), RelayReleaseArchive::Binary);
+        assert_eq!(
+            client
+                .download_and_activate(&asset, &activation_target, &activation_temp, &reporter,)
+                .await
+                .expect_err("directory blocks activation")
+                .reason,
+            "write_failed"
+        );
+        server.await.expect("activation server");
+
+        let stage_temp = temp.path().join("stage-temp");
+        fs::create_dir(&stage_temp).await.expect("stage temp");
+        let (url, server) = spawn_body_response(&fixture).await;
+        let asset = RelayReleaseAsset::new(url, checksum, RelayReleaseArchive::Binary);
+        assert_eq!(
+            client
+                .download_and_activate(
+                    &asset,
+                    &temp.path().join("missing-parent").join("cloudflared"),
+                    &stage_temp,
+                    &reporter,
+                )
+                .await
+                .expect_err("missing parent blocks staging")
+                .reason,
+            "write_failed"
+        );
+        server.await.expect("staging server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn windows_named_relay_binary_installs_on_unix_fixture() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let temp = TempDir::new().expect("temp dir");
+        let fixture = fs::read("/usr/bin/true").await.expect("true fixture");
+        let checksum = format!("{:x}", Sha256::digest(&fixture));
+        let (url, server) = spawn_body_response(&fixture).await;
+        let options = RelayClientOptions::new(temp.path(), "win32", "x64")
+            .with_search_path(OsString::new())
+            .with_release_asset(Some(RelayReleaseAsset::new(
+                url,
+                checksum,
+                RelayReleaseArchive::Binary,
+            )));
+        let managed = options.managed_executable_path();
+        let client = NativeRelayClient::new(options).expect("Windows-named client");
+        assert!(matches!(
+            client.install(successful_reporter()).await,
+            Ok(RelayClientStatus::Available { .. })
+        ));
+        server.await.expect("Windows-named server");
+        assert!(managed.is_file());
     }
 }
