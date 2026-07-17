@@ -1137,6 +1137,21 @@ staticDescribe("Sidebar full render", () => {
     expect(markup).toContain("No projects yet");
   });
 
+  it("disables new worktree when no project is selected", () => {
+    h.state.projects = [projectA];
+    h.state.threads = [threadDefault];
+    h.state.environments = [
+      environmentFixture({ environmentId: ENV_MAIN, label: "Main", connectionId: "primary" }),
+    ];
+    h.state.primaryEnvironmentId = ENV_MAIN;
+    h.state.routeParams = {};
+
+    render(<Sidebar />);
+
+    const newWorktree = mustFindProps(byTestId("sidebar-new-worktree-trigger"), "new worktree");
+    expect(newWorktree["disabled"]).toBe(true);
+  });
+
   it("shows the empty-thread state for an expanded project without workspace threads", () => {
     h.state.projects = [projectA];
     h.state.threads = [threadDefault];
@@ -1420,14 +1435,17 @@ staticDescribe("Sidebar full render", () => {
     baseScenario();
     render(<Sidebar />);
 
+    const dialog = captured("CreateWorktreeDialog")[0]!;
+    expect(dialog.props["defaultProjectId"]).toBe(projectA.id);
+
     const newWorktree = mustFindProps(byTestId("sidebar-new-worktree-trigger"), "new worktree");
+    expect(newWorktree["disabled"]).toBe(false);
     invoke(newWorktree, "onClick", mouseEvent());
 
     const addProject = mustFindProps(byTestId("sidebar-add-project-trigger"), "add project");
     invoke(addProject, "onClick", mouseEvent());
     expect(h.spies.openAddProject).toHaveBeenCalled();
 
-    const dialog = captured("CreateWorktreeDialog")[0]!;
     const onOpenChange = dialog.props["onOpenChange"] as (open: boolean) => void;
     onOpenChange(true);
     onOpenChange(false);
