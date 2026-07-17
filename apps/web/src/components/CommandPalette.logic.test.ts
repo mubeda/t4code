@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t4code/contracts";
 import type { Thread } from "../types";
 import {
+  buildRootGroups,
   buildThreadActionItems,
   filterCommandPaletteGroups,
+  filterBrowseEntries,
   type CommandPaletteGroup,
 } from "./CommandPalette.logic";
 
@@ -161,5 +163,121 @@ describe("buildThreadActionItems", () => {
     });
 
     expect(items.map((item) => item.value)).toEqual(["thread:thread-active"]);
+  });
+
+  it("limits contextual items and falls back through optional thread metadata", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-25T12:00:00.000Z"));
+    const runThread = vi.fn(async () => undefined);
+
+    try {
+      const items = buildThreadActionItems({
+        threads: [
+          makeThread({
+            id: ThreadId.make("thread-context"),
+            title: "Context thread",
+            branch: "feature/context",
+            latestUserMessageAt: null,
+            updatedAt: undefined as never,
+            createdAt: "2026-03-25T11:00:00.000Z",
+          }),
+          makeThread({ id: ThreadId.make("thread-hidden"), title: "Hidden by limit" }),
+        ],
+        activeThreadId: ThreadId.make("thread-context"),
+        projectTitleById: new Map(),
+        sortOrder: "created_at",
+        icon: null,
+        runThread,
+        limit: 1,
+      });
+
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({
+        searchTerms: ["Context thread", "", "feature/context"],
+        description: "#feature/context · Current thread",
+        timestamp: "1h ago",
+      });
+      await items[0]!.run();
+      expect(runThread).toHaveBeenCalledWith(expect.objectContaining({ id: "thread-context" }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("command palette defensive branches", () => {
+  const action = (value: string, searchTerms: string[]) => ({
+    kind: "action" as const,
+    value,
+    searchTerms,
+    title: value,
+    icon: null,
+    run: async () => undefined,
+  });
+
+  it("returns null when a highlighted browse path is no longer filtered", () => {
+    expect(
+      filterBrowseEntries({
+        browseEntries: [
+          { name: "src", fullPath: "/repo/src" },
+          { name: ".git", fullPath: "/repo/.git" },
+        ],
+        browseFilterQuery: "s",
+        highlightedItemValue: "browse:/repo/missing",
+      }),
+    ).toEqual({
+      filteredEntries: [{ name: "src", fullPath: "/repo/src" }],
+      highlightedEntry: null,
+      exactEntry: null,
+    });
+  });
+
+  it("ranks prefix and substring matches and filters nonempty action queries", () => {
+    const searchableGroup: CommandPaletteGroup = {
+      value: "actions",
+      label: "Actions",
+      items: [action("prefix", ["Project setup"]), action("substring", ["My project notes"])],
+    };
+
+    expect(
+      filterCommandPaletteGroups({
+        activeGroups: [searchableGroup],
+        query: "pro",
+        isInSubmenu: true,
+        projectSearchItems: [],
+        threadSearchItems: [],
+      })[0]?.items.map((item) => item.value),
+    ).toEqual(["prefix", "substring"]);
+    expect(
+      filterCommandPaletteGroups({
+        activeGroups: [searchableGroup],
+        query: "oje",
+        isInSubmenu: true,
+        projectSearchItems: [],
+        threadSearchItems: [],
+      })[0]?.items.map((item) => item.value),
+    ).toEqual(["prefix", "substring"]);
+    expect(
+      filterCommandPaletteGroups({
+        activeGroups: [searchableGroup, { value: "threads", label: "Threads", items: [] }],
+        query: ">project",
+        isInSubmenu: false,
+        projectSearchItems: [],
+        threadSearchItems: [],
+      }).map((group) => group.value),
+    ).toEqual(["actions"]);
+  });
+
+  it("omits an empty actions group while retaining recent threads", () => {
+    const groups = buildRootGroups({
+      actionItems: [],
+      recentThreadItems: [action("recent", ["recent"])],
+    });
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({
+      value: "recent-threads",
+      label: "Recent Threads",
+    });
+    expect(groups[0]?.items.map((item) => item.value)).toEqual(["recent"]);
   });
 });

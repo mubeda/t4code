@@ -116,6 +116,7 @@ describe("formatElapsedDurationLabel", () => {
   it("returns just now when the instant is current or in the future", () => {
     expect(formatElapsedDurationLabel("2026-04-07T12:00:00.000Z")).toBe("just now");
     expect(formatElapsedDurationLabel("2026-04-07T12:01:00.000Z")).toBe("just now");
+    expect(formatElapsedDurationLabel("2026-04-07T11:59:57.000Z")).toBe("just now");
   });
 
   it("formats seconds, minutes, hours, and days", () => {
@@ -179,6 +180,7 @@ describe("timestamp display", () => {
       value: "just now",
       suffix: null,
     });
+    expect(formatRelativeTimeLabel("2026-04-07T12:01:00.000Z")).toBe("just now");
     expect(formatRelativeTimeLabel("2026-04-07T11:45:00.000Z")).toBe("15m ago");
     expect(formatRelativeTimeLabel("2026-04-07T06:00:00.000Z")).toBe("6h ago");
     expect(formatRelativeTimeLabel("2026-04-03T12:00:00.000Z")).toBe("4d ago");

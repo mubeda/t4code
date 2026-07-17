@@ -541,4 +541,67 @@ describe("terminalUiStateStore actions", () => {
     expect(selectThreadTerminalUiState({}, null).terminalIds).toEqual([]);
     expect(selectThreadTerminalUiState({}, emptyRef).terminalIds).toEqual([]);
   });
+
+  it("normalizes group equality mismatches and toggles an existing drawer closed", () => {
+    const threadKey = scopedThreadKey(THREAD_REF);
+    const malformedStates = [
+      {
+        terminalOpen: true,
+        terminalHeight: 280,
+        terminalIds: ["term-a", "term-b"],
+        activeTerminalId: "term-a",
+        terminalGroups: [],
+        activeTerminalGroupId: "group-term-a",
+      },
+      {
+        terminalOpen: true,
+        terminalHeight: 280,
+        terminalIds: ["term-a"],
+        activeTerminalId: "term-a",
+        terminalGroups: [{ id: "", terminalIds: ["term-a"] }],
+        activeTerminalGroupId: "group-term-a",
+      },
+      {
+        terminalOpen: true,
+        terminalHeight: 280,
+        terminalIds: ["term-a"],
+        activeTerminalId: "term-a",
+        terminalGroups: [{ id: "group-term-a", terminalIds: [" term-a "] }],
+        activeTerminalGroupId: "group-term-a",
+      },
+    ];
+
+    for (const malformed of malformedStates) {
+      useTerminalUiStateStore.setState({
+        terminalUiStateByThreadKey: { [threadKey]: malformed },
+        suppressedTerminalIdsByThreadKey: {},
+      });
+      useTerminalUiStateStore.getState().setTerminalHeight(THREAD_REF, 300);
+    }
+
+    useTerminalUiStateStore.getState().setTerminalOpen(THREAD_REF, false);
+    expect(
+      selectThreadTerminalUiState(
+        useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
+        THREAD_REF,
+      ).terminalOpen,
+    ).toBe(false);
+  });
+
+  it("reconciles around a retained active terminal and ensures an existing terminal", () => {
+    const store = useTerminalUiStateStore.getState();
+    store.newTerminal(THREAD_REF, "term-a");
+    store.newTerminal(THREAD_REF, "term-b");
+    store.setActiveTerminal(THREAD_REF, "term-a");
+    store.reconcileTerminalIds(THREAD_REF, ["term-b", "term-a"]);
+    store.ensureTerminal(THREAD_REF, "term-a", { active: false, open: true });
+
+    const state = selectThreadTerminalUiState(
+      useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
+      THREAD_REF,
+    );
+    expect(state.activeTerminalId).toBe("term-a");
+    expect(state.terminalIds).toEqual(["term-b", "term-a"]);
+    expect(state.terminalOpen).toBe(true);
+  });
 });

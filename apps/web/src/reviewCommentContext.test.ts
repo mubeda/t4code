@@ -319,6 +319,78 @@ describe("review comment context parsing", () => {
       );
     });
 
+    it("defaults formatted comments to diff fences", () => {
+      expect(
+        formatReviewCommentContext({
+          id: "default-fence",
+          sectionId: "section",
+          sectionTitle: "Section",
+          filePath: "src/a.ts",
+          startIndex: 0,
+          endIndex: 0,
+          rangeLabel: "L1",
+          text: "note",
+          diff: "+line",
+        }),
+      ).toContain("```diff\n+line\n```");
+    });
+
+    it("renders bounded empty content when parsed diff line arrays are sparse", () => {
+      const contextDiff = parsePatchFiles(
+        [
+          "diff --git a/a.ts b/a.ts",
+          "--- a/a.ts",
+          "+++ b/a.ts",
+          "@@ -1,1 +1,1 @@",
+          " context",
+        ].join("\n"),
+        "review-sparse-context",
+      )[0]!.files[0]!;
+      const contextFromDeletion = buildDiffReviewComment({
+        id: "context-deletion-fallback",
+        sectionId: "s",
+        sectionTitle: "S",
+        filePath: "a.ts",
+        fileDiff: { ...contextDiff, additionLines: [] },
+        range: { start: 1, side: "additions", end: 1 },
+        text: "context",
+      });
+      expect(contextFromDeletion?.diff).toContain(" context");
+
+      const emptyContext = buildDiffReviewComment({
+        id: "context-empty-fallback",
+        sectionId: "s",
+        sectionTitle: "S",
+        filePath: "a.ts",
+        fileDiff: { ...contextDiff, additionLines: [], deletionLines: [] },
+        range: { start: 1, side: "additions", end: 1 },
+        text: "context",
+      });
+      expect(emptyContext?.diff).toMatch(/\n $/);
+
+      const changedDiff = parsePatchFiles(
+        [
+          "diff --git a/a.ts b/a.ts",
+          "--- a/a.ts",
+          "+++ b/a.ts",
+          "@@ -1,1 +1,1 @@",
+          "-old",
+          "+new",
+        ].join("\n"),
+        "review-sparse-change",
+      )[0]!.files[0]!;
+      const sparseChange = buildDiffReviewComment({
+        id: "change-empty-fallbacks",
+        sectionId: "s",
+        sectionTitle: "S",
+        filePath: "a.ts",
+        fileDiff: { ...changedDiff, additionLines: [], deletionLines: [] },
+        range: { start: 1, side: "deletions", end: 1, endSide: "additions" },
+        text: "change",
+      });
+      expect(sparseChange?.diff).toContain("\n-\n+");
+    });
+
     it("appends no-op, blank-prompt, and populated review blocks", () => {
       const comment = buildFileReviewComment({
         id: "file-1",

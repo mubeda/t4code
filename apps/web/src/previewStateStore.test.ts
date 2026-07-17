@@ -19,6 +19,7 @@ import {
   updatePreviewServerSnapshot,
   isPreviewSupportedInRuntime,
 } from "./previewStateStore";
+import { appAtomRegistry } from "./rpc/atomRegistry";
 
 const environmentId = "env-1" as EnvironmentId;
 const ref = scopeThreadRef(environmentId, ThreadId.make("thread-1"));
@@ -555,10 +556,63 @@ describe("previewStateStore (single-tab)", () => {
   });
 
   it("detects desktop preview runtime support", () => {
+    expect(isPreviewSupportedInRuntime()).toBe(false);
     vi.stubGlobal("window", { desktopBridge: { preview: {} } });
     expect(isPreviewSupportedInRuntime()).toBe(true);
     vi.stubGlobal("window", { desktopBridge: {} });
     expect(isPreviewSupportedInRuntime()).toBe(false);
     vi.unstubAllGlobals();
+  });
+
+  it("repairs stale active ids while applying server events", () => {
+    const first = makeSnapshot({ tabId: "tab_first" });
+    const second = makeSnapshot({
+      tabId: "tab_second",
+      updatedAt: "2026-01-01T00:00:01.000Z",
+    });
+    const atom = previewStateAtom(scopedThreadKey(ref));
+    appAtomRegistry.set(atom, {
+      ...__testing.EMPTY_THREAD_PREVIEW_STATE,
+      sessions: { [first.tabId]: first, [second.tabId]: second },
+      activeTabId: "tab_stale",
+      snapshot: first,
+    });
+
+    applyPreviewServerEvent(ref, {
+      type: "closed",
+      threadId: "thread-1",
+      tabId: first.tabId,
+      createdAt: "2026-01-01T00:00:02.000Z",
+    });
+    expect(readThreadPreviewState(ref).activeTabId).toBe(second.tabId);
+
+    appAtomRegistry.set(atom, {
+      ...__testing.EMPTY_THREAD_PREVIEW_STATE,
+      activeTabId: "tab_stale",
+    });
+    applyPreviewServerEvent(ref, {
+      type: "navigated",
+      threadId: "thread-1",
+      tabId: first.tabId,
+      createdAt: first.updatedAt,
+      snapshot: first,
+    });
+    expect(readThreadPreviewState(ref).snapshot).toEqual(first);
+  });
+
+  it("restores an idle close cancellation and activates a tab without desktop overlay", () => {
+    const first = makeSnapshot({ tabId: "tab_first" });
+    const idle = makeSnapshot({ tabId: "tab_idle", navStatus: { _tag: "Idle" } });
+    applyPreviewServerSnapshot(ref, first);
+    applyPreviewServerSnapshot(ref, idle);
+    beginPreviewSessionClose(ref, idle.tabId);
+    cancelPreviewSessionClose(ref, idle, idle.tabId);
+    setActivePreviewTab(ref, first.tabId);
+
+    expect(readThreadPreviewState(ref)).toMatchObject({
+      activeTabId: first.tabId,
+      desktopOverlay: null,
+      recentlySeenUrls: [first.navStatus._tag === "Idle" ? "" : first.navStatus.url],
+    });
   });
 });
