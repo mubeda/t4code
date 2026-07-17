@@ -113,6 +113,7 @@ mod bridge;
 mod config;
 mod context_menu;
 mod security;
+mod shell_environment;
 pub mod ssh;
 mod tailscale;
 mod updates;
