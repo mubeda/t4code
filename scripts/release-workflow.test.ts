@@ -5,12 +5,13 @@ import * as NodeURL from "node:url";
 
 import { assert, it } from "@effect/vitest";
 
-const repoRoot = NodePath.resolve(
-  NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)),
-  "..",
-);
+const repoRoot = NodePath.resolve(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)), "..");
 const releaseWorkflow = NodeFS.readFileSync(
   NodePath.join(repoRoot, ".github", "workflows", "release.yml"),
+  "utf8",
+);
+const releaseDocumentation = NodeFS.readFileSync(
+  NodePath.join(repoRoot, "docs", "operations", "release.md"),
   "utf8",
 );
 
@@ -32,4 +33,11 @@ it("keeps nightly releases manual-only", () => {
   assert.include(releaseWorkflow, "channel:");
   assert.include(releaseWorkflow, "- nightly");
   assert.include(releaseWorkflow, "scripts/resolve-nightly-release.ts");
+});
+
+it("documents nightly releases as manual-only", () => {
+  assert.notInclude(releaseDocumentation, "scheduled nightly");
+  assert.notInclude(releaseDocumentation, "every three hours");
+  assert.include(releaseDocumentation, "manual stable or nightly releases");
+  assert.include(releaseDocumentation, "Manual nightly releases are GitHub prereleases");
 });
