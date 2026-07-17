@@ -518,6 +518,24 @@ mod tests {
     };
 
     #[cfg(unix)]
+    fn process_exists(pid: u32) -> bool {
+        Command::new("/bin/kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    #[cfg(unix)]
+    fn wait_for_process_disappearance(pid: u32, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while process_exists(pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        !process_exists(pid)
+    }
+
+    #[cfg(unix)]
     #[test]
     fn parses_path_between_delimiters_and_ignores_shell_output() {
         let output = b"welcome\n__T4CODE_PATH_START__/opt/homebrew/bin:/usr/bin\
@@ -727,12 +745,10 @@ printf '__T4CODE_PATH_END__'",
 
         assert_eq!(result, Err(PathHydrationFailure::TimedOut));
         assert_ne!(pid, 0, "probe did not record the spawned shell PID");
-        let alive = Command::new("/bin/kill")
-            .args(["-0", &pid.to_string()])
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success());
-        assert!(!alive, "timed-out shell process was not reaped");
+        assert!(
+            wait_for_process_disappearance(pid, Duration::from_secs(1)),
+            "timed-out shell process was not reaped"
+        );
     }
 
     #[cfg(unix)]
@@ -760,13 +776,15 @@ printf '__T4CODE_PATH_START__/user/bin:/usr/bin__T4CODE_PATH_END__'",
             started.elapsed() < Duration::from_secs(3),
             "probe exceeded its bounded cleanup window"
         );
-        let pid = std::fs::read_to_string(pid_path).unwrap();
-        let alive = Command::new("/bin/kill")
-            .args(["-0", pid.trim()])
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success());
-        assert!(!alive, "background shell descendant remained alive");
+        let pid = std::fs::read_to_string(pid_path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(
+            wait_for_process_disappearance(pid, Duration::from_secs(1)),
+            "background shell descendant remained alive"
+        );
     }
 
     #[test]
