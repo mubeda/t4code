@@ -10,6 +10,7 @@ import {
 interface HarnessOptions {
   readonly projects?: ReadonlyArray<AddProjectRecord>;
   readonly clonePath?: string;
+  readonly cloneError?: unknown;
   readonly createError?: unknown;
   readonly createInterrupted?: boolean;
 }
@@ -22,10 +23,14 @@ function makeHarness(options: HarnessOptions = {}) {
         ? ({ _tag: "Failure", error: options.createError } as const)
         : ({ _tag: "Success", value: undefined } as const),
   );
-  const cloneRepository = vi.fn(async () => ({
-    _tag: "Success" as const,
-    value: { path: options.clonePath ?? "/code/cloned" },
-  }));
+  const cloneRepository = vi.fn(async () =>
+    options.cloneError
+      ? ({ _tag: "Failure", error: options.cloneError } as const)
+      : ({
+          _tag: "Success" as const,
+          value: { path: options.clonePath ?? "/code/cloned" },
+        } as const),
+  );
   const openProject = vi.fn(async () => ({
     _tag: "Success" as const,
     value: undefined,
@@ -107,8 +112,31 @@ describe("add project operations", () => {
       parentDir: "/code",
     });
     expect(harness.createProject).toHaveBeenCalledWith(
-      expect.objectContaining({ workspaceRoot: "/code/demo" }),
+      expect.objectContaining({
+        workspaceRoot: "/code/demo",
+        createWorkspaceRootIfMissing: false,
+        initializeGit: false,
+      }),
     );
+    expect(harness.openProject).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a failed clone and does not register or navigate", async () => {
+    const error = new Error("clone denied");
+    const harness = makeHarness({ cloneError: error });
+    const operations = createAddProjectOperations(harness.dependencies);
+
+    await expect(
+      operations.clone({
+        environmentId: EnvironmentId.make("local"),
+        url: "https://example.test/demo.git",
+        parentDir: "/code",
+      }),
+    ).resolves.toBe(false);
+
+    expect(harness.reportFailure).toHaveBeenCalledWith("Clone failed", error);
+    expect(harness.createProject).not.toHaveBeenCalled();
+    expect(harness.openProject).not.toHaveBeenCalled();
   });
 
   it("creates and initializes Git through project.create", async () => {
@@ -159,5 +187,66 @@ describe("add project operations", () => {
 
     expect(harness.reportFailure).not.toHaveBeenCalled();
     expect(harness.openProject).not.toHaveBeenCalled();
+  });
+
+  it("reports a rejected create command and does not navigate", async () => {
+    const error = new Error("disk disconnected");
+    const harness = makeHarness();
+    harness.createProject.mockRejectedValue(error);
+    const operations = createAddProjectOperations(harness.dependencies);
+
+    await expect(
+      operations.create({
+        environmentId: EnvironmentId.make("local"),
+        workspaceRoot: "/code/demo",
+      }),
+    ).resolves.toBe(false);
+
+    expect(harness.reportFailure).toHaveBeenCalledWith("Failed to create project", error);
+    expect(harness.openProject).not.toHaveBeenCalled();
+  });
+
+  it("reports a rejected clone command and does not register or navigate", async () => {
+    const error = new Error("network disconnected");
+    const harness = makeHarness();
+    harness.cloneRepository.mockRejectedValue(error);
+    const operations = createAddProjectOperations(harness.dependencies);
+
+    await expect(
+      operations.clone({
+        environmentId: EnvironmentId.make("local"),
+        url: "https://example.test/demo.git",
+        parentDir: "/code",
+      }),
+    ).resolves.toBe(false);
+
+    expect(harness.reportFailure).toHaveBeenCalledWith("Clone failed", error);
+    expect(harness.createProject).not.toHaveBeenCalled();
+    expect(harness.openProject).not.toHaveBeenCalled();
+  });
+
+  it("reports a rejected open command", async () => {
+    const error = new Error("navigation unavailable");
+    const harness = makeHarness({
+      projects: [
+        {
+          id: ProjectId.make("existing"),
+          environmentId: EnvironmentId.make("local"),
+          workspaceRoot: "/code/demo",
+        },
+      ],
+    });
+    harness.openProject.mockRejectedValue(error);
+    const operations = createAddProjectOperations(harness.dependencies);
+
+    await expect(
+      operations.addFolder({
+        environmentId: EnvironmentId.make("local"),
+        workspaceRoot: "/code/demo",
+      }),
+    ).resolves.toBe(false);
+
+    expect(harness.createProject).not.toHaveBeenCalled();
+    expect(harness.reportFailure).toHaveBeenCalledWith("Failed to open project", error);
   });
 });
