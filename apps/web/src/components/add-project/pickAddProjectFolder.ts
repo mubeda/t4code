@@ -13,7 +13,7 @@ import {
   type WslEnvironmentCandidate,
 } from "~/wslPaths";
 
-import type { AddProjectHostOption } from "./AddProjectDialog.logic";
+import { shouldUseNativePicker, type AddProjectHostOption } from "./AddProjectDialog.logic";
 
 export type PickAddProjectFolderResult =
   | { readonly _tag: "Cancelled" }
@@ -33,6 +33,13 @@ export interface PickAddProjectFolderInput {
 export async function pickAddProjectFolder(
   input: PickAddProjectFolderInput,
 ): Promise<PickAddProjectFolderResult> {
+  if (!shouldUseNativePicker(input.host)) {
+    return {
+      _tag: "Failure",
+      message: "This host does not support folder picking. Enter its project path manually.",
+    };
+  }
+
   const wslState =
     input.host.isPrimary && input.host.platform === "Linux"
       ? await input.getWslState().catch(() => null)
