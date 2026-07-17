@@ -1356,6 +1356,21 @@ esac
             .expect("Azure current PR should resolve");
         assert_eq!(current.number, 44);
 
+        for (provider, expected) in [(ProviderKind::Github, 42), (ProviderKind::Gitlab, 43)] {
+            let current = service
+                .resolve_current(
+                    ResolvePullRequestInput {
+                        cwd: temporary.path().to_path_buf(),
+                        provider,
+                        reference: "feature".to_owned(),
+                    },
+                    &cancellation,
+                )
+                .await
+                .expect("current provider PR should resolve");
+            assert_eq!(current.number, expected);
+        }
+
         for (provider, expected) in [
             (ProviderKind::Github, 42),
             (ProviderKind::Gitlab, 43),
@@ -1390,6 +1405,98 @@ esac
                 .expect("provider PR should create");
             assert_eq!(created.number, expected);
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn provider_cli_flows_report_spawn_exit_and_payload_failures() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let temporary = tempfile::tempdir().expect("provider CLI directory");
+        let cancellation = CancellationToken::new();
+        let missing = temporary
+            .path()
+            .join("missing")
+            .to_string_lossy()
+            .into_owned();
+        let missing_service =
+            PullRequestService::with_provider_commands(missing.clone(), missing.clone(), missing);
+        let resolve_input = |provider| ResolvePullRequestInput {
+            cwd: temporary.path().to_path_buf(),
+            provider,
+            reference: "feature".to_owned(),
+        };
+        assert!(
+            missing_service
+                .resolve(resolve_input(ProviderKind::Github), &cancellation)
+                .await
+                .unwrap_err()
+                .detail
+                .contains("execution failed")
+        );
+
+        let failed = temporary.path().join("failed");
+        std::fs::write(&failed, "#!/bin/sh\nexit 7\n").unwrap();
+        std::fs::set_permissions(&failed, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let failed_command = failed.to_string_lossy().into_owned();
+        let failed_service = PullRequestService::with_provider_commands(
+            failed_command.clone(),
+            failed_command.clone(),
+            failed_command,
+        );
+        assert!(
+            failed_service
+                .resolve(resolve_input(ProviderKind::Github), &cancellation)
+                .await
+                .unwrap_err()
+                .detail
+                .contains("not found or provider authentication failed")
+        );
+
+        let invalid = temporary.path().join("invalid");
+        std::fs::write(&invalid, "#!/bin/sh\nprintf invalid\n").unwrap();
+        std::fs::set_permissions(&invalid, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let invalid_command = invalid.to_string_lossy().into_owned();
+        let invalid_service = PullRequestService::with_provider_commands(
+            invalid_command.clone(),
+            invalid_command.clone(),
+            invalid_command,
+        );
+        assert!(
+            invalid_service
+                .resolve(resolve_input(ProviderKind::Github), &cancellation)
+                .await
+                .unwrap_err()
+                .detail
+                .contains("unrecognized change-request payload")
+        );
+        assert!(
+            invalid_service
+                .resolve_current(resolve_input(ProviderKind::AzureDevops), &cancellation)
+                .await
+                .unwrap_err()
+                .detail
+                .contains("No open pull request")
+        );
+        assert!(
+            invalid_service
+                .create(
+                    CreatePullRequestInput {
+                        cwd: temporary.path().to_path_buf(),
+                        provider: ProviderKind::Github,
+                        base_branch: "main".to_owned(),
+                        head_branch: "feature".to_owned(),
+                        title: "Invalid output".to_owned(),
+                        body: String::new(),
+                    },
+                    &cancellation,
+                )
+                .await
+                .unwrap_err()
+                .detail
+                .contains("unrecognized pull-request payload")
+        );
     }
 
     async fn bitbucket_repository() -> TempDir {
