@@ -267,7 +267,50 @@ unsafe extern "C" {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Error, ErrorKind};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::time::Duration;
+
+    #[derive(Debug)]
+    enum TestWriter {
+        WriteError,
+        FlushError,
+    }
+
+    impl Write for TestWriter {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            match self {
+                Self::WriteError => Err(Error::new(ErrorKind::BrokenPipe, "write failed")),
+                Self::FlushError => Ok(buffer.len()),
+            }
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            match self {
+                Self::WriteError => Ok(()),
+                Self::FlushError => Err(Error::new(ErrorKind::BrokenPipe, "flush failed")),
+            }
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct TestKiller {
+        fail: bool,
+    }
+
+    impl portable_pty::ChildKiller for TestKiller {
+        fn kill(&mut self) -> std::io::Result<()> {
+            if self.fail {
+                Err(Error::new(ErrorKind::PermissionDenied, "kill failed"))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+            Box::new(self.clone())
+        }
+    }
 
     #[test]
     fn executable_discovery_handles_absolute_relative_and_overridden_paths() {
@@ -372,5 +415,77 @@ mod tests {
             })
             .unwrap_err();
         assert!(error.contains("shell executable was not found"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn portable_process_reports_writer_resize_and_killer_failures() {
+        let (resize, resize_requests) = mpsc::sync_channel(1);
+        let (output, _) = broadcast::channel(1);
+        let (exit, _) = watch::channel(None);
+        let process = PortablePtyProcess {
+            pid: 42,
+            resize,
+            writer: Mutex::new(Box::new(TestWriter::WriteError)),
+            killer: Mutex::new(Box::new(TestKiller { fail: true })),
+            output,
+            exit,
+            #[cfg(unix)]
+            process_group: None,
+        };
+
+        assert!(process.write("data").unwrap_err().contains("write failed"));
+        *process.writer.lock().unwrap() = Box::new(TestWriter::FlushError);
+        assert!(process.write("data").unwrap_err().contains("flush failed"));
+
+        process.resize(80, 24).unwrap();
+        process.resize(100, 40).unwrap();
+        drop(resize_requests);
+        assert_eq!(
+            process.resize(120, 50).unwrap_err(),
+            "PTY resize worker is not available"
+        );
+
+        assert!(process.kill().unwrap_err().contains("kill failed"));
+        let mut cloned_killer = process.killer.lock().unwrap().clone_killer();
+        assert!(
+            cloned_killer
+                .kill()
+                .unwrap_err()
+                .to_string()
+                .contains("kill failed")
+        );
+        *process.killer.lock().unwrap() = Box::new(TestKiller { fail: false });
+        process.kill().unwrap();
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn portable_process_reports_poisoned_writer_and_killer_locks() {
+        let (resize, _resize_requests) = mpsc::sync_channel(1);
+        let (output, _) = broadcast::channel(1);
+        let (exit, _) = watch::channel(None);
+        let process = PortablePtyProcess {
+            pid: 43,
+            resize,
+            writer: Mutex::new(Box::new(TestWriter::FlushError)),
+            killer: Mutex::new(Box::new(TestKiller { fail: false })),
+            output,
+            exit,
+            #[cfg(unix)]
+            process_group: None,
+        };
+
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = process.writer.lock().unwrap();
+            panic!("poison writer");
+        }));
+        assert!(process.write("data").unwrap_err().contains("poisoned lock"));
+
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = process.killer.lock().unwrap();
+            panic!("poison killer");
+        }));
+        assert!(process.kill().unwrap_err().contains("poisoned lock"));
     }
 }
