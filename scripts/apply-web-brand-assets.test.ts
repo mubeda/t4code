@@ -65,7 +65,7 @@ it.layer(NodeServices.layer)("apply-web-brand-assets", (it) => {
       );
 
       assert.lengthOf(copies, 4);
-      assert.match(copies[0]![0], /[\\/]assets[\\/]dev[\\/]/);
+      assert.match(copies[0]![0], /[\\/]assets[\\/]prod[\\/]/);
       assert.match(copies[0]![1], /[\\/]output[\\/]/);
     });
   });
