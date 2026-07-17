@@ -207,6 +207,16 @@ async fn cursor_runtime_matches_approval_and_cancel_traces() {
             "id": 1002,
             "result": { "outcome": { "outcome": "cancelled" } }
         }))
+        .emit_notification_after_response(json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": { "type": "text", "text": "ignored after cancel" }
+                }
+            }
+        }))
         .expect_notification("session/cancel")
         .respond(json!({ "stopReason": "cancelled" }));
 
@@ -490,6 +500,412 @@ async fn cursor_extension_requests_emit_plan_todos_and_questions() {
     peer_task.await.expect("peer");
 }
 
+#[tokio::test]
+async fn cursor_runtime_covers_resume_permission_and_notification_edges() {
+    let (connection, incoming, mut peer) = scripted_peer();
+    let runtime = CursorSessionRuntime::new(
+        CursorSessionOptions {
+            thread_id: "cursor-edge-thread".to_owned(),
+            cwd: "/tmp/cursor-edge".to_owned(),
+            runtime_mode: "approval-required".to_owned(),
+            interaction_mode: "default".to_owned(),
+            model: "gpt-edge".to_owned(),
+            resume_session_id: Some("cursor-resumed".to_owned()),
+            mcp_servers: Vec::new(),
+        },
+        connection,
+        incoming,
+    );
+
+    assert!(
+        runtime
+            .send_turn(Some("before start"), Vec::new())
+            .await
+            .expect_err("turns require a provider session")
+            .to_string()
+            .contains("has not started")
+    );
+    assert!(
+        runtime
+            .respond_to_request("missing", "accept")
+            .await
+            .expect_err("unknown approvals must fail")
+            .to_string()
+            .contains("Unknown pending request id missing")
+    );
+    assert!(
+        runtime
+            .respond_to_user_input("missing-input", json!({}))
+            .await
+            .expect_err("unknown prompts must fail")
+            .to_string()
+            .contains("Unknown pending request id missing-input")
+    );
+
+    peer.expect_request("initialize").respond(json!({}));
+    peer.expect_request("authenticate")
+        .expect_params(json!({ "methodId": "cursor_login" }))
+        .respond(json!({}));
+    peer.expect_request("session/load")
+        .expect_params(json!({ "sessionId": "cursor-resumed" }))
+        .respond(json!({
+            "configOptions": [{ "id": "model", "category": "model" }],
+            "modes": {
+                "currentModeId": "code",
+                "availableModes": [
+                    { "id": "architect", "name": "Plan" },
+                    { "id": "ask", "name": "Ask" },
+                    { "id": "code", "name": "Agent" }
+                ]
+            }
+        }));
+    peer.expect_request("session/set_config_option")
+        .expect_params(json!({
+            "sessionId": "cursor-resumed",
+            "configId": "model",
+            "value": "gpt-edge",
+        }))
+        .respond(json!({
+            "configOptions": [{ "id": "model-next", "category": "model" }]
+        }));
+    peer.expect_request("session/set_mode")
+        .expect_params(json!({ "sessionId": "cursor-resumed", "modeId": "ask" }))
+        .respond(json!({}));
+    peer.expect_request("session/set_mode")
+        .expect_params(json!({ "sessionId": "cursor-resumed", "modeId": "code" }))
+        .respond(json!({}));
+    peer.expect_request("session/set_mode")
+        .expect_params(json!({ "sessionId": "cursor-resumed", "modeId": "architect" }))
+        .respond(json!({}));
+    peer.expect_request("session/set_mode")
+        .expect_params(json!({ "sessionId": "cursor-resumed", "modeId": "code" }))
+        .respond(json!({}));
+    peer.expect_request("session/set_mode")
+        .expect_params(json!({ "sessionId": "cursor-resumed", "modeId": "ask" }))
+        .respond(json!({}));
+
+    for (wire_id, expected_option) in [(5001, "always"), (5002, "reject")] {
+        peer.expect_request("session/prompt")
+            .emit_request(cursor_permission_request(wire_id))
+            .expect_response(json!({
+                "jsonrpc": "2.0",
+                "id": wire_id,
+                "result": {
+                    "outcome": { "outcome": "selected", "optionId": expected_option }
+                }
+            }))
+            .respond(json!({ "stopReason": "end_turn" }));
+    }
+
+    peer.expect_request("session/prompt")
+        .emit_request(json!({
+            "jsonrpc": "2.0",
+            "id": 5003,
+            "method": "x.ai/ask_user_question",
+            "params": {
+                "params": {
+                    "questions": [
+                        { "question": "Targets", "options": [] },
+                        {}
+                    ]
+                }
+            }
+        }))
+        .expect_response(json!({
+            "jsonrpc": "2.0",
+            "id": 5003,
+            "result": {
+                "outcome": "accepted",
+                "answers": {
+                    "array": ["server", "desktop"],
+                    "string": ["all"],
+                    "ignored": []
+                }
+            }
+        }))
+        .respond(json!({ "stopReason": "end_turn" }));
+
+    peer.expect_request("session/prompt")
+        .emit_request(json!({
+            "jsonrpc": "2.0",
+            "id": 5004,
+            "method": "_x.ai/ask_user_question",
+            "params": { "questions": [] }
+        }))
+        .expect_response(json!({
+            "jsonrpc": "2.0",
+            "id": 5004,
+            "result": { "outcome": "cancelled" }
+        }))
+        .respond(json!({ "stopReason": "end_turn" }));
+
+    peer.expect_request("session/prompt")
+        .emit_stderr("cursor edge warning")
+        .emit_request(json!({
+            "jsonrpc": "2.0",
+            "id": 5005,
+            "method": "cursor/create_plan",
+            "params": { "plan": "" }
+        }))
+        .emit_notification_after_response(json!({
+            "jsonrpc": "2.0",
+            "method": "cursor/update_todos",
+            "params": {
+                "todos": [
+                    { "content": "  " },
+                    { "title": "Queued task", "status": "queued" },
+                    { "content": "Finished task", "status": "completed" }
+                ]
+            }
+        }))
+        .emit_notification_after_response(json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "update": { "sessionUpdate": "plan" }
+            }
+        }))
+        .emit_notification_after_response(json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "title": "Fallback command"
+                }
+            }
+        }))
+        .emit_notification_after_response(json!({
+            "jsonrpc": "2.0",
+            "method": "ignored/notification",
+            "params": {}
+        }))
+        .expect_response(json!({
+            "jsonrpc": "2.0",
+            "id": 5005,
+            "result": { "accepted": true }
+        }))
+        .respond(json!({}));
+
+    peer.expect_request("session/prompt")
+        .emit_request(json!({
+            "jsonrpc": "2.0",
+            "id": 5006,
+            "method": "unsupported/request",
+            "params": {}
+        }))
+        .expect_response(json!({
+            "jsonrpc": "2.0",
+            "id": 5006,
+            "error": {
+                "code": -32601,
+                "message": "Method not found: unsupported/request",
+                "data": null
+            }
+        }))
+        .respond(json!({ "stopReason": "end_turn" }));
+
+    let peer_task = tokio::spawn(peer.run());
+    assert_eq!(runtime.start().await.expect("resume"), "cursor-resumed");
+    runtime.collect_events(2).await;
+    runtime
+        .set_runtime_mode("full-access")
+        .await
+        .expect("full access mode");
+    runtime
+        .set_interaction_mode("plan")
+        .await
+        .expect("plan mode");
+    runtime
+        .set_interaction_mode("default")
+        .await
+        .expect("default mode");
+    runtime
+        .set_runtime_mode("approval-required")
+        .await
+        .expect("approval mode");
+
+    for (wire_id, decision) in [(5001, "acceptForSession"), (5002, "decline")] {
+        let turn_id = runtime
+            .send_turn(Some("permission"), Vec::new())
+            .await
+            .expect("permission turn");
+        let request_id = format!("approval:{wire_id}");
+        next_cursor_event_matching(&runtime, |event| {
+            event.event_type == "request.opened"
+                && event.request_id.as_deref() == Some(request_id.as_str())
+        })
+        .await;
+        runtime
+            .respond_to_request(&request_id, decision)
+            .await
+            .expect("permission decision");
+        next_cursor_event_matching(&runtime, |event| {
+            event.event_type == "turn.completed"
+                && event.turn_id.as_deref() == Some(turn_id.as_str())
+        })
+        .await;
+    }
+
+    let normalized_turn = runtime
+        .send_turn(Some("normalize answers"), Vec::new())
+        .await
+        .expect("input turn");
+    let requested = next_cursor_event_matching(&runtime, |event| {
+        event.request_id.as_deref() == Some("user-input:5003")
+    })
+    .await;
+    assert_eq!(requested.payload["questions"][0]["id"], "Targets");
+    assert_eq!(requested.payload["questions"][1]["id"], "");
+    runtime
+        .respond_to_user_input(
+            "user-input:5003",
+            json!({
+                "array": ["server", "desktop"],
+                "string": "all",
+                "ignored": 42,
+            }),
+        )
+        .await
+        .expect("normalized response");
+    next_cursor_event_matching(&runtime, |event| {
+        event.event_type == "turn.completed"
+            && event.turn_id.as_deref() == Some(normalized_turn.as_str())
+    })
+    .await;
+
+    let cancelled_input_turn = runtime
+        .send_turn(Some("cancel prompt"), Vec::new())
+        .await
+        .expect("cancel input turn");
+    next_cursor_event_matching(&runtime, |event| {
+        event.request_id.as_deref() == Some("user-input:5004")
+    })
+    .await;
+    runtime
+        .respond_to_request("user-input:5004", "cancel")
+        .await
+        .expect("generic cancellation");
+    next_cursor_event_matching(&runtime, |event| {
+        event.event_type == "turn.completed"
+            && event.turn_id.as_deref() == Some(cancelled_input_turn.as_str())
+    })
+    .await;
+
+    let notification_turn = runtime
+        .send_turn(Some("notifications"), Vec::new())
+        .await
+        .expect("notification turn");
+    let notification_events = collect_cursor_turn(&runtime, &notification_turn).await;
+    assert!(notification_events.iter().any(|event| {
+        event.event_type == "runtime.warning"
+            && event.payload["message"] == json!("cursor edge warning")
+    }));
+    assert!(notification_events.iter().any(|event| {
+        event.event_type == "turn.proposed.completed"
+            && event.payload["planMarkdown"]
+                == json!("# Plan\n\n(Cursor did not supply plan text.)")
+    }));
+    assert!(notification_events.iter().any(|event| {
+        event.event_type == "item.updated" && event.payload["detail"] == json!("Fallback command")
+    }));
+
+    let unknown_turn = runtime
+        .send_turn(Some("unknown"), Vec::new())
+        .await
+        .expect("unknown turn");
+    next_cursor_event_matching(&runtime, |event| {
+        event.event_type == "turn.completed"
+            && event.turn_id.as_deref() == Some(unknown_turn.as_str())
+    })
+    .await;
+    peer_task.await.expect("peer");
+    let exited =
+        next_cursor_event_matching(&runtime, |event| event.event_type == "session.exited").await;
+    assert!(exited.payload["reason"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn cursor_runtime_rejects_new_sessions_without_an_identifier() {
+    let (connection, incoming, mut peer) = scripted_peer();
+    let runtime = CursorSessionRuntime::new(
+        CursorSessionOptions {
+            thread_id: "cursor-invalid-thread".to_owned(),
+            cwd: "/tmp/cursor-invalid".to_owned(),
+            runtime_mode: "approval-required".to_owned(),
+            interaction_mode: "default".to_owned(),
+            model: String::new(),
+            resume_session_id: None,
+            mcp_servers: Vec::new(),
+        },
+        connection,
+        incoming,
+    );
+    peer.expect_request("initialize").respond(json!({}));
+    peer.expect_request("authenticate").respond(json!({}));
+    peer.expect_request("session/new").respond(json!({}));
+    let peer_task = tokio::spawn(peer.run());
+    assert!(
+        runtime
+            .start()
+            .await
+            .expect_err("missing session identifiers must fail")
+            .to_string()
+            .contains("has not started")
+    );
+    peer_task.await.expect("peer");
+}
+
+fn cursor_permission_request(wire_id: u64) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": wire_id,
+        "method": "session/request_permission",
+        "params": {
+            "toolCall": { "title": "`edge command`" },
+            "options": [
+                { "optionId": "once", "kind": "allow_once" },
+                { "optionId": "always", "kind": "allow_always" },
+                { "optionId": "reject", "kind": "reject_once" }
+            ]
+        }
+    })
+}
+
+async fn collect_cursor_turn(
+    runtime: &CursorSessionRuntime,
+    turn_id: &str,
+) -> Vec<cursor::CursorRuntimeEvent> {
+    let mut events = Vec::new();
+    loop {
+        let event = timeout(Duration::from_secs(5), runtime.next_event())
+            .await
+            .expect("cursor event timeout")
+            .expect("cursor event");
+        let completed =
+            event.event_type == "turn.completed" && event.turn_id.as_deref() == Some(turn_id);
+        events.push(event);
+        if completed {
+            return events;
+        }
+    }
+}
+
+async fn next_cursor_event_matching(
+    runtime: &CursorSessionRuntime,
+    predicate: impl Fn(&cursor::CursorRuntimeEvent) -> bool,
+) -> cursor::CursorRuntimeEvent {
+    loop {
+        let event = timeout(Duration::from_secs(5), runtime.next_event())
+            .await
+            .expect("cursor event timeout")
+            .expect("cursor event");
+        if predicate(&event) {
+            return event;
+        }
+    }
+}
+
 fn fixture(name: &str) -> Value {
     serde_json::from_str(
         &std::fs::read_to_string(fixture_directory().join(name)).expect("fixture file"),
@@ -569,6 +985,7 @@ impl ScriptedPeer {
             emits_after_follow_up: Vec::new(),
             expected_follow_up: None,
             expected_notification: None,
+            stderr_messages: Vec::new(),
         });
         self.steps.last_mut().expect("step")
     }
@@ -576,7 +993,7 @@ impl ScriptedPeer {
     async fn run(self) {
         let mut reader = BufReader::new(self.stdin_reader);
         let mut writer = self.stdout_writer;
-        let _stderr = self.stderr;
+        let mut stderr = self.stderr;
         for step in self.steps {
             match step {
                 PeerStep::ExpectRequest {
@@ -587,12 +1004,16 @@ impl ScriptedPeer {
                     emits_after_follow_up,
                     expected_follow_up,
                     expected_notification,
+                    stderr_messages,
                 } => {
                     let message =
                         read_json_message(&mut reader, &format!("request:{method}")).await;
                     assert_eq!(message["method"], method);
                     if let Some(expected_params) = expected_params {
                         assert_eq!(message["params"], expected_params);
+                    }
+                    for message in stderr_messages {
+                        write_line(&mut stderr, &message).await;
                     }
                     for emit in emits {
                         write_json(&mut writer, emit).await;
@@ -623,6 +1044,7 @@ impl ScriptedPeer {
                 }
             }
         }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -635,6 +1057,7 @@ enum PeerStep {
         emits_after_follow_up: Vec<Value>,
         expected_follow_up: Option<Value>,
         expected_notification: Option<String>,
+        stderr_messages: Vec<String>,
     },
 }
 
@@ -684,6 +1107,14 @@ impl PeerStep {
         *expected_notification = Some(method.to_owned());
         self
     }
+
+    fn emit_stderr(&mut self, message: &str) -> &mut Self {
+        let PeerStep::ExpectRequest {
+            stderr_messages, ..
+        } = self;
+        stderr_messages.push(message.to_owned());
+        self
+    }
 }
 
 async fn read_json_message<R>(reader: &mut BufReader<R>, context: &str) -> Value
@@ -710,5 +1141,18 @@ where
         .write_all(format!("{value}\n").as_bytes())
         .await
         .expect("write json");
+    writer.flush().await.expect("flush");
+}
+
+async fn write_line<W>(writer: &mut W, value: &str)
+where
+    W: AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+
+    writer
+        .write_all(format!("{value}\n").as_bytes())
+        .await
+        .expect("write line");
     writer.flush().await.expect("flush");
 }
