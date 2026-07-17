@@ -1467,6 +1467,74 @@ async fn source_control_discovery_and_typed_errors_are_deterministic() {
     assert_eq!(unknown_editor["_tag"], "ExternalLauncherUnknownEditorError");
     assert_eq!(unknown_editor["editor"], "unknown-editor");
 
+    request(
+        server.socket(),
+        "509",
+        "sourceControl.lookupRepository",
+        json!({ "provider": "gitlab", "repository": "acme/repo" }),
+    )
+    .await;
+    let missing_gitlab_cli = failure_value(server.socket(), "509").await;
+    assert_eq!(missing_gitlab_cli["_tag"], "SourceControlRepositoryError");
+    assert_eq!(missing_gitlab_cli["provider"], "gitlab");
+
+    request(
+        server.socket(),
+        "510",
+        "sourceControl.lookupRepository",
+        json!({ "provider": "github", "repository": "://" }),
+    )
+    .await;
+    let invalid_github_repository = failure_value(server.socket(), "510").await;
+    assert_eq!(
+        invalid_github_repository["_tag"],
+        "SourceControlRepositoryError"
+    );
+    assert_eq!(invalid_github_repository["provider"], "github");
+
+    request(
+        server.socket(),
+        "511",
+        "sourceControl.cloneRepository",
+        json!({
+            "remoteUrl": local_file_url(&remote),
+            "destinationPath": "/",
+        }),
+    )
+    .await;
+    let parentless_destination = failure_value(server.socket(), "511").await;
+    assert_eq!(parentless_destination["_tag"], "RpcRequestInvalid");
+
+    request(
+        server.socket(),
+        "512",
+        "sourceControl.publishRepository",
+        json!({
+            "cwd": cwd,
+            "provider": "gitlab",
+            "repository": "acme/repo",
+            "visibility": "private",
+        }),
+    )
+    .await;
+    let unsupported_publisher = failure_value(server.socket(), "512").await;
+    assert_eq!(
+        unsupported_publisher["_tag"],
+        "SourceControlRepositoryError"
+    );
+    assert_eq!(unsupported_publisher["provider"], "gitlab");
+
+    request(
+        server.socket(),
+        "513",
+        "shell.openInEditor",
+        json!({ "cwd": cwd, "editor": "rustrover" }),
+    )
+    .await;
+    let missing_editor = failure_value(server.socket(), "513").await;
+    assert_eq!(missing_editor["_tag"], "ExternalLauncherEditorSpawnError");
+    assert_eq!(missing_editor["editor"], "rustrover");
+
     server.shutdown().await;
 }
 
