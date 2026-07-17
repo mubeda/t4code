@@ -799,7 +799,7 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           title="Add project starts in"
-          description='Leave empty to use "~/" when the Add Project browser opens.'
+          description='Leave empty to use "~/" for Clone and Create in Add Project.'
           resetAction={
             settings.addProjectBaseDirectory !==
             DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory ? (
