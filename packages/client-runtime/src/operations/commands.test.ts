@@ -93,6 +93,30 @@ describe("environment commands", () => {
     }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
   );
 
+  it.effect("preserves atomic Git project creation options", () =>
+    Effect.gen(function* () {
+      const dispatched: ClientOrchestrationCommand[] = [];
+      const supervisor = yield* makeSupervisor(dispatched);
+
+      yield* createProject({
+        commandId: CommandId.make("create-git-project"),
+        projectId: ProjectId.make("project-git"),
+        title: "Git Project",
+        workspaceRoot: "/tmp/project-git",
+        createWorkspaceRootIfMissing: true,
+        initializeGit: true,
+        createdAt: "2026-07-17T00:00:00.000Z",
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+
+      expect(dispatched[0]).toMatchObject({
+        type: "project.create",
+        projectId: "project-git",
+        createWorkspaceRootIfMissing: true,
+        initializeGit: true,
+      });
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
   it.effect("preserves caller metadata for idempotent queued commands", () =>
     Effect.gen(function* () {
       const dispatched: ClientOrchestrationCommand[] = [];

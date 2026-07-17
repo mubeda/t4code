@@ -132,6 +132,7 @@ it.effect("trims branded ids and command string fields at decode boundaries", ()
     assert.strictEqual(parsed.title, "Project Title");
     assert.strictEqual(parsed.workspaceRoot, "/tmp/workspace");
     assert.strictEqual(parsed.createWorkspaceRootIfMissing, undefined);
+    assert.strictEqual(parsed.initializeGit, undefined);
     assert.deepStrictEqual(parsed.defaultModelSelection, {
       instanceId: ProviderInstanceId.make("codex"),
       model: "gpt-5.2",
@@ -152,6 +153,23 @@ it.effect("decodes project.create with createWorkspaceRootIfMissing enabled", ()
     });
 
     assert.strictEqual(parsed.createWorkspaceRootIfMissing, true);
+  }),
+);
+
+it.effect("decodes project.create with Git initialization enabled", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeProjectCreateCommand({
+      type: "project.create",
+      commandId: "cmd-1",
+      projectId: "project-1",
+      title: "Project Title",
+      workspaceRoot: "/tmp/workspace",
+      createWorkspaceRootIfMissing: true,
+      initializeGit: true,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.initializeGit, true);
   }),
 );
 

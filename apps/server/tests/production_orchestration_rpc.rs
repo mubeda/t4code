@@ -151,6 +151,90 @@ async fn orchestration_rpc_registration_has_the_contract_modes() {
 }
 
 #[tokio::test]
+async fn project_create_can_initialize_git_before_registration() {
+    let harness = harness().await;
+    let outcome = AssertUnwindSafe(async {
+        let mut socket = harness.connect().await;
+        let workspace = harness._temp.path().join("git-project");
+
+        dispatch_command(
+            &mut socket,
+            "1",
+            json!({
+                "type": "project.create",
+                "commandId": "create-git-project",
+                "projectId": "git-project",
+                "title": "Git Project",
+                "workspaceRoot": workspace,
+                "createWorkspaceRootIfMissing": true,
+                "initializeGit": true,
+                "createdAt": CREATED_AT,
+            }),
+        )
+        .await;
+
+        assert!(workspace.join(".git").is_dir());
+        let snapshot = load_snapshot(&harness.engine.repositories())
+            .await
+            .expect("snapshot");
+        assert!(
+            snapshot
+                .projects
+                .iter()
+                .any(|project| project.project_id == "git-project")
+        );
+        socket.close(None).await.expect("close WebSocket");
+    })
+    .catch_unwind()
+    .await;
+    finish_test(harness, outcome).await;
+}
+
+#[tokio::test]
+async fn failed_git_initialization_does_not_register_project() {
+    let harness = harness().await;
+    let outcome = AssertUnwindSafe(async {
+        let mut socket = harness.connect().await;
+        let workspace = harness._temp.path().join("blocked-git-project");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        std::fs::write(workspace.join(".git"), "not a directory").expect("blocking .git file");
+
+        rpc_request(
+            &mut socket,
+            "1",
+            "orchestration.dispatchCommand",
+            json!({
+                "type": "project.create",
+                "commandId": "create-blocked-git-project",
+                "projectId": "blocked-git-project",
+                "title": "Blocked Git Project",
+                "workspaceRoot": workspace,
+                "createWorkspaceRootIfMissing": false,
+                "initializeGit": true,
+                "createdAt": CREATED_AT,
+            }),
+        )
+        .await;
+        let error = expect_failure(&mut socket, "1").await;
+        assert_eq!(error["_tag"], json!("InvalidRequest"));
+
+        let snapshot = load_snapshot(&harness.engine.repositories())
+            .await
+            .expect("snapshot");
+        assert!(
+            !snapshot
+                .projects
+                .iter()
+                .any(|project| project.project_id == "blocked-git-project")
+        );
+        socket.close(None).await.expect("close WebSocket");
+    })
+    .catch_unwind()
+    .await;
+    finish_test(harness, outcome).await;
+}
+
+#[tokio::test]
 async fn orchestration_lifecycle_and_query_rpcs_round_trip_real_state() {
     let harness = harness().await;
     let outcome = AssertUnwindSafe(async {
