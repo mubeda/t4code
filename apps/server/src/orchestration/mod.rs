@@ -1,5 +1,6 @@
 pub mod engine;
 
 pub use engine::{
-    EngineOptions, OrchestrationCommand, OrchestrationEngine, Snapshot, load_snapshot,
+    EngineOptions, OrchestrationCommand, OrchestrationEngine, OrchestrationError, Snapshot,
+    load_snapshot,
 };
