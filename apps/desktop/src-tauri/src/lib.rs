@@ -57,6 +57,7 @@ macro_rules! bridge_command_names {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let shell_path_hydration = shell_environment::hydrate_process_path();
     tauri::Builder::<bridge::DesktopRuntime>::new()
         .manage(backend::BackendSupervisor::new())
         .manage(context_menu::NativeContextMenuManager::new())
@@ -66,7 +67,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .setup(|app| {
+        .setup(move |app| {
+            shell_path_hydration.record();
             window::configure_application_menu(app.handle())?;
             window::restore_main_window_state(app.handle())?;
 
