@@ -342,8 +342,9 @@ impl JsonRpcConnection {
         }
         let mut pending = self.inner.pending.lock().await;
         for (_, entry) in pending.drain() {
+            let pending_close_reason = reason.as_deref().unwrap_or("closed").to_owned();
             let _ = entry.responder.send(Err(ProtocolError::Closed {
-                reason: reason.clone().unwrap_or_else(|| "closed".to_owned()),
+                reason: pending_close_reason,
             }));
         }
     }
@@ -595,7 +596,43 @@ fn trim_newline(bytes: Vec<u8>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, duplex};
+    use std::{
+        io,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, ReadBuf, duplex};
+
+    struct FailingReader;
+
+    impl AsyncRead for FailingReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            _buffer: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Err(io::Error::other("intentional read failure")))
+        }
+    }
+
+    fn connection_with_writer(
+        writer: mpsc::UnboundedSender<WriterMessage>,
+    ) -> (JsonRpcConnection, Arc<Inner>) {
+        let inner = Arc::new(Inner {
+            writer,
+            pending: Mutex::new(HashMap::new()),
+            closed: AtomicBool::new(false),
+            close_reason: Mutex::new(None),
+            next_request_id: AtomicU64::new(1),
+            _tasks: Mutex::new(Vec::new()),
+        });
+        (
+            JsonRpcConnection {
+                inner: inner.clone(),
+            },
+            inner,
+        )
+    }
 
     #[tokio::test]
     async fn outbound_notifications_responses_and_close_use_json_rpc_wire_shapes() {
@@ -822,6 +859,132 @@ mod tests {
             Err(ProtocolError::LineTooLong {
                 stream: "stdout",
                 maximum: 3
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn dropped_writer_and_response_waiter_report_closed_contracts() {
+        let (writer, writer_rx) = mpsc::unbounded_channel();
+        drop(writer_rx);
+        let (connection, _inner) = connection_with_writer(writer);
+
+        for result in [
+            connection.notify("notify", Value::Null).await,
+            connection.notify_without_params("notify-empty").await,
+            connection.respond(json!(1), Value::Null).await,
+            connection
+                .respond_error(
+                    json!(2),
+                    JsonRpcErrorShape {
+                        code: -1,
+                        message: "failure".to_owned(),
+                        data: None,
+                    },
+                )
+                .await,
+        ] {
+            assert!(matches!(result, Err(ProtocolError::Closed { .. })));
+        }
+
+        let (writer, mut writer_rx) = mpsc::unbounded_channel();
+        let (connection, inner) = connection_with_writer(writer);
+        let request = tokio::spawn(async move { connection.request("wait", Value::Null).await });
+        assert!(matches!(
+            writer_rx.recv().await,
+            Some(WriterMessage::Json(_))
+        ));
+        drop(
+            inner
+                .pending
+                .lock()
+                .await
+                .remove("1")
+                .expect("pending request"),
+        );
+        assert!(matches!(
+            request.await.expect("request task"),
+            Err(ProtocolError::Closed { reason }) if reason == "response waiter dropped"
+        ));
+
+        let (writer, _writer_rx) = mpsc::unbounded_channel();
+        let (connection, inner) = connection_with_writer(writer);
+        inner.closed.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            connection.notify("closed", Value::Null).await,
+            Err(ProtocolError::Closed { reason }) if reason == "closed"
+        ));
+    }
+
+    #[tokio::test]
+    async fn malformed_messages_and_dropped_receivers_cover_protocol_errors() {
+        let (writer, _writer_rx) = mpsc::unbounded_channel();
+        let (_connection, inner) = connection_with_writer(writer);
+        let (incoming, incoming_rx) = mpsc::unbounded_channel();
+        drop(incoming_rx);
+
+        assert!(matches!(
+            route_stdout_message(
+                json!({"id":"request","method":"approval"}),
+                &inner,
+                &incoming,
+            )
+            .await,
+            Err(ProtocolError::Closed { reason }) if reason == "incoming receiver dropped"
+        ));
+
+        let (error_tx, _error_rx) = oneshot::channel();
+        inner.pending.lock().await.insert(
+            "2".to_owned(),
+            PendingRequest {
+                method: "failure".to_owned(),
+                responder: error_tx,
+            },
+        );
+        assert!(matches!(
+            route_stdout_message(
+                json!({"id":2,"error":{"code":"invalid"}}),
+                &inner,
+                &incoming,
+            )
+            .await,
+            Err(ProtocolError::InvalidMessage { .. })
+        ));
+
+        let (reader, mut peer) = duplex(64);
+        peer.write_all(b"not-json\n").await.unwrap();
+        let mut reader = BufReader::new(reader);
+        assert!(matches!(
+            read_stdout_loop(&mut reader, 64, &inner, &incoming).await,
+            Err(ProtocolError::InvalidMessage { .. })
+        ));
+
+        let (stderr, mut peer) = duplex(64);
+        peer.write_all(b"warning\n").await.unwrap();
+        let mut stderr = BufReader::new(stderr);
+        assert!(matches!(
+            read_stderr_loop(&mut stderr, 64, &incoming).await,
+            Err(ProtocolError::Closed { reason }) if reason == "incoming receiver dropped"
+        ));
+    }
+
+    #[tokio::test]
+    async fn failing_readers_identify_stdout_and_stderr() {
+        let mut stdout = BufReader::new(FailingReader);
+        assert!(matches!(
+            read_bounded_line(&mut stdout, 64, "stdout").await,
+            Err(ProtocolError::ReadFailure {
+                stream: "stdout",
+                ..
+            })
+        ));
+
+        let mut stderr = BufReader::new(FailingReader);
+        assert!(matches!(
+            read_bounded_or_truncated_line(&mut stderr, 64).await,
+            Err(ProtocolError::ReadFailure {
+                stream: "stderr",
+                ..
             })
         ));
     }
