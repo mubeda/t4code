@@ -211,9 +211,10 @@ export function useAddProjectWorkflowState(
   );
 
   const completeOperation = useCallback(
-    async (generation: number, operation: () => Promise<boolean>) => {
+    async (generation: number, operation: (shouldContinue: () => boolean) => Promise<boolean>) => {
+      const shouldContinue = () => isCurrent(generation);
       try {
-        const succeeded = await operation();
+        const succeeded = await operation(shouldContinue);
         if (!isCurrent(generation)) {
           return;
         }
@@ -276,10 +277,11 @@ export function useAddProjectWorkflowState(
         setError(picked.message);
         return;
       }
-      await completeOperation(generation, () =>
+      await completeOperation(generation, (shouldContinue) =>
         input.operations.addFolder({
           environmentId: picked.environmentId,
           workspaceRoot: picked.path,
+          shouldContinue,
         }),
       );
     } catch (cause) {
@@ -309,10 +311,11 @@ export function useAddProjectWorkflowState(
     if (generation === null) {
       return;
     }
-    await completeOperation(generation, () =>
+    await completeOperation(generation, (shouldContinue) =>
       input.operations.addFolder({
         environmentId: selectedHost.environmentId,
         workspaceRoot: hostPath.trim(),
+        shouldContinue,
       }),
     );
   }, [beginAsync, completeOperation, hostPath, input.operations, selectedHost]);
@@ -402,11 +405,12 @@ export function useAddProjectWorkflowState(
     if (generation === null) {
       return;
     }
-    await completeOperation(generation, () =>
+    await completeOperation(generation, (shouldContinue) =>
       input.operations.clone({
         environmentId: selectedHost.environmentId,
         url: cloneUrl.trim(),
         parentDir: cloneParent.trim(),
+        shouldContinue,
       }),
     );
   }, [
@@ -430,10 +434,11 @@ export function useAddProjectWorkflowState(
     if (generation === null) {
       return;
     }
-    await completeOperation(generation, () =>
+    await completeOperation(generation, (shouldContinue) =>
       input.operations.create({
         environmentId: selectedHost.environmentId,
         workspaceRoot: joinProjectPath(createParent, createName, selectedHost.platform),
+        shouldContinue,
       }),
     );
   }, [beginAsync, completeOperation, createName, createParent, input.operations, selectedHost]);

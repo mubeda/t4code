@@ -2,10 +2,26 @@ import { EnvironmentId, ProjectId } from "@t4code/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  type AddProjectCommandResult,
   createAddProjectOperations,
   type AddProjectOperationsDependencies,
   type AddProjectRecord,
 } from "./addProjectOperations";
+
+const CURRENT_OPERATION = {
+  shouldContinue: () => true,
+} as const;
+
+function deferredResult<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+} {
+  let resolveResult!: (value: T) => void;
+  const promise = new Promise<T>((resolve) => {
+    resolveResult = resolve;
+  });
+  return { promise, resolve: resolveResult };
+}
 
 interface HarnessOptions {
   readonly projects?: ReadonlyArray<AddProjectRecord>;
@@ -16,14 +32,14 @@ interface HarnessOptions {
 }
 
 function makeHarness(options: HarnessOptions = {}) {
-  const createProject = vi.fn(async () =>
+  const createProject = vi.fn<AddProjectOperationsDependencies["createProject"]>(async () =>
     options.createInterrupted
       ? ({ _tag: "Failure", error: null } as const)
       : options.createError
         ? ({ _tag: "Failure", error: options.createError } as const)
         : ({ _tag: "Success", value: undefined } as const),
   );
-  const cloneRepository = vi.fn(async () =>
+  const cloneRepository = vi.fn<AddProjectOperationsDependencies["cloneRepository"]>(async () =>
     options.cloneError
       ? ({ _tag: "Failure", error: options.cloneError } as const)
       : ({
@@ -31,7 +47,7 @@ function makeHarness(options: HarnessOptions = {}) {
           value: { path: options.clonePath ?? "/code/cloned" },
         } as const),
   );
-  const openProject = vi.fn(async () => ({
+  const openProject = vi.fn<AddProjectOperationsDependencies["openProject"]>(async () => ({
     _tag: "Success" as const,
     value: undefined,
   }));
@@ -66,6 +82,7 @@ describe("add project operations", () => {
 
     await expect(
       operations.addFolder({
+        ...CURRENT_OPERATION,
         environmentId: EnvironmentId.make("local"),
         workspaceRoot: "/code/demo/",
       }),
@@ -83,6 +100,7 @@ describe("add project operations", () => {
     const operations = createAddProjectOperations(harness.dependencies);
 
     await operations.addFolder({
+      ...CURRENT_OPERATION,
       environmentId: EnvironmentId.make("local"),
       workspaceRoot: "/code/demo",
     });
@@ -101,6 +119,7 @@ describe("add project operations", () => {
     const operations = createAddProjectOperations(harness.dependencies);
 
     await operations.clone({
+      ...CURRENT_OPERATION,
       environmentId: EnvironmentId.make("local"),
       url: "https://example.test/demo.git",
       parentDir: "/code",
@@ -128,6 +147,7 @@ describe("add project operations", () => {
 
     await expect(
       operations.clone({
+        ...CURRENT_OPERATION,
         environmentId: EnvironmentId.make("local"),
         url: "https://example.test/demo.git",
         parentDir: "/code",
@@ -144,6 +164,7 @@ describe("add project operations", () => {
     const operations = createAddProjectOperations(harness.dependencies);
 
     await operations.create({
+      ...CURRENT_OPERATION,
       environmentId: EnvironmentId.make("local"),
       workspaceRoot: "/code/demo",
     });
@@ -162,6 +183,7 @@ describe("add project operations", () => {
 
     await expect(
       operations.create({
+        ...CURRENT_OPERATION,
         environmentId: EnvironmentId.make("local"),
         workspaceRoot: "/code/demo",
       }),
@@ -180,6 +202,7 @@ describe("add project operations", () => {
 
     await expect(
       operations.create({
+        ...CURRENT_OPERATION,
         environmentId: EnvironmentId.make("local"),
         workspaceRoot: "/code/demo",
       }),
@@ -197,6 +220,7 @@ describe("add project operations", () => {
 
     await expect(
       operations.create({
+        ...CURRENT_OPERATION,
         environmentId: EnvironmentId.make("local"),
         workspaceRoot: "/code/demo",
       }),
@@ -214,6 +238,7 @@ describe("add project operations", () => {
 
     await expect(
       operations.clone({
+        ...CURRENT_OPERATION,
         environmentId: EnvironmentId.make("local"),
         url: "https://example.test/demo.git",
         parentDir: "/code",
@@ -241,6 +266,7 @@ describe("add project operations", () => {
 
     await expect(
       operations.addFolder({
+        ...CURRENT_OPERATION,
         environmentId: EnvironmentId.make("local"),
         workspaceRoot: "/code/demo",
       }),
@@ -248,5 +274,90 @@ describe("add project operations", () => {
 
     expect(harness.createProject).not.toHaveBeenCalled();
     expect(harness.reportFailure).toHaveBeenCalledWith("Failed to open project", error);
+  });
+
+  it("does not begin an operation when its continuation is already stale", async () => {
+    const harness = makeHarness();
+    const operations = createAddProjectOperations(harness.dependencies);
+
+    await expect(
+      operations.create({
+        environmentId: EnvironmentId.make("local"),
+        workspaceRoot: "/code/demo",
+        shouldContinue: () => false,
+      }),
+    ).resolves.toBe(false);
+
+    expect(harness.createProject).not.toHaveBeenCalled();
+    expect(harness.reportFailure).not.toHaveBeenCalled();
+    expect(harness.openProject).not.toHaveBeenCalled();
+  });
+
+  it("does not register or navigate when a clone becomes stale while pending", async () => {
+    const harness = makeHarness();
+    const cloneResult = deferredResult<AddProjectCommandResult<{ readonly path: string }>>();
+    harness.cloneRepository.mockReturnValue(cloneResult.promise);
+    let current = true;
+    const operations = createAddProjectOperations(harness.dependencies);
+
+    const result = operations.clone({
+      environmentId: EnvironmentId.make("local"),
+      url: "https://example.test/demo.git",
+      parentDir: "/code",
+      shouldContinue: () => current,
+    });
+    current = false;
+    cloneResult.resolve({
+      _tag: "Success",
+      value: { path: "/code/demo" },
+    });
+
+    await expect(result).resolves.toBe(false);
+    expect(harness.createProject).not.toHaveBeenCalled();
+    expect(harness.reportFailure).not.toHaveBeenCalled();
+    expect(harness.openProject).not.toHaveBeenCalled();
+  });
+
+  it("does not report a create failure that completes after becoming stale", async () => {
+    const harness = makeHarness();
+    const createResult = deferredResult<AddProjectCommandResult<void>>();
+    harness.createProject.mockReturnValue(createResult.promise);
+    let current = true;
+    const operations = createAddProjectOperations(harness.dependencies);
+
+    const result = operations.create({
+      environmentId: EnvironmentId.make("local"),
+      workspaceRoot: "/code/demo",
+      shouldContinue: () => current,
+    });
+    current = false;
+    createResult.resolve({
+      _tag: "Failure",
+      error: new Error("late failure"),
+    });
+
+    await expect(result).resolves.toBe(false);
+    expect(harness.reportFailure).not.toHaveBeenCalled();
+    expect(harness.openProject).not.toHaveBeenCalled();
+  });
+
+  it("does not navigate when add registration completes after becoming stale", async () => {
+    const harness = makeHarness();
+    const createResult = deferredResult<AddProjectCommandResult<void>>();
+    harness.createProject.mockReturnValue(createResult.promise);
+    let current = true;
+    const operations = createAddProjectOperations(harness.dependencies);
+
+    const result = operations.addFolder({
+      environmentId: EnvironmentId.make("local"),
+      workspaceRoot: "/code/demo",
+      shouldContinue: () => current,
+    });
+    current = false;
+    createResult.resolve({ _tag: "Success", value: undefined });
+
+    await expect(result).resolves.toBe(false);
+    expect(harness.reportFailure).not.toHaveBeenCalled();
+    expect(harness.openProject).not.toHaveBeenCalled();
   });
 });

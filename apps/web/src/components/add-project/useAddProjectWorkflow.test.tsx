@@ -6,8 +6,18 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { AddProjectHostOption } from "./AddProjectDialog.logic";
+import {
+  createAddProjectOperations,
+  type AddProjectCommandResult,
+  type AddProjectOperationsDependencies,
+} from "./addProjectOperations";
 import type { PickAddProjectFolderResult } from "./pickAddProjectFolder";
 import { useAddProjectWorkflowState, type AddProjectWorkflow } from "./useAddProjectWorkflow";
+
+type WorkflowOperations = Pick<
+  ReturnType<typeof createAddProjectOperations>,
+  "addFolder" | "clone" | "create"
+>;
 
 const ENV_PRIMARY = EnvironmentId.make("primary");
 const ENV_REMOTE = EnvironmentId.make("remote");
@@ -49,6 +59,7 @@ const testState = {
     clone: vi.fn(async () => true),
     create: vi.fn(async () => true),
   },
+  operationOverride: null as WorkflowOperations | null,
   onOpenChange: vi.fn(),
 };
 
@@ -62,7 +73,7 @@ function WorkflowProbe({ open }: { readonly open: boolean }) {
     onOpenChange: testState.onOpenChange,
     hosts: [primaryHost, remoteHost, wslHost],
     primaryEnvironmentId: ENV_PRIMARY,
-    operations: testState.operations,
+    operations: testState.operationOverride ?? testState.operations,
     pickFolder: testState.pickFolder,
   });
   return null;
@@ -101,6 +112,36 @@ function deferredResult<T>(): {
   return { promise, resolve: resolveResult };
 }
 
+function makeIntegratedOperations() {
+  const createProject = vi.fn<AddProjectOperationsDependencies["createProject"]>(async () => ({
+    _tag: "Success",
+    value: undefined,
+  }));
+  const cloneRepository = vi.fn<AddProjectOperationsDependencies["cloneRepository"]>(async () => ({
+    _tag: "Success",
+    value: { path: "/code/cloned" },
+  }));
+  const openProject = vi.fn<AddProjectOperationsDependencies["openProject"]>(async () => ({
+    _tag: "Success",
+    value: undefined,
+  }));
+  const reportFailure = vi.fn<AddProjectOperationsDependencies["reportFailure"]>();
+  const operations = createAddProjectOperations({
+    getProjects: () => [],
+    createProject,
+    cloneRepository,
+    openProject,
+    reportFailure,
+  });
+  return {
+    operations,
+    createProject,
+    cloneRepository,
+    openProject,
+    reportFailure,
+  };
+}
+
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   testState.pickResult = { _tag: "Cancelled" };
@@ -108,6 +149,7 @@ beforeEach(() => {
   testState.operations.addFolder.mockReset().mockResolvedValue(true);
   testState.operations.clone.mockReset().mockResolvedValue(true);
   testState.operations.create.mockReset().mockResolvedValue(true);
+  testState.operationOverride = null;
   testState.onOpenChange.mockReset();
 });
 
@@ -154,6 +196,7 @@ describe("useAddProjectWorkflowState", () => {
     expect(testState.operations.addFolder).toHaveBeenCalledWith({
       environmentId: ENV_WSL,
       workspaceRoot: "/home/me/code",
+      shouldContinue: expect.any(Function),
     });
     expect(testState.onOpenChange).toHaveBeenCalledWith(false);
   });
@@ -215,6 +258,163 @@ describe("useAddProjectWorkflowState", () => {
     expect(testState.onOpenChange).not.toHaveBeenCalledWith(false);
   });
 
+  it.each([
+    { invalidation: "close", outcome: "success" },
+    { invalidation: "close", outcome: "failure" },
+    { invalidation: "host change", outcome: "success" },
+    { invalidation: "host change", outcome: "failure" },
+    { invalidation: "Back", outcome: "success" },
+    { invalidation: "Back", outcome: "failure" },
+  ] as const)(
+    "stops stale clone side effects after $invalidation on $outcome",
+    async ({ invalidation, outcome }) => {
+      const harness = makeIntegratedOperations();
+      const cloneResult = deferredResult<AddProjectCommandResult<{ readonly path: string }>>();
+      harness.cloneRepository.mockReturnValue(cloneResult.promise);
+      testState.operationOverride = harness.operations;
+      const view = await mountWorkflow({ open: true });
+      act(() => view.current.openClone());
+      act(() => view.current.setCloneUrl("https://example.test/demo.git"));
+      let submission!: Promise<void>;
+      act(() => {
+        submission = view.current.submitClone();
+      });
+      expect(harness.cloneRepository).toHaveBeenCalledTimes(1);
+
+      if (invalidation === "close") {
+        await view.rerender(false);
+      } else if (invalidation === "host change") {
+        act(() => view.current.selectHost(ENV_REMOTE));
+      } else {
+        act(() => view.current.back());
+      }
+      await act(async () => {
+        cloneResult.resolve(
+          outcome === "success"
+            ? {
+                _tag: "Success",
+                value: { path: "/code/cloned" },
+              }
+            : {
+                _tag: "Failure",
+                error: new Error("late clone failure"),
+              },
+        );
+        await submission;
+      });
+
+      expect(harness.createProject).not.toHaveBeenCalled();
+      expect(harness.reportFailure).not.toHaveBeenCalled();
+      expect(harness.openProject).not.toHaveBeenCalled();
+      expect(testState.onOpenChange).not.toHaveBeenCalledWith(false);
+    },
+  );
+
+  it("does not report or navigate when create fails after close", async () => {
+    const harness = makeIntegratedOperations();
+    const createResult = deferredResult<AddProjectCommandResult<void>>();
+    harness.createProject.mockReturnValue(createResult.promise);
+    testState.operationOverride = harness.operations;
+    const view = await mountWorkflow({ open: true });
+    act(() => view.current.openCreate());
+    act(() => view.current.setCreateName("demo"));
+    let submission!: Promise<void>;
+    act(() => {
+      submission = view.current.submitCreate();
+    });
+    expect(harness.createProject).toHaveBeenCalledTimes(1);
+
+    await view.rerender(false);
+    await act(async () => {
+      createResult.resolve({
+        _tag: "Failure",
+        error: new Error("late failure"),
+      });
+      await submission;
+    });
+
+    expect(harness.reportFailure).not.toHaveBeenCalled();
+    expect(harness.openProject).not.toHaveBeenCalled();
+    expect(testState.onOpenChange).not.toHaveBeenCalledWith(false);
+  });
+
+  it("does not navigate or close when add registration completes after Back", async () => {
+    const harness = makeIntegratedOperations();
+    const createResult = deferredResult<AddProjectCommandResult<void>>();
+    harness.createProject.mockReturnValue(createResult.promise);
+    testState.operationOverride = harness.operations;
+    testState.pickResult = {
+      _tag: "Selected",
+      environmentId: ENV_PRIMARY,
+      path: "/code/demo",
+    };
+    const view = await mountWorkflow({ open: true });
+    let submission!: Promise<void>;
+    act(() => {
+      submission = view.current.browse();
+    });
+    await flushPromises();
+    expect(harness.createProject).toHaveBeenCalledTimes(1);
+
+    act(() => view.current.back());
+    await act(async () => {
+      createResult.resolve({ _tag: "Success", value: undefined });
+      await submission;
+    });
+
+    expect(harness.reportFailure).not.toHaveBeenCalled();
+    expect(harness.openProject).not.toHaveBeenCalled();
+    expect(testState.onOpenChange).not.toHaveBeenCalledWith(false);
+  });
+
+  it("fresh reopen invalidates an older pending create", async () => {
+    const harness = makeIntegratedOperations();
+    const createResult = deferredResult<AddProjectCommandResult<void>>();
+    harness.createProject.mockReturnValue(createResult.promise);
+    testState.operationOverride = harness.operations;
+    const view = await mountWorkflow({ open: true });
+    act(() => view.current.openCreate());
+    act(() => view.current.setCreateName("demo"));
+    let submission!: Promise<void>;
+    act(() => {
+      submission = view.current.submitCreate();
+    });
+
+    await view.rerender(false);
+    await view.rerender(true);
+    await act(async () => {
+      createResult.resolve({ _tag: "Success", value: undefined });
+      await submission;
+    });
+
+    expect(view.current.selectedHost.environmentId).toBe(ENV_PRIMARY);
+    expect(view.current.step).toBe("start");
+    expect(harness.reportFailure).not.toHaveBeenCalled();
+    expect(harness.openProject).not.toHaveBeenCalled();
+    expect(testState.onOpenChange).not.toHaveBeenCalledWith(false);
+  });
+
+  it("lets a current integrated create register, navigate, and close", async () => {
+    const harness = makeIntegratedOperations();
+    testState.operationOverride = harness.operations;
+    const view = await mountWorkflow({ open: true });
+    act(() => view.current.openCreate());
+    act(() => view.current.setCreateName("demo"));
+    await act(async () => view.current.submitCreate());
+
+    expect(harness.createProject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environmentId: ENV_PRIMARY,
+        workspaceRoot: "~/demo",
+        createWorkspaceRootIfMissing: true,
+        initializeGit: true,
+      }),
+    );
+    expect(harness.reportFailure).not.toHaveBeenCalled();
+    expect(harness.openProject).toHaveBeenCalledTimes(1);
+    expect(testState.onOpenChange).toHaveBeenCalledWith(false);
+  });
+
   it("keeps invalid clone input on the clone step", async () => {
     const view = await mountWorkflow({ open: true });
     act(() => view.current.openClone());
@@ -236,6 +436,7 @@ describe("useAddProjectWorkflowState", () => {
     expect(testState.operations.create).toHaveBeenCalledWith({
       environmentId: ENV_PRIMARY,
       workspaceRoot: "~/demo",
+      shouldContinue: expect.any(Function),
     });
     expect(testState.onOpenChange).toHaveBeenCalledWith(false);
   });
