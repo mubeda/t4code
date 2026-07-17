@@ -3319,6 +3319,198 @@ mod tests {
 
     use super::*;
 
+    struct NoopBootstrapEffects;
+
+    impl ThreadTurnBootstrapEffects for NoopBootstrapEffects {
+        fn prepare_worktree<'a>(
+            &'a self,
+            input: ThreadTurnStartBootstrapPrepareWorktree,
+        ) -> BoxBootstrapFuture<'a, BootstrapWorktree> {
+            Box::pin(async move {
+                Ok(BootstrapWorktree {
+                    repository_root: input.project_cwd.clone(),
+                    branch: input.base_branch,
+                    path: input.project_cwd,
+                    remove_branch: false,
+                })
+            })
+        }
+
+        fn run_setup_script<'a>(
+            &'a self,
+            _input: BootstrapSetupInput,
+        ) -> BoxBootstrapFuture<'a, BootstrapSetupResult> {
+            Box::pin(async { Ok(BootstrapSetupResult::NoScript) })
+        }
+
+        fn cleanup_thread_resources<'a>(
+            &'a self,
+            _thread_id: &'a str,
+        ) -> BoxBootstrapFuture<'a, ()> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn remove_worktree<'a>(
+            &'a self,
+            _worktree: BootstrapWorktree,
+        ) -> BoxBootstrapFuture<'a, ()> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn projector_event(event_type: &str, payload: Value, metadata: Value) -> OrchestrationEvent {
+        OrchestrationEvent {
+            sequence: 99,
+            event: NewOrchestrationEvent {
+                event_id: Uuid::new_v4().to_string(),
+                event_type: event_type.to_owned(),
+                aggregate_kind: "thread".to_owned(),
+                aggregate_id: "projector-thread".to_owned(),
+                occurred_at: "2026-07-10T10:00:00.000Z".to_owned(),
+                command_id: Some("projector-edge".to_owned()),
+                causation_event_id: None,
+                correlation_id: None,
+                payload,
+                metadata,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn projector_edges_reject_corrupt_payloads_and_preserve_resolved_approvals() {
+        const CREATED_AT: &str = "2026-07-10T10:00:00.000Z";
+
+        let database = Database::open_in_memory().await.expect("database");
+        database
+            .call(|connection| {
+                run_migrations(connection, None)?;
+                let transaction = connection.transaction()?;
+
+                apply_projects_projector_tx(
+                    &transaction,
+                    &projector_event(
+                        "project.created",
+                        json!({
+                            "projectId":"projector-project",
+                            "title":"Projector",
+                            "workspaceRoot":"C:/projector",
+                            "defaultModelSelection":null,
+                            "createdAt":CREATED_AT,
+                            "updatedAt":CREATED_AT
+                        }),
+                        json!({}),
+                    ),
+                )?;
+
+                for error in [
+                    apply_plans_projector_tx(
+                        &transaction,
+                        &projector_event(
+                            "thread.proposed-plan-upserted",
+                            json!({"threadId":"projector-thread"}),
+                            json!({}),
+                        ),
+                    ),
+                    apply_activities_projector_tx(
+                        &transaction,
+                        &projector_event(
+                            "thread.activity-appended",
+                            json!({"threadId":"projector-thread"}),
+                            json!({}),
+                        ),
+                    ),
+                    apply_sessions_projector_tx(
+                        &transaction,
+                        &projector_event(
+                            "thread.session-set",
+                            json!({"threadId":"projector-thread"}),
+                            json!({}),
+                        ),
+                    ),
+                    apply_turns_projector_tx(
+                        &transaction,
+                        &projector_event(
+                            "thread.session-set",
+                            json!({"threadId":"projector-thread"}),
+                            json!({}),
+                        ),
+                    ),
+                    apply_pending_approvals_projector_tx(
+                        &transaction,
+                        &projector_event(
+                            "thread.activity-appended",
+                            json!({"threadId":"projector-thread"}),
+                            json!({}),
+                        ),
+                    ),
+                ] {
+                    assert!(matches!(error, Err(PersistenceError::Corrupt(_))));
+                }
+
+                apply_pending_approvals_projector_tx(
+                    &transaction,
+                    &projector_event(
+                        "thread.approval-response-requested",
+                        json!({
+                            "requestId":"resolved-request",
+                            "threadId":"projector-thread",
+                            "decision":"approved",
+                            "createdAt":CREATED_AT
+                        }),
+                        json!({}),
+                    ),
+                )?;
+                apply_pending_approvals_projector_tx(
+                    &transaction,
+                    &projector_event(
+                        "thread.activity-appended",
+                        json!({
+                            "threadId":"projector-thread",
+                            "activity":{
+                                "id":"approval-activity",
+                                "kind":"approval.requested",
+                                "createdAt":CREATED_AT,
+                                "payload":{}
+                            }
+                        }),
+                        json!({"requestId":"resolved-request"}),
+                    ),
+                )?;
+                let status: String = transaction.query_row(
+                    "SELECT status FROM projection_pending_approvals WHERE request_id = ?",
+                    ["resolved-request"],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(status, "resolved");
+
+                let missing_request_id = apply_pending_approvals_projector_tx(
+                    &transaction,
+                    &projector_event(
+                        "thread.activity-appended",
+                        json!({
+                            "threadId":"projector-thread",
+                            "activity":{
+                                "id":"missing-request",
+                                "kind":"approval.requested",
+                                "createdAt":CREATED_AT,
+                                "payload":{}
+                            }
+                        }),
+                        json!({}),
+                    ),
+                );
+                assert!(matches!(
+                    missing_request_id,
+                    Err(PersistenceError::Corrupt(_))
+                ));
+
+                transaction.rollback()?;
+                Ok(())
+            })
+            .await
+            .expect("projector edges execute");
+    }
+
     #[tokio::test]
     async fn unit_build_covers_engine_projection_failure_bootstrap_and_lifecycle_paths() {
         const CREATED_AT: &str = "2026-07-10T10:00:00.000Z";
@@ -3425,12 +3617,12 @@ mod tests {
         ));
 
         let commands = [
-            json!({"type":"project.meta.update","commandId":"project-meta","projectId":"p1","title":"Renamed","defaultModelSelection":{"instanceId":"codex","model":"gpt-5"}}),
+            json!({"type":"project.meta.update","commandId":"project-meta","projectId":"p1","title":"Renamed","workspaceRoot":"C:/repo-renamed","defaultModelSelection":{"instanceId":"codex","model":"gpt-5"}}),
             json!({"type":"thread.create","commandId":"thread","threadId":"t1","projectId":"p1","title":"Thread","modelSelection":{"instanceId":"codex","model":"gpt-5"},"runtimeMode":"full-access","interactionMode":"default","branch":null,"worktreePath":null,"createdAt":CREATED_AT}),
             json!({"type":"thread.meta.update","commandId":"thread-meta","threadId":"t1","title":"Thread 2","branch":"main","worktreePath":null}),
             json!({"type":"thread.runtime-mode.set","commandId":"runtime-mode","threadId":"t1","runtimeMode":"approval-required","createdAt":CREATED_AT}),
             json!({"type":"thread.interaction-mode.set","commandId":"interaction-mode","threadId":"t1","interactionMode":"plan","createdAt":CREATED_AT}),
-            json!({"type":"thread.turn.start","commandId":"turn-start","threadId":"t1","message":{"messageId":"m-user","role":"user","text":"hello","attachments":[]},"createdAt":CREATED_AT}),
+            json!({"type":"thread.turn.start","commandId":"turn-start","threadId":"t1","message":{"messageId":"m-user","role":"user","text":"hello","attachments":[]},"titleSeed":"Coverage title","createdAt":CREATED_AT}),
             json!({"type":"thread.session.set","commandId":"session","threadId":"t1","session":{"threadId":"t1","status":"running","providerName":"codex","providerInstanceId":"codex","runtimeMode":"approval-required","activeTurnId":"turn-1","lastError":null,"updatedAt":CREATED_AT},"createdAt":CREATED_AT}),
             json!({"type":"thread.message.assistant.delta","commandId":"delta","threadId":"t1","messageId":"m-assistant","delta":"hello","turnId":"turn-1","createdAt":CREATED_AT}),
             json!({"type":"thread.proposed-plan.upsert","commandId":"plan","threadId":"t1","proposedPlan":{"id":"plan-1","turnId":"turn-1","planMarkdown":"Do it","createdAt":CREATED_AT,"updatedAt":CREATED_AT},"createdAt":CREATED_AT}),
@@ -3444,6 +3636,56 @@ mod tests {
                 .await
                 .expect("command succeeds");
         }
+
+        assert!(matches!(
+            engine
+                .dispatch(command(json!({
+                    "type":"project.delete",
+                    "commandId":"project-delete-not-empty",
+                    "projectId":"p1"
+                })))
+                .await,
+            Err(OrchestrationError::Invariant { .. })
+        ));
+        assert!(matches!(
+            engine
+                .dispatch(command(json!({
+                    "type":"thread.turn.start",
+                    "commandId":"missing-source-plan",
+                    "threadId":"t1",
+                    "message":{"messageId":"missing-plan-message","role":"user","text":"implement","attachments":[]},
+                    "sourceProposedPlan":{"threadId":"t1","planId":"missing-plan"},
+                    "createdAt":CREATED_AT
+                })))
+                .await,
+            Err(OrchestrationError::Invariant { .. })
+        ));
+
+        engine
+            .repositories()
+            .upsert_command_receipt(CommandReceipt {
+                command_id: "previously-rejected".to_owned(),
+                aggregate_kind: "project".to_owned(),
+                aggregate_id: "p1".to_owned(),
+                accepted_at: CREATED_AT.to_owned(),
+                result_sequence: 0,
+                status: "rejected".to_owned(),
+                error: None,
+            })
+            .await
+            .expect("receipt fixture inserts");
+        assert!(matches!(
+            engine
+                .dispatch(command(json!({
+                    "type":"project.meta.update",
+                    "commandId":"previously-rejected",
+                    "projectId":"p1",
+                    "title":"Ignored"
+                })))
+                .await,
+            Err(OrchestrationError::PreviouslyRejected { detail, .. })
+                if detail == "Previously rejected."
+        ));
 
         let mut subscriber = engine.subscribe_events();
         engine
@@ -3520,6 +3762,46 @@ mod tests {
         assert!(required_str(&json!({}), "value").is_err());
         assert_eq!(required_i64(&json!({"value":7}), "value").unwrap(), 7);
         assert!(required_i64(&json!({}), "value").is_err());
+
+        let effects = Arc::new(NoopBootstrapEffects);
+        let worktree = effects
+            .prepare_worktree(ThreadTurnStartBootstrapPrepareWorktree {
+                project_cwd: "C:/repo".to_owned(),
+                base_branch: "main".to_owned(),
+                branch: None,
+                start_from_origin: None,
+            })
+            .await
+            .expect("noop worktree");
+        assert_eq!(
+            effects
+                .run_setup_script(BootstrapSetupInput {
+                    thread_id: "t1".to_owned(),
+                    project_id: Some("p1".to_owned()),
+                    project_cwd: Some("C:/repo".to_owned()),
+                    worktree_path: worktree.path.clone(),
+                })
+                .await,
+            Ok(BootstrapSetupResult::NoScript)
+        );
+        effects
+            .cleanup_thread_resources("t1")
+            .await
+            .expect("noop cleanup");
+        effects
+            .remove_worktree(worktree)
+            .await
+            .expect("noop worktree cleanup");
+
+        let poisoned_effects = engine.bootstrap_effects.clone();
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = poisoned_effects.lock().expect("mutex initially healthy");
+            panic!("poison bootstrap effects mutex");
+        }));
+        assert!(panic_result.is_err());
+        assert!(engine.bootstrap_effects().is_none());
+        engine.set_bootstrap_effects(effects);
+        assert!(engine.bootstrap_effects().is_some());
 
         engine.shutdown().await;
         assert!(matches!(
