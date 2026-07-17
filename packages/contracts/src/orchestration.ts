@@ -1201,6 +1201,7 @@ export type ProjectionPendingApprovalDecision = typeof ProjectionPendingApproval
 
 export const DispatchResult = Schema.Struct({
   sequence: NonNegativeInt,
+  projectId: Schema.optional(ProjectId),
 });
 export type DispatchResult = typeof DispatchResult.Type;
 

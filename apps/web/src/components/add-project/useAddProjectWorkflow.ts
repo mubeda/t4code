@@ -91,7 +91,10 @@ function fallbackHost(primaryEnvironmentId: EnvironmentId): AddProjectHostOption
   return {
     environmentId: primaryEnvironmentId,
     label: "This device",
-    platform: getEnvironmentBrowsePlatform(undefined),
+    platform:
+      typeof navigator !== "undefined" && navigator.platform.trim().length > 0
+        ? navigator.platform
+        : null,
     baseDirectory: "~/",
     isPrimary: true,
     desktopInstanceId: null,
@@ -116,7 +119,7 @@ function unexpectedErrorMessage(error: unknown): string {
 export function useAddProjectWorkflowState(
   input: AddProjectWorkflowStateInput,
 ): AddProjectWorkflow {
-  const initialHost = primaryHost(input);
+  const initialHost = useMemo(() => primaryHost(input), [input.hosts, input.primaryEnvironmentId]);
   const [selectedEnvironmentId, setSelectedEnvironmentId] = useState(initialHost.environmentId);
   const [step, setStep] = useState<AddProjectStep>("start");
   const [busy, setBusy] = useState(false);
@@ -132,28 +135,33 @@ export function useAddProjectWorkflowState(
   const previousOpenRef = useRef(false);
   openRef.current = input.open;
 
-  const selectedHost =
-    input.hosts.find((host) => host.environmentId === selectedEnvironmentId) ?? initialHost;
+  const catalogSelectedHost = input.hosts.find(
+    (host) => host.environmentId === selectedEnvironmentId,
+  );
+  const selectedHost = catalogSelectedHost ?? initialHost;
 
-  const resetForHost = useCallback((host: AddProjectHostOption) => {
-    setSelectedEnvironmentId(host.environmentId);
-    setStep("start");
-    setBusy(false);
-    busyRef.current = false;
-    setHostPathState(host.baseDirectory);
-    setCloneUrlState("");
-    setCloneParentState(host.baseDirectory);
-    setCreateNameState("");
-    setCreateParentState(host.baseDirectory);
-    setError(null);
-  }, []);
+  const resetForHost = useCallback(
+    (host: AddProjectHostOption, nextError: string | null = null) => {
+      setSelectedEnvironmentId(host.environmentId);
+      setStep("start");
+      setBusy(false);
+      busyRef.current = false;
+      setHostPathState(host.baseDirectory);
+      setCloneUrlState("");
+      setCloneParentState(host.baseDirectory);
+      setCreateNameState("");
+      setCreateParentState(host.baseDirectory);
+      setError(nextError);
+    },
+    [],
+  );
 
   useEffect(() => {
     const wasOpen = previousOpenRef.current;
     previousOpenRef.current = input.open;
     if (input.open && !wasOpen) {
       generationRef.current += 1;
-      resetForHost(primaryHost(input));
+      resetForHost(initialHost);
       return;
     }
     if (!input.open && wasOpen) {
@@ -161,7 +169,15 @@ export function useAddProjectWorkflowState(
       setBusy(false);
       busyRef.current = false;
     }
-  }, [input.open, input.hosts, input.primaryEnvironmentId, resetForHost]);
+  }, [initialHost, input.open, resetForHost]);
+
+  useEffect(() => {
+    if (!input.open || catalogSelectedHost !== undefined) {
+      return;
+    }
+    generationRef.current += 1;
+    resetForHost(initialHost, "The selected host disconnected. Choose a host and try again.");
+  }, [catalogSelectedHost, initialHost, input.open, resetForHost]);
 
   useEffect(
     () => () => {
@@ -235,6 +251,9 @@ export function useAddProjectWorkflowState(
 
   const selectHost = useCallback(
     (environmentId: EnvironmentId) => {
+      if (busyRef.current) {
+        return;
+      }
       const nextHost = input.hosts.find((host) => host.environmentId === environmentId);
       if (nextHost === undefined || nextHost.environmentId === selectedHost.environmentId) {
         return;
@@ -396,7 +415,8 @@ export function useAddProjectWorkflowState(
 
   const submitClone = useCallback(async () => {
     const validationError =
-      validateGitCloneUrl(cloneUrl) ?? validateGitCloneParentPath(cloneParent);
+      validateGitCloneUrl(cloneUrl) ??
+      validateGitCloneParentPath(cloneParent, selectedHost.platform);
     if (validationError !== null) {
       setError(validationError);
       return;
@@ -420,14 +440,19 @@ export function useAddProjectWorkflowState(
     completeOperation,
     input.operations,
     selectedHost.environmentId,
+    selectedHost.platform,
   ]);
 
   const submitCreate = useCallback(async () => {
+    const platform = selectedHost.platform;
     const validationError =
-      validateProjectName(createName) ??
-      validateAddProjectPath(createParent, selectedHost.platform);
+      validateProjectName(createName) ?? validateAddProjectPath(createParent, platform);
     if (validationError !== null) {
       setError(validationError);
+      return;
+    }
+    if (platform === null) {
+      setError("Host platform information is still loading.");
       return;
     }
     const generation = beginAsync();
@@ -437,7 +462,7 @@ export function useAddProjectWorkflowState(
     await completeOperation(generation, (shouldContinue) =>
       input.operations.create({
         environmentId: selectedHost.environmentId,
-        workspaceRoot: joinProjectPath(createParent, createName, selectedHost.platform),
+        workspaceRoot: joinProjectPath(createParent, createName, platform),
         shouldContinue,
       }),
     );
@@ -588,7 +613,9 @@ export function useAddProjectWorkflow(input: {
                   },
                 },
               }),
-              () => undefined,
+              (result) => ({
+                projectId: result.projectId ?? commandInput.projectId,
+              }),
             ),
           ),
         cloneRepository: async (commandInput) =>

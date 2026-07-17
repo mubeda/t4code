@@ -33,6 +33,9 @@ use crate::{
     persistence::{OrchestrationEvent, PersistenceError},
 };
 
+pub use super::host_paths::process_compatible_path;
+use super::host_paths::{HostPathError, resolve_host_directory};
+
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const GIT_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 
@@ -109,56 +112,26 @@ pub async fn normalize_project_workspace_root(
     workspace_root: &Path,
     create_if_missing: bool,
 ) -> Result<PathBuf, OrchestrationEffectsError> {
-    match tokio::fs::metadata(workspace_root).await {
-        Ok(metadata) if !metadata.is_dir() => {
-            return Err(OrchestrationEffectsError::WorkspaceNotDirectory(
-                workspace_root.to_path_buf(),
-            ));
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound && create_if_missing => {
-            tokio::fs::create_dir_all(workspace_root)
-                .await
-                .map_err(|source| OrchestrationEffectsError::WorkspaceIo {
-                    path: workspace_root.to_path_buf(),
-                    source,
-                })?;
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(OrchestrationEffectsError::WorkspaceMissing(
-                workspace_root.to_path_buf(),
-            ));
-        }
-        Err(source) => {
-            return Err(OrchestrationEffectsError::WorkspaceIo {
-                path: workspace_root.to_path_buf(),
-                source,
-            });
-        }
-    }
-
-    tokio::fs::canonicalize(workspace_root)
+    resolve_host_directory(workspace_root, create_if_missing)
         .await
-        .map_err(|source| OrchestrationEffectsError::WorkspaceIo {
-            path: workspace_root.to_path_buf(),
-            source,
+        .map_err(|error| match error {
+            HostPathError::Missing(path) => OrchestrationEffectsError::WorkspaceMissing(path),
+            HostPathError::NotDirectory(path) => {
+                OrchestrationEffectsError::WorkspaceNotDirectory(path)
+            }
+            HostPathError::HomeDirectoryUnavailable(path) => {
+                OrchestrationEffectsError::WorkspaceIo {
+                    path,
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "home directory is unavailable",
+                    ),
+                }
+            }
+            HostPathError::Io { path, source } => {
+                OrchestrationEffectsError::WorkspaceIo { path, source }
+            }
         })
-        .map(process_compatible_path)
-}
-
-#[must_use]
-pub fn process_compatible_path(path: PathBuf) -> PathBuf {
-    #[cfg(windows)]
-    {
-        let raw = path.to_string_lossy();
-        if let Some(unc_path) = raw.strip_prefix(r"\\?\UNC\") {
-            return PathBuf::from(format!(r"\\{unc_path}"));
-        }
-        if let Some(regular_path) = raw.strip_prefix(r"\\?\") {
-            return PathBuf::from(regular_path);
-        }
-    }
-    path
 }
 
 pub async fn normalize_project_create_command(

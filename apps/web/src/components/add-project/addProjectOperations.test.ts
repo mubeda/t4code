@@ -32,12 +32,12 @@ interface HarnessOptions {
 }
 
 function makeHarness(options: HarnessOptions = {}) {
-  const createProject = vi.fn<AddProjectOperationsDependencies["createProject"]>(async () =>
+  const createProject = vi.fn<AddProjectOperationsDependencies["createProject"]>(async (input) =>
     options.createInterrupted
       ? ({ _tag: "Failure", error: null } as const)
       : options.createError
         ? ({ _tag: "Failure", error: options.createError } as const)
-        : ({ _tag: "Success", value: undefined } as const),
+        : ({ _tag: "Success", value: { projectId: input.projectId } } as const),
   );
   const cloneRepository = vi.fn<AddProjectOperationsDependencies["cloneRepository"]>(async () =>
     options.cloneError
@@ -112,6 +112,27 @@ describe("add project operations", () => {
         workspaceRoot: "/code/demo",
       }),
     );
+  });
+
+  it("opens the authoritative project identity returned for a canonical duplicate", async () => {
+    const harness = makeHarness();
+    const authoritativeProjectId = ProjectId.make("server-existing");
+    harness.createProject.mockResolvedValue({
+      _tag: "Success",
+      value: { projectId: authoritativeProjectId },
+    } as never);
+    const operations = createAddProjectOperations(harness.dependencies);
+
+    await operations.addFolder({
+      ...CURRENT_OPERATION,
+      environmentId: EnvironmentId.make("remote"),
+      workspaceRoot: "~/code/demo",
+    });
+
+    expect(harness.openProject).toHaveBeenCalledWith({
+      environmentId: EnvironmentId.make("remote"),
+      projectId: authoritativeProjectId,
+    });
   });
 
   it("clones before registering the returned path", async () => {
@@ -320,7 +341,8 @@ describe("add project operations", () => {
 
   it("does not report a create failure that completes after becoming stale", async () => {
     const harness = makeHarness();
-    const createResult = deferredResult<AddProjectCommandResult<void>>();
+    const createResult =
+      deferredResult<AddProjectCommandResult<{ readonly projectId: ProjectId }>>();
     harness.createProject.mockReturnValue(createResult.promise);
     let current = true;
     const operations = createAddProjectOperations(harness.dependencies);
@@ -343,7 +365,8 @@ describe("add project operations", () => {
 
   it("does not navigate when add registration completes after becoming stale", async () => {
     const harness = makeHarness();
-    const createResult = deferredResult<AddProjectCommandResult<void>>();
+    const createResult =
+      deferredResult<AddProjectCommandResult<{ readonly projectId: ProjectId }>>();
     harness.createProject.mockReturnValue(createResult.promise);
     let current = true;
     const operations = createAddProjectOperations(harness.dependencies);
@@ -354,7 +377,10 @@ describe("add project operations", () => {
       shouldContinue: () => current,
     });
     current = false;
-    createResult.resolve({ _tag: "Success", value: undefined });
+    createResult.resolve({
+      _tag: "Success",
+      value: { projectId: ProjectId.make("created") },
+    });
 
     await expect(result).resolves.toBe(false);
     expect(harness.reportFailure).not.toHaveBeenCalled();

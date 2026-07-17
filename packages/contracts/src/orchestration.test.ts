@@ -5,6 +5,7 @@ import * as Schema from "effect/Schema";
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  DispatchResult,
   ModelSelection,
   OrchestrationCommand,
   OrchestrationEvent,
@@ -38,7 +39,19 @@ const decodeThreadTurnStartRequestedPayload = Schema.decodeUnknownEffect(
 const decodeOrchestrationLatestTurn = Schema.decodeUnknownEffect(OrchestrationLatestTurn);
 const decodeOrchestrationProposedPlan = Schema.decodeUnknownEffect(OrchestrationProposedPlan);
 const decodeOrchestrationSession = Schema.decodeUnknownEffect(OrchestrationSession);
+const decodeDispatchResult = Schema.decodeUnknownEffect(DispatchResult);
 const encodeThreadCreatedPayload = Schema.encodeEffect(ThreadCreatedPayload);
+
+it.effect("decodes an authoritative project identity from project creation", () =>
+  Effect.gen(function* () {
+    const result = yield* decodeDispatchResult({
+      sequence: 2,
+      projectId: "existing-project",
+    });
+
+    assert.strictEqual(result.projectId, "existing-project");
+  }),
+);
 
 function getOptionValue(
   options: ReadonlyArray<{ id: string; value: unknown }> | undefined,

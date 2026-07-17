@@ -569,8 +569,11 @@ fn default_interaction_mode() -> String {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct DispatchResult {
     pub sequence: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -655,6 +658,7 @@ struct CommandModel {
 
 #[derive(Clone, Debug)]
 struct ProjectState {
+    workspace_root: String,
     deleted_at: Option<String>,
 }
 
@@ -1059,6 +1063,14 @@ async fn process_envelope(
     command: OrchestrationCommand,
 ) -> Result<DispatchResult, OrchestrationError> {
     let command_id = command.command_id().to_owned();
+    let project_create_identity = match &command {
+        OrchestrationCommand::ProjectCreate {
+            project_id,
+            workspace_root,
+            ..
+        } => Some((project_id.clone(), workspace_root.clone())),
+        _ => None,
+    };
     let occurred_at = match command.occurred_at() {
         Some(value) => value.to_owned(),
         None => current_timestamp(repositories.database()).await?,
@@ -1071,6 +1083,13 @@ async fn process_envelope(
         if receipt.status == "accepted" {
             return Ok(DispatchResult {
                 sequence: receipt.result_sequence,
+                project_id: project_create_identity.as_ref().map(|(requested_id, _)| {
+                    if receipt.aggregate_kind == "project" {
+                        receipt.aggregate_id.clone()
+                    } else {
+                        requested_id.clone()
+                    }
+                }),
             });
         }
         return Err(OrchestrationError::PreviouslyRejected {
@@ -1079,6 +1098,34 @@ async fn process_envelope(
                 .error
                 .unwrap_or_else(|| "Previously rejected.".to_owned()),
         });
+    }
+
+    if let Some((requested_id, workspace_root)) = &project_create_identity {
+        let existing_project_id = model.projects.iter().find_map(|(project_id, project)| {
+            (project_id != requested_id
+                && project.deleted_at.is_none()
+                && project.workspace_root == *workspace_root)
+                .then(|| project_id.clone())
+        });
+        if let Some(existing_project_id) = existing_project_id {
+            let sequence = current_max_sequence(repositories).await?;
+            repositories
+                .upsert_command_receipt(CommandReceipt {
+                    command_id,
+                    aggregate_kind: "project".to_owned(),
+                    aggregate_id: existing_project_id.clone(),
+                    accepted_at: occurred_at,
+                    result_sequence: sequence,
+                    status: "accepted".to_owned(),
+                    error: None,
+                })
+                .await
+                .map_err(wrap_persistence)?;
+            return Ok(DispatchResult {
+                sequence,
+                project_id: Some(existing_project_id),
+            });
+        }
     }
 
     let planned = match plan_command(repositories, model, &command, &occurred_at).await {
@@ -1101,7 +1148,16 @@ async fn process_envelope(
         }
     };
 
-    let committed = persist_command(repositories, hooks, &planned, &command_id).await?;
+    let aggregate = command.aggregate_ref();
+    let committed = persist_command(
+        repositories,
+        hooks,
+        &planned,
+        &command_id,
+        aggregate.0,
+        aggregate.1,
+    )
+    .await?;
     apply_to_model(model, &committed);
     for event in &committed {
         let _ = events.send(event.clone());
@@ -1115,6 +1171,7 @@ async fn process_envelope(
         })?;
     Ok(DispatchResult {
         sequence: last_sequence,
+        project_id: project_create_identity.map(|(project_id, _)| project_id),
     })
 }
 
@@ -1833,11 +1890,15 @@ async fn persist_command(
     hooks: &TestHooks,
     events: &[NewOrchestrationEvent],
     command_id: &str,
+    aggregate_kind: &str,
+    aggregate_id: &str,
 ) -> Result<VecDeque<OrchestrationEvent>, OrchestrationError> {
     let repositories = repositories.clone();
     let hooks = hooks.clone();
     let event_list = events.to_vec();
     let command_id = command_id.to_owned();
+    let aggregate_kind = aggregate_kind.to_owned();
+    let aggregate_id = aggregate_id.to_owned();
     let committed = repositories
         .database()
         .call(move |connection| {
@@ -1869,8 +1930,8 @@ async fn persist_command(
                 &transaction,
                 CommandReceipt {
                     command_id,
-                    aggregate_kind: last_saved.event.aggregate_kind.clone(),
-                    aggregate_id: last_saved.event.aggregate_id.clone(),
+                    aggregate_kind,
+                    aggregate_id,
                     accepted_at: last_saved.event.occurred_at.clone(),
                     result_sequence: last_saved.sequence,
                     status: "accepted".to_owned(),
@@ -1892,9 +1953,30 @@ fn apply_to_model(model: &mut CommandModel, events: &VecDeque<OrchestrationEvent
                 if let Some(project_id) =
                     event.event.payload.get("projectId").and_then(Value::as_str)
                 {
-                    model
-                        .projects
-                        .insert(project_id.to_owned(), ProjectState { deleted_at: None });
+                    model.projects.insert(
+                        project_id.to_owned(),
+                        ProjectState {
+                            workspace_root: event
+                                .event
+                                .payload
+                                .get("workspaceRoot")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned(),
+                            deleted_at: None,
+                        },
+                    );
+                }
+            }
+            "project.meta-updated" => {
+                if let Some(project) = model.projects.get_mut(&event.event.aggregate_id)
+                    && let Some(workspace_root) = event
+                        .event
+                        .payload
+                        .get("workspaceRoot")
+                        .and_then(Value::as_str)
+                {
+                    project.workspace_root = workspace_root.to_owned();
                 }
             }
             "thread.created" => {
@@ -2054,6 +2136,7 @@ async fn load_command_model(
         projects.insert(
             project.project_id.clone(),
             ProjectState {
+                workspace_root: project.workspace_root.clone(),
                 deleted_at: project.deleted_at.clone(),
             },
         );

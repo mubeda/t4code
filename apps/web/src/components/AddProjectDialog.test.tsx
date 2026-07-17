@@ -169,6 +169,25 @@ describe("AddProjectDialog mounted interactions", () => {
     );
   });
 
+  it("names and describes the dialog and keeps step content padded and scrollable", async () => {
+    await mount(<AddProjectDialog open onOpenChange={vi.fn()} />);
+
+    const dialog = document.querySelector('[role="dialog"]');
+    if (!(dialog instanceof HTMLElement)) throw new Error("Missing add project dialog");
+    const labelledBy = dialog.getAttribute("aria-labelledby");
+    const describedBy = dialog.getAttribute("aria-describedby");
+    expect(labelledBy).not.toBeNull();
+    expect(describedBy).not.toBeNull();
+    expect(document.getElementById(labelledBy!)?.textContent).toBe("Add a project");
+    expect(document.getElementById(describedBy!)?.textContent).toContain(
+      "Choose how to add a project",
+    );
+
+    const content = dialog.querySelector('[data-add-project-content="true"]');
+    expect(content?.classList.contains("overflow-y-auto")).toBe(true);
+    expect(content?.classList.contains("px-6")).toBe(true);
+  });
+
   it("never renders nested repository import UI", async () => {
     await mount(<AddProjectDialog open onOpenChange={vi.fn()} />);
     expect(document.body.textContent).not.toContain("Repositories found");

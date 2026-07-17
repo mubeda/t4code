@@ -23,6 +23,7 @@ export interface AddProjectStartStepProps {
   readonly hosts: ReadonlyArray<AddProjectHostOption>;
   readonly selectedEnvironmentId: EnvironmentId;
   readonly busy: boolean;
+  readonly error: string | null;
   readonly onSelectHost: (environmentId: EnvironmentId) => void;
   readonly onBrowse: () => void;
   readonly onOpenClone: () => void;
@@ -41,6 +42,7 @@ export interface AddProjectHostPathStepProps {
 export interface AddProjectCloneStepProps {
   readonly url: string;
   readonly parentDir: string;
+  readonly platform: string | null;
   readonly error: string | null;
   readonly busy: boolean;
   readonly canPickParent: boolean;
@@ -53,7 +55,7 @@ export interface AddProjectCloneStepProps {
 export interface AddProjectCreateStepProps {
   readonly name: string;
   readonly parentDir: string;
-  readonly platform: string;
+  readonly platform: string | null;
   readonly error: string | null;
   readonly busy: boolean;
   readonly canPickParent: boolean;
@@ -185,6 +187,7 @@ export function AddProjectStartStep({
   hosts,
   selectedEnvironmentId,
   busy,
+  error,
   onSelectHost,
   onBrowse,
   onOpenClone,
@@ -237,7 +240,7 @@ export function AddProjectStartStep({
         <label className="flex items-center gap-3">
           <span className="font-medium text-muted-foreground text-sm">Host</span>
           <Select
-            disabled={hosts.length <= 1}
+            disabled={busy || hosts.length <= 1}
             items={hostItems}
             modal={false}
             onValueChange={(value) => {
@@ -257,6 +260,7 @@ export function AddProjectStartStep({
             </SelectPopup>
           </Select>
         </label>
+        {error ? <ErrorMessage>{error}</ErrorMessage> : null}
 
         <ActionRow
           Icon={actions[0].icon}
@@ -344,17 +348,19 @@ function ParentDirectoryField({
           spellCheck={false}
           value={value}
         />
-        <Button
-          aria-label="Choose parent folder"
-          className="shrink-0"
-          disabled={busy || !canPick}
-          onClick={onPick}
-          size="icon"
-          title="Choose parent folder"
-          variant="outline"
-        >
-          <FolderOpenIcon aria-hidden />
-        </Button>
+        {canPick ? (
+          <Button
+            aria-label="Choose parent folder"
+            className="shrink-0"
+            disabled={busy}
+            onClick={onPick}
+            size="icon"
+            title="Choose parent folder"
+            variant="outline"
+          >
+            <FolderOpenIcon aria-hidden />
+          </Button>
+        ) : null}
       </div>
       {error ? <ErrorMessage>{error}</ErrorMessage> : null}
     </div>
@@ -380,8 +386,8 @@ export function AddProjectHostPathStep({
       }}
     >
       <StepHeading
-        description="Enter the absolute path to an existing project on this host."
-        title={`Add project from ${hostLabel}`}
+        description={`Enter an absolute or home-relative project path on ${hostLabel}.`}
+        title="Open project folder"
       />
       <div className="space-y-1.5">
         <label
@@ -406,7 +412,7 @@ export function AddProjectHostPathStep({
       </div>
       {error ? <ErrorMessage>{error}</ErrorMessage> : null}
       <Button className="w-full" disabled={!canSubmit} size="lg" type="submit">
-        {busy ? "Adding…" : "Add project"}
+        {busy ? "Opening…" : "Open project"}
       </Button>
     </form>
   );
@@ -415,6 +421,7 @@ export function AddProjectHostPathStep({
 export function AddProjectCloneStep({
   url,
   parentDir,
+  platform,
   error,
   busy,
   canPickParent,
@@ -424,7 +431,7 @@ export function AddProjectCloneStep({
   onClone,
 }: AddProjectCloneStepProps) {
   const urlError = validateGitCloneUrl(url);
-  const parentError = validateGitCloneParentPath(parentDir);
+  const parentError = validateGitCloneParentPath(parentDir, platform);
   const visibleUrlError = url.trim().length > 0 ? urlError : null;
   const visibleParentError = parentDir.trim().length > 0 ? parentError : null;
   const canSubmit = urlError === null && parentError === null && !busy;
@@ -505,7 +512,9 @@ export function AddProjectCreateStep({
   const nameError = validateProjectName(name);
   const parentError = validateAddProjectPath(parentDir, platform);
   const targetPath =
-    nameError === null && parentError === null ? joinProjectPath(parentDir, name, platform) : "";
+    nameError === null && parentError === null && platform !== null
+      ? joinProjectPath(parentDir, name, platform)
+      : "";
   const canSubmit = nameError === null && parentError === null && !busy;
   const parentSummary = formatParentSummary(parentDir) || "location not selected";
 
