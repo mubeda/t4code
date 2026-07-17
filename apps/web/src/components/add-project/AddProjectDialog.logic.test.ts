@@ -56,6 +56,19 @@ describe("Add Project rules", () => {
     expect(validateGitCloneUrl("git@github.com:openai/codex.git")).toBeNull();
   });
 
+  it("accepts a userless SCP-style domain remote", () => {
+    expect(validateGitCloneUrl("github.com:openai/codex.git")).toBeNull();
+  });
+
+  it("accepts a userless SCP-style SSH alias remote", () => {
+    expect(validateGitCloneUrl("work-git:team/repo.git")).toBeNull();
+  });
+
+  it("rejects Windows drive paths as clone URLs", () => {
+    expect(validateGitCloneUrl("C:\\repo")).toBe("Enter a valid Git repository URL.");
+    expect(validateGitCloneUrl("C:/repo")).toBe("Enter a valid Git repository URL.");
+  });
+
   it("rejects whitespace, unsupported schemes, and arbitrary clone URL text", () => {
     expect(validateGitCloneUrl("")).toBe("Enter a Git repository URL.");
     expect(validateGitCloneUrl("not-a-url")).toBe("Enter a valid Git repository URL.");
