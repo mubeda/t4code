@@ -2799,8 +2799,855 @@ async fn wait_for_endpoint(
 
 #[cfg(test)]
 mod tests {
-    use crate::server_settings::{ProviderInstanceState, ProvidersState};
-    use serde_json::json;
+    use super::{ProviderDriver, ProviderDriverFactory};
+    use crate::{
+        orchestration::engine::{EngineOptions, OrchestrationCommand},
+        persistence::{Database, ProviderSessionRuntime, run_migrations},
+        server_settings::{
+            ProviderEnvironmentVariableState, ProviderInstanceState, ProviderSettingsState,
+            ProvidersState,
+        },
+    };
+    use axum::{
+        Json, Router,
+        routing::{get, post},
+    };
+    use serde_json::{Value, json};
+    use std::sync::{Arc, Mutex as StdMutex};
+    use tempfile::TempDir;
+    use tokio::{net::TcpListener, sync::mpsc, time::timeout};
+
+    #[derive(Default)]
+    struct SupervisorDriverState {
+        launches: usize,
+        starts: usize,
+        sends: Vec<String>,
+        interrupts: usize,
+        approvals: usize,
+        answers: usize,
+        modes: Vec<String>,
+        interaction_modes: Vec<String>,
+        models: Vec<String>,
+        rollbacks: Vec<i64>,
+        shutdowns: usize,
+    }
+
+    struct SupervisorDriver {
+        state: Arc<StdMutex<SupervisorDriverState>>,
+        events: tokio::sync::Mutex<mpsc::Receiver<super::ProviderEvent>>,
+    }
+
+    impl ProviderDriver for SupervisorDriver {
+        fn start(
+            &self,
+        ) -> super::BoxRuntimeFuture<'_, Result<super::StartedSession, super::ProviderRuntimeError>>
+        {
+            Box::pin(async move {
+                self.state.lock().unwrap().starts += 1;
+                Ok(super::StartedSession {
+                    resume_cursor: Some(json!({"sessionId":"unit-session"})),
+                    runtime_payload: Some(json!({"transport":"unit"})),
+                })
+            })
+        }
+
+        fn send(
+            &self,
+            text: String,
+            _: Vec<Value>,
+            _: String,
+        ) -> super::BoxRuntimeFuture<'_, Result<Option<String>, super::ProviderRuntimeError>>
+        {
+            Box::pin(async move {
+                self.state.lock().unwrap().sends.push(text);
+                Ok(Some("unit-turn".to_owned()))
+            })
+        }
+
+        fn interrupt(
+            &self,
+            _: Option<String>,
+        ) -> super::BoxRuntimeFuture<'_, Result<(), super::ProviderRuntimeError>> {
+            Box::pin(async move {
+                self.state.lock().unwrap().interrupts += 1;
+                Ok(())
+            })
+        }
+
+        fn approve(
+            &self,
+            _: String,
+            _: String,
+        ) -> super::BoxRuntimeFuture<'_, Result<(), super::ProviderRuntimeError>> {
+            Box::pin(async move {
+                self.state.lock().unwrap().approvals += 1;
+                Ok(())
+            })
+        }
+
+        fn answer(
+            &self,
+            _: String,
+            _: Value,
+        ) -> super::BoxRuntimeFuture<'_, Result<(), super::ProviderRuntimeError>> {
+            Box::pin(async move {
+                self.state.lock().unwrap().answers += 1;
+                Ok(())
+            })
+        }
+
+        fn set_mode(
+            &self,
+            mode: String,
+        ) -> super::BoxRuntimeFuture<'_, Result<(), super::ProviderRuntimeError>> {
+            Box::pin(async move {
+                self.state.lock().unwrap().modes.push(mode);
+                Ok(())
+            })
+        }
+
+        fn set_interaction_mode(
+            &self,
+            mode: String,
+        ) -> super::BoxRuntimeFuture<'_, Result<(), super::ProviderRuntimeError>> {
+            Box::pin(async move {
+                self.state.lock().unwrap().interaction_modes.push(mode);
+                Ok(())
+            })
+        }
+
+        fn set_model(
+            &self,
+            model: String,
+        ) -> super::BoxRuntimeFuture<'_, Result<(), super::ProviderRuntimeError>> {
+            Box::pin(async move {
+                self.state.lock().unwrap().models.push(model);
+                Ok(())
+            })
+        }
+
+        fn rollback(
+            &self,
+            turn_count: i64,
+        ) -> super::BoxRuntimeFuture<'_, Result<(), super::ProviderRuntimeError>> {
+            Box::pin(async move {
+                self.state.lock().unwrap().rollbacks.push(turn_count);
+                Ok(())
+            })
+        }
+
+        fn next_event(&self) -> super::BoxRuntimeFuture<'_, Option<super::ProviderEvent>> {
+            Box::pin(async move { self.events.lock().await.recv().await })
+        }
+
+        fn shutdown(&self) -> super::BoxRuntimeFuture<'_, Result<(), super::ProviderRuntimeError>> {
+            Box::pin(async move {
+                self.state.lock().unwrap().shutdowns += 1;
+                Ok(())
+            })
+        }
+    }
+
+    struct SupervisorFactory {
+        state: Arc<StdMutex<SupervisorDriverState>>,
+        events: StdMutex<Option<mpsc::Receiver<super::ProviderEvent>>>,
+    }
+
+    impl ProviderDriverFactory for SupervisorFactory {
+        fn create(
+            &self,
+            _: super::ProviderLaunchRequest,
+        ) -> super::BoxRuntimeFuture<'_, Result<Arc<dyn ProviderDriver>, super::ProviderRuntimeError>>
+        {
+            Box::pin(async move {
+                self.state.lock().unwrap().launches += 1;
+                Ok(Arc::new(SupervisorDriver {
+                    state: self.state.clone(),
+                    events: tokio::sync::Mutex::new(
+                        self.events.lock().unwrap().take().expect("event receiver"),
+                    ),
+                }) as Arc<dyn ProviderDriver>)
+            })
+        }
+    }
+
+    async fn supervisor_engine() -> super::OrchestrationEngine {
+        let database = Database::open_in_memory().await.unwrap();
+        database
+            .call(|connection| {
+                run_migrations(connection, None)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let engine = super::OrchestrationEngine::start(database, EngineOptions::default())
+            .await
+            .unwrap();
+        for command in [
+            json!({"type":"project.create","commandId":"project","projectId":"p1","title":"Project","workspaceRoot":"/tmp/project","createdAt":"2026-07-16T00:00:00Z"}),
+            json!({"type":"thread.create","commandId":"thread","threadId":"t1","projectId":"p1","title":"Thread","kind":"workspace","modelSelection":{"instanceId":"codex","model":"gpt-5"},"runtimeMode":"full-access","interactionMode":"default","branch":null,"worktreePath":null,"createdAt":"2026-07-16T00:00:00Z"}),
+        ] {
+            engine
+                .dispatch(serde_json::from_value(command).unwrap())
+                .await
+                .unwrap();
+        }
+        engine
+    }
+
+    fn native_launch(temp: &TempDir, provider: &str) -> super::ProviderLaunchRequest {
+        super::ProviderLaunchRequest {
+            thread_id: "native-test-thread".to_owned(),
+            provider: provider.to_owned(),
+            provider_instance_id: Some(provider.to_owned()),
+            binary_path: format!("missing-{provider}"),
+            cwd: temp.path().to_path_buf(),
+            runtime_mode: "approval-required".to_owned(),
+            interaction_mode: "default".to_owned(),
+            model: Some("test-model".to_owned()),
+            service_tier: None,
+            effort: None,
+            agent: None,
+            resume_cursor: None,
+            environment: Default::default(),
+            endpoint: None,
+            server_password: None,
+            mcp: None,
+            codex_home: None,
+        }
+    }
+
+    #[cfg(unix)]
+    fn executable_fixture(temp: &TempDir, name: &str, contents: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let executable = temp.path().join(name);
+        std::fs::write(&executable, contents).expect("provider fixture should write");
+        let mut permissions = std::fs::metadata(&executable)
+            .expect("provider fixture metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&executable, permissions)
+            .expect("provider fixture should be executable");
+        executable
+    }
+
+    #[tokio::test]
+    async fn unit_supervisor_covers_complete_command_routing_and_shutdown_lifecycle() {
+        let engine = supervisor_engine().await;
+        let state = Arc::new(StdMutex::new(SupervisorDriverState::default()));
+        let (events_tx, events_rx) = mpsc::channel(4);
+        let factory = Arc::new(SupervisorFactory {
+            state: state.clone(),
+            events: StdMutex::new(Some(events_rx)),
+        });
+        let supervisor = super::ProviderRuntimeSupervisor::start(
+            engine.clone(),
+            factory,
+            super::SupervisorOptions::default(),
+        );
+        let temp = TempDir::new().unwrap();
+        let settings_root = temp.path().join("settings");
+        std::fs::create_dir(&settings_root).unwrap();
+        let mut settings = ProviderSettingsState::default();
+        settings.provider_instances.insert(
+            "codex-custom".to_owned(),
+            ProviderInstanceState {
+                driver: "codex".to_owned(),
+                enabled: true,
+                display_name: Some("Custom Codex".to_owned()),
+                environment: vec![
+                    ProviderEnvironmentVariableState {
+                        name: "UNIT_ENV".to_owned(),
+                        value: "enabled".to_owned(),
+                        sensitive: false,
+                        value_redacted: false,
+                    },
+                    ProviderEnvironmentVariableState {
+                        name: String::new(),
+                        value: "ignored".to_owned(),
+                        sensitive: false,
+                        value_redacted: false,
+                    },
+                ],
+                config: json!({
+                    "binaryPath": "/bin/sh",
+                    "serverUrl": "http://127.0.0.1:4773",
+                    "serverPassword": "fixture-password",
+                    "homePath": temp.path().join("shared-home"),
+                    "shadowHomePath": temp.path().join("shadow-home")
+                }),
+            },
+        );
+        std::fs::write(
+            settings_root.join("settings.json"),
+            serde_json::to_vec(&settings).unwrap(),
+        )
+        .unwrap();
+        let launch_command = serde_json::from_value(json!({
+            "type":"thread.turn.start",
+            "commandId":"launch-options",
+            "threadId":"t1",
+            "message":{"messageId":"launch-message","role":"user","text":"launch","attachments":[]},
+            "modelSelection":{
+                "instanceId":"codex-custom",
+                "model":"gpt-5.2",
+                "options":[
+                    {"id":"serviceTier","value":"fast"},
+                    {"id":"reasoningEffort","value":"high"},
+                    {"id":"agent","value":"reviewer"}
+                ]
+            },
+            "runtimeMode":"full-access",
+            "interactionMode":"plan",
+            "createdAt":"2026-07-16T00:00:00Z"
+        }))
+        .unwrap();
+        let missing_thread_command = serde_json::from_value(json!({
+            "type":"thread.turn.start",
+            "commandId":"missing-launch",
+            "threadId":"missing",
+            "message":{"messageId":"missing-message","role":"user","text":"launch","attachments":[]},
+            "modelSelection":{"instanceId":"codex-custom","model":"gpt-5.2"},
+            "runtimeMode":"full-access",
+            "interactionMode":"plan",
+            "createdAt":"2026-07-16T00:00:00Z"
+        }))
+        .unwrap();
+        assert!(matches!(
+            super::launch_request_for_command(&engine, &settings_root, &missing_thread_command)
+                .await,
+            Err(super::ProviderRuntimeError::SessionNotFound { .. })
+        ));
+        let blocked_settings_root = temp.path().join("blocked-settings");
+        std::fs::write(&blocked_settings_root, "not a directory").unwrap();
+        assert!(
+            super::launch_request_for_command(&engine, &blocked_settings_root, &launch_command)
+                .await
+                .is_err()
+        );
+        engine
+            .repositories()
+            .upsert_provider_session_runtime(ProviderSessionRuntime {
+                thread_id: "t1".to_owned(),
+                provider_name: "claudeAgent".to_owned(),
+                provider_instance_id: Some("other-instance".to_owned()),
+                adapter_key: "unit".to_owned(),
+                runtime_mode: "full-access".to_owned(),
+                status: "running".to_owned(),
+                last_seen_at: "2026-07-16T00:00:00Z".to_owned(),
+                resume_cursor: Some(json!({"threadId":"ignored"})),
+                runtime_payload: None,
+            })
+            .await
+            .unwrap();
+        let resolved_launch =
+            super::launch_request_for_command(&engine, &settings_root, &launch_command)
+                .await
+                .unwrap();
+        assert_eq!(
+            resolved_launch.provider_instance_id.as_deref(),
+            Some("codex-custom")
+        );
+        assert_eq!(
+            resolved_launch.environment.get("UNIT_ENV"),
+            Some(&"enabled".to_owned())
+        );
+        assert_eq!(resolved_launch.service_tier.as_deref(), Some("fast"));
+        assert_eq!(resolved_launch.effort.as_deref(), Some("high"));
+        assert_eq!(resolved_launch.agent.as_deref(), Some("reviewer"));
+        assert_eq!(
+            resolved_launch.endpoint.as_deref(),
+            Some("http://127.0.0.1:4773")
+        );
+        assert_eq!(
+            resolved_launch.server_password.as_deref(),
+            Some("fixture-password")
+        );
+        assert!(resolved_launch.codex_home.is_some());
+        assert!(resolved_launch.resume_cursor.is_none());
+        engine
+            .repositories()
+            .upsert_provider_session_runtime(ProviderSessionRuntime {
+                thread_id: "t1".to_owned(),
+                provider_name: "codex".to_owned(),
+                provider_instance_id: Some("codex-custom".to_owned()),
+                adapter_key: "unit".to_owned(),
+                runtime_mode: "full-access".to_owned(),
+                status: "running".to_owned(),
+                last_seen_at: "2026-07-16T00:00:01Z".to_owned(),
+                resume_cursor: Some(json!({"threadId":"resume-unit"})),
+                runtime_payload: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            super::launch_request_for_command(&engine, &settings_root, &launch_command)
+                .await
+                .unwrap()
+                .resume_cursor,
+            Some(json!({"threadId":"resume-unit"}))
+        );
+
+        let mut launch = native_launch(&temp, "codex");
+        launch.thread_id = "t1".to_owned();
+        launch.cwd = temp.path().to_path_buf();
+        supervisor.launch(launch.clone()).await.unwrap();
+        assert!(matches!(
+            supervisor.launch(launch).await,
+            Err(super::ProviderRuntimeError::SessionAlreadyExists { .. })
+        ));
+
+        for command in [
+            json!({"type":"thread.turn.start","commandId":"turn","threadId":"t1","message":{"messageId":"m1","role":"user","text":"hello","attachments":[]},"modelSelection":{"instanceId":"codex","model":"gpt-5.1"},"runtimeMode":"full-access","interactionMode":"default","createdAt":"2026-07-16T00:00:00Z"}),
+            json!({"type":"thread.turn.interrupt","commandId":"interrupt","threadId":"t1","turnId":"unit-turn","createdAt":"2026-07-16T00:00:00Z"}),
+            json!({"type":"thread.approval.respond","commandId":"approve","threadId":"t1","requestId":"r1","decision":"accept","createdAt":"2026-07-16T00:00:00Z"}),
+            json!({"type":"thread.user-input.respond","commandId":"answer","threadId":"t1","requestId":"r2","answers":{"q":"a"},"createdAt":"2026-07-16T00:00:00Z"}),
+            json!({"type":"thread.runtime-mode.set","commandId":"mode","threadId":"t1","runtimeMode":"approval-required","createdAt":"2026-07-16T00:00:00Z"}),
+            json!({"type":"thread.interaction-mode.set","commandId":"interaction","threadId":"t1","interactionMode":"plan","createdAt":"2026-07-16T00:00:00Z"}),
+            json!({"type":"thread.meta.update","commandId":"model","threadId":"t1","modelSelection":{"instanceId":"codex","model":"gpt-5.2"}}),
+            json!({"type":"thread.checkpoint.revert","commandId":"revert","threadId":"t1","turnCount":2,"createdAt":"2026-07-16T00:00:00Z"}),
+        ] {
+            supervisor
+                .handle_orchestration(serde_json::from_value(command).unwrap())
+                .await
+                .unwrap();
+        }
+
+        let project_command: OrchestrationCommand = serde_json::from_value(json!({
+            "type":"project.create","commandId":"unsupported","projectId":"p2","title":"Project","workspaceRoot":"/tmp/p2","createdAt":"2026-07-16T00:00:00Z"
+        }))
+        .unwrap();
+        assert!(
+            supervisor
+                .handle_orchestration(project_command)
+                .await
+                .is_err()
+        );
+        assert!(
+            supervisor
+                .handle_orchestration(
+                    serde_json::from_value(json!({"type":"thread.turn.interrupt","commandId":"missing","threadId":"missing","turnId":null,"createdAt":"2026-07-16T00:00:00Z"})).unwrap(),
+                )
+                .await
+                .is_err()
+        );
+        supervisor
+            .handle_orchestration(
+                serde_json::from_value(json!({"type":"thread.session.stop","commandId":"stop","threadId":"t1","createdAt":"2026-07-16T00:00:00Z"})).unwrap(),
+            )
+            .await
+            .unwrap();
+        drop(events_tx);
+        supervisor.shutdown().await.unwrap();
+        supervisor.shutdown().await.unwrap();
+        assert!(matches!(
+            supervisor
+                .handle_orchestration(
+                    serde_json::from_value(json!({"type":"thread.session.stop","commandId":"late","threadId":"t1","createdAt":"2026-07-16T00:00:00Z"})).unwrap(),
+                )
+                .await,
+            Err(super::ProviderRuntimeError::Shutdown)
+        ));
+
+        {
+            let state = state.lock().unwrap();
+            assert_eq!(state.launches, 1);
+            assert_eq!(state.starts, 1);
+            assert_eq!(state.sends, ["hello"]);
+            assert_eq!(state.interrupts, 1);
+            assert_eq!(state.approvals, 1);
+            assert_eq!(state.answers, 1);
+            assert_eq!(state.modes, ["approval-required"]);
+            assert_eq!(state.interaction_modes, ["plan"]);
+            assert_eq!(state.models, ["gpt-5.1", "gpt-5.2"]);
+            assert_eq!(state.rollbacks, [2]);
+            assert_eq!(state.shutdowns, 1);
+        }
+        engine.shutdown().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_process_adapters_cover_live_codex_claude_cursor_and_grok_commands() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let temp = TempDir::new().expect("provider fixture directory");
+        let factory = super::NativeProviderDriverFactory::new(temp.path().join("attachments"));
+
+        let claude_fixture = executable_fixture(
+            &temp,
+            "claude-fixture.sh",
+            "#!/bin/sh\nprintf '%s\\n' 'fixture warning' >&2\ncat >/dev/null\n",
+        );
+        let mut claude_request = native_launch(&temp, "claudeAgent");
+        claude_request.binary_path = claude_fixture.to_string_lossy().into_owned();
+        claude_request.model = Some("claude-sonnet".to_owned());
+        claude_request.agent = Some("reviewer".to_owned());
+        claude_request.resume_cursor = Some(json!({"sessionId":"claude-session"}));
+        let claude = super::ClaudeDriver::spawn(claude_request, factory.attachments.clone())
+            .await
+            .expect("Claude driver should create");
+        assert_eq!(
+            claude
+                .start()
+                .await
+                .expect("Claude should start")
+                .resume_cursor,
+            Some(json!({"sessionId":"claude-session"})),
+        );
+        assert!(
+            claude
+                .send("hello".to_owned(), Vec::new(), "default".to_owned())
+                .await
+                .expect("Claude turn should send")
+                .is_some()
+        );
+        claude
+            .interrupt(None)
+            .await
+            .expect("Claude should interrupt");
+        claude
+            .approve("approval-1".to_owned(), "acceptForSession".to_owned())
+            .await
+            .expect("Claude approval should resolve");
+        claude
+            .approve("approval-2".to_owned(), "deny".to_owned())
+            .await
+            .expect("Claude denial should resolve");
+        claude.runtime.lock().await.open_user_input_request(
+            crate::provider::claude::UserInputRequestInput {
+                tool_name: "AskUserQuestion".to_owned(),
+                input: json!({"questions":[{"question":"Continue?"}]}),
+                tool_use_id: "tool-1".to_owned(),
+            },
+            "question-1",
+        );
+        claude
+            .answer("question-1".to_owned(), json!({"answer":"yes"}))
+            .await
+            .expect("Claude user input should resolve");
+        claude
+            .set_mode("auto-accept-edits".to_owned())
+            .await
+            .expect("Claude mode should update");
+        claude
+            .set_interaction_mode("plan".to_owned())
+            .await
+            .expect("Claude interaction mode should update");
+        assert!(claude.set_model("other".to_owned()).await.is_err());
+        assert!(claude.rollback(1).await.is_err());
+        assert_eq!(
+            timeout(std::time::Duration::from_secs(2), claude.next_event())
+                .await
+                .expect("Claude event timeout")
+                .expect("Claude stderr event")
+                .event_type,
+            "session.stderr",
+        );
+        claude.shutdown().await.expect("Claude should shut down");
+
+        let mut fresh_claude_request = native_launch(&temp, "claudeAgent");
+        fresh_claude_request.binary_path = claude_fixture.to_string_lossy().into_owned();
+        let fresh_claude =
+            super::ClaudeDriver::spawn(fresh_claude_request, factory.attachments.clone())
+                .await
+                .expect("fresh Claude driver should create");
+        fresh_claude
+            .shutdown()
+            .await
+            .expect("fresh Claude should shut down");
+
+        let codex_fixture = executable_fixture(
+            &temp,
+            "codex-fixture.sh",
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"id":%s,"result":{"userAgent":"fixture"}}\n' "$id" ;;
+    *'"method":"thread/start"'*) printf '{"id":%s,"result":{"cwd":"/tmp","model":"gpt-5","thread":{"id":"native-codex-thread"}}}\n' "$id" ;;
+    *'"method":"thread/goal/set"'*) printf '{"id":%s,"result":{"goal":{"status":"active"}}}\n' "$id" ;;
+    *'"method":"turn/start"'*) printf '{"id":%s,"result":{"turn":{"id":"native-codex-turn"}}}\n' "$id" ;;
+    *'"method":"turn/interrupt"'*) printf '{"id":%s,"result":{}}\n' "$id" ;;
+    *'"method":"thread/rollback"'*) printf '{"id":%s,"result":{"thread":{"id":"native-codex-thread","turns":[]}}}\n' "$id" ;;
+    *'"method":"shutdown"'*) printf '{"id":%s,"result":null}\n' "$id" ;;
+  esac
+done
+"#,
+        );
+        let mut codex_request = native_launch(&temp, "codex");
+        codex_request.binary_path = codex_fixture.to_string_lossy().into_owned();
+        let codex = factory
+            .create(codex_request)
+            .await
+            .expect("Codex driver should create");
+        assert_eq!(
+            timeout(std::time::Duration::from_secs(2), codex.start())
+                .await
+                .expect("Codex start timeout")
+                .expect("Codex should start")
+                .resume_cursor,
+            Some(json!({"threadId":"native-codex-thread"})),
+        );
+        assert!(
+            !timeout(std::time::Duration::from_secs(2), codex.next_event())
+                .await
+                .expect("Codex event timeout")
+                .expect("Codex startup event")
+                .event_type
+                .is_empty()
+        );
+        codex
+            .set_interaction_mode("plan".to_owned())
+            .await
+            .expect("Codex default interaction mode should be accepted");
+        assert!(
+            codex
+                .send("hello".to_owned(), Vec::new(), "default".to_owned())
+                .await
+                .expect("Codex turn should send")
+                .is_some()
+        );
+        assert!(
+            codex
+                .send(
+                    "/goal finish coverage".to_owned(),
+                    Vec::new(),
+                    "default".to_owned(),
+                )
+                .await
+                .expect("Codex goal should send")
+                .is_some()
+        );
+        codex.interrupt(None).await.expect("Codex should interrupt");
+        codex.rollback(0).await.expect("Codex should roll back");
+        assert!(codex.rollback(-1).await.is_err());
+        assert!(
+            codex
+                .set_mode("approval-required".to_owned())
+                .await
+                .is_err()
+        );
+        assert!(codex.set_model("other".to_owned()).await.is_err());
+        assert!(
+            codex
+                .approve("unknown".to_owned(), "accept".to_owned())
+                .await
+                .is_err()
+        );
+        assert!(codex.answer("unknown".to_owned(), json!({})).await.is_err());
+        codex.shutdown().await.expect("Codex should shut down");
+
+        let acp_fixture = executable_fixture(
+            &temp,
+            "acp-fixture.sh",
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*|*'"method":"authenticate"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    *'"method":"session/new"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"cursor-session","configOptions":[{"id":"model","category":"model"}],"modes":{"currentModeId":"ask","availableModes":[{"id":"ask","name":"Ask"},{"id":"code","name":"Agent"},{"id":"architect","name":"Plan"}]}}}\n' "$id" ;;
+    *'"method":"session/create"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"grok-session","modes":{"currentModeId":"code","availableModes":[{"id":"code","name":"Agent"},{"id":"ask","name":"Ask"}]}}}\n' "$id" ;;
+    *'"method":"session/set_config_option"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[]}}\n' "$id" ;;
+    *'"method":"session/set_mode"'*|*'"method":"session/set_model"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    *'"method":"session/prompt"'*) sleep 0.1; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id" ;;
+  esac
+done
+"#,
+        );
+        for provider in ["cursor", "grok"] {
+            let mut request = native_launch(&temp, provider);
+            request.binary_path = acp_fixture.to_string_lossy().into_owned();
+            if provider == "grok" {
+                request
+                    .environment
+                    .insert("XAI_API_KEY".to_owned(), "unit-key".to_owned());
+            }
+            let driver = factory
+                .create(request)
+                .await
+                .expect("ACP driver should create");
+            assert!(
+                driver
+                    .start()
+                    .await
+                    .expect("ACP driver should start")
+                    .resume_cursor
+                    .is_some()
+            );
+            assert!(
+                !timeout(std::time::Duration::from_secs(2), driver.next_event())
+                    .await
+                    .expect("ACP event timeout")
+                    .expect("ACP startup event")
+                    .event_type
+                    .is_empty()
+            );
+            let turn = driver
+                .send("hello".to_owned(), Vec::new(), "default".to_owned())
+                .await
+                .expect("ACP turn should send")
+                .expect("ACP turn id");
+            driver
+                .interrupt(Some(turn))
+                .await
+                .expect("ACP turn should interrupt");
+            driver
+                .set_model("updated-model".to_owned())
+                .await
+                .expect("ACP model should update");
+            driver
+                .set_mode("full-access".to_owned())
+                .await
+                .expect("ACP mode should update");
+            driver
+                .set_interaction_mode("plan".to_owned())
+                .await
+                .expect("ACP interaction mode should update");
+            assert!(driver.rollback(1).await.is_err());
+            assert!(
+                driver
+                    .approve("unknown".to_owned(), "accept".to_owned())
+                    .await
+                    .is_err()
+            );
+            assert!(
+                driver
+                    .answer("unknown".to_owned(), json!({}))
+                    .await
+                    .is_err()
+            );
+            driver
+                .shutdown()
+                .await
+                .expect("ACP driver should shut down");
+        }
+    }
+
+    #[tokio::test]
+    async fn native_opencode_adapter_covers_live_session_turn_and_control_commands() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let app = Router::new()
+            .route(
+                "/session",
+                post(|| async { Json(json!({"id":"native-opencode-session"})) }),
+            )
+            .route("/event", get(|| async { "" }))
+            .route(
+                "/session/{session_id}/prompt_async",
+                post(|| async { Json(json!({})) }),
+            )
+            .route(
+                "/session/{session_id}/command",
+                post(|| async { Json(json!({})) }),
+            )
+            .route(
+                "/session/{session_id}/abort",
+                post(|| async { Json(json!({})) }),
+            )
+            .route(
+                "/session/{session_id}/message",
+                get(|| async { Json(json!({"data":[]})) }),
+            )
+            .route(
+                "/session/{session_id}/revert",
+                post(|| async { Json(json!({})) }),
+            );
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("OpenCode fixture should bind");
+        let address = listener.local_addr().expect("OpenCode fixture address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("OpenCode fixture should serve");
+        });
+
+        let temp = TempDir::new().expect("OpenCode fixture directory");
+        let endpoint_child = tokio::process::Command::new("/bin/sh")
+            .args(["-c", "sleep 2"])
+            .spawn()
+            .expect("endpoint child should spawn");
+        let endpoint_child: Box<dyn process_wrap::tokio::ChildWrapper> = Box::new(endpoint_child);
+        let endpoint_child = Arc::new(tokio::sync::Mutex::new(endpoint_child));
+        super::wait_for_endpoint(&format!("http://{address}"), &endpoint_child)
+            .await
+            .expect("live endpoint should become ready");
+        super::kill_child(&endpoint_child).await;
+        let factory = super::NativeProviderDriverFactory::new(temp.path().join("attachments"));
+        let mut request = native_launch(&temp, "opencode");
+        request.endpoint = Some(format!("http://{address}"));
+        request.server_password = Some("secret".to_owned());
+        request.agent = Some("reviewer".to_owned());
+        request.model = Some("openai/gpt-5".to_owned());
+        let driver = factory
+            .create(request)
+            .await
+            .expect("OpenCode driver should create");
+        assert_eq!(
+            driver
+                .start()
+                .await
+                .expect("OpenCode should start")
+                .resume_cursor,
+            Some(json!({"sessionId":"native-opencode-session"})),
+        );
+        driver
+            .set_interaction_mode("plan".to_owned())
+            .await
+            .expect("OpenCode default interaction mode should be accepted");
+        assert!(
+            driver
+                .send("hello".to_owned(), Vec::new(), "default".to_owned())
+                .await
+                .expect("OpenCode turn should send")
+                .is_some()
+        );
+        assert!(
+            driver
+                .send(
+                    "/review src/provider".to_owned(),
+                    Vec::new(),
+                    "default".to_owned(),
+                )
+                .await
+                .expect("OpenCode command should send")
+                .is_some()
+        );
+        driver
+            .interrupt(None)
+            .await
+            .expect("OpenCode should interrupt");
+        driver
+            .set_model("openai/gpt-5.4".to_owned())
+            .await
+            .expect("OpenCode model should update");
+        driver.rollback(0).await.expect("OpenCode should roll back");
+        assert!(driver.rollback(-1).await.is_err());
+        assert!(driver.set_mode("full-access".to_owned()).await.is_err());
+        assert!(
+            driver
+                .approve("unknown".to_owned(), "accept".to_owned())
+                .await
+                .is_err()
+        );
+        assert!(
+            driver
+                .answer("unknown".to_owned(), json!({}))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            timeout(std::time::Duration::from_secs(2), driver.next_event())
+                .await
+                .expect("OpenCode event timeout")
+                .expect("OpenCode event")
+                .event_type,
+            "session.started",
+        );
+        driver.shutdown().await.expect("OpenCode should shut down");
+        server.abort();
+    }
 
     #[test]
     fn automatic_model_selection_uses_the_provider_default() {

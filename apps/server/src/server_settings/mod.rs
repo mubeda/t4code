@@ -542,3 +542,84 @@ async fn write_bytes_atomically(path: &Path, contents: &[u8]) -> Result<(), std:
     let _ = fs::remove_dir_all(&temporary_dir).await;
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn filesystem_and_patch_boundaries_cover_settings_failure_contracts() {
+        let temporary = tempfile::tempdir().unwrap();
+        let unreadable_settings = temporary.path().join("unreadable");
+        fs::create_dir_all(unreadable_settings.join("settings.json"))
+            .await
+            .unwrap();
+        assert!(matches!(
+            ProviderSettingsStore::new(&unreadable_settings)
+                .read_persisted()
+                .await,
+            Err(ServerSettingsReadError::Read { .. })
+        ));
+
+        let blocked_root = temporary.path().join("blocked-root");
+        fs::write(&blocked_root, "file").await.unwrap();
+        assert!(matches!(
+            ProviderSettingsStore::new(&blocked_root)
+                .materialize_and_persist(ProviderSettingsState::default())
+                .await,
+            Err(ServerSettingsReadError::Persist { .. })
+        ));
+        assert!(
+            write_json_atomically(&blocked_root.join("settings.json"), &Value::Null)
+                .await
+                .is_err()
+        );
+
+        let secret_root = temporary.path().join("secret-root");
+        let store = ProviderSettingsStore::new(&secret_root);
+        fs::create_dir_all(store.secret_path("instance", "TOKEN"))
+            .await
+            .unwrap();
+        let mut settings = ProviderSettingsState::default();
+        settings.provider_instances.insert(
+            "instance".to_owned(),
+            ProviderInstanceState {
+                driver: "codex".to_owned(),
+                enabled: true,
+                display_name: None,
+                environment: vec![ProviderEnvironmentVariableState {
+                    name: "TOKEN".to_owned(),
+                    value: String::new(),
+                    sensitive: true,
+                    value_redacted: true,
+                }],
+                config: Value::Null,
+            },
+        );
+        assert!(matches!(
+            store.materialize_secrets(settings).await,
+            Err(ServerSettingsReadError::Read { .. })
+        ));
+
+        let mut provider = ProviderBinarySettingsState::default();
+        apply_provider_patch(
+            &mut provider,
+            Some(ProviderSettingsPatch {
+                enabled: Some(true),
+                binary_path: Some(" custom ".to_owned()),
+                server_url: Some(" http://localhost ".to_owned()),
+                server_password: Some(" secret ".to_owned()),
+            }),
+            "default",
+        );
+        assert!(provider.enabled);
+        assert_eq!(provider.binary_path, "custom");
+        assert_eq!(provider.server_url, "http://localhost");
+        assert_eq!(provider.server_password, "secret");
+        assert_eq!(strip_defaults(&Value::Null, &Value::Null), None);
+        assert_eq!(
+            strip_defaults(&Value::String("value".to_owned()), &Value::Null),
+            Some(Value::String("value".to_owned()))
+        );
+    }
+}

@@ -162,4 +162,78 @@ describe("resolveBrowserViewportLayout", () => {
       ),
     ).toEqual({ width: 460, height: 409 });
   });
+
+  it("chooses the dominant diagonal axis for locked aspect ratios", () => {
+    expect(
+      resizeFreeformViewport({ width: 800, height: 600 }, { x: 300, y: 25 }, 1, "southeast", 4 / 3),
+    ).toEqual({ width: 1100, height: 825 });
+    expect(
+      resizeFreeformViewport({ width: 800, height: 600 }, { x: 25, y: 300 }, 1, "southeast", 4 / 3),
+    ).toEqual({ width: 1200, height: 900 });
+    expect(
+      resizeFreeformViewport(
+        { width: 800, height: 600 },
+        { x: 100, y: 100 },
+        1,
+        "southeast",
+        Number.NaN,
+      ),
+    ).toEqual({ width: 900, height: 700 });
+  });
+
+  it("reduces the non-dominant dimension when freeform area exceeds the cap", () => {
+    const horizontal = resizeFreeformViewport({ width: 3_800, height: 2_100 }, { x: 500, y: 10 });
+    const vertical = resizeFreeformViewport({ width: 3_800, height: 2_100 }, { x: 10, y: 500 });
+    expect(horizontal.width * horizontal.height).toBeLessThanOrEqual(3840 * 2160);
+    expect(vertical.width * vertical.height).toBeLessThanOrEqual(3840 * 2160);
+    expect(horizontal.width).not.toBe(vertical.width);
+  });
+
+  it("handles west and north rails on both sides of the centered-fit boundary", () => {
+    const available = { width: 1_000, height: 700 };
+    expect(
+      resizeBrowserViewportFromRail(
+        { width: 1_200, height: 800 },
+        { x: 100, y: 50 },
+        available,
+        1,
+        "northwest",
+      ),
+    ).toEqual({ width: 1100, height: 750 });
+    expect(
+      resizeBrowserViewportFromRail(
+        { width: 1_200, height: 800 },
+        { x: 300, y: 200 },
+        available,
+        1,
+        "northwest",
+      ),
+    ).toEqual({ width: 800, height: 500 });
+    expect(
+      resizeBrowserViewportFromRail(
+        { width: 800, height: 500 },
+        { x: -200, y: -150 },
+        available,
+        1,
+        "northwest",
+      ),
+    ).toEqual({ width: 1100, height: 750 });
+  });
+
+  it("normalizes invalid zoom and clamps tiny device areas", () => {
+    expect(
+      resolveBrowserViewportLayout(
+        { width: 0, height: -10 },
+        { _tag: "freeform", width: 400, height: 300 },
+        0,
+      ),
+    ).toMatchObject({ canvasWidth: 1, canvasHeight: 1 });
+    expect(
+      resolveBrowserDeviceViewportLayout(
+        { width: 1, height: 1 },
+        { _tag: "freeform", width: 240, height: 240 },
+        Number.POSITIVE_INFINITY,
+      ),
+    ).toMatchObject({ canvasWidth: 1, canvasHeight: 1 });
+  });
 });

@@ -143,6 +143,11 @@ describe("splitPromptIntoComposerSegments", () => {
 });
 
 describe("selectionTouchesMentionBoundary", () => {
+  it("rejects empty and collapsed selections", () => {
+    expect(selectionTouchesMentionBoundary("", 0, 1)).toBe(false);
+    expect(selectionTouchesMentionBoundary("hi @package.json there", 4, 4)).toBe(false);
+  });
+
   it("returns true when selection includes the whitespace after a mention", () => {
     expect(
       selectionTouchesMentionBoundary(
@@ -203,5 +208,12 @@ describe("selectionTouchesMentionBoundary", () => {
         prompt.length,
       ),
     ).toBe(true);
+  });
+
+  it("ignores skills and selections that miss both mention boundaries", () => {
+    const prompt = `Use $review-follow-up before ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}@AGENTS.md later`;
+    expect(selectionTouchesMentionBoundary(prompt, 0, 3)).toBe(false);
+    expect(selectionTouchesMentionBoundary("@AGENTS.md later", 0, 2)).toBe(false);
+    expect(selectionTouchesMentionBoundary("before @AGENTS.md", 0, 3)).toBe(false);
   });
 });

@@ -407,7 +407,7 @@ fn build_startup_access(
     } else {
         local_addr.ip().to_string()
     };
-    let authority = if local_addr.is_ipv6() {
+    let authority = if local_addr.is_ipv6() && !local_addr.ip().is_unspecified() {
         format!("[{host}]:{}", local_addr.port())
     } else {
         format!("{host}:{}", local_addr.port())
@@ -434,5 +434,202 @@ impl Drop for ServerHandle {
         if let Some(task) = &self.task {
             task.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn server_runtime_covers_production_fallback_startup_access_and_shutdown_paths() {
+        let _logging_guard = crate::logging::TEST_INITIALIZE_LOCK.lock().await;
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let production_state = tempfile::tempdir().expect("production state directory");
+        let production_config =
+            ServerConfig::new(production_state.path()).with_bind("127.0.0.1", 0);
+        let production = ServerRuntime::start(production_config)
+            .await
+            .expect("production server should start");
+        let startup = production
+            .startup_access()
+            .expect("web server should issue startup access")
+            .clone();
+        let client = reqwest::Client::new();
+        let descriptor = reqwest::get(format!(
+            "http://{}/.well-known/t4code/environment",
+            production.local_addr()
+        ))
+        .await
+        .expect("environment descriptor should respond");
+        assert!(descriptor.status().is_success());
+        let token = client
+            .post(format!("http://{}/oauth/token", production.local_addr()))
+            .form(&[
+                (
+                    "grant_type",
+                    "urn:ietf:params:oauth:grant-type:token-exchange",
+                ),
+                ("subject_token", startup.credential.as_str()),
+                (
+                    "subject_token_type",
+                    "urn:t4code:params:oauth:token-type:environment-bootstrap",
+                ),
+                (
+                    "requested_token_type",
+                    "urn:ietf:params:oauth:token-type:access_token",
+                ),
+            ])
+            .send()
+            .await
+            .expect("startup credential should exchange")
+            .json::<serde_json::Value>()
+            .await
+            .expect("token response should decode");
+        let snapshot = client
+            .get(format!(
+                "http://{}/api/orchestration/snapshot",
+                production.local_addr()
+            ))
+            .bearer_auth(token["access_token"].as_str().expect("access token"))
+            .send()
+            .await
+            .expect("orchestration snapshot should respond");
+        assert!(snapshot.status().is_success());
+        let link_state = client
+            .get(format!(
+                "http://{}/api/connect/link-state",
+                production.local_addr()
+            ))
+            .bearer_auth(token["access_token"].as_str().expect("access token"))
+            .send()
+            .await
+            .expect("connect link state should respond");
+        assert!(link_state.status().is_success());
+        let diagnostic = client
+            .post(format!(
+                "http://{}/api/diagnostics/logs.zip",
+                production.local_addr()
+            ))
+            .bearer_auth(token["access_token"].as_str().expect("access token"))
+            .json(&serde_json::json!({"frontendLog":"unit lifecycle log"}))
+            .send()
+            .await
+            .expect("diagnostic logs should respond");
+        assert!(diagnostic.status().is_success());
+        production.shutdown();
+        production.wait_for_shutdown().await;
+        production
+            .join()
+            .await
+            .expect("production server should join");
+
+        let fallback_state = tempfile::tempdir().expect("fallback state directory");
+        let fallback_config = ServerConfig::new(fallback_state.path()).with_bind("127.0.0.1", 0);
+        let fallback = ServerRuntime::start_with_registry(fallback_config, RpcRegistry::empty())
+            .await
+            .expect("fallback server should start");
+        let fallback_credential = fallback
+            .startup_access()
+            .expect("fallback server should issue startup access")
+            .credential
+            .clone();
+        let fallback_token = client
+            .post(format!("http://{}/oauth/token", fallback.local_addr()))
+            .form(&[
+                (
+                    "grant_type",
+                    "urn:ietf:params:oauth:grant-type:token-exchange",
+                ),
+                ("subject_token", fallback_credential.as_str()),
+                (
+                    "subject_token_type",
+                    "urn:t4code:params:oauth:token-type:environment-bootstrap",
+                ),
+                (
+                    "requested_token_type",
+                    "urn:ietf:params:oauth:token-type:access_token",
+                ),
+            ])
+            .send()
+            .await
+            .expect("fallback startup credential should exchange")
+            .json::<serde_json::Value>()
+            .await
+            .expect("fallback token response should decode");
+        let response = client
+            .post(format!(
+                "http://{}/api/orchestration/dispatch",
+                fallback.local_addr()
+            ))
+            .bearer_auth(
+                fallback_token["access_token"]
+                    .as_str()
+                    .expect("fallback access token"),
+            )
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .expect("fallback route should respond");
+        assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        for response in [
+            client
+                .post(format!(
+                    "http://{}/api/diagnostics/logs.zip",
+                    fallback.local_addr()
+                ))
+                .bearer_auth(
+                    fallback_token["access_token"]
+                        .as_str()
+                        .expect("fallback access token"),
+                )
+                .json(&serde_json::json!({"frontendLog":"fallback"}))
+                .send()
+                .await
+                .expect("fallback diagnostics should respond"),
+            client
+                .get(format!(
+                    "http://{}/api/assets/token/file",
+                    fallback.local_addr()
+                ))
+                .bearer_auth(
+                    fallback_token["access_token"]
+                        .as_str()
+                        .expect("fallback access token"),
+                )
+                .send()
+                .await
+                .expect("fallback asset should respond"),
+            client
+                .post(format!("http://{}/mcp", fallback.local_addr()))
+                .bearer_auth(
+                    fallback_token["access_token"]
+                        .as_str()
+                        .expect("fallback access token"),
+                )
+                .body("{}")
+                .send()
+                .await
+                .expect("fallback MCP should respond"),
+        ] {
+            assert!(response.status().is_client_error() || response.status().is_server_error());
+        }
+        fallback.shutdown();
+        fallback.join().await.expect("fallback server should join");
+
+        let ipv4 = build_startup_access(
+            "0.0.0.0:3773".parse().expect("IPv4 socket address"),
+            "pairing credential".to_string(),
+        )
+        .expect("IPv4 startup access should build");
+        assert_eq!(ipv4.connection_string, "http://localhost:3773");
+        assert!(ipv4.pairing_url.contains("token=pairing+credential"));
+
+        let ipv6 = build_startup_access(
+            "[::]:3774".parse().expect("IPv6 socket address"),
+            "credential".to_string(),
+        )
+        .expect("IPv6 startup access should build");
+        assert_eq!(ipv6.connection_string, "http://localhost:3774");
     }
 }

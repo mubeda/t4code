@@ -51,7 +51,7 @@ export const EMPTY_RELAY_ENVIRONMENT_DISCOVERY_STATE: RelayEnvironmentDiscoveryS
   error: Option.none(),
 };
 
-function validateStatus(
+export function validateStatus(
   environment: RelayClientEnvironmentRecord,
   status: RelayEnvironmentStatusResponse,
 ): Effect.Effect<RelayEnvironmentStatusResponse, ConnectionAttemptError> {
@@ -89,7 +89,7 @@ function validateStatus(
   return Effect.succeed(status);
 }
 
-function relayAccountId(clerkToken: string): Option.Option<string> {
+export function relayAccountId(clerkToken: string): Option.Option<string> {
   try {
     return Option.fromNullishOr(decodeRelayJwt(clerkToken).sub).pipe(
       Option.filter((subject) => subject.length > 0),

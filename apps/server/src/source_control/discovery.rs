@@ -369,3 +369,111 @@ fn unauthenticated_auth() -> SourceControlProviderAuth {
         detail: WireOption::none(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn output(exit_code: i32, stdout: &str, stderr: &str) -> ProcessOutput {
+        ProcessOutput {
+            exit_code,
+            stdout: stdout.to_owned(),
+            stderr: stderr.to_owned(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn discovery_covers_native_probe_inventory() {
+        let root = tempfile::tempdir().unwrap();
+        let result = SourceControlDiscovery::default()
+            .discover(root.path().to_path_buf(), &CancellationToken::new())
+            .await;
+        assert_eq!(result.version_control_systems.len(), VCS_PROBES.len());
+        assert_eq!(
+            result.source_control_providers.len(),
+            PROVIDER_PROBES.len() + 1
+        );
+        assert_eq!(
+            result.source_control_providers.last().unwrap().kind,
+            ProviderKind::Bitbucket
+        );
+    }
+
+    #[test]
+    fn auth_and_wire_helpers_cover_success_unknown_and_empty_results() {
+        assert_eq!(first_line(None), WireOption::none());
+        assert_eq!(
+            first_line(Some(&output(0, "\n version 1 \n", "ignored"))),
+            WireOption::some("version 1".to_owned())
+        );
+        assert_eq!(
+            first_line(Some(&output(1, "", " error detail "))),
+            WireOption::some("error detail".to_owned())
+        );
+
+        let github = parse_auth(
+            ProviderKind::Github,
+            Some(&output(
+                0,
+                r#"{"hosts":{"github.com":[{"state":"success","active":true,"host":"github.com","login":"octo"}]}}"#,
+                "",
+            )),
+        );
+        assert_eq!(github.status, AuthStatus::Authenticated);
+        assert_eq!(github.account.0.as_deref(), Some("octo"));
+        assert_eq!(
+            parse_auth(
+                ProviderKind::Github,
+                Some(&output(1, r#"{"hosts":{}}"#, "")),
+            )
+            .status,
+            AuthStatus::Unauthenticated
+        );
+        assert_eq!(
+            parse_auth(ProviderKind::Github, Some(&output(1, "unrecognized", "")),).status,
+            AuthStatus::Unknown
+        );
+
+        let gitlab = parse_auth(
+            ProviderKind::Gitlab,
+            Some(&output(
+                0,
+                "gitlab.example.test\n  Logged in to gitlab.example.test as user\n",
+                "",
+            )),
+        );
+        assert_eq!(gitlab.status, AuthStatus::Authenticated);
+        assert_eq!(gitlab.account.0.as_deref(), Some("user"));
+        assert_eq!(
+            parse_auth(
+                ProviderKind::Gitlab,
+                Some(&output(1, "gitlab.example.test\n  not logged in\n", "")),
+            )
+            .status,
+            AuthStatus::Unauthenticated
+        );
+        assert_eq!(
+            parse_auth(ProviderKind::AzureDevops, Some(&output(0, "{}", ""))).status,
+            AuthStatus::Authenticated
+        );
+        assert_eq!(
+            parse_auth(ProviderKind::AzureDevops, Some(&output(1, "", ""))).status,
+            AuthStatus::Unauthenticated
+        );
+        assert_eq!(
+            parse_auth(ProviderKind::Github, None).status,
+            AuthStatus::Unknown
+        );
+
+        assert_eq!(
+            serde_json::to_value(WireOption::some("value")).unwrap(),
+            serde_json::json!({"_id":"Option","_tag":"Some","value":"value"})
+        );
+        assert_eq!(
+            serde_json::to_value(WireOption::<String>::none()).unwrap(),
+            serde_json::json!({"_id":"Option","_tag":"None"})
+        );
+    }
+}

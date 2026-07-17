@@ -144,8 +144,8 @@ pub(crate) fn context_menu_request_from_values(items: Vec<Value>) -> NativeConte
     }
 }
 
-pub(crate) fn show_native_context_menu(
-    window: &WebviewWindow,
+pub(crate) fn show_native_context_menu<R: Runtime>(
+    window: &WebviewWindow<R>,
     request: &NativeContextMenuRequest,
     position: Option<ContextMenuPosition>,
 ) -> Result<(), String> {
@@ -335,6 +335,14 @@ mod tests {
                 .any(|id| id == "copy-link")
         );
         assert!(request.native_to_original.values().any(|id| id == "delete"));
+        assert!(context_menu_request_has_selectable_items(&request));
+        assert!(!context_menu_request_has_selectable_items(
+            &context_menu_request_from_values(vec![json!({
+                "id":"header",
+                "label":"Header",
+                "header":true
+            })])
+        ));
     }
 
     #[test]

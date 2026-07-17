@@ -543,4 +543,282 @@ describe("rightPanelStore", () => {
       surfaces: [],
     });
   });
+
+  it("normalizes malformed and partially upgraded persisted state", () => {
+    expect(migratePersistedRightPanelState(null)).toEqual({ byThreadKey: {} });
+    expect(migratePersistedRightPanelState({})).toEqual({ byThreadKey: {} });
+    expect(
+      migratePersistedRightPanelState({
+        byThreadKey: {
+          invalid: null,
+          files: {
+            activeSurfaceId: "missing",
+            surfaces: [
+              {
+                id: "file:a.ts",
+                kind: "file",
+                relativePath: "a.ts",
+                revealLine: -4.8,
+                revealRequestId: 3,
+              },
+              {
+                id: "terminal:bad-id",
+                kind: "terminal",
+                resourceId: "other",
+              },
+              {
+                id: "terminal:term-1",
+                kind: "terminal",
+                resourceId: "term-1",
+                terminalIds: ["term-1", "term-1", 42],
+                activeTerminalId: "missing",
+              },
+              {
+                id: "terminal:term-2",
+                kind: "terminal",
+                resourceId: "term-2",
+                terminalIds: [],
+                activeTerminalId: "term-2",
+              },
+            ],
+          },
+        },
+      }),
+    ).toEqual({
+      byThreadKey: {
+        invalid: { isOpen: false, activeSurfaceId: null, surfaces: [] },
+        files: {
+          isOpen: false,
+          activeSurfaceId: null,
+          surfaces: [
+            {
+              id: "file:a.ts",
+              kind: "file",
+              relativePath: "a.ts",
+              revealLine: 1,
+              revealRequestId: 3,
+            },
+            {
+              id: "terminal:term-1",
+              kind: "terminal",
+              resourceId: "term-1",
+              terminalIds: ["term-1"],
+              activeTerminalId: "term-1",
+            },
+            {
+              id: "terminal:term-2",
+              kind: "terminal",
+              resourceId: "term-2",
+              terminalIds: ["term-2"],
+              activeTerminalId: "term-2",
+            },
+          ],
+        },
+      },
+    });
+  });
+
+  it("reuses preview placeholders and normalizes file reveal lines", () => {
+    useRightPanelStore.getState().open(refA, "preview");
+    useRightPanelStore.getState().open(refA, "preview");
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces,
+    ).toHaveLength(1);
+
+    useRightPanelStore.getState().openBrowser(refA, null);
+    useRightPanelStore.getState().openBrowser(refA, "tab-a");
+    useRightPanelStore.getState().openFile(refA, "src/a.ts", Number.NaN);
+    expect(
+      selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA),
+    ).toMatchObject({ revealLine: null });
+    useRightPanelStore.getState().openFile(refA, "src/a.ts", -2.9);
+    expect(
+      selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA),
+    ).toMatchObject({ revealLine: 1, revealRequestId: 2 });
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces.some(
+        (surface) => surface.id === "browser:new",
+      ),
+    ).toBe(false);
+  });
+
+  it("ignores invalid terminal operations and preserves non-active panes", () => {
+    useRightPanelStore.getState().openTerminal(refA, "term-1");
+    useRightPanelStore.getState().splitTerminal(refA, "terminal:term-1", "term-2", "vertical");
+    useRightPanelStore.getState().splitTerminal(refA, "terminal:term-1", "term-2");
+    useRightPanelStore.getState().splitTerminal(refA, "missing", "term-3");
+    useRightPanelStore.getState().activateTerminal(refA, "terminal:term-1", "missing");
+    useRightPanelStore.getState().closeTerminal(refA, "missing", "term-1");
+    useRightPanelStore.getState().activateTerminal(refA, "terminal:term-1", "term-1");
+    useRightPanelStore.getState().closeTerminal(refA, "terminal:term-1", "term-2");
+
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      id: "terminal:term-1",
+      kind: "terminal",
+      resourceId: "term-1",
+      terminalIds: ["term-1"],
+      activeTerminalId: "term-1",
+    });
+  });
+
+  it("treats invalid or already-satisfied surface closing operations as no-ops", () => {
+    useRightPanelStore.getState().openBrowser(refA, "tab-a");
+    useRightPanelStore.getState().openFile(refA, "a.ts");
+    useRightPanelStore.getState().activateSurface(refA, "missing");
+    useRightPanelStore.getState().closeSurface(refA, "missing");
+    useRightPanelStore.getState().closeSurface(refA, "browser:tab-a");
+    useRightPanelStore.getState().closeOtherSurfaces(refA, "missing");
+    useRightPanelStore.getState().closeOtherSurfaces(refA, "file:a.ts");
+    useRightPanelStore.getState().closeSurfacesToRight(refA, "missing");
+    useRightPanelStore.getState().closeSurfacesToRight(refA, "file:a.ts");
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)?.id).toBe(
+      "file:a.ts",
+    );
+    useRightPanelStore.getState().closeAllSurfaces(refB);
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refB)).toEqual({
+      isOpen: false,
+      activeSurfaceId: null,
+      surfaces: [],
+    });
+  });
+
+  it("reconciles empty browser and workspace states with deterministic fallbacks", () => {
+    useRightPanelStore.getState().open(refA, "plan");
+    useRightPanelStore.getState().openBrowser(refA, "tab-a");
+    useRightPanelStore.getState().reconcileBrowserSurfaces(refA, []);
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)?.id).toBe(
+      "plan",
+    );
+    useRightPanelStore.getState().reconcileBrowserSurfaces(refA, ["tab-b"]);
+    useRightPanelStore.getState().openFile(refA, "a.ts");
+    useRightPanelStore.getState().reconcileFileSurfaces(refA, true);
+    useRightPanelStore.getState().activateSurface(refA, "browser:tab-b");
+    useRightPanelStore.getState().reconcileFileSurfaces(refA, false);
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)?.id).toBe(
+      "browser:tab-b",
+    );
+    useRightPanelStore.getState().reconcileFileSurfaces(refB, false);
+  });
+
+  it("handles file collisions, missing deletes, and non-active directory deletes", () => {
+    useRightPanelStore.getState().openFile(refA, "new/a.ts");
+    useRightPanelStore.getState().openFile(refA, "old/a.ts");
+    useRightPanelStore.getState().open(refA, "plan");
+    useRightPanelStore.getState().remapFileSurfaces(refA, "old", "new");
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces.map(
+        (surface) => surface.id,
+      ),
+    ).toEqual(["file:new/a.ts", "plan"]);
+    useRightPanelStore.getState().closeFileSurfacesUnder(refA, "missing");
+    useRightPanelStore.getState().closeFileSurfacesUnder(refA, "new");
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)?.id).toBe(
+      "plan",
+    );
+  });
+
+  it("covers visibility no-ops, preview toggles, missing removal, and selectors", () => {
+    useRightPanelStore.getState().show(refA);
+    useRightPanelStore.getState().show(refA);
+    useRightPanelStore.getState().close(refA);
+    useRightPanelStore.getState().close(refA);
+    useRightPanelStore.getState().openBrowser(refA, "tab-a");
+    useRightPanelStore.getState().toggle(refA, "preview");
+    useRightPanelStore.getState().toggle(refA, "preview");
+    useRightPanelStore.getState().removeThread(refB);
+
+    const byThreadKey = useRightPanelStore.getState().byThreadKey;
+    expect(selectThreadRightPanelState(byThreadKey, null).surfaces).toEqual([]);
+    expect(selectActiveRightPanel(byThreadKey, null)).toBeNull();
+    expect(selectActiveRightPanelSurface(byThreadKey, null)).toBeNull();
+    const threadKey = Object.keys(byThreadKey)[0]!;
+    expect(
+      selectActiveRightPanel(
+        {
+          [threadKey]: { isOpen: true, activeSurfaceId: "missing", surfaces: [] },
+        },
+        refA,
+      ),
+    ).toBeNull();
+  });
+
+  it("covers active migration and terminal, reconciliation, and selector fallbacks", () => {
+    expect(
+      migratePersistedRightPanelState({
+        byThreadKey: {
+          saved: {
+            activeSurfaceId: "terminal:term-1",
+            surfaces: [
+              {
+                id: "terminal:term-1",
+                kind: "terminal",
+                resourceId: "term-1",
+                terminalIds: ["term-1", "term-2"],
+                activeTerminalId: "term-2",
+              },
+            ],
+          },
+        },
+      }),
+    ).toMatchObject({
+      byThreadKey: {
+        saved: {
+          isOpen: true,
+          activeSurfaceId: "terminal:term-1",
+          surfaces: [{ activeTerminalId: "term-2" }],
+        },
+      },
+    });
+
+    useRightPanelStore.getState().openTerminal(refA, "term-1");
+    useRightPanelStore.getState().splitTerminal(refA, "terminal:term-1", "term-2");
+    useRightPanelStore.getState().open(refA, "plan");
+    useRightPanelStore.getState().closeTerminal(refA, "terminal:term-1", "term-2");
+    useRightPanelStore.getState().closeTerminal(refA, "terminal:term-1", "term-1");
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)?.id).toBe(
+      "plan",
+    );
+
+    useRightPanelStore.getState().openBrowser(refA, "tab-a");
+    useRightPanelStore.getState().openFile(refA, "a.ts");
+    useRightPanelStore.getState().activateSurface(refA, "plan");
+    useRightPanelStore.getState().closeSurfacesToRight(refA, "browser:tab-a");
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)?.id).toBe(
+      "plan",
+    );
+
+    useRightPanelStore.setState({ byThreadKey: {} });
+    useRightPanelStore.getState().open(refA, "preview");
+    useRightPanelStore.getState().reconcileBrowserSurfaces(refA, ["tab-b"]);
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)?.id).toBe(
+      "browser:tab-b",
+    );
+    useRightPanelStore.getState().reconcileBrowserSurfaces(refA, []);
+    expect(
+      selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA),
+    ).toBeNull();
+
+    const threadKey = Object.keys(useRightPanelStore.getState().byThreadKey)[0]!;
+    useRightPanelStore.setState({
+      byThreadKey: {
+        [threadKey]: {
+          isOpen: true,
+          activeSurfaceId: null,
+          surfaces: [
+            {
+              id: "file:old.ts",
+              kind: "file",
+              relativePath: "old.ts",
+              revealLine: null,
+              revealRequestId: 0,
+            },
+          ],
+        },
+      },
+    });
+    useRightPanelStore.getState().remapFileSurfaces(refA, "old.ts", "new.ts");
+    expect(
+      selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA),
+    ).toBeNull();
+  });
 });

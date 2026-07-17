@@ -1391,3 +1391,617 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+    use crate::RequestId;
+    use std::ffi::{OsStr, OsString};
+
+    struct EnvGuard {
+        saved: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl EnvGuard {
+        fn new(keys: &[&'static str]) -> Self {
+            Self {
+                saved: keys
+                    .iter()
+                    .map(|key| (*key, std::env::var_os(key)))
+                    .collect(),
+            }
+        }
+
+        fn set(key: &'static str, value: impl AsRef<OsStr>) {
+            // The external-process lock serializes environment-sensitive unit tests.
+            unsafe { std::env::set_var(key, value) };
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in self.saved.drain(..) {
+                // Restore every environment value before releasing the process lock.
+                unsafe {
+                    match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
+
+    fn rpc_request(tag: &str, payload: Value) -> RpcRequest {
+        RpcRequest {
+            id: RequestId::try_from("1").expect("request id"),
+            tag: tag.to_owned(),
+            payload,
+            headers: Vec::new(),
+            trace_id: None,
+            span_id: None,
+            sampled: None,
+        }
+    }
+
+    fn git(cwd: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("git should start");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    async fn unary(services: &GitVcsRpcServices, tag: &str, payload: Value) -> RpcResult {
+        services
+            .handle_unary(rpc_request(tag, payload), CancellationToken::new())
+            .await
+    }
+
+    #[tokio::test]
+    async fn native_git_vcs_service_covers_repository_lifecycle_and_validation_paths() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let temporary = tempfile::tempdir().expect("temporary repository parent");
+        let repository = temporary.path().join("repository");
+        tokio::fs::create_dir_all(&repository)
+            .await
+            .expect("repository directory should create");
+        let cwd = repository.to_string_lossy().into_owned();
+        let services = GitVcsRpcServices::default();
+
+        assert!(
+            unary(&services, "vcs.init", json!({"cwd":cwd,"kind":"mercurial"}),)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            unary(&services, "vcs.init", json!({"cwd":cwd,"kind":"git"}))
+                .await
+                .expect("repository should initialize"),
+            Value::Null,
+        );
+        git(&repository, &["config", "user.name", "T4Code Test"]);
+        git(
+            &repository,
+            &["config", "user.email", "t4code@example.test"],
+        );
+
+        tokio::fs::write(repository.join("tracked.txt"), "first\n")
+            .await
+            .expect("tracked file should write");
+        let status = unary(&services, "vcs.refreshStatus", json!({"cwd":cwd}))
+            .await
+            .expect("status should refresh");
+        assert!(
+            status["workingTree"]["files"]
+                .as_array()
+                .is_some_and(|files| !files.is_empty())
+        );
+        assert_eq!(
+            unary(
+                &services,
+                "vcs.generateCommitMessage",
+                json!({"cwd":cwd,"filePaths":["tracked.txt"]}),
+            )
+            .await
+            .expect("commit message should generate")["message"],
+            "Update tracked.txt",
+        );
+        assert_eq!(
+            unary(
+                &services,
+                "vcs.stageFiles",
+                json!({"cwd":cwd,"filePaths":["tracked.txt"]}),
+            )
+            .await
+            .expect("file should stage"),
+            Value::Null,
+        );
+        git(&repository, &["commit", "--quiet", "-m", "initial"]);
+        git(&repository, &["branch", "-M", "main"]);
+
+        let refs = unary(
+            &services,
+            "vcs.listRefs",
+            json!({
+                "cwd":cwd,
+                "query":"",
+                "cursor":0,
+                "limit":500,
+                "includeMatchingRemoteRefs":true,
+                "refKind":"branch",
+            }),
+        )
+        .await
+        .expect("refs should list");
+        assert!(
+            refs["refs"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty())
+        );
+        let commits = unary(
+            &services,
+            "vcs.listCommits",
+            json!({"cwd":cwd,"cursor":0,"limit":500}),
+        )
+        .await
+        .expect("commits should list");
+        assert!(
+            commits["commits"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty())
+        );
+
+        assert_eq!(
+            unary(
+                &services,
+                "vcs.createRef",
+                json!({"cwd":cwd,"refName":"feature","switchRef":true}),
+            )
+            .await
+            .expect("feature ref should create")["refName"],
+            "feature",
+        );
+        assert_eq!(
+            unary(
+                &services,
+                "vcs.switchRef",
+                json!({"cwd":cwd,"refName":"main"}),
+            )
+            .await
+            .expect("base ref should switch")["refName"],
+            "main",
+        );
+
+        tokio::fs::write(repository.join("tracked.txt"), "second\n")
+            .await
+            .expect("tracked file should change");
+        unary(
+            &services,
+            "vcs.stageFiles",
+            json!({"cwd":cwd,"filePaths":["tracked.txt"]}),
+        )
+        .await
+        .expect("changed file should stage");
+        unary(
+            &services,
+            "vcs.unstageFiles",
+            json!({"cwd":cwd,"filePaths":["tracked.txt"]}),
+        )
+        .await
+        .expect("changed file should unstage");
+        unary(
+            &services,
+            "vcs.discardFiles",
+            json!({"cwd":cwd,"filePaths":["tracked.txt"]}),
+        )
+        .await
+        .expect("changed file should discard");
+
+        let worktree = temporary.path().join("worktree");
+        unary(
+            &services,
+            "vcs.createWorktree",
+            json!({
+                "cwd":cwd,
+                "refName":"feature",
+                "newRefName":null,
+                "baseRefName":null,
+                "path":worktree,
+            }),
+        )
+        .await
+        .expect("worktree should create");
+        unary(
+            &services,
+            "vcs.removeWorktree",
+            json!({"cwd":cwd,"path":worktree,"force":true}),
+        )
+        .await
+        .expect("worktree should remove");
+
+        let clone_parent = temporary.path().join("clones");
+        tokio::fs::create_dir_all(&clone_parent)
+            .await
+            .expect("clone parent should create");
+        let cloned = unary(
+            &services,
+            "vcs.clone",
+            json!({
+                "url":repository,
+                "parentDir":clone_parent,
+                "directoryName":"copy",
+            }),
+        )
+        .await
+        .expect("repository should clone");
+        assert!(
+            cloned["path"]
+                .as_str()
+                .is_some_and(|path| path.ends_with("copy"))
+        );
+
+        assert!(
+            unary(&services, "vcs.pull", json!({"cwd":cwd}))
+                .await
+                .is_err()
+        );
+        assert!(
+            unary(
+                &services,
+                "git.resolvePullRequest",
+                json!({"cwd":cwd,"reference":"current"}),
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            unary(
+                &services,
+                "sourceControl.lookupRepository",
+                json!({"provider":"unknown","repository":"owner/name","cwd":cwd}),
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            unary(&services, "server.discoverSourceControl", json!({}))
+                .await
+                .expect("source control should discover")["versionControlSystems"]
+                .is_array()
+        );
+        let source_clone = temporary.path().join("source-clone");
+        assert!(
+            unary(
+                &services,
+                "sourceControl.cloneRepository",
+                json!({
+                    "remoteUrl":format!("file://{}", repository.display()),
+                    "destinationPath":source_clone,
+                }),
+            )
+            .await
+            .expect("source repository should clone")["cwd"]
+                .is_string()
+        );
+        assert!(
+            unary(
+                &services,
+                "sourceControl.publishRepository",
+                json!({
+                    "cwd":cwd,
+                    "provider":"github",
+                    "repository":"owner/name",
+                    "visibility":"friends-only",
+                }),
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            unary(
+                &services,
+                "git.preparePullRequestThread",
+                json!({
+                    "cwd":cwd,
+                    "reference":"current",
+                    "mode":"unsupported",
+                    "threadId":"thread-1",
+                }),
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            unary(
+                &services,
+                "shell.openInEditor",
+                json!({"cwd":cwd,"editor":"missing-editor"}),
+            )
+            .await
+            .is_err()
+        );
+        assert!(unary(&services, "unknown.method", json!({})).await.is_err());
+        assert!(
+            unary(&services, "vcs.listRefs", json!({"cwd":42}))
+                .await
+                .is_err()
+        );
+
+        let mut invalid_status = services.status_stream(
+            rpc_request("subscribeVcsStatus", json!({"cwd":42})),
+            CancellationToken::new(),
+        );
+        assert!(invalid_status.recv().await.expect("status error").is_err());
+        let mut invalid_action = services.stacked_action_stream(
+            rpc_request("git.runStackedAction", json!({"actionId":"invalid"})),
+            CancellationToken::new(),
+        );
+        assert!(invalid_action.recv().await.expect("action error").is_err());
+
+        let mut unsupported_action = services.stacked_action_stream(
+            rpc_request(
+                "git.runStackedAction",
+                json!({
+                    "actionId":"unsupported-action",
+                    "cwd":cwd,
+                    "action":"unsupported"
+                }),
+            ),
+            CancellationToken::new(),
+        );
+        let started = unsupported_action
+            .recv()
+            .await
+            .expect("action start chunk")
+            .expect("action start event");
+        assert_eq!(started[0]["kind"], "action_started");
+        let failed = unsupported_action
+            .recv()
+            .await
+            .expect("action failure chunk")
+            .expect("action failure event");
+        assert_eq!(failed[0]["kind"], "action_failed");
+        assert!(
+            failed[0]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("Unsupported Git action"))
+        );
+
+        let mut unavailable_status = services.status_stream(
+            rpc_request("subscribeVcsStatus", json!({"cwd":"\u{0}"})),
+            CancellationToken::new(),
+        );
+        assert!(
+            unavailable_status
+                .recv()
+                .await
+                .expect("unavailable status chunk")
+                .is_err()
+        );
+
+        let branches =
+            local_branch_names(&services.repository, &repository, &CancellationToken::new())
+                .await
+                .expect("local branches should list");
+        assert!(branches.iter().any(|branch| branch == "main"));
+        assert_eq!(
+            sanitize_branch_fragment(" Feature: It's Ready! "),
+            "feature-its-ready"
+        );
+        assert_eq!(sanitize_branch_fragment("..."), "update");
+        assert_eq!(
+            sanitize_feature_branch_name("Ready Now"),
+            "feature/ready-now"
+        );
+        assert_eq!(
+            sanitize_feature_branch_name("feature/already"),
+            "feature/already",
+        );
+        assert_eq!(
+            resolve_feature_branch_name(
+                &["feature/update".to_owned(), "FEATURE/UPDATE-2".to_owned()],
+                "feature/update",
+            ),
+            "feature/update-3",
+        );
+        assert_eq!(
+            action_phases("commit_push_pr", true),
+            vec!["branch", "commit", "push", "pr"]
+        );
+        assert_eq!(action_phases("unknown", false), Vec::<&str>::new());
+
+        let (event_sender, mut event_receiver) = mpsc::channel(1);
+        send_event(&event_sender, json!({"kind":"test"}))
+            .await
+            .expect("stream event should send");
+        assert_eq!(
+            event_receiver
+                .recv()
+                .await
+                .expect("stream event")
+                .expect("successful stream event"),
+            vec![json!({"kind":"test"})],
+        );
+        drop(event_receiver);
+        assert!(send_event(&event_sender, json!({})).await.is_err());
+
+        assert_eq!(
+            run_provider_json(
+                "/bin/sh",
+                &["-c", "printf '{\"ok\":true}'"],
+                Some(&repository),
+                CancellationToken::new(),
+                "fixture",
+                "success",
+            )
+            .await
+            .expect("provider JSON should decode"),
+            json!({"ok":true}),
+        );
+        assert!(
+            run_provider_json(
+                "/bin/sh",
+                &["-c", "exit 1"],
+                None,
+                CancellationToken::new(),
+                "fixture",
+                "failure",
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            run_provider_json(
+                "/bin/sh",
+                &["-c", "printf invalid"],
+                None,
+                CancellationToken::new(),
+                "fixture",
+                "invalid-json",
+            )
+            .await
+            .is_err()
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let bare_remote = temporary.path().join("published.git");
+            tokio::fs::create_dir(&bare_remote)
+                .await
+                .expect("bare remote directory");
+            git(&bare_remote, &["init", "--bare"]);
+
+            let gh = temporary.path().join("gh");
+            tokio::fs::write(
+                &gh,
+                r#"#!/bin/sh
+case "$1:$2" in
+  repo:view)
+    printf '%s\n' '{"nameWithOwner":"owner/name","url":"https://github.test/owner/name","sshUrl":"git@github.test:owner/name.git"}'
+    ;;
+  repo:create)
+    git remote add origin "$T4CODE_TEST_REMOTE"
+    ;;
+  *)
+    exit 64
+    ;;
+esac
+"#,
+            )
+            .await
+            .expect("gh fixture");
+            std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o700))
+                .expect("gh fixture permissions");
+
+            let _environment = EnvGuard::new(&["PATH", "T4CODE_TEST_REMOTE"]);
+            let inherited_path = std::env::var_os("PATH").unwrap_or_default();
+            EnvGuard::set(
+                "PATH",
+                std::env::join_paths(
+                    std::iter::once(temporary.path().to_path_buf())
+                        .chain(std::env::split_paths(&inherited_path)),
+                )
+                .expect("fixture PATH"),
+            );
+            EnvGuard::set("T4CODE_TEST_REMOTE", &bare_remote);
+
+            let lookup = unary(
+                &services,
+                "sourceControl.lookupRepository",
+                json!({
+                    "provider":"github",
+                    "repository":"owner/name",
+                    "cwd":cwd
+                }),
+            )
+            .await
+            .expect("GitHub repository lookup should use the fixture CLI");
+            assert_eq!(lookup["nameWithOwner"], "owner/name");
+
+            let published = unary(
+                &services,
+                "sourceControl.publishRepository",
+                json!({
+                    "cwd":cwd,
+                    "provider":"github",
+                    "repository":"owner/name",
+                    "visibility":"private",
+                    "protocol":"ssh",
+                    "remoteName":"origin"
+                }),
+            )
+            .await
+            .expect("GitHub repository publish should use the fixture CLI");
+            assert_eq!(published["status"], "pushed");
+            assert_eq!(published["branch"], "main");
+            assert_eq!(published["remoteUrl"], "git@github.com:owner/name.git");
+            assert_eq!(published["upstreamBranch"], "origin/main");
+        }
+
+        let invalid_action = StackedActionInput {
+            action_id: "action-1".to_owned(),
+            cwd: repository.clone(),
+            action: "unsupported".to_owned(),
+            commit_message: None,
+            file_paths: None,
+            feature_branch: None,
+            commit_staged_index_as_is: None,
+        };
+        assert!(
+            run_stacked_action(
+                &services.repository,
+                &services.pull_requests,
+                &invalid_action,
+                &CancellationToken::new(),
+            )
+            .await
+            .is_err()
+        );
+        assert!(matches!(
+            editor_launch_strategy(
+                "missing-editor",
+                vec!["--goto".to_owned(), repository.display().to_string()],
+                repository.display().to_string(),
+            ),
+            EditorLaunchStrategy::Process { .. }
+        ));
+
+        assert_eq!(summarize_commit_context("", None), "");
+        assert_eq!(
+            summarize_commit_context("diff --git a/a.txt b/a.txt\n", None),
+            "Update a.txt",
+        );
+        assert_eq!(
+            summarize_commit_context("plain context", None),
+            "Update working tree",
+        );
+        assert!(request_error("method", "detail").is_object());
+        assert!(vcs_error("operation", &repository, "detail").is_object());
+        assert!(source_control_error("unknown", "lookup", "detail").is_object());
+    }
+
+    #[tokio::test]
+    async fn every_unary_method_rejects_malformed_payloads_through_its_typed_decoder() {
+        let services = GitVcsRpcServices::default();
+        for method in GIT_VCS_UNARY_METHODS {
+            let result = services
+                .handle_unary(
+                    rpc_request(method, json!("not-an-object")),
+                    CancellationToken::new(),
+                )
+                .await;
+            assert!(
+                result.is_err(),
+                "{method} unexpectedly accepted a string payload"
+            );
+        }
+    }
+}

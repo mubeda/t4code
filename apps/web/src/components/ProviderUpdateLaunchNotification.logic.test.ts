@@ -19,9 +19,11 @@ import {
   firstFailedProviderUpdateMessage,
   firstRejectedProviderUpdateMessage,
   firstUnsuccessfulSecondaryProviderOutcome,
+  formatProviderList,
   getProviderUpdateInitialToastView,
   getProviderUpdateProgressToastView,
   getProviderUpdateRejectedToastView,
+  getProviderUpdateRunningToastView,
   getProviderUpdateSidebarPillView,
   getSingleProviderUpdateProgressToastView,
   hasOneClickUpdateProviderCandidate,
@@ -56,16 +58,17 @@ function provider(input: {
   readonly updateCommand?: string | null;
   readonly updateState?: ServerProvider["updateState"];
   readonly advisoryStatus?: NonNullable<ServerProvider["versionAdvisory"]>["status"];
+  readonly checkedAt?: string;
 }): ServerProvider {
   const result: ServerProvider = {
     instanceId: input.instanceId ?? instanceId(String(input.driver)),
     driver: input.driver,
     enabled: input.enabled ?? true,
     installed: true,
-    version: input.version ?? "1.0.0",
+    version: "version" in input ? input.version : "1.0.0",
     status: "ready",
     auth: { status: "authenticated" },
-    checkedAt,
+    checkedAt: input.checkedAt ?? checkedAt,
     models: [],
     slashCommands: [],
     skills: [],
@@ -1111,6 +1114,487 @@ describe("provider update launch notification logic", () => {
           isPending: false,
         }),
       ).toMatchObject({ kind: "idle", text: "Codex" });
+    });
+  });
+
+  describe("edge-state presentation", () => {
+    const terminalState = (
+      status: "succeeded" | "failed" | "unchanged",
+      message: string,
+      finishedAt: string | null = checkedAt,
+    ): NonNullable<ServerProvider["updateState"]> => ({
+      status,
+      startedAt: checkedAt,
+      finishedAt,
+      message,
+      output: null,
+    });
+
+    it("formats provider lists and singular/plural operation views", () => {
+      expect(formatProviderList([])).toBe("");
+      expect(formatProviderList([{ driver: driver("codex") }])).toBe("Codex");
+      expect(
+        formatProviderList([
+          { driver: driver("codex") },
+          { driver: driver("cursor") },
+          { driver: driver("custom") },
+        ]),
+      ).toBe("Codex, Cursor, and custom");
+      expect(providerUpdateNotificationKey([])).toBeNull();
+      expect(getProviderUpdateRunningToastView(1).title).toBe("Updating provider");
+      expect(getProviderUpdateRunningToastView(2).title).toBe("Updating providers");
+      expect(getProviderUpdateRejectedToastView(1, "nope").title).toBe("Provider update failed");
+      expect(getProviderUpdateRejectedToastView(2, "nope").title).toBe("Provider updates failed");
+    });
+
+    it("rejects incomplete one-click candidate sets", () => {
+      const candidate = updateCandidate({ driver: driver("codex") });
+      expect(
+        hasOneClickUpdateProviderCandidate(
+          updateCandidate({ driver: driver("codex"), canUpdate: false }),
+          [candidate],
+        ),
+      ).toBe(false);
+      expect(
+        hasOneClickUpdateProviderCandidate(
+          updateCandidate({ driver: driver("codex"), updateCommand: null }),
+          [candidate],
+        ),
+      ).toBe(false);
+      expect(hasOneClickUpdateProviderCandidate(candidate, [])).toBe(false);
+      expect(
+        hasOneClickUpdateProviderCandidate(candidate, [
+          provider({
+            driver: driver("codex"),
+            advisoryStatus: "current",
+            latestVersion: "1.1.0",
+          }),
+        ]),
+      ).toBe(false);
+    });
+
+    it("describes plural failed, unchanged, and successful progress", () => {
+      const failed = [
+        provider({ driver: driver("codex"), updateState: terminalState("failed", "") }),
+        provider({ driver: driver("cursor"), updateState: terminalState("failed", "") }),
+      ];
+      expect(
+        getProviderUpdateProgressToastView({ providers: failed, providerCount: 2 }),
+      ).toMatchObject({
+        phase: "failed",
+        title: "Provider updates failed",
+        description: "Codex and Cursor failed to update. Check provider settings for details.",
+      });
+
+      const unchanged = [
+        provider({ driver: driver("codex"), updateState: terminalState("unchanged", "old") }),
+        provider({ driver: driver("cursor"), updateState: terminalState("unchanged", "old") }),
+      ];
+      expect(
+        getProviderUpdateProgressToastView({ providers: unchanged, providerCount: 2 }),
+      ).toMatchObject({
+        phase: "unchanged",
+        title: "Providers still need updates",
+        description: "Codex and Cursor still appear outdated. Check provider settings for details.",
+      });
+
+      const succeeded = [
+        provider({
+          driver: driver("codex"),
+          advisoryStatus: "current",
+          latestVersion: "1.1.0",
+          updateState: terminalState("succeeded", "done"),
+        }),
+        provider({
+          driver: driver("cursor"),
+          advisoryStatus: "current",
+          latestVersion: "1.1.0",
+          updateState: terminalState("succeeded", "done"),
+        }),
+      ];
+      expect(
+        getProviderUpdateProgressToastView({ providers: succeeded, providerCount: 2 }),
+      ).toMatchObject({
+        phase: "succeeded",
+        title: "Provider updates finished",
+        description: "New sessions will use the updated providers.",
+      });
+    });
+
+    it("keeps incomplete progress running and recognizes queued updates", () => {
+      expect(
+        getProviderUpdateProgressToastView({
+          providers: [provider({ driver: driver("codex") })],
+          providerCount: 2,
+        }),
+      ).toMatchObject({ phase: "running", title: "Updating providers" });
+      expect(
+        getProviderUpdateProgressToastView({
+          providers: [
+            provider({
+              driver: driver("codex"),
+              updateState: {
+                status: "queued",
+                startedAt: null,
+                finishedAt: null,
+                message: "queued",
+                output: null,
+              },
+            }),
+          ],
+          providerCount: 1,
+        }),
+      ).toMatchObject({ phase: "running" });
+    });
+
+    it("preserves prefixed versions and treats current snapshots as completed", () => {
+      const candidate = updateCandidate({ driver: driver("custom"), latestVersion: "v2.0.0" });
+      expect(
+        getProviderUpdateInitialToastView({
+          updateProviders: [candidate],
+          oneClickProviders: [candidate],
+        }).title,
+      ).toBe("Update Available: custom v2.0.0");
+      expect(
+        getProviderUpdateProgressToastView({
+          providers: [
+            provider({
+              driver: driver("custom"),
+              advisoryStatus: "current",
+              latestVersion: "2.0.0",
+            }),
+          ],
+          providerCount: 1,
+        }),
+      ).toMatchObject({ phase: "succeeded" });
+    });
+
+    it("uses driver and idle-state fallbacks for custom providers", () => {
+      const activeCustom = provider({
+        driver: driver("custom-active"),
+        updateState: {
+          status: "queued",
+          startedAt: null,
+          finishedAt: null,
+          message: null,
+          output: null,
+        },
+      });
+      expect(getProviderUpdateSidebarPillView([activeCustom])).toMatchObject({
+        tone: "loading",
+        title: "Updating custom-active",
+      });
+
+      const customGroup: LocalEnvironmentUpdateGroup = {
+        environmentId: "custom-env" as EnvironmentId,
+        label: "Custom",
+        isPrimary: false,
+        isSettling: false,
+        candidates: [updateCandidate({ driver: driver("custom-idle") })],
+        providers: [],
+      };
+      expect(
+        resolveEnvironmentUpdateRowStatus({
+          group: customGroup,
+          error: undefined,
+          result: undefined,
+          pill: null,
+          isPending: false,
+        }),
+      ).toEqual({ kind: "idle", text: "custom-idle" });
+    });
+
+    it("builds and orders terminal pills with missing optional details", () => {
+      const state = (
+        status: "succeeded" | "failed" | "unchanged",
+        finishedAt: string | null,
+      ): NonNullable<ServerProvider["updateState"]> => ({
+        status,
+        startedAt: checkedAt,
+        finishedAt,
+        message: null,
+        output: null,
+      });
+      const providers = [
+        provider({ driver: driver("custom-failed"), updateState: state("failed", null) }),
+        provider({
+          driver: driver("custom-unchanged"),
+          updateState: state("unchanged", laterCheckedAt),
+        }),
+        provider({ driver: driver("custom-succeeded"), updateState: state("succeeded", null) }),
+      ];
+
+      const first = getProviderUpdateSidebarPillView(providers);
+      expect(first).toMatchObject({
+        tone: "warning",
+        title: "custom-unchanged still needs an update",
+      });
+      const second = getProviderUpdateSidebarPillView(providers, {
+        dismissedKeys: new Set([first!.key]),
+      });
+      expect(second).not.toBeNull();
+      const third = getProviderUpdateSidebarPillView(providers, {
+        dismissedKeys: new Set([first!.key, second!.key]),
+      });
+      expect(new Set([second!.tone, third!.tone])).toEqual(new Set(["error", "success"]));
+    });
+
+    it("handles rejected secondary outcomes and providers without update state", () => {
+      expect(
+        firstUnsuccessfulSecondaryProviderOutcome([
+          { status: "rejected", reason: new Error("offline") },
+        ]),
+      ).toBeNull();
+
+      const first = provider({ driver: driver("custom") });
+      const second = provider({
+        driver: driver("custom"),
+        instanceId: instanceId("custom-secondary"),
+      });
+      expect(
+        collectProviderUpdateOutcomeSnapshots([
+          {
+            status: "fulfilled",
+            value: {
+              environmentId: "primary" as EnvironmentId,
+              isPrimary: true,
+              driver: first.driver,
+              instanceId: first.instanceId,
+              provider: first,
+            },
+          },
+          {
+            status: "fulfilled",
+            value: {
+              environmentId: "secondary" as EnvironmentId,
+              isPrimary: false,
+              driver: second.driver,
+              instanceId: second.instanceId,
+              provider: second,
+            },
+          },
+        ]),
+      ).toEqual([first]);
+    });
+
+    it("summarizes plural terminal sidebar states and can dismiss all of them", () => {
+      const failedProviders = [
+        provider({ driver: driver("codex"), updateState: terminalState("failed", "") }),
+        provider({ driver: driver("cursor"), updateState: terminalState("failed", "") }),
+      ];
+      const failedView = getProviderUpdateSidebarPillView(failedProviders);
+      expect(failedView).toMatchObject({
+        tone: "error",
+        title: "2 provider updates failed",
+        description: "Codex and Cursor failed to update. Check provider settings for details.",
+      });
+      expect(
+        getProviderUpdateSidebarPillView(failedProviders, {
+          dismissedKeys: new Set([failedView!.key]),
+        }),
+      ).toBeNull();
+
+      expect(
+        getProviderUpdateSidebarPillView([
+          provider({ driver: driver("codex"), updateState: terminalState("unchanged", "old") }),
+          provider({ driver: driver("cursor"), updateState: terminalState("unchanged", "old") }),
+        ]),
+      ).toMatchObject({ title: "2 providers still need updates" });
+      expect(
+        getProviderUpdateSidebarPillView([
+          provider({
+            driver: driver("codex"),
+            advisoryStatus: "current",
+            updateState: terminalState("succeeded", "done"),
+          }),
+          provider({
+            driver: driver("cursor"),
+            advisoryStatus: "current",
+            updateState: terminalState("succeeded", "done"),
+          }),
+        ]),
+      ).toMatchObject({ title: "2 providers updated" });
+    });
+
+    it("handles timestamps, non-error rejections, WSL ids, and platform labels", () => {
+      const noTimestamp = provider({
+        driver: driver("codex"),
+        updateState: terminalState("failed", "", null),
+      });
+      expect(
+        getProviderUpdateSidebarPillView([noTimestamp], { visibleAfterIso: sessionStartedAt }),
+      ).toBeNull();
+      expect(getProviderUpdateSidebarPillView([noTimestamp])).toMatchObject({ tone: "error" });
+      expect(firstRejectedProviderUpdateMessage([{ status: "rejected", reason: "bad" }])).toBe(
+        "Provider update failed.",
+      );
+      expect(parseWslDistroFromInstanceId(undefined)).toBeNull();
+      expect(parseWslDistroFromInstanceId("local")).toBeNull();
+      expect(parseWslDistroFromInstanceId("wsl:")).toBeNull();
+      expect(parseWslDistroFromInstanceId("wsl:default")).toBeNull();
+      expect(parseWslDistroFromInstanceId("wsl: fedora ")).toBe("fedora");
+
+      const label = (platformOs: "windows" | "darwin" | "linux" | undefined) =>
+        deriveEnvironmentDisplayLabel({
+          isWsl: false,
+          wslDistro: null,
+          platformOs,
+          fallbackLabel: "Local",
+        });
+      expect([label("windows"), label("darwin"), label("linux"), label(undefined)]).toEqual([
+        "Windows",
+        "macOS",
+        "Linux",
+        "Local",
+      ]);
+      expect(
+        deriveEnvironmentDisplayLabel({
+          isWsl: true,
+          wslDistro: null,
+          platformOs: "linux",
+          fallbackLabel: "Local",
+        }),
+      ).toBe("WSL");
+    });
+
+    it("covers representative selection, snapshot failures, and single-provider fallbacks", () => {
+      const defaultCodex = provider({ driver: driver("codex"), instanceId: instanceId("codex") });
+      const personalCodex = provider({
+        driver: driver("codex"),
+        instanceId: instanceId("codex_personal"),
+        checkedAt: laterCheckedAt,
+      });
+      expect(collectProviderUpdateCandidates([defaultCodex, personalCodex])[0]?.instanceId).toBe(
+        "codex",
+      );
+
+      const oldCustom = provider({
+        driver: driver("custom"),
+        instanceId: instanceId("custom_old"),
+        checkedAt,
+      });
+      const newCustom = provider({
+        driver: driver("custom"),
+        instanceId: instanceId("custom_new"),
+        checkedAt: laterCheckedAt,
+      });
+      expect(collectProviderUpdateCandidates([newCustom, oldCustom])[0]?.instanceId).toBe(
+        "custom_new",
+      );
+      expect(collectProviderUpdateCandidates([oldCustom, newCustom])[0]?.instanceId).toBe(
+        "custom_new",
+      );
+
+      const runningCustom = provider({
+        driver: driver("custom"),
+        updateState: {
+          status: "running",
+          startedAt: checkedAt,
+          finishedAt: null,
+          message: "running",
+          output: null,
+        },
+      });
+      expect(getSingleProviderUpdateProgressToastView(runningCustom).title).toBe("Updating custom");
+      expect(
+        getSingleProviderUpdateProgressToastView(
+          provider({
+            driver: driver("custom"),
+            updateState: terminalState("unchanged", "old"),
+          }),
+        ).title,
+      ).toBe("custom still needs an update");
+      expect(
+        getSingleProviderUpdateProgressToastView(
+          provider({
+            driver: driver("custom"),
+            version: null,
+            latestVersion: null,
+            advisoryStatus: "current",
+            updateState: terminalState("succeeded", "done"),
+          }),
+        ).title,
+      ).toBe("custom updated");
+      expect(
+        getSingleProviderUpdateProgressToastView(
+          provider({
+            driver: driver("custom"),
+            latestVersion: null,
+            advisoryStatus: "current",
+            updateState: terminalState("failed", "nope"),
+          }),
+        ).title,
+      ).toBe("custom update failed");
+
+      expect(firstFailedProviderUpdateMessage([])).toBeNull();
+      expect(firstFailedProviderUpdateMessage([AsyncResult.failure(Cause.fail("opaque"))])).toBe(
+        "Provider update failed.",
+      );
+      expect(
+        collectUpdatedProviderSnapshots({
+          results: [
+            AsyncResult.failure(Cause.fail("offline")),
+            AsyncResult.success({ providers: [newCustom, { ...newCustom, checkedAt }] }),
+          ],
+          providerInstanceIds: new Set([newCustom.instanceId]),
+        }),
+      ).toEqual([newCustom]);
+      expect(firstRejectedProviderUpdateMessage([])).toBeNull();
+    });
+
+    it("resolves every terminal result and live-pill row status", () => {
+      const group: LocalEnvironmentUpdateGroup = {
+        environmentId: "env" as EnvironmentId,
+        label: "Local",
+        isPrimary: true,
+        isSettling: false,
+        candidates: [updateCandidate({ driver: driver("custom") })],
+        providers: [],
+      };
+      const result = (phase: "failed" | "unchanged"): ProviderUpdateToastView => ({
+        phase,
+        type: phase === "failed" ? "error" : "warning",
+        title: phase,
+        description: `${phase} details`,
+      });
+      expect(
+        resolveEnvironmentUpdateRowStatus({
+          group,
+          error: undefined,
+          result: result("failed"),
+          pill: null,
+          isPending: false,
+        }),
+      ).toEqual({ kind: "failed", text: "failed details" });
+      expect(
+        resolveEnvironmentUpdateRowStatus({
+          group,
+          error: undefined,
+          result: result("unchanged"),
+          pill: null,
+          isPending: false,
+        }),
+      ).toEqual({ kind: "unchanged", text: "unchanged details" });
+      for (const [tone, kind] of [
+        ["error", "failed"],
+        ["warning", "unchanged"],
+        ["loading", "loading"],
+      ] as const) {
+        expect(
+          resolveEnvironmentUpdateRowStatus({
+            group,
+            error: undefined,
+            result: undefined,
+            pill: {
+              key: tone,
+              tone,
+              title: tone,
+              description: `${tone} details`,
+            },
+            isPending: false,
+          }).kind,
+        ).toBe(kind);
+      }
     });
   });
 });

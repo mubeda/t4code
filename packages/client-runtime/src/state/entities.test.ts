@@ -1,8 +1,12 @@
 import {
+  CheckpointRef,
   EnvironmentId,
+  EventId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
   type OrchestrationShellSnapshot,
   type OrchestrationThread,
 } from "@t4code/contracts";
@@ -195,6 +199,80 @@ function makeHarness() {
 }
 
 describe("environment entity projections", () => {
+  it("projects empty thread collections when the shell snapshot is unavailable", () => {
+    const harness = makeHarness();
+    const threadAtom = harness.threadShells.threadShellAtom({
+      environmentId: ENVIRONMENT_ID,
+      threadId: THREAD_ID,
+    });
+    expect(harness.registry.get(threadAtom)).toMatchObject({ id: THREAD_ID });
+    expect(harness.registry.get(harness.threadShells.threadRefsAtom)).toHaveLength(2);
+    expect(harness.registry.get(harness.threadShells.threadShellsAtom)).toHaveLength(2);
+
+    harness.registry.set(
+      harness.shellStateAtom,
+      AsyncResult.success<EnvironmentShellState>({
+        snapshot: Option.none(),
+        status: "empty",
+        error: Option.none(),
+      }),
+    );
+
+    expect(
+      harness.registry.get(harness.threadShells.environmentThreadsAtom(ENVIRONMENT_ID)),
+    ).toEqual([]);
+    expect(
+      harness.registry.get(harness.threadShells.environmentThreadIndexAtom(ENVIRONMENT_ID)).size,
+    ).toBe(0);
+    expect(
+      harness.registry.get(harness.threadShells.environmentThreadRefsByProjectAtom(ENVIRONMENT_ID))
+        .size,
+    ).toBe(0);
+    expect(harness.registry.get(threadAtom)).toBeNull();
+    expect(harness.registry.get(harness.threadShells.threadRefsAtom)).toEqual([]);
+    expect(harness.registry.get(harness.threadShells.threadShellsAtom)).toEqual([]);
+    expect(
+      harness.registry.get(
+        harness.threadShells.threadShellsForProjectRefsAtom([
+          { environmentId: ENVIRONMENT_ID, projectId: PROJECT_ID },
+        ]),
+      ),
+    ).toEqual([]);
+  });
+
+  it("groups sibling threads and deduplicates repeated project references", () => {
+    const harness = makeHarness();
+    harness.registry.set(
+      harness.shellStateAtom,
+      AsyncResult.success(
+        shellState({
+          ...SNAPSHOT,
+          threads: SNAPSHOT.threads.map((thread) => ({ ...thread, projectId: PROJECT_ID })),
+        }),
+      ),
+    );
+    const projectRef = { environmentId: ENVIRONMENT_ID, projectId: PROJECT_ID };
+    const missingProjectRef = {
+      environmentId: ENVIRONMENT_ID,
+      projectId: ProjectId.make("missing-project"),
+    };
+
+    expect(
+      harness.registry
+        .get(harness.threadShells.environmentThreadRefsByProjectAtom(ENVIRONMENT_ID))
+        .get(PROJECT_ID),
+    ).toHaveLength(2);
+    expect(
+      harness.registry.get(
+        harness.threadShells.threadShellsForProjectRefsAtom([
+          projectRef,
+          missingProjectRef,
+          projectRef,
+        ]),
+      ),
+    ).toHaveLength(2);
+  });
+
   it("composes detail collections with authoritative shell workspace metadata", () => {
     const messages: OrchestrationThread["messages"] = [];
     const detail = {
@@ -227,6 +305,28 @@ describe("environment entity projections", () => {
     expect(merged?.messages).toBe(messages);
   });
 
+  it("leaves incomplete or mismatched detail and shell pairs unchanged", () => {
+    const detail = {
+      ...THREAD_SHELL,
+      environmentId: ENVIRONMENT_ID,
+      deletedAt: null,
+      messages: [],
+      proposedPlans: [],
+      activities: [],
+      checkpoints: [],
+    } satisfies OrchestrationThread & { readonly environmentId: EnvironmentId };
+    const shell = { ...THREAD_SHELL, environmentId: ENVIRONMENT_ID };
+
+    expect(mergeEnvironmentThread(null, shell)).toBeNull();
+    expect(mergeEnvironmentThread(detail, null)).toBe(detail);
+    expect(
+      mergeEnvironmentThread(detail, { ...shell, environmentId: EnvironmentId.make("other") }),
+    ).toBe(detail);
+    expect(mergeEnvironmentThread(detail, { ...shell, id: ThreadId.make("other-thread") })).toBe(
+      detail,
+    );
+  });
+
   it("preserves untouched project and thread identities across unrelated shell updates", () => {
     const harness = makeHarness();
     const projectRefsAtom = harness.projects.environmentProjectRefsAtom(ENVIRONMENT_ID);
@@ -242,6 +342,8 @@ describe("environment entity projections", () => {
     });
     const projectRefs = harness.registry.get(projectRefsAtom);
     const threadRefs = harness.registry.get(threadRefsAtom);
+    const allThreadRefs = harness.registry.get(harness.threadShells.threadRefsAtom);
+    const allThreadShells = harness.registry.get(harness.threadShells.threadShellsAtom);
     const projects = harness.registry.get(projectsAtom);
     const project = harness.registry.get(projectAtom);
     const thread = harness.registry.get(threadAtom);
@@ -252,6 +354,23 @@ describe("environment entity projections", () => {
         shellState({
           ...SNAPSHOT,
           snapshotSequence: 2,
+          projects: SNAPSHOT.projects.map((candidate) =>
+            candidate.id === OTHER_PROJECT_ID
+              ? { ...candidate, title: "Renamed other project" }
+              : candidate,
+          ),
+        }),
+      ),
+    );
+    expect(harness.registry.get(harness.threadShells.threadRefsAtom)).toBe(allThreadRefs);
+    expect(harness.registry.get(harness.threadShells.threadShellsAtom)).toBe(allThreadShells);
+
+    harness.registry.set(
+      harness.shellStateAtom,
+      AsyncResult.success(
+        shellState({
+          ...SNAPSHOT,
+          snapshotSequence: 3,
           threads: SNAPSHOT.threads.map((candidate) =>
             candidate.id === OTHER_THREAD_ID
               ? { ...candidate, title: "Renamed other thread" }
@@ -263,6 +382,7 @@ describe("environment entity projections", () => {
 
     expect(harness.registry.get(projectRefsAtom)).toBe(projectRefs);
     expect(harness.registry.get(threadRefsAtom)).toBe(threadRefs);
+    expect(harness.registry.get(harness.threadShells.threadRefsAtom)).toBe(allThreadRefs);
     expect(harness.registry.get(projectsAtom)).toBe(projects);
     expect(harness.registry.get(projectAtom)).toBe(project);
     expect(harness.registry.get(threadAtom)).toBe(thread);
@@ -364,5 +484,116 @@ describe("environment entity projections", () => {
 
     expect(harness.registry.get(messagesAtom)).toBe(messages);
     expect(harness.registry.get(activitiesAtom)).toBe(activities);
+  });
+
+  it("projects every detail collection, status, error, session, and latest turn", () => {
+    const harness = makeHarness();
+    const ref = { environmentId: ENVIRONMENT_ID, threadId: THREAD_ID };
+    const atoms = harness.threadDetails;
+    const stateAtom = atoms.stateAtom(ref);
+    const detailAtom = atoms.detailAtom(ref);
+    const statusAtom = atoms.statusAtom(ref);
+    const errorAtom = atoms.errorAtom(ref);
+    const messagesAtom = atoms.messagesAtom(ref);
+    const activitiesAtom = atoms.activitiesAtom(ref);
+    const plansAtom = atoms.proposedPlansAtom(ref);
+    const checkpointsAtom = atoms.checkpointsAtom(ref);
+    const sessionAtom = atoms.sessionAtom(ref);
+    const latestTurnAtom = atoms.latestTurnAtom(ref);
+
+    expect(harness.registry.get(stateAtom)).toEqual(EMPTY_ENVIRONMENT_THREAD_STATE);
+    expect(harness.registry.get(detailAtom)).toBeNull();
+    expect(harness.registry.get(statusAtom)).toBe("empty");
+    expect(harness.registry.get(errorAtom)).toBeNull();
+    expect(harness.registry.get(messagesAtom)).toEqual([]);
+    expect(harness.registry.get(activitiesAtom)).toEqual([]);
+    expect(harness.registry.get(plansAtom)).toEqual([]);
+    expect(harness.registry.get(checkpointsAtom)).toEqual([]);
+    expect(harness.registry.get(sessionAtom)).toBeNull();
+    expect(harness.registry.get(latestTurnAtom)).toBeNull();
+
+    const message = {
+      id: MessageId.make("message-projected"),
+      role: "assistant" as const,
+      text: "done",
+      turnId: TurnId.make("turn-projected"),
+      streaming: false,
+      createdAt: "created",
+      updatedAt: "updated",
+    };
+    const activity = {
+      id: EventId.make("activity-projected"),
+      tone: "tool" as const,
+      kind: "command" as const,
+      summary: "ran",
+      payload: {},
+      turnId: TurnId.make("turn-projected"),
+      createdAt: "created",
+    };
+    const plan = {
+      id: "plan-projected",
+      turnId: TurnId.make("turn-projected"),
+      planMarkdown: "plan",
+      implementedAt: null,
+      implementationThreadId: null,
+      createdAt: "created",
+      updatedAt: "updated",
+    };
+    const checkpoint = {
+      turnId: TurnId.make("turn-projected"),
+      checkpointTurnCount: 1,
+      checkpointRef: CheckpointRef.make("checkpoint-projected"),
+      status: "ready" as const,
+      files: [],
+      assistantMessageId: message.id,
+      completedAt: "completed",
+    };
+    const latestTurn = {
+      turnId: TurnId.make("turn-projected"),
+      state: "completed" as const,
+      requestedAt: "requested",
+      startedAt: "started",
+      completedAt: "completed",
+      assistantMessageId: message.id,
+    };
+    const session = {
+      threadId: THREAD_ID,
+      status: "ready" as const,
+      providerName: "codex",
+      runtimeMode: "full-access" as const,
+      activeTurnId: null,
+      lastError: null,
+      updatedAt: "updated",
+    };
+    const thread = {
+      ...THREAD_SHELL,
+      deletedAt: null,
+      messages: [message],
+      activities: [activity],
+      proposedPlans: [plan],
+      checkpoints: [checkpoint],
+      latestTurn,
+      session,
+    } satisfies OrchestrationThread;
+    harness.registry.set(
+      harness.threadStateAtom(THREAD_ID),
+      AsyncResult.success<EnvironmentThreadState>({
+        data: Option.some(thread),
+        status: "live",
+        error: Option.some("warning"),
+      }),
+    );
+
+    expect(harness.registry.get(detailAtom)).toMatchObject({ environmentId: ENVIRONMENT_ID });
+    expect(harness.registry.get(statusAtom)).toBe("live");
+    expect(harness.registry.get(errorAtom)).toBe("warning");
+    expect(harness.registry.get(messagesAtom)).toBe(thread.messages);
+    expect(harness.registry.get(activitiesAtom)).toBe(thread.activities);
+    expect(harness.registry.get(plansAtom)).toBe(thread.proposedPlans);
+    expect(harness.registry.get(checkpointsAtom)).toBe(thread.checkpoints);
+    expect(harness.registry.get(sessionAtom)).toBe(session);
+    expect(harness.registry.get(latestTurnAtom)).toBe(latestTurn);
+    expect(harness.registry.get(detailAtom)).toBe(harness.registry.get(detailAtom));
+    harness.registry.dispose();
   });
 });

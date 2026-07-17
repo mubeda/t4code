@@ -1,6 +1,7 @@
 import {
   EnvironmentId,
   ORCHESTRATION_WS_METHODS,
+  ProjectId,
   type OrchestrationShellSnapshot,
   type OrchestrationShellStreamItem,
 } from "@t4code/contracts";
@@ -89,12 +90,76 @@ describe("environment shell synchronization", () => {
         lastFailure: null,
         retryAt: null,
       });
+      for (let index = 0; index < 10; index += 1) {
+        yield* Effect.yieldNow;
+      }
+      expect((yield* SubscriptionRef.get(shellState)).status).toBe("synchronizing");
+      yield* SubscriptionRef.set(supervisorState, {
+        desired: true,
+        network: "offline",
+        phase: "offline",
+        stage: null,
+        attempt: 1,
+        generation: 0,
+        lastFailure: null,
+        retryAt: null,
+      });
+      for (let index = 0; index < 10; index += 1) {
+        yield* Effect.yieldNow;
+      }
+      expect((yield* SubscriptionRef.get(shellState)).status).toBe("empty");
+      yield* SubscriptionRef.set(supervisorState, {
+        desired: true,
+        network: "online",
+        phase: "connected",
+        stage: null,
+        attempt: 1,
+        generation: 0,
+        lastFailure: null,
+        retryAt: null,
+      });
+      for (let index = 0; index < 10; index += 1) {
+        yield* Effect.yieldNow;
+      }
+      expect((yield* SubscriptionRef.get(shellState)).status).toBe("synchronizing");
+      yield* Queue.offer(events, {
+        kind: "project-removed",
+        sequence: 1,
+        projectId: ProjectId.make("missing-project"),
+      });
+      for (let index = 0; index < 10; index += 1) {
+        yield* Effect.yieldNow;
+      }
+      expect(Option.isNone((yield* SubscriptionRef.get(shellState)).snapshot)).toBe(true);
+
       yield* Queue.offer(events, {
         kind: "snapshot",
         snapshot: LIVE_SHELL_SNAPSHOT,
       });
       yield* SubscriptionRef.changes(shellState).pipe(
         Stream.filter((state) => state.status === "live"),
+        Stream.runHead,
+      );
+      yield* Queue.offer(events, {
+        kind: "project-removed",
+        sequence: 1,
+        projectId: ProjectId.make("missing-project"),
+      });
+      for (let index = 0; index < 10; index += 1) {
+        yield* Effect.yieldNow;
+      }
+      expect(Option.getOrThrow((yield* SubscriptionRef.get(shellState)).snapshot)).toBe(
+        LIVE_SHELL_SNAPSHOT,
+      );
+      yield* Queue.offer(events, {
+        kind: "project-removed",
+        sequence: 2,
+        projectId: ProjectId.make("missing-project"),
+      });
+      yield* SubscriptionRef.changes(shellState).pipe(
+        Stream.filter(
+          (next) => Option.isSome(next.snapshot) && next.snapshot.value.snapshotSequence === 2,
+        ),
         Stream.runHead,
       );
 
@@ -114,7 +179,7 @@ describe("environment shell synchronization", () => {
 
       const state = yield* SubscriptionRef.get(shellState);
       expect(state.status).toBe("live");
-      expect(Option.getOrThrow(state.snapshot)).toEqual(LIVE_SHELL_SNAPSHOT);
+      expect(Option.getOrThrow(state.snapshot).snapshotSequence).toBe(2);
     }),
   );
 });

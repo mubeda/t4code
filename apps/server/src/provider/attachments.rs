@@ -183,7 +183,7 @@ mod tests {
             .await
             .expect("outside file");
 
-        let error = AttachmentMaterializer::new(attachments_dir)
+        let error = AttachmentMaterializer::new(attachments_dir.clone())
             .materialize(vec![json!({
                 "type": "image",
                 "id": "../outside",
@@ -195,6 +195,80 @@ mod tests {
             .expect_err("traversal must fail");
 
         assert!(error.to_string().contains("invalid attachment id"));
+
+        let missing_root_error = AttachmentMaterializer::new(state.path().join("missing"))
+            .materialize(vec![json!({
+                "type": "image",
+                "id": "image-1",
+                "name": "missing.png",
+                "mimeType": "image/png"
+            })])
+            .await
+            .expect_err("a missing attachment directory must fail");
+        assert!(
+            missing_root_error
+                .to_string()
+                .contains("failed to access attachment directory")
+        );
+
+        let invalid_metadata_error = AttachmentMaterializer::new(attachments_dir.clone())
+            .materialize(vec![json!({ "type": "image" })])
+            .await
+            .expect_err("incomplete metadata must fail");
+        assert!(
+            invalid_metadata_error
+                .to_string()
+                .contains("invalid attachment metadata")
+        );
+
+        let unsupported_attachment_error = AttachmentMaterializer::new(attachments_dir.clone())
+            .materialize(vec![json!({
+                "type": "file",
+                "id": "image-1",
+                "name": "notes.txt",
+                "mimeType": "text/plain"
+            })])
+            .await
+            .expect_err("non-image attachments must fail");
+        assert!(
+            unsupported_attachment_error
+                .to_string()
+                .contains("only image attachments are supported")
+        );
+
+        let missing_attachment_error = AttachmentMaterializer::new(attachments_dir.clone())
+            .materialize(vec![json!({
+                "type": "image",
+                "id": "missing",
+                "name": "missing.png",
+                "mimeType": "image/png"
+            })])
+            .await
+            .expect_err("a missing attachment must fail");
+        assert!(
+            missing_attachment_error
+                .to_string()
+                .contains("failed to read attachment")
+        );
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                state.path().join("outside"),
+                attachments_dir.join("linked-image"),
+            )
+            .expect("attachment symlink");
+            let symlink_error = AttachmentMaterializer::new(attachments_dir)
+                .materialize(vec![json!({
+                    "type": "image",
+                    "id": "linked-image",
+                    "name": "outside.png",
+                    "mimeType": "image/png"
+                })])
+                .await
+                .expect_err("a symlink outside the attachment directory must fail");
+            assert!(symlink_error.to_string().contains("resolves outside"));
+        }
     }
 
     #[test]

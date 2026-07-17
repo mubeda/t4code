@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   clearProjectFileQueryData,
   confirmProjectFileQueryData,
+  getProjectEntriesQueryAtom,
+  getProjectFileQueryAtom,
   getOptimisticProjectFileQueryData,
   resolveProjectFileQueryData,
   setProjectFileQueryData,
@@ -47,5 +49,21 @@ describe("project files queries", () => {
     expect(
       confirmProjectFileQueryData(environmentId, "/repo", "convex.json", '{"nodeVersion":"22"}'),
     ).toBe(true);
+  });
+
+  it("builds entry and file queries and resolves missing paths", () => {
+    expect(getProjectEntriesQueryAtom(environmentId, "/repo")).toBeDefined();
+    expect(getProjectFileQueryAtom(environmentId, "/repo", "convex.json")).toBeDefined();
+    expect(getProjectFileQueryAtom(environmentId, "/repo", null)).toBeDefined();
+    expect(getOptimisticProjectFileQueryData(environmentId, "/repo", "convex.json")).toBeNull();
+
+    const data = {
+      relativePath: "convex.json",
+      contents: "{}",
+      byteLength: 2,
+      truncated: false,
+    } satisfies ProjectReadFileResult;
+    expect(resolveProjectFileQueryData(environmentId, "/repo", null, data)).toBe(data);
+    expect(resolveProjectFileQueryData(environmentId, "/repo", "convex.json", data)).toBe(data);
   });
 });

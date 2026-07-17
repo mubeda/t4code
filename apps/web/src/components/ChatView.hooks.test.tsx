@@ -508,7 +508,12 @@ vi.mock("./files/FilePreviewPanel", () => ({
   default: () => <div data-mock="file-preview-panel" />,
 }));
 
-import ChatView from "./ChatView";
+import ChatView, {
+  eventPathContainsSelector,
+  serverTerminalIdsStrictSubsetOfClient,
+  shouldTypeToFocusComposer,
+  terminalIdListsEqual,
+} from "./ChatView";
 import type { ChatMessage, Project, Thread } from "../types";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useRightPanelStore, type RightPanelSurface } from "../rightPanelStore";
@@ -734,6 +739,13 @@ function renderDraftRoute(draftId: ReturnType<typeof newDraftId>): string {
       routeKind="draft"
       draftId={draftId}
     />,
+  );
+}
+
+function renderPanelRoute(): string {
+  resetRenderCaptures();
+  return renderToStaticMarkup(
+    <ChatView variant="panel" panelThreadRef={scopeThreadRef(environmentId, threadId)} />,
   );
 }
 
@@ -1069,6 +1081,47 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("ChatView center panel variant", () => {
+  it("renders a server-backed sibling without host-only chrome or effects", () => {
+    seedConnectedServerThread();
+    renderPanelRoute();
+
+    expect(h.captured["messagesTimeline"]).toBeDefined();
+    expect(h.captured["chatComposer"]).toBeDefined();
+    expect(h.captured["chatHeader"]).toBeUndefined();
+    runEffects();
+    expect(windowStub.listeners.some((listener) => listener.type === "keydown")).toBe(false);
+  });
+
+  it("mounts an active sibling chat surface from host center-panel state", () => {
+    const siblingId = ThreadId.make("thread-sibling");
+    seedConnectedServerThread();
+    seedServerThread(makeThread({ id: siblingId, title: "Sibling thread" }));
+    useCenterPanelStore.getState().openChatPanel(threadRef, siblingId, "Codex");
+    publishSeededStoreState(useCenterPanelStore);
+
+    renderServerRoute();
+
+    expect(h.capturedList.filter((entry) => entry.name === "messagesTimeline")).toHaveLength(2);
+    expect(h.captured["centerPanelTabs"]).toBeDefined();
+  });
+
+  it("renders the empty center-panel state when every surface was closed", () => {
+    seedConnectedServerThread();
+    useCenterPanelStore.setState({
+      byThreadKey: {
+        [threadKey]: {
+          surfaces: [],
+          activeSurfaceId: null,
+        },
+      },
+    });
+    publishSeededStoreState(useCenterPanelStore);
+
+    expect(renderServerRoute()).toContain("No chat panels open");
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────
 // Effects
 // ─────────────────────────────────────────────────────────────────────
@@ -1343,6 +1396,53 @@ describe("ChatView effects (captured and run manually)", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("ChatView keydown shortcuts", () => {
+  it("classifies every type-to-focus keyboard guard and event-path fallback", () => {
+    expect(shouldTypeToFocusComposer(makeKeyEvent({ key: "a" }) as never)).toBe(true);
+    expect(
+      shouldTypeToFocusComposer(makeKeyEvent({ key: "a", defaultPrevented: true }) as never),
+    ).toBe(false);
+    expect(shouldTypeToFocusComposer(makeKeyEvent({ key: "a", isComposing: true }) as never)).toBe(
+      false,
+    );
+    expect(shouldTypeToFocusComposer(makeKeyEvent({ key: "a", metaKey: true }) as never)).toBe(
+      false,
+    );
+    expect(shouldTypeToFocusComposer(makeKeyEvent({ key: "a", ctrlKey: true }) as never)).toBe(
+      false,
+    );
+    expect(shouldTypeToFocusComposer(makeKeyEvent({ key: "a", altKey: true }) as never)).toBe(
+      false,
+    );
+    expect(shouldTypeToFocusComposer(makeKeyEvent({ key: "Enter" }) as never)).toBe(false);
+    expect(
+      shouldTypeToFocusComposer(makeKeyEvent({ key: "a", path: [new FakeElement(true)] }) as never),
+    ).toBe(false);
+    const interactive = new FakeElement(false);
+    interactive.closest = (selector: string) => (selector.includes("button") ? interactive : null);
+    expect(
+      shouldTypeToFocusComposer(makeKeyEvent({ key: "a", path: [interactive] }) as never),
+    ).toBe(false);
+
+    const target = new FakeElement(true);
+    const emptyPathEvent = makeKeyEvent({ key: "a", target });
+    expect(eventPathContainsSelector(emptyPathEvent as never, "button")).toBe(true);
+    expect(
+      eventPathContainsSelector(makeKeyEvent({ key: "a", path: [{}] }) as never, "button"),
+    ).toBe(false);
+  });
+
+  it("compares terminal ids without relying on server ordering", () => {
+    expect(terminalIdListsEqual([], [])).toBe(true);
+    expect(terminalIdListsEqual(["one"], [])).toBe(false);
+    expect(terminalIdListsEqual(["two", "one"], ["one", "two"])).toBe(true);
+    expect(terminalIdListsEqual(["one", "three"], ["one", "two"])).toBe(false);
+
+    expect(serverTerminalIdsStrictSubsetOfClient(["one"], ["one", "two"])).toBe(true);
+    expect(serverTerminalIdsStrictSubsetOfClient(["missing"], ["one", "two"])).toBe(false);
+    expect(serverTerminalIdsStrictSubsetOfClient(["one"], ["one"])).toBe(false);
+    expect(serverTerminalIdsStrictSubsetOfClient([], ["one"])).toBe(true);
+  });
+
   function renderWithKeydown(thread: Thread = makeThread()) {
     seedConnectedServerThread(thread);
     renderServerRoute();
@@ -2024,6 +2124,115 @@ describe("ChatView project script handlers", () => {
     });
     expect(centerState?.activeSurfaceId).toBe(claudeSurface?.id);
   });
+
+  it("covers explicit script launch options and opaque terminal failures", async () => {
+    const header = renderWithScripts();
+    const onRun = header["onRunProjectScript"] as (
+      target: ProjectScript,
+      options?: Record<string, unknown>,
+    ) => Promise<void>;
+
+    await onRun(script, {
+      cwd: "X:/custom",
+      env: { FEATURE: "1" },
+      worktreePath: null,
+      preferNewTerminal: true,
+      rememberAsLastInvoked: false,
+    });
+    expect(commandCallsFor("terminal.open")[0]?.input).toMatchObject({
+      input: { cwd: "X:/custom", env: expect.objectContaining({ FEATURE: "1" }) },
+    });
+
+    h.commandCalls.length = 0;
+    h.commandResults["terminal.open"] = () => AsyncResult.failure(Cause.fail("opaque open"));
+    await onRun(script);
+    expect(commandCallsFor("terminal.write")).toHaveLength(0);
+
+    h.commandCalls.length = 0;
+    h.commandResults["terminal.open"] = () => AsyncResult.success(undefined);
+    h.commandResults["terminal.write"] = () => AsyncResult.failure(Cause.fail("opaque write"));
+    await onRun(script);
+    expect(
+      h.setStateCalls.some(
+        (call) =>
+          typeof call.applied === "object" &&
+          call.applied !== null &&
+          Object.values(call.applied as Record<string, unknown>).includes(
+            'Failed to run script "Dev server".',
+          ),
+      ),
+    ).toBe(true);
+  });
+
+  it("covers script persistence alternatives and unknown deletions", async () => {
+    const autoScript = { ...script, runOnWorktreeCreate: true };
+    const secondScript: ProjectScript = {
+      id: "test",
+      name: "Test",
+      command: "pnpm test",
+      icon: "test",
+      runOnWorktreeCreate: false,
+    };
+    const header = renderWithScripts([autoScript, secondScript]);
+    const input = {
+      name: "Build",
+      command: "pnpm build",
+      icon: null,
+      runOnWorktreeCreate: false,
+      keybinding: null,
+    };
+
+    await (header["onAddProjectScript"] as (value: Record<string, unknown>) => Promise<unknown>)(
+      input,
+    );
+    await (
+      header["onUpdateProjectScript"] as (
+        id: string,
+        value: Record<string, unknown>,
+      ) => Promise<unknown>
+    )("dev-server", { ...input, runOnWorktreeCreate: true });
+    await (header["onDeleteProjectScript"] as (id: string) => Promise<unknown>)("missing");
+
+    expect(
+      h.toasts.some((toast) => (toast as { title?: string }).title === 'Deleted action "Unknown"'),
+    ).toBe(true);
+  });
+
+  it("returns successful no-ops for script mutations without an active project", async () => {
+    seedEnvironment(makeEnvironmentPresentation());
+    seedServerThread(makeThread());
+    seedGitStatus(true);
+    renderServerRoute();
+    const header = capturedProps("chatHeader");
+    const input = {
+      name: "No project",
+      command: "true",
+      icon: null,
+      runOnWorktreeCreate: false,
+      keybinding: null,
+    };
+
+    expect(
+      await (
+        header["onAddProjectScript"] as (value: Record<string, unknown>) => Promise<{
+          _tag: string;
+        }>
+      )(input),
+    ).toMatchObject({ _tag: "Success" });
+    expect(
+      await (
+        header["onUpdateProjectScript"] as (
+          id: string,
+          value: Record<string, unknown>,
+        ) => Promise<{ _tag: string }>
+      )("missing", input),
+    ).toMatchObject({ _tag: "Success" });
+    expect(
+      await (header["onDeleteProjectScript"] as (id: string) => Promise<{ _tag: string }>)(
+        "missing",
+      ),
+    ).toMatchObject({ _tag: "Success" });
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -2031,6 +2240,15 @@ describe("ChatView project script handlers", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("ChatView send flows", () => {
+  it("returns without dispatch when the composer handle has no send context", async () => {
+    seedConnectedServerThread();
+    renderServerRoute();
+
+    await (capturedProps("chatComposer")["onSend"] as () => Promise<void>)();
+
+    expect(commandCallsFor("thread.startTurn")).toHaveLength(0);
+  });
+
   it("treats a standalone /plan message as an interaction mode switch", async () => {
     seedConnectedServerThread();
     renderServerRoute();
@@ -2184,6 +2402,119 @@ describe("ChatView send flows", () => {
     };
     expect(input.input.titleSeed).toBe("Image: shot.png");
     expect(input.input.message.attachments[0]!.dataUrl).toBe("data:image/png;base64,ZmFrZQ==");
+  });
+
+  it("uses terminal and element context labels as attachment-only title seeds", async () => {
+    const terminalContext: TerminalContextDraft = {
+      id: "ctx-title",
+      threadId,
+      createdAt: now,
+      terminalId: "terminal-1",
+      terminalLabel: "Build shell",
+      lineStart: 3,
+      lineEnd: 4,
+      text: "build output",
+    };
+    seedConnectedServerThread();
+    renderServerRoute();
+    let installed = installComposerHandle({
+      getSendContext: () => ({
+        ...composerHandle().getSendContext(),
+        terminalContexts: [terminalContext],
+      }),
+    });
+    installed.promptRef.current = "";
+    await (capturedProps("chatComposer")["onSend"] as () => Promise<void>)();
+    expect(commandCallsFor("thread.startTurn")[0]?.input).toMatchObject({
+      input: { titleSeed: expect.stringContaining("Build shell") },
+    });
+
+    h.commandCalls.length = 0;
+    seedConnectedServerThread(makeThread({ messages: [] }));
+    renderServerRoute();
+    const elementContext = {
+      id: "element-title",
+      threadId,
+      pageUrl: "http://localhost:3000",
+      pageTitle: "Demo",
+      tagName: "button",
+      selector: ".save",
+      htmlPreview: "<button>Save</button>",
+      componentName: "SaveButton",
+      source: null,
+      styles: "",
+      pickedAt: now,
+    };
+    installed = installComposerHandle({
+      getSendContext: () => ({
+        ...composerHandle().getSendContext(),
+        elementContexts: [elementContext],
+      }),
+    });
+    installed.promptRef.current = "";
+    await (capturedProps("chatComposer")["onSend"] as () => Promise<void>)();
+    expect(commandCallsFor("thread.startTurn")[0]?.input).toMatchObject({
+      input: { titleSeed: "<SaveButton>" },
+    });
+  });
+
+  it("omits expired contexts while sending valid prompt content", async () => {
+    const expiredContext: TerminalContextDraft = {
+      id: "ctx-expired-with-prompt",
+      threadId,
+      createdAt: now,
+      terminalId: "terminal-1",
+      terminalLabel: "Expired shell",
+      lineStart: 1,
+      lineEnd: 2,
+      text: "",
+    };
+    seedConnectedServerThread();
+    renderServerRoute();
+    const { promptRef } = installComposerHandle({
+      getSendContext: () => ({
+        ...composerHandle().getSendContext(),
+        terminalContexts: [expiredContext],
+      }),
+    });
+    promptRef.current = "send the valid text";
+
+    await (capturedProps("chatComposer")["onSend"] as () => Promise<void>)();
+
+    expect(commandCallsFor("thread.startTurn")).toHaveLength(1);
+    expect(
+      h.toasts.some((toast) =>
+        (toast as { title?: string }).title?.includes("Expired terminal context"),
+      ),
+    ).toBe(true);
+  });
+
+  it("uses generic send and interrupt messages for opaque command failures", async () => {
+    seedConnectedServerThread(
+      makeThread({
+        session: makeSession({ status: "running", activeTurnId: TurnId.make("turn-opaque") }),
+      }),
+    );
+    h.commandResults["thread.updateMetadata"] = () =>
+      AsyncResult.failure(Cause.fail("opaque title failure"));
+    h.commandResults["thread.interruptTurn"] = () =>
+      AsyncResult.failure(Cause.fail("opaque interrupt failure"));
+    renderServerRoute();
+    const { promptRef } = installComposerHandle();
+    promptRef.current = "fail opaquely";
+    const composer = capturedProps("chatComposer");
+
+    await (composer["onSend"] as () => Promise<void>)();
+    await (composer["onInterrupt"] as () => Promise<void>)();
+
+    const messages = h.setStateCalls.flatMap((call) =>
+      typeof call.applied === "object" && call.applied !== null
+        ? Object.values(call.applied as Record<string, unknown>)
+        : [],
+    );
+    expect(messages).toEqual(
+      expect.arrayContaining(["Failed to send message.", "Failed to interrupt the current turn."]),
+    );
   });
 
   it("submits a plan follow-up instead of a regular turn when a plan is actionable", async () => {
@@ -2496,6 +2827,109 @@ describe("ChatView pending user input", () => {
         (call.applied as Record<string, unknown>)[threadKey] === "approval rejected",
     );
     expect(errorWrites.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("keeps pending-input callbacks inert when no request is active", () => {
+    seedConnectedServerThread();
+    renderServerRoute();
+    const composer = capturedProps("chatComposer");
+
+    (composer["onSelectActivePendingUserInputOption"] as (id: string, label: string) => void)(
+      "missing",
+      "Yes",
+    );
+    (
+      composer["onChangeActivePendingUserInputCustomAnswer"] as (
+        id: string,
+        value: string,
+        cursor: number,
+        expandedCursor: number,
+        adjacent: boolean,
+      ) => void
+    )("missing", "answer", 6, 6, false);
+    (composer["onAdvanceActivePendingUserInput"] as () => void)();
+    (composer["onPreviousActivePendingUserInputQuestion"] as () => void)();
+
+    expect(commandCallsFor("thread.respondToUserInput")).toHaveLength(0);
+  });
+
+  it("ignores unknown questions, advances multi-question requests, and avoids redundant focus", () => {
+    seedConnectedServerThread(threadWithQuestions(2));
+    renderServerRoute();
+    const focusAt = vi.fn();
+    installComposerHandle({
+      focusAt,
+      readSnapshot: () => ({
+        value: "answer",
+        cursor: 6,
+        expandedCursor: 6,
+        terminalContextIds: [],
+      }),
+    });
+    const composer = capturedProps("chatComposer");
+
+    (composer["onSelectActivePendingUserInputOption"] as (id: string, label: string) => void)(
+      "unknown-question",
+      "Yes",
+    );
+    (
+      composer["onChangeActivePendingUserInputCustomAnswer"] as (
+        id: string,
+        value: string,
+        cursor: number,
+        expandedCursor: number,
+        adjacent: boolean,
+      ) => void
+    )("question-1", "answer", 6, 6, true);
+    (composer["onAdvanceActivePendingUserInput"] as () => void)();
+
+    expect(focusAt).not.toHaveBeenCalled();
+    expect(commandCallsFor("thread.respondToUserInput")).toHaveLength(0);
+  });
+
+  it("uses generic messages for opaque approval and user-input failures", async () => {
+    seedConnectedServerThread(threadWithQuestions(1));
+    seedHostState("pendingUserInputAnswersByRequestId", {
+      "request-1": { "question-1": { customAnswer: "", selectedOptionLabels: ["Yes"] } },
+    });
+    h.commandResults["thread.interruptTurn"] = () =>
+      AsyncResult.failure(Cause.fail("opaque cancel"));
+    h.commandResults["thread.respondToApproval"] = () =>
+      AsyncResult.failure(Cause.fail("opaque approval"));
+    h.commandResults["thread.respondToUserInput"] = () =>
+      AsyncResult.failure(Cause.fail("opaque input"));
+    renderServerRoute();
+    const composer = capturedProps("chatComposer");
+
+    await (
+      composer["onRespondToApproval"] as (
+        id: ApprovalRequestId,
+        decision: "cancel" | "deny",
+      ) => Promise<unknown>
+    )(requestId, "cancel");
+    await (
+      composer["onRespondToApproval"] as (
+        id: ApprovalRequestId,
+        decision: "cancel" | "deny",
+      ) => Promise<unknown>
+    )(requestId, "deny");
+    (composer["onAdvanceActivePendingUserInput"] as () => void)();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const messages = h.setStateCalls.flatMap((call) =>
+      typeof call.applied === "object" && call.applied !== null
+        ? Object.values(call.applied as Record<string, unknown>)
+        : [],
+    );
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        "Failed to cancel the current turn.",
+        "Failed to submit approval decision.",
+        "Failed to submit user input.",
+      ]),
+    );
   });
 });
 

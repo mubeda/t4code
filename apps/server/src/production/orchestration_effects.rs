@@ -1162,3 +1162,409 @@ fn now_iso() -> String {
 fn server_id(tag: &str) -> String {
     format!("server:{tag}:{}", Uuid::new_v4())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use crate::orchestration::engine::OrchestrationCommand;
+    use crate::persistence::{Database, ProjectionProject, Repositories, run_migrations};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn unit_build_covers_workspace_normalization_and_checkpoint_git_lifecycle() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let parent = tempfile::tempdir().expect("workspace parent");
+        let missing = parent.path().join("nested/project");
+        assert!(matches!(
+            normalize_project_workspace_root(&missing, false).await,
+            Err(OrchestrationEffectsError::WorkspaceMissing(_))
+        ));
+        let normalized = normalize_project_workspace_root(&missing, true)
+            .await
+            .expect("workspace creates");
+        assert!(normalized.is_absolute());
+        assert_eq!(process_compatible_path(normalized.clone()), normalized);
+        let file = parent.path().join("file");
+        tokio::fs::write(&file, "not a directory")
+            .await
+            .expect("file fixture");
+        assert!(matches!(
+            normalize_project_workspace_root(&file, false).await,
+            Err(OrchestrationEffectsError::WorkspaceNotDirectory(_))
+        ));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let read_only = parent.path().join("read-only");
+            tokio::fs::create_dir(&read_only).await.unwrap();
+            tokio::fs::set_permissions(&read_only, std::fs::Permissions::from_mode(0o500))
+                .await
+                .unwrap();
+            assert!(matches!(
+                normalize_project_workspace_root(&read_only.join("child"), true).await,
+                Err(OrchestrationEffectsError::WorkspaceIo { .. })
+            ));
+            tokio::fs::set_permissions(&read_only, std::fs::Permissions::from_mode(0o700))
+                .await
+                .unwrap();
+        }
+
+        let command_root = parent.path().join("command-project");
+        let mut project_command: OrchestrationCommand = serde_json::from_value(json!({
+            "type":"project.create",
+            "commandId":"project",
+            "projectId":"p1",
+            "title":"Project",
+            "workspaceRoot":command_root,
+            "createWorkspaceRootIfMissing":true,
+            "createdAt":"2026-07-10T10:00:00.000Z"
+        }))
+        .expect("project command");
+        normalize_project_create_command(&mut project_command)
+            .await
+            .expect("project command normalizes");
+        let encoded = serde_json::to_value(project_command).expect("project command encodes");
+        assert!(
+            Path::new(encoded["workspaceRoot"].as_str().expect("workspace root")).is_absolute()
+        );
+        let mut unrelated: OrchestrationCommand = serde_json::from_value(json!({
+            "type":"thread.archive",
+            "commandId":"archive",
+            "threadId":"t1"
+        }))
+        .expect("thread command");
+        normalize_project_create_command(&mut unrelated)
+            .await
+            .expect("unrelated command unchanged");
+
+        let repository = tempfile::tempdir().expect("repository");
+        let cancellation = CancellationToken::new();
+        assert!(
+            !is_git_repository(repository.path(), &cancellation)
+                .await
+                .expect("non-repository probe")
+        );
+        run_git(repository.path(), &["init"], &[], false, &cancellation)
+            .await
+            .expect("git init");
+        run_git(
+            repository.path(),
+            &["config", "user.name", "T4Code Test"],
+            &[],
+            false,
+            &cancellation,
+        )
+        .await
+        .expect("git user name");
+        run_git(
+            repository.path(),
+            &["config", "user.email", "t4code@example.test"],
+            &[],
+            false,
+            &cancellation,
+        )
+        .await
+        .expect("git user email");
+        tokio::fs::write(repository.path().join("tracked.txt"), "baseline\n")
+            .await
+            .expect("baseline file");
+        run_git(repository.path(), &["add", "."], &[], false, &cancellation)
+            .await
+            .expect("git add");
+        run_git(
+            repository.path(),
+            &["commit", "-m", "baseline"],
+            &[],
+            false,
+            &cancellation,
+        )
+        .await
+        .expect("git commit");
+        assert!(
+            is_git_repository(repository.path(), &cancellation)
+                .await
+                .expect("repository probe")
+        );
+
+        capture_checkpoint(repository.path(), "thread/one", 0)
+            .await
+            .expect("baseline checkpoint");
+        let baseline_ref = checkpoint_ref("thread/one", 0);
+        assert!(
+            has_ref(repository.path(), &baseline_ref, &cancellation)
+                .await
+                .expect("baseline ref")
+        );
+        tokio::fs::write(repository.path().join("tracked.txt"), "changed\n")
+            .await
+            .expect("changed file");
+        tokio::fs::write(repository.path().join("new.txt"), "new\n")
+            .await
+            .expect("new file");
+        capture_checkpoint_with_cancellation(repository.path(), "thread/one", 1, &cancellation)
+            .await
+            .expect("changed checkpoint");
+        let changed_ref = checkpoint_ref("thread/one", 1);
+        let files = diff_file_summaries(
+            repository.path(),
+            &baseline_ref,
+            &changed_ref,
+            &cancellation,
+        )
+        .await
+        .expect("checkpoint diff");
+        assert_eq!(files.len(), 2);
+        assert!(
+            restore_checkpoint(repository.path(), &baseline_ref, false, &cancellation)
+                .await
+                .expect("checkpoint restore")
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(repository.path().join("tracked.txt"))
+                .await
+                .expect("restored file"),
+            "baseline\n"
+        );
+        assert!(!repository.path().join("new.txt").exists());
+        assert!(
+            restore_checkpoint(
+                repository.path(),
+                "refs/t4code/checkpoints/missing",
+                true,
+                &cancellation,
+            )
+            .await
+            .expect("head fallback")
+        );
+        assert!(
+            !restore_checkpoint(
+                repository.path(),
+                "refs/t4code/checkpoints/missing",
+                false,
+                &cancellation,
+            )
+            .await
+            .expect("missing checkpoint")
+        );
+        delete_ref(repository.path(), &changed_ref, &cancellation)
+            .await
+            .expect("checkpoint ref deletes");
+        assert!(
+            !has_ref(repository.path(), &changed_ref, &cancellation)
+                .await
+                .expect("deleted ref")
+        );
+
+        assert_eq!(checkpoint_environment(Path::new("index")).len(), 5);
+        assert_eq!(
+            required_str(&json!({"field":"value"}), "field").unwrap(),
+            "value"
+        );
+        assert!(required_str(&json!({}), "field").is_err());
+        assert!(!now_iso().is_empty());
+        assert!(server_id("unit").starts_with("server:unit:"));
+        assert!(checkpoint_ref("thread/one", 2).contains("dGhyZWFkL29uZQ"));
+
+        struct CleanupCallbacks(AtomicUsize);
+
+        impl OrchestrationEffectCallbacks for CleanupCallbacks {
+            fn workspace_for_thread<'a>(
+                &'a self,
+                _: &'a str,
+            ) -> BoxEffectFuture<'a, Option<PathBuf>> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Box::pin(async { Ok(None) })
+            }
+
+            fn rollback_provider<'a>(&'a self, _: &'a str, _: i64) -> BoxEffectFuture<'a, ()> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Box::pin(async { Ok(()) })
+            }
+
+            fn stop_provider<'a>(&'a self, _: &'a str) -> BoxEffectFuture<'a, ()> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Box::pin(async { Err("provider".to_owned()) })
+            }
+
+            fn close_terminals<'a>(&'a self, _: &'a str) -> BoxEffectFuture<'a, ()> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Box::pin(async { Err("terminals".to_owned()) })
+            }
+
+            fn refresh_workspace<'a>(&'a self, _: &'a Path) -> BoxEffectFuture<'a, ()> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        let database = Database::open_in_memory().await.expect("database");
+        database
+            .call(|connection| {
+                run_migrations(connection, None)?;
+                Ok(())
+            })
+            .await
+            .expect("migrations");
+        let callbacks = Arc::new(CleanupCallbacks(AtomicUsize::new(0)));
+        callbacks
+            .workspace_for_thread("thread")
+            .await
+            .expect("workspace callback");
+        callbacks
+            .rollback_provider("thread", 1)
+            .await
+            .expect("rollback callback");
+        callbacks
+            .refresh_workspace(parent.path())
+            .await
+            .expect("refresh callback");
+        let repositories = Repositories::new(database.clone());
+        repositories
+            .upsert_project(ProjectionProject {
+                project_id: "malformed".to_owned(),
+                title: "Malformed".to_owned(),
+                workspace_root: parent
+                    .path()
+                    .join("malformed")
+                    .to_string_lossy()
+                    .into_owned(),
+                default_model_selection: None,
+                scripts: json!({"not":"an array"}),
+                created_at: "2026-07-16T00:00:00Z".to_owned(),
+                updated_at: "2026-07-16T00:00:00Z".to_owned(),
+                deleted_at: None,
+            })
+            .await
+            .expect("malformed project fixture");
+        repositories
+            .upsert_project(ProjectionProject {
+                project_id: "empty".to_owned(),
+                title: "Empty".to_owned(),
+                workspace_root: parent.path().join("empty").to_string_lossy().into_owned(),
+                default_model_selection: None,
+                scripts: json!([]),
+                created_at: "2026-07-16T00:00:01Z".to_owned(),
+                updated_at: "2026-07-16T00:00:01Z".to_owned(),
+                deleted_at: None,
+            })
+            .await
+            .expect("empty project fixture");
+        let bootstrap = ProductionBootstrapEffects {
+            repositories,
+            callbacks: callbacks.clone(),
+            cancellation: CancellationToken::new(),
+        };
+        assert!(
+            bootstrap
+                .prepare_worktree(ThreadTurnStartBootstrapPrepareWorktree {
+                    project_cwd: file.to_string_lossy().into_owned(),
+                    base_branch: "main".to_owned(),
+                    branch: Some("unit-invalid".to_owned()),
+                    start_from_origin: None,
+                })
+                .await
+                .is_err()
+        );
+        assert!(
+            bootstrap
+                .remove_worktree(BootstrapWorktree {
+                    repository_root: file.to_string_lossy().into_owned(),
+                    branch: "unit-invalid".to_owned(),
+                    path: parent
+                        .path()
+                        .join("missing-worktree")
+                        .to_string_lossy()
+                        .into_owned(),
+                    remove_branch: true,
+                })
+                .await
+                .is_err()
+        );
+        assert!(
+            bootstrap_process_error(ProcessError::Spawn {
+                operation: "unit".to_owned(),
+                command: "missing".to_owned(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing"),
+            })
+            .contains("failed to spawn")
+        );
+        assert!(
+            bootstrap_process_error(ProcessError::NonZeroExit {
+                operation: "unit".to_owned(),
+                exit_code: 1,
+                stdout_length: 6,
+                stderr_length: 0,
+                stdout: "detail".into(),
+                stderr: "".into(),
+            })
+            .contains("detail")
+        );
+        assert!(
+            bootstrap
+                .run_setup_script(BootstrapSetupInput {
+                    thread_id: "thread".to_owned(),
+                    project_id: None,
+                    project_cwd: None,
+                    worktree_path: parent.path().to_string_lossy().into_owned(),
+                })
+                .await
+                .is_err()
+        );
+        assert!(
+            bootstrap
+                .run_setup_script(BootstrapSetupInput {
+                    thread_id: "thread".to_owned(),
+                    project_id: Some("malformed".to_owned()),
+                    project_cwd: None,
+                    worktree_path: parent.path().to_string_lossy().into_owned(),
+                })
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            bootstrap
+                .run_setup_script(BootstrapSetupInput {
+                    thread_id: "thread".to_owned(),
+                    project_id: None,
+                    project_cwd: Some(parent.path().join("empty").to_string_lossy().into_owned()),
+                    worktree_path: parent.path().to_string_lossy().into_owned(),
+                })
+                .await
+                .expect("empty scripts should be a no-op"),
+            BootstrapSetupResult::NoScript
+        );
+        database
+            .call(|connection| {
+                connection.execute("DROP TABLE projection_projects", [])?;
+                Ok(())
+            })
+            .await
+            .expect("drop project projection");
+        for input in [
+            BootstrapSetupInput {
+                thread_id: "thread".to_owned(),
+                project_id: Some("missing".to_owned()),
+                project_cwd: None,
+                worktree_path: parent.path().to_string_lossy().into_owned(),
+            },
+            BootstrapSetupInput {
+                thread_id: "thread".to_owned(),
+                project_id: None,
+                project_cwd: Some("missing".to_owned()),
+                worktree_path: parent.path().to_string_lossy().into_owned(),
+            },
+        ] {
+            assert!(bootstrap.run_setup_script(input).await.is_err());
+        }
+        let cleanup_error = bootstrap
+            .cleanup_thread_resources("thread")
+            .await
+            .expect_err("both cleanup callbacks fail");
+        assert!(cleanup_error.contains("provider cleanup failed: provider"));
+        assert!(cleanup_error.contains("terminal cleanup failed: terminals"));
+        assert_eq!(callbacks.0.load(Ordering::Relaxed), 5);
+    }
+}

@@ -187,6 +187,20 @@ pub enum TerminalEvent {
     },
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn existing_attachment_uses_owned_identifiers_and_empty_restart_metadata() {
+        let input = TerminalAttachInput::existing("thread".to_owned(), "terminal".to_owned());
+        assert_eq!(input.thread_id, "thread");
+        assert_eq!(input.terminal_id, "terminal");
+        assert!(input.cwd.is_none());
+        assert!(!input.restart_if_not_running);
+    }
+}
+
 impl TerminalEvent {
     pub const fn sequence(&self) -> u64 {
         match self {

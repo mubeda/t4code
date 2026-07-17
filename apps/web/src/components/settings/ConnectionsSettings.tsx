@@ -574,6 +574,26 @@ function isHostedAppPairingUrl(value: string): boolean {
   }
 }
 
+/** @internal Deterministic connection helpers shared with the focused unit-test suite. */
+export const connectionsSettingsInternals = {
+  endpointDefaultPreferenceKey,
+  endpointRowClassName,
+  formatAccessTimestamp,
+  formatDesktopSshConnectionError,
+  formatDesktopSshTarget,
+  isHostedAppPairingUrl,
+  isTailscaleHttpsEndpoint,
+  parseManualDesktopSshTarget,
+  parsePairingUrlFields,
+  parseRemotePairingFields,
+  resolveAdvertisedEndpointPairingUrl,
+  selectPairingEndpoint,
+  sortDesktopClientSessions,
+  sortDesktopPairingLinks,
+  toDesktopClientSessionRecord,
+  toDesktopPairingLinkRecord,
+};
+
 type PairingLinkListRowProps = {
   pairingLink: ServerPairingLinkRecord;
   endpointUrl: string | null | undefined;

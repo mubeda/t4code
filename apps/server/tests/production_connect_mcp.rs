@@ -109,6 +109,134 @@ async fn setup_service(
     (service, calls)
 }
 
+#[derive(Clone, Copy)]
+struct DependencyFailures {
+    key_pair: bool,
+    sign: bool,
+    verify: bool,
+    endpoint: bool,
+    endpoint_status: &'static str,
+    pairing: bool,
+}
+
+impl Default for DependencyFailures {
+    fn default() -> Self {
+        Self {
+            key_pair: false,
+            sign: false,
+            verify: false,
+            endpoint: false,
+            endpoint_status: "running",
+            pairing: false,
+        }
+    }
+}
+
+async fn setup_service_with_failures(
+    temp: &TempDir,
+    name: &str,
+    failures: DependencyFailures,
+) -> ConnectMcpService {
+    let jwt = JwtCodec::new(
+        move |typ, payload| async move {
+            if failures.sign {
+                Err("injected signing failure".to_owned())
+            } else {
+                Ok(format!("signed:{typ}:{}", payload["jti"]))
+            }
+        },
+        move |_key, typ, token, _issuer, _audience, _now| async move {
+            if failures.verify {
+                return Err("injected verification failure".to_owned());
+            }
+            let is_health = typ.contains("health");
+            let scope = if is_health {
+                "environment:status"
+            } else {
+                "environment:connect"
+            };
+            Ok(DecodedCloudProof {
+                issuer: "https://relay.example".into(),
+                subject: "cloud-user".into(),
+                audience: "t4code-env:env-1".into(),
+                jwt_id: token.clone(),
+                issued_at: 1_700_000_000,
+                expires_at: 1_700_000_120,
+                environment_id: "env-1".into(),
+                nonce: format!("nonce-{token}"),
+                scope: vec![scope.into()],
+                client_proof_key_thumbprint: (!is_health).then(|| "thumbprint".into()),
+                confirmation_thumbprint: (!is_health).then(|| "thumbprint".into()),
+            })
+        },
+        move || async move {
+            if failures.key_pair {
+                Err("injected key pair failure".to_owned())
+            } else {
+                Ok((
+                    "private-key".into(),
+                    "-----BEGIN PUBLIC KEY-----\npublic-key\n-----END PUBLIC KEY-----".into(),
+                ))
+            }
+        },
+    );
+    let endpoint = EndpointRuntime::new(move |_config| async move {
+        if failures.endpoint {
+            Err("injected endpoint failure".to_owned())
+        } else {
+            Ok(json!({"status":failures.endpoint_status}))
+        }
+    });
+    let pairing = PairingIssuer::new(move |_thumbprint| async move {
+        if failures.pairing {
+            Err("injected pairing failure".to_owned())
+        } else {
+            Ok(PairingCredential {
+                credential: "pairing-secret".into(),
+                expires_at: "2026-07-10T12:02:00Z".into(),
+            })
+        }
+    });
+    let preview = PreviewInvoker::new(|_scope, _operation, _input, _tab, _cancellation| async {
+        Ok(Value::Null)
+    });
+    ConnectMcpService::open(
+        temp.path().join(name),
+        ConnectMcpConfig {
+            environment_id: "env-1".into(),
+            descriptor: json!({"environmentId":"env-1"}),
+            mcp_endpoint: "http://127.0.0.1:43123/mcp".into(),
+            now_epoch_seconds: Arc::new(|| 1_700_000_000),
+            max_mcp_credentials: 4,
+            max_mcp_sessions: 4,
+        },
+        jwt,
+        endpoint,
+        pairing,
+        preview,
+    )
+    .await
+    .expect("connect service")
+}
+
+async fn link_service(service: &ConnectMcpService) {
+    service
+        .json(
+            JsonOperation::ConnectRelayConfig,
+            Some(json!({
+                "relayUrl":"https://relay.example",
+                "relayIssuer":"https://relay.example",
+                "cloudUserId":"cloud-user",
+                "environmentCredential":"environment-secret",
+                "cloudMintPublicKey":"-----BEGIN PUBLIC KEY-----\ncloud-key\n-----END PUBLIC KEY-----",
+                "endpointRuntime":null,
+            })),
+            context(HeaderMap::new()),
+        )
+        .await
+        .expect("link service");
+}
+
 #[tokio::test]
 async fn cloud_config_is_persistent_atomic_and_replay_safe() {
     let temp = TempDir::new().unwrap();
@@ -492,4 +620,296 @@ async fn http_route_adapters_and_provider_revocation_are_ready_for_central_wirin
         Err(error) => error,
     };
     assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn malformed_connect_and_mcp_requests_preserve_transport_errors() {
+    let temp = TempDir::new().unwrap();
+    let (service, _) = setup_service(&temp).await;
+
+    for (operation, payload) in [
+        (JsonOperation::ConnectLinkProof, None),
+        (JsonOperation::ConnectRelayConfig, Some(json!([]))),
+        (JsonOperation::ConnectHealth, Some(json!({}))),
+        (
+            JsonOperation::ConnectMintCredential,
+            Some(json!({"proof":7})),
+        ),
+    ] {
+        let error = service
+            .json(operation, payload, context(HeaderMap::new()))
+            .await
+            .err()
+            .expect("malformed connect payload should fail");
+        assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    }
+
+    for payload in [
+        json!({
+            "challenge":"challenge",
+            "relayIssuer":"https://relay.example",
+        }),
+        json!({
+            "challenge":"challenge",
+            "relayIssuer":"https://relay.example",
+            "endpoint":{"providerKind":"unsupported"},
+            "origin":{"localHttpHost":"127.0.0.1","localHttpPort":43123},
+        }),
+        json!({
+            "challenge":"challenge",
+            "relayIssuer":"https://relay.example",
+            "endpoint":{"providerKind":"cloudflare_tunnel"},
+            "origin":{"localHttpHost":"example.test","localHttpPort":43123},
+        }),
+    ] {
+        let error = service
+            .json(
+                JsonOperation::ConnectLinkProof,
+                Some(payload),
+                context(HeaderMap::new()),
+            )
+            .await
+            .err()
+            .expect("invalid link proof should fail");
+        assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    }
+
+    for payload in [
+        json!({
+            "relayUrl":"http://relay.example",
+            "cloudUserId":"user",
+            "environmentCredential":"credential",
+            "cloudMintPublicKey":"-----BEGIN PUBLIC KEY-----\nkey\n-----END PUBLIC KEY-----",
+        }),
+        json!({
+            "relayUrl":"https://relay.example",
+            "cloudUserId":"",
+            "environmentCredential":"credential",
+            "cloudMintPublicKey":"-----BEGIN PUBLIC KEY-----\nkey\n-----END PUBLIC KEY-----",
+        }),
+        json!({
+            "relayUrl":"https://relay.example",
+            "cloudUserId":"user",
+            "environmentCredential":"credential",
+            "cloudMintPublicKey":"not-a-public-key",
+        }),
+    ] {
+        let error = service
+            .json(
+                JsonOperation::ConnectRelayConfig,
+                Some(payload),
+                context(HeaderMap::new()),
+            )
+            .await
+            .err()
+            .expect("invalid relay config should fail");
+        assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    }
+
+    let issued = service
+        .issue_mcp_credential("thread", "provider")
+        .await
+        .unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "authorization",
+        HeaderValue::from_str(&issued.authorization_header).unwrap(),
+    );
+
+    let unsupported = service
+        .mcp(Method::GET, Vec::new(), context(headers.clone()))
+        .await
+        .err()
+        .expect("unsupported method should fail");
+    assert_eq!(unsupported.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+    for body in [
+        b"not-json".to_vec(),
+        serde_json::to_vec(&json!({"id":1})).unwrap(),
+    ] {
+        let error = service
+            .mcp(Method::POST, body, context(headers.clone()))
+            .await
+            .err()
+            .expect("invalid JSON-RPC request should fail");
+        assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    }
+
+    let missing_session = service
+        .mcp(Method::DELETE, Vec::new(), context(headers))
+        .await
+        .err()
+        .expect("delete without session should fail");
+    assert_eq!(missing_session.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn connect_dependencies_map_failures_without_partial_success() {
+    let temp = TempDir::new().unwrap();
+    let link_payload = || {
+        json!({
+            "challenge":"challenge",
+            "relayIssuer":"https://relay.example",
+            "endpoint":{"providerKind":"cloudflare_tunnel"},
+            "origin":{"localHttpHost":"127.0.0.1","localHttpPort":43123},
+        })
+    };
+
+    for (name, failures) in [
+        (
+            "keypair.sqlite3",
+            DependencyFailures {
+                key_pair: true,
+                ..DependencyFailures::default()
+            },
+        ),
+        (
+            "link-sign.sqlite3",
+            DependencyFailures {
+                sign: true,
+                ..DependencyFailures::default()
+            },
+        ),
+    ] {
+        let service = setup_service_with_failures(&temp, name, failures).await;
+        let error = service
+            .json(
+                JsonOperation::ConnectLinkProof,
+                Some(link_payload()),
+                context(HeaderMap::new()),
+            )
+            .await
+            .err()
+            .expect("link dependency failure");
+        assert_eq!(error.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    let endpoint_failure = setup_service_with_failures(
+        &temp,
+        "endpoint.sqlite3",
+        DependencyFailures {
+            endpoint: true,
+            ..DependencyFailures::default()
+        },
+    )
+    .await;
+    for (operation, payload) in [
+        (
+            JsonOperation::ConnectRelayConfig,
+            Some(json!({
+                "relayUrl":"https://relay.example",
+                "cloudUserId":"cloud-user",
+                "environmentCredential":"environment-secret",
+                "cloudMintPublicKey":"-----BEGIN PUBLIC KEY-----\ncloud-key\n-----END PUBLIC KEY-----",
+                "endpointRuntime":{"providerKind":"cloudflare_tunnel"},
+            })),
+        ),
+        (JsonOperation::ConnectUnlink, None),
+    ] {
+        let error = endpoint_failure
+            .json(operation, payload, context(HeaderMap::new()))
+            .await
+            .err()
+            .expect("endpoint dependency failure");
+        assert_eq!(error.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    let unavailable = setup_service_with_failures(
+        &temp,
+        "unavailable.sqlite3",
+        DependencyFailures {
+            endpoint_status: "failed",
+            ..DependencyFailures::default()
+        },
+    )
+    .await;
+    let unavailable_error = unavailable
+        .json(
+            JsonOperation::ConnectRelayConfig,
+            Some(json!({
+                "relayUrl":"https://relay.example",
+                "cloudUserId":"cloud-user",
+                "environmentCredential":"environment-secret",
+                "cloudMintPublicKey":"-----BEGIN PUBLIC KEY-----\ncloud-key\n-----END PUBLIC KEY-----",
+                "endpointRuntime":{"providerKind":"cloudflare_tunnel"},
+            })),
+            context(HeaderMap::new()),
+        )
+        .await
+        .err()
+        .expect("unavailable endpoint");
+    assert_eq!(unavailable_error.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let verification = setup_service_with_failures(
+        &temp,
+        "verification.sqlite3",
+        DependencyFailures {
+            verify: true,
+            ..DependencyFailures::default()
+        },
+    )
+    .await;
+    link_service(&verification).await;
+    for operation in [
+        JsonOperation::ConnectHealth,
+        JsonOperation::ConnectMintCredential,
+    ] {
+        let error = verification
+            .json(
+                operation,
+                Some(json!({"proof":"proof"})),
+                context(HeaderMap::new()),
+            )
+            .await
+            .err()
+            .expect("verification dependency failure");
+        assert_eq!(error.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    let signing = setup_service_with_failures(
+        &temp,
+        "response-sign.sqlite3",
+        DependencyFailures {
+            sign: true,
+            ..DependencyFailures::default()
+        },
+    )
+    .await;
+    link_service(&signing).await;
+    for (operation, proof) in [
+        (JsonOperation::ConnectHealth, "health-sign"),
+        (JsonOperation::ConnectMintCredential, "mint-sign"),
+    ] {
+        let error = signing
+            .json(
+                operation,
+                Some(json!({"proof":proof})),
+                context(HeaderMap::new()),
+            )
+            .await
+            .err()
+            .expect("response signing dependency failure");
+        assert_eq!(error.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    let pairing = setup_service_with_failures(
+        &temp,
+        "pairing.sqlite3",
+        DependencyFailures {
+            pairing: true,
+            ..DependencyFailures::default()
+        },
+    )
+    .await;
+    link_service(&pairing).await;
+    let pairing_error = pairing
+        .json(
+            JsonOperation::ConnectMintCredential,
+            Some(json!({"proof":"mint-pairing"})),
+            context(HeaderMap::new()),
+        )
+        .await
+        .err()
+        .expect("pairing dependency failure");
+    assert_eq!(pairing_error.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }

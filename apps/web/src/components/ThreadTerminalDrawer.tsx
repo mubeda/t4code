@@ -70,12 +70,12 @@ const MIN_DRAWER_HEIGHT = 180;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
 const MULTI_CLICK_SELECTION_ACTION_DELAY_MS = 260;
 
-function maxDrawerHeight(): number {
+export function maxDrawerHeight(): number {
   if (typeof window === "undefined") return DEFAULT_THREAD_TERMINAL_HEIGHT;
   return Math.max(MIN_DRAWER_HEIGHT, Math.floor(window.innerHeight * MAX_DRAWER_HEIGHT_RATIO));
 }
 
-function clampDrawerHeight(height: number): number {
+export function clampDrawerHeight(height: number): number {
   const safeHeight = Number.isFinite(height) ? height : DEFAULT_THREAD_TERMINAL_HEIGHT;
   const maxHeight = maxDrawerHeight();
   return Math.min(Math.max(Math.round(safeHeight), MIN_DRAWER_HEIGHT), maxHeight);
@@ -85,14 +85,14 @@ function writeSystemMessage(terminal: Terminal, message: string): void {
   terminal.write(`\r\n[terminal] ${message}\r\n`);
 }
 
-function writeTerminalBuffer(terminal: Terminal, buffer: string): void {
+export function writeTerminalBuffer(terminal: Terminal, buffer: string): void {
   terminal.write("\u001bc");
   if (buffer.length > 0) {
     terminal.write(buffer);
   }
 }
 
-function fitTerminalSafely(fitAddon: FitAddon): boolean {
+export function fitTerminalSafely(fitAddon: FitAddon): boolean {
   try {
     fitAddon.fit();
     return true;
@@ -101,7 +101,7 @@ function fitTerminalSafely(fitAddon: FitAddon): boolean {
   }
 }
 
-function runtimeEnvSignature(runtimeEnv: Record<string, string> | undefined): string {
+export function runtimeEnvSignature(runtimeEnv: Record<string, string> | undefined): string {
   if (!runtimeEnv) return "";
   return JSON.stringify(
     Object.entries(runtimeEnv)
@@ -110,7 +110,7 @@ function runtimeEnvSignature(runtimeEnv: Record<string, string> | undefined): st
   );
 }
 
-function normalizeComputedColor(value: string | null | undefined, fallback: string): string {
+export function normalizeComputedColor(value: string | null | undefined, fallback: string): string {
   const normalizedValue = value?.trim().toLowerCase();
   if (
     !normalizedValue ||
@@ -197,7 +197,7 @@ function terminalThemeFromApp(mountElement?: HTMLElement | null): ITheme {
   };
 }
 
-function getTerminalSelectionRect(mountElement: HTMLElement): DOMRect | null {
+export function getTerminalSelectionRect(mountElement: HTMLElement): DOMRect | null {
   const selection = window.getSelection();
   if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
     return null;

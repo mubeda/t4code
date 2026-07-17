@@ -1910,6 +1910,39 @@ describe("malformed orchestration payload handling", () => {
     ]);
   });
 
+  it("handles empty, primitive, and incomplete request payloads", () => {
+    const nullPayload = {
+      ...makeActivity({ kind: "user-input.requested" }),
+      payload: null,
+    } as unknown as OrchestrationThreadActivity;
+    expect(
+      derivePendingUserInputs([
+        nullPayload,
+        makeActivity({
+          kind: "user-input.requested",
+          payload: { requestId: 7, questions: [] },
+        }),
+        makeActivity({
+          kind: "user-input.requested",
+          payload: { requestId: "empty", questions: [] },
+        }),
+        makeActivity({
+          kind: "provider.user-input.respond.failed",
+          payload: { requestId: "empty" },
+        }),
+      ]),
+    ).toEqual([]);
+
+    expect(
+      derivePendingApprovals([
+        makeActivity({
+          kind: "approval.requested",
+          payload: { requestId: "change", requestType: "file_change_approval" },
+        }),
+      ]),
+    ).toEqual([expect.objectContaining({ requestId: "change", requestKind: "file-change" })]);
+  });
+
   it("returns no active plan for absent or unusable plan updates", () => {
     expect(deriveActivePlanState([], undefined)).toBeNull();
     expect(
@@ -1940,6 +1973,38 @@ describe("malformed orchestration payload handling", () => {
         undefined,
       ),
     ).toBeNull();
+
+    const primitivePayload = {
+      ...makeActivity({ kind: "turn.plan.updated" }),
+      payload: "not-an-object",
+    } as unknown as OrchestrationThreadActivity;
+    expect(deriveActivePlanState([primitivePayload], undefined)).toBeNull();
+  });
+
+  it("uses plan ids as deterministic tie breakers", () => {
+    const tiedPlans = [
+      {
+        id: "plan-a",
+        turnId: TurnId.make("turn-tied"),
+        planMarkdown: "# A",
+        implementedAt: null,
+        implementationThreadId: null,
+        createdAt: "2026-02-23T00:00:01.000Z",
+        updatedAt: "2026-02-23T00:00:02.000Z",
+      },
+      {
+        id: "plan-b",
+        turnId: TurnId.make("turn-tied"),
+        planMarkdown: "# B",
+        implementedAt: null,
+        implementationThreadId: null,
+        createdAt: "2026-02-23T00:00:01.000Z",
+        updatedAt: "2026-02-23T00:00:02.000Z",
+      },
+    ];
+
+    expect(findLatestProposedPlan(tiedPlans, TurnId.make("turn-tied"))?.id).toBe("plan-b");
+    expect(findLatestProposedPlan(tiedPlans, null)?.id).toBe("plan-b");
   });
 
   it("falls back safely when proposed plans or source references are missing", () => {
@@ -1965,6 +2030,17 @@ describe("malformed orchestration payload handling", () => {
         latestTurn: null,
         latestTurnSettled: true,
         threadId: null,
+      }),
+    ).toBeNull();
+    expect(
+      findSidebarProposedPlan({
+        threads: [],
+        latestTurn: {
+          turnId: TurnId.make("turn-without-source"),
+          sourceProposedPlan: undefined,
+        },
+        latestTurnSettled: false,
+        threadId: ThreadId.make("thread-active"),
       }),
     ).toBeNull();
   });
@@ -2010,6 +2086,19 @@ describe("incomplete timing state", () => {
         "2026-02-27T21:11:00.000Z",
       ),
     ).toBe("2026-02-27T21:11:00.000Z");
+  });
+
+  it("does not settle a started turn until it has a completion timestamp", () => {
+    expect(
+      isLatestTurnSettled(
+        {
+          turnId: TurnId.make("turn-started"),
+          startedAt: "2026-02-27T21:10:00.000Z",
+          completedAt: null,
+        },
+        null,
+      ),
+    ).toBe(false);
   });
 });
 
@@ -2059,6 +2148,355 @@ describe("work-log fallback payloads", () => {
     ]);
     expect(entry).toMatchObject({ requestKind: "file-change" });
     expect(entry?.itemType).toBeUndefined();
+  });
+
+  it("keeps task detail separate when a payload summary supplies the label", () => {
+    expect(
+      deriveWorkLogEntries([
+        makeActivity({
+          kind: "task.completed",
+          summary: "Task complete",
+          payload: {
+            summary: "Indexed project",
+            detail: "Indexed 42 files <exited with exit code 0>",
+          },
+        }),
+      ]),
+    ).toEqual([
+      expect.objectContaining({
+        label: "Indexed project",
+        detail: "Indexed 42 files",
+      }),
+    ]);
+  });
+
+  it("filters checkpoint rows after non-tool lifecycle filters", () => {
+    expect(
+      deriveWorkLogEntries([
+        makeActivity({
+          kind: "checkpoint.updated",
+          summary: "Checkpoint captured",
+          tone: "info",
+        }),
+      ]),
+    ).toEqual([]);
+  });
+
+  it("normalizes approval-tone work rows to informational tone", () => {
+    expect(
+      deriveWorkLogEntries([
+        makeActivity({
+          kind: "approval.requested",
+          summary: "Approval requested",
+          tone: "approval",
+        }),
+      ])[0]?.tone,
+    ).toBe("info");
+  });
+
+  it("merges prior command metadata and changed files into a sparse completion", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "merge-command-update",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.updated",
+        summary: "Legacy command",
+        payload: {
+          itemType: "command_execution",
+          requestKind: "command",
+          data: {
+            toolCallId: "merge-command",
+            item: {
+              command: "pwsh -Command 'echo hi'",
+              changes: [{ path: "before.ts" }],
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "merge-command-complete",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Legacy command completed",
+        payload: {
+          data: {
+            toolCallId: "merge-command",
+            item: { changes: [{ path: "after.ts" }] },
+          },
+        },
+      }),
+    ]);
+
+    expect(entries).toEqual([
+      expect.objectContaining({
+        id: "merge-command-complete",
+        command: "echo hi",
+        rawCommand: "pwsh -Command 'echo hi'",
+        changedFiles: ["before.ts", "after.ts"],
+        itemType: "command_execution",
+        requestKind: "command",
+      }),
+    ]);
+  });
+
+  it("collapses legacy blank-label completions and keeps non-tool rows separate", () => {
+    const collapsed = deriveWorkLogEntries([
+      makeActivity({
+        id: "blank-tool-update",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.updated",
+        summary: "  ",
+        payload: { data: { toolCallId: "blank-tool" } },
+      }),
+      makeActivity({
+        id: "blank-tool-complete",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "  ",
+        payload: {},
+      }),
+    ]);
+    expect(collapsed.map((entry) => entry.id)).toEqual(["blank-tool-complete"]);
+
+    const separated = deriveWorkLogEntries([
+      makeActivity({
+        id: "tool-before-status",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.updated",
+        summary: "Tool update",
+      }),
+      makeActivity({
+        id: "status-after-tool",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "session.updated",
+        summary: "Status update",
+        tone: "info",
+      }),
+    ]);
+    expect(separated.map((entry) => entry.id)).toEqual(["tool-before-status", "status-after-tool"]);
+  });
+
+  it("normalizes malformed and minimal command payloads defensively", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "command-unterminated",
+        kind: "tool.completed",
+        summary: "Unterminated",
+        payload: { data: { item: { command: '"unterminated' } } },
+      }),
+      makeActivity({
+        id: "command-empty-basename",
+        kind: "tool.completed",
+        summary: "Empty basename",
+        payload: { data: { item: { command: "/ -c echo" } } },
+      }),
+      makeActivity({
+        id: "command-bare-shell",
+        kind: "tool.completed",
+        summary: "Bare shell",
+        payload: { data: { item: { command: "bash" } } },
+      }),
+      makeActivity({
+        id: "command-empty-quoted-executable",
+        kind: "tool.completed",
+        summary: "Quoted executable",
+        payload: { data: { item: { command: '"" -Command whoami' } } },
+      }),
+      makeActivity({
+        id: "command-mixed-argv",
+        kind: "tool.completed",
+        summary: "Mixed argv",
+        payload: {
+          data: { item: { command: [null, " ", 1, "echo", 'say "hi"'] } },
+        },
+      }),
+      makeActivity({
+        id: "command-empty-argv",
+        kind: "tool.completed",
+        summary: "Empty argv",
+        payload: { data: { item: { command: [null, "", 1] } } },
+      }),
+    ]);
+    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+
+    expect(byId.get("command-unterminated")?.command).toBe('"unterminated');
+    expect(byId.get("command-empty-basename")?.command).toBe("/ -c echo");
+    expect(byId.get("command-bare-shell")?.command).toBe("bash");
+    expect(byId.get("command-empty-quoted-executable")?.command).toBe('"" -Command whoami');
+    expect(byId.get("command-mixed-argv")?.command).toBe('echo "say \\"hi\\""');
+    expect(byId.get("command-empty-argv")?.command).toBeUndefined();
+  });
+
+  it("summarizes long, fenced, singular, and stdout tool output", () => {
+    const longLine = "x".repeat(100);
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "raw-long",
+        kind: "tool.completed",
+        summary: "Read output",
+        payload: { itemType: "dynamic_tool_call", data: { rawOutput: { content: longLine } } },
+      }),
+      makeActivity({
+        id: "raw-fences",
+        kind: "tool.completed",
+        summary: "Read fences",
+        payload: {
+          itemType: "dynamic_tool_call",
+          data: { rawOutput: { content: "```\n```" } },
+        },
+      }),
+      makeActivity({
+        id: "raw-singular",
+        kind: "tool.completed",
+        summary: "Search output",
+        payload: {
+          itemType: "web_search",
+          data: { rawOutput: { totalFiles: 1, truncated: true } },
+        },
+      }),
+      makeActivity({
+        id: "raw-stdout",
+        kind: "tool.completed",
+        summary: "Read stdout",
+        payload: {
+          itemType: "dynamic_tool_call",
+          data: { rawOutput: { stdout: "\n\nhello world" } },
+        },
+      }),
+      makeActivity({
+        id: "raw-interior-blank",
+        kind: "tool.completed",
+        summary: "Read lines",
+        payload: {
+          itemType: "dynamic_tool_call",
+          data: { rawOutput: { content: "hello\n\nworld" } },
+        },
+      }),
+      makeActivity({
+        id: "raw-single-fence",
+        kind: "tool.completed",
+        summary: "Read fence",
+        payload: {
+          itemType: "dynamic_tool_call",
+          data: { rawOutput: { content: "```" } },
+        },
+      }),
+      makeActivity({
+        id: "raw-empty",
+        kind: "tool.completed",
+        summary: "Read empty",
+        payload: {
+          itemType: "dynamic_tool_call",
+          data: { rawOutput: {} },
+        },
+      }),
+      makeActivity({
+        id: "raw-repeated-heading",
+        kind: "tool.completed",
+        summary: "1 file+",
+        payload: {
+          itemType: "web_search",
+          title: "1 file+",
+          data: { rawOutput: { totalFiles: 1, truncated: true } },
+        },
+      }),
+    ]);
+    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+
+    expect(byId.get("raw-long")?.detail).toBe(`${"x".repeat(83)}…`);
+    expect(byId.get("raw-fences")?.detail).toBe("2 lines");
+    expect(byId.get("raw-singular")?.detail).toBe("1 file+");
+    expect(byId.get("raw-stdout")?.detail).toBe("hello world");
+    expect(byId.get("raw-interior-blank")?.detail).toBe("hello");
+    expect(byId.get("raw-single-fence")?.detail).toBeUndefined();
+    expect(byId.get("raw-empty")?.detail).toBeUndefined();
+    expect(byId.get("raw-repeated-heading")?.detail).toBeUndefined();
+  });
+
+  it("drops an exit-code-only detail after parsing its lifecycle suffix", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        kind: "tool.completed",
+        summary: "Tool output",
+        payload: {
+          itemType: "dynamic_tool_call",
+          detail: "<exited with exit code 0>",
+        },
+      }),
+    ]);
+
+    expect(entry?.detail).toBeUndefined();
+  });
+
+  it("bounds changed-file traversal by count and nesting depth", () => {
+    const cappedFiles = Array.from({ length: 15 }, (_, index) => ({ path: `file-${index}.ts` }));
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "file-cap",
+        kind: "tool.completed",
+        summary: "Many files",
+        payload: { itemType: "file_change", data: { files: cappedFiles } },
+      }),
+      makeActivity({
+        id: "file-too-deep",
+        kind: "tool.completed",
+        summary: "Deep file",
+        payload: {
+          itemType: "file_change",
+          data: { item: { result: { input: { data: { item: { path: "ignored.ts" } } } } } },
+        },
+      }),
+    ]);
+
+    expect(entries[0]?.changedFiles).toEqual(
+      Array.from({ length: 12 }, (_, index) => `file-${index}.ts`),
+    );
+    expect(entries[1]?.changedFiles).toBeUndefined();
+  });
+
+  it("orders mixed and tied sequence values before applying lifecycle filters", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "sequenced-second",
+        sequence: 2,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        kind: "tool.completed",
+        summary: "Sequenced second",
+      }),
+      makeActivity({
+        id: "unsequenced-first",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.completed",
+        summary: "Unsequenced first",
+      }),
+      makeActivity({
+        id: "same-sequence-a",
+        sequence: 1,
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Same sequence A",
+      }),
+      makeActivity({
+        id: "same-sequence-b",
+        sequence: 1,
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "tool.completed",
+        summary: "Same sequence B",
+      }),
+      makeActivity({
+        id: "started-filtered",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "task.started",
+        summary: "Started",
+      }),
+    ]);
+
+    expect(entries.map((entry) => entry.id)).toEqual([
+      "unsequenced-first",
+      "same-sequence-a",
+      "same-sequence-b",
+      "sequenced-second",
+    ]);
   });
 });
 

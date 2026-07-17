@@ -84,6 +84,9 @@ pub struct PullRequestService {
     runner: ProcessRunner,
     client: Client,
     bitbucket: BitbucketConfiguration,
+    github_command: String,
+    gitlab_command: String,
+    azure_command: String,
 }
 
 impl Default for PullRequestService {
@@ -92,11 +95,28 @@ impl Default for PullRequestService {
             runner: ProcessRunner,
             client: Client::new(),
             bitbucket: BitbucketConfiguration::default(),
+            github_command: "gh".to_owned(),
+            gitlab_command: "glab".to_owned(),
+            azure_command: "az".to_owned(),
         }
     }
 }
 
 impl PullRequestService {
+    #[must_use]
+    pub fn with_provider_commands(
+        github_command: impl Into<String>,
+        gitlab_command: impl Into<String>,
+        azure_command: impl Into<String>,
+    ) -> Self {
+        Self {
+            github_command: github_command.into(),
+            gitlab_command: gitlab_command.into(),
+            azure_command: azure_command.into(),
+            ..Self::default()
+        }
+    }
+
     pub async fn resolve_current(
         &self,
         input: ResolvePullRequestInput,
@@ -116,7 +136,7 @@ impl PullRequestService {
                 input.provider,
                 &input.cwd,
                 "resolveCurrentPullRequest",
-                "az",
+                self.azure_command.as_str(),
                 [
                     "repos",
                     "pr",
@@ -141,7 +161,7 @@ impl PullRequestService {
                 input.provider,
                 &input.cwd,
                 "resolveCurrentPullRequest",
-                Some("az"),
+                Some(self.azure_command.as_str()),
                 Some(&input.reference),
                 "No open pull request was found for the current branch.",
             )
@@ -158,7 +178,7 @@ impl PullRequestService {
         }
         let (command, args): (&str, Vec<OsString>) = match input.provider {
             ProviderKind::Github => (
-                "gh",
+                self.github_command.as_str(),
                 [
                     "pr",
                     "create",
@@ -176,7 +196,7 @@ impl PullRequestService {
                 .collect(),
             ),
             ProviderKind::Gitlab => (
-                "glab",
+                self.gitlab_command.as_str(),
                 vec![
                     "api".into(),
                     "--method".into(),
@@ -193,7 +213,7 @@ impl PullRequestService {
                 ],
             ),
             ProviderKind::AzureDevops => (
-                "az",
+                self.azure_command.as_str(),
                 [
                     "repos",
                     "pr",
@@ -271,7 +291,7 @@ impl PullRequestService {
         }
         let (command, args): (&str, Vec<OsString>) = match input.provider {
             ProviderKind::Github => (
-                "gh",
+                self.github_command.as_str(),
                 [
                     "pr",
                     "view",
@@ -284,14 +304,14 @@ impl PullRequestService {
                 .collect(),
             ),
             ProviderKind::Gitlab => (
-                "glab",
+                self.gitlab_command.as_str(),
                 ["mr", "view", input.reference.as_str(), "--output", "json"]
                     .into_iter()
                     .map(OsString::from)
                     .collect(),
             ),
             ProviderKind::AzureDevops => (
-                "az",
+                self.azure_command.as_str(),
                 [
                     "repos",
                     "pr",
@@ -1286,10 +1306,201 @@ mod tests {
                 api_base_url: api_base_url.into(),
                 credentials,
             },
+            github_command: "gh".to_owned(),
+            gitlab_command: "glab".to_owned(),
+            azure_command: "az".to_owned(),
         }
     }
 
-    fn bitbucket_repository() -> TempDir {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn provider_cli_flows_cover_github_gitlab_and_azure_resolution_and_creation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let temporary = tempfile::tempdir().expect("provider CLI directory");
+        let script = r#"#!/bin/sh
+case "$(basename "$0"):$*" in
+  gh:*create*) printf '%s\n' 'https://github.com/example/repo/pull/42' ;;
+  gh:*) printf '%s\n' '{"number":42,"title":"GitHub PR","url":"https://github.test/42","baseRefName":"main","headRefName":"feature","state":"OPEN"}' ;;
+  glab:*) printf '%s\n' '{"iid":43,"title":"GitLab MR","web_url":"https://gitlab.test/43","target_branch":"main","source_branch":"feature","state":"opened"}' ;;
+  az:*list*) printf '%s\n' '[{"pullRequestId":44,"title":"Azure PR","url":"https://azure.test/44","targetRefName":"refs/heads/main","sourceRefName":"refs/heads/feature","status":"active"}]' ;;
+  az:*) printf '%s\n' '{"pullRequestId":44,"title":"Azure PR","url":"https://azure.test/44","targetRefName":"refs/heads/main","sourceRefName":"refs/heads/feature","status":"active"}' ;;
+esac
+"#;
+        for command in ["gh", "glab", "az"] {
+            let path = temporary.path().join(command);
+            std::fs::write(&path, script).expect("provider fixture should write");
+            let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(path, permissions).unwrap();
+        }
+        let service = PullRequestService {
+            github_command: temporary.path().join("gh").to_string_lossy().into_owned(),
+            gitlab_command: temporary.path().join("glab").to_string_lossy().into_owned(),
+            azure_command: temporary.path().join("az").to_string_lossy().into_owned(),
+            ..PullRequestService::default()
+        };
+        let cancellation = CancellationToken::new();
+
+        let current = service
+            .resolve_current(
+                ResolvePullRequestInput {
+                    cwd: temporary.path().to_path_buf(),
+                    provider: ProviderKind::AzureDevops,
+                    reference: "feature".to_owned(),
+                },
+                &cancellation,
+            )
+            .await
+            .expect("Azure current PR should resolve");
+        assert_eq!(current.number, 44);
+
+        for (provider, expected) in [(ProviderKind::Github, 42), (ProviderKind::Gitlab, 43)] {
+            let current = service
+                .resolve_current(
+                    ResolvePullRequestInput {
+                        cwd: temporary.path().to_path_buf(),
+                        provider,
+                        reference: "feature".to_owned(),
+                    },
+                    &cancellation,
+                )
+                .await
+                .expect("current provider PR should resolve");
+            assert_eq!(current.number, expected);
+        }
+
+        for (provider, expected) in [
+            (ProviderKind::Github, 42),
+            (ProviderKind::Gitlab, 43),
+            (ProviderKind::AzureDevops, 44),
+        ] {
+            let resolved = service
+                .resolve(
+                    ResolvePullRequestInput {
+                        cwd: temporary.path().to_path_buf(),
+                        provider,
+                        reference: expected.to_string(),
+                    },
+                    &cancellation,
+                )
+                .await
+                .expect("provider PR should resolve");
+            assert_eq!(resolved.number, expected);
+
+            let created = service
+                .create(
+                    CreatePullRequestInput {
+                        cwd: temporary.path().to_path_buf(),
+                        provider,
+                        base_branch: "main".to_owned(),
+                        head_branch: "feature".to_owned(),
+                        title: "Fixture".to_owned(),
+                        body: "Body".to_owned(),
+                    },
+                    &cancellation,
+                )
+                .await
+                .expect("provider PR should create");
+            assert_eq!(created.number, expected);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn provider_cli_flows_report_spawn_exit_and_payload_failures() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let temporary = tempfile::tempdir().expect("provider CLI directory");
+        let cancellation = CancellationToken::new();
+        let missing = temporary
+            .path()
+            .join("missing")
+            .to_string_lossy()
+            .into_owned();
+        let missing_service =
+            PullRequestService::with_provider_commands(missing.clone(), missing.clone(), missing);
+        let resolve_input = |provider| ResolvePullRequestInput {
+            cwd: temporary.path().to_path_buf(),
+            provider,
+            reference: "feature".to_owned(),
+        };
+        assert!(
+            missing_service
+                .resolve(resolve_input(ProviderKind::Github), &cancellation)
+                .await
+                .unwrap_err()
+                .detail
+                .contains("execution failed")
+        );
+
+        let failed = temporary.path().join("failed");
+        std::fs::write(&failed, "#!/bin/sh\nexit 7\n").unwrap();
+        std::fs::set_permissions(&failed, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let failed_command = failed.to_string_lossy().into_owned();
+        let failed_service = PullRequestService::with_provider_commands(
+            failed_command.clone(),
+            failed_command.clone(),
+            failed_command,
+        );
+        assert!(
+            failed_service
+                .resolve(resolve_input(ProviderKind::Github), &cancellation)
+                .await
+                .unwrap_err()
+                .detail
+                .contains("not found or provider authentication failed")
+        );
+
+        let invalid = temporary.path().join("invalid");
+        std::fs::write(&invalid, "#!/bin/sh\nprintf invalid\n").unwrap();
+        std::fs::set_permissions(&invalid, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let invalid_command = invalid.to_string_lossy().into_owned();
+        let invalid_service = PullRequestService::with_provider_commands(
+            invalid_command.clone(),
+            invalid_command.clone(),
+            invalid_command,
+        );
+        assert!(
+            invalid_service
+                .resolve(resolve_input(ProviderKind::Github), &cancellation)
+                .await
+                .unwrap_err()
+                .detail
+                .contains("unrecognized change-request payload")
+        );
+        assert!(
+            invalid_service
+                .resolve_current(resolve_input(ProviderKind::AzureDevops), &cancellation)
+                .await
+                .unwrap_err()
+                .detail
+                .contains("No open pull request")
+        );
+        assert!(
+            invalid_service
+                .create(
+                    CreatePullRequestInput {
+                        cwd: temporary.path().to_path_buf(),
+                        provider: ProviderKind::Github,
+                        base_branch: "main".to_owned(),
+                        head_branch: "feature".to_owned(),
+                        title: "Invalid output".to_owned(),
+                        body: String::new(),
+                    },
+                    &cancellation,
+                )
+                .await
+                .unwrap_err()
+                .detail
+                .contains("unrecognized pull-request payload")
+        );
+    }
+
+    async fn bitbucket_repository() -> TempDir {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
         let repository = tempfile::tempdir().expect("temporary repository");
         for args in [
             vec!["init"],
@@ -1305,7 +1516,11 @@ mod tests {
                 .current_dir(repository.path())
                 .output()
                 .expect("run git fixture command");
-            assert!(output.status.success(), "git fixture command failed");
+            assert!(
+                output.status.success(),
+                "git fixture command failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
         repository
     }
@@ -1374,7 +1589,7 @@ mod tests {
 
     #[tokio::test]
     async fn bitbucket_branch_resolution_follows_pagination() {
-        let repository = bitbucket_repository();
+        let repository = bitbucket_repository().await;
         let mut server = spawn_http_server(vec![
             (
                 200,
@@ -1419,7 +1634,7 @@ mod tests {
 
     #[tokio::test]
     async fn bitbucket_pagination_rejects_a_different_origin_before_sending_credentials() {
-        let repository = bitbucket_repository();
+        let repository = bitbucket_repository().await;
         let mut second_server = spawn_http_server(vec![(
             200,
             r#"{"values":[{"id":20,"title":"Leaked request","state":"OPEN","links":{"html":{"href":"https://bitbucket.org/example/native-source-control/pull-requests/20"}},"source":{"branch":{"name":"feature/native"}},"destination":{"branch":{"name":"main"}}}]}"#.to_owned(),
@@ -1464,7 +1679,7 @@ mod tests {
 
     #[tokio::test]
     async fn bitbucket_pagination_maps_a_malformed_next_url_to_a_structured_error() {
-        let repository = bitbucket_repository();
+        let repository = bitbucket_repository().await;
         let server = spawn_http_server(vec![(
             200,
             r#"{"values":[],"next":"not a URL"}"#.to_owned(),
@@ -1517,7 +1732,7 @@ mod tests {
 
     #[tokio::test]
     async fn bitbucket_explicit_references_use_the_direct_endpoint_and_bearer_auth() {
-        let repository = bitbucket_repository();
+        let repository = bitbucket_repository().await;
         let response = r#"{"id":42,"title":"Merged work","state":"MERGED","links":{"html":{"href":"https://bitbucket.org/example/native-source-control/pull-requests/42"}},"source":{"branch":{"name":"feature/merged"}},"destination":{"branch":{"name":"main"}}}"#.to_owned();
         let mut server = spawn_http_server(vec![
             (200, response.clone()),
@@ -1560,7 +1775,7 @@ mod tests {
 
     #[tokio::test]
     async fn bitbucket_current_branch_preserves_numeric_path_segments_in_the_list_query() {
-        let repository = bitbucket_repository();
+        let repository = bitbucket_repository().await;
         let mut server = spawn_http_server(vec![
             (
                 200,
@@ -1615,7 +1830,7 @@ mod tests {
 
     #[tokio::test]
     async fn bitbucket_creation_sends_branch_payload_with_basic_auth() {
-        let repository = bitbucket_repository();
+        let repository = bitbucket_repository().await;
         let mut server = spawn_http_server(vec![(
             200,
             r#"{"id":51,"title":"Create native flow","state":"OPEN","links":{"html":{"href":"https://bitbucket.org/example/native-source-control/pull-requests/51"}},"source":{"branch":{"name":"feature/create"}},"destination":{"branch":{"name":"release"}}}"#.to_owned(),
@@ -1670,7 +1885,7 @@ mod tests {
 
     #[tokio::test]
     async fn bitbucket_cancellation_stops_an_in_flight_request() {
-        let repository = bitbucket_repository();
+        let repository = bitbucket_repository().await;
         let mut server = spawn_stalled_http_server().await;
         let service = bitbucket_service(
             &server.base_url,
@@ -1757,7 +1972,7 @@ mod tests {
 
     #[tokio::test]
     async fn bitbucket_errors_map_credentials_http_status_and_invalid_json() {
-        let repository = bitbucket_repository();
+        let repository = bitbucket_repository().await;
         let cancellation = CancellationToken::new();
         let error = bitbucket_service("http://127.0.0.1:1/2.0", None)
             .resolve(
