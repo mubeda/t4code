@@ -493,3 +493,124 @@ async fn http_route_adapters_and_provider_revocation_are_ready_for_central_wirin
     };
     assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn malformed_connect_and_mcp_requests_preserve_transport_errors() {
+    let temp = TempDir::new().unwrap();
+    let (service, _) = setup_service(&temp).await;
+
+    for (operation, payload) in [
+        (JsonOperation::ConnectLinkProof, None),
+        (JsonOperation::ConnectRelayConfig, Some(json!([]))),
+        (JsonOperation::ConnectHealth, Some(json!({}))),
+        (
+            JsonOperation::ConnectMintCredential,
+            Some(json!({"proof":7})),
+        ),
+    ] {
+        let error = service
+            .json(operation, payload, context(HeaderMap::new()))
+            .await
+            .err()
+            .expect("malformed connect payload should fail");
+        assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    }
+
+    for payload in [
+        json!({
+            "challenge":"challenge",
+            "relayIssuer":"https://relay.example",
+        }),
+        json!({
+            "challenge":"challenge",
+            "relayIssuer":"https://relay.example",
+            "endpoint":{"providerKind":"unsupported"},
+            "origin":{"localHttpHost":"127.0.0.1","localHttpPort":43123},
+        }),
+        json!({
+            "challenge":"challenge",
+            "relayIssuer":"https://relay.example",
+            "endpoint":{"providerKind":"cloudflare_tunnel"},
+            "origin":{"localHttpHost":"example.test","localHttpPort":43123},
+        }),
+    ] {
+        let error = service
+            .json(
+                JsonOperation::ConnectLinkProof,
+                Some(payload),
+                context(HeaderMap::new()),
+            )
+            .await
+            .err()
+            .expect("invalid link proof should fail");
+        assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    }
+
+    for payload in [
+        json!({
+            "relayUrl":"http://relay.example",
+            "cloudUserId":"user",
+            "environmentCredential":"credential",
+            "cloudMintPublicKey":"-----BEGIN PUBLIC KEY-----\nkey\n-----END PUBLIC KEY-----",
+        }),
+        json!({
+            "relayUrl":"https://relay.example",
+            "cloudUserId":"",
+            "environmentCredential":"credential",
+            "cloudMintPublicKey":"-----BEGIN PUBLIC KEY-----\nkey\n-----END PUBLIC KEY-----",
+        }),
+        json!({
+            "relayUrl":"https://relay.example",
+            "cloudUserId":"user",
+            "environmentCredential":"credential",
+            "cloudMintPublicKey":"not-a-public-key",
+        }),
+    ] {
+        let error = service
+            .json(
+                JsonOperation::ConnectRelayConfig,
+                Some(payload),
+                context(HeaderMap::new()),
+            )
+            .await
+            .err()
+            .expect("invalid relay config should fail");
+        assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    }
+
+    let issued = service
+        .issue_mcp_credential("thread", "provider")
+        .await
+        .unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "authorization",
+        HeaderValue::from_str(&issued.authorization_header).unwrap(),
+    );
+
+    let unsupported = service
+        .mcp(Method::GET, Vec::new(), context(headers.clone()))
+        .await
+        .err()
+        .expect("unsupported method should fail");
+    assert_eq!(unsupported.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+    for body in [
+        b"not-json".to_vec(),
+        serde_json::to_vec(&json!({"id":1})).unwrap(),
+    ] {
+        let error = service
+            .mcp(Method::POST, body, context(headers.clone()))
+            .await
+            .err()
+            .expect("invalid JSON-RPC request should fail");
+        assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    }
+
+    let missing_session = service
+        .mcp(Method::DELETE, Vec::new(), context(headers))
+        .await
+        .err()
+        .expect("delete without session should fail");
+    assert_eq!(missing_session.status(), StatusCode::BAD_REQUEST);
+}
