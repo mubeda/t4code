@@ -283,6 +283,27 @@ mod tests {
     }
 
     #[cfg(unix)]
+    async fn read_status_fixture(
+        path: &Path,
+        timeout: Duration,
+    ) -> Result<TailscaleStatus, String> {
+        for _ in 0..10 {
+            let result = read_tailscale_status_with(path, timeout).await;
+            if result.as_ref().err().map(String::as_str)
+                != Some("tailscale status exited with code unknown.")
+            {
+                return result;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        Err(
+            "tailscale status fixture was repeatedly terminated by a concurrent process test."
+                .to_owned(),
+        )
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn status_command_reports_success_and_process_failures() {
         let directory = tempfile::tempdir().unwrap();
@@ -292,7 +313,7 @@ mod tests {
             &format!("printf '%s' '{}'", TAILSCALE_STATUS_JSON),
         );
         assert_eq!(
-            read_tailscale_status_with(&success, Duration::from_secs(1))
+            read_status_fixture(&success, Duration::from_secs(2))
                 .await
                 .unwrap()
                 .magic_dns_name
@@ -302,7 +323,7 @@ mod tests {
 
         let failed = executable_script(directory.path(), "failed", "exit 7");
         assert_eq!(
-            read_tailscale_status_with(&failed, Duration::from_secs(1))
+            read_status_fixture(&failed, Duration::from_secs(1))
                 .await
                 .unwrap_err(),
             "tailscale status exited with code 7."
@@ -310,7 +331,7 @@ mod tests {
 
         let invalid_utf8 = executable_script(directory.path(), "invalid-utf8", "printf '\\377'");
         assert!(
-            read_tailscale_status_with(&invalid_utf8, Duration::from_secs(1))
+            read_status_fixture(&invalid_utf8, Duration::from_secs(1))
                 .await
                 .unwrap_err()
                 .contains("non-UTF-8")
@@ -318,7 +339,7 @@ mod tests {
 
         let invalid_json = executable_script(directory.path(), "invalid-json", "printf nope");
         assert!(
-            read_tailscale_status_with(&invalid_json, Duration::from_secs(1))
+            read_status_fixture(&invalid_json, Duration::from_secs(1))
                 .await
                 .unwrap_err()
                 .contains("decode")
@@ -326,14 +347,14 @@ mod tests {
 
         let slow = executable_script(directory.path(), "slow", "sleep 1");
         assert_eq!(
-            read_tailscale_status_with(&slow, Duration::from_millis(10))
+            read_status_fixture(&slow, Duration::from_millis(10))
                 .await
                 .unwrap_err(),
             "tailscale status timed out after 10ms."
         );
 
         assert!(
-            read_tailscale_status_with(&directory.path().join("missing"), Duration::from_secs(1))
+            read_status_fixture(&directory.path().join("missing"), Duration::from_secs(1))
                 .await
                 .unwrap_err()
                 .contains("Failed to spawn")
