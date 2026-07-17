@@ -995,6 +995,60 @@ mod tests {
         assert!(diagnostics.filename.ends_with(".zip"));
         assert!(diagnostics.bytes.starts_with(b"PK"));
 
+        let callback_database = callbacks.repositories.database().clone();
+        callback_database
+            .call(|connection| {
+                connection.execute_batch(
+                    "ALTER TABLE projection_projects RENAME TO projection_projects_unavailable",
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("project table should become unavailable");
+        assert!(
+            callbacks
+                .workspace_for_thread("runtime-thread")
+                .await
+                .is_err()
+        );
+        assert!(
+            asset_context
+                .resolve_workspace_root("runtime-thread")
+                .await
+                .is_err()
+        );
+        callback_database
+            .call(|connection| {
+                connection.execute_batch(
+                    "ALTER TABLE projection_projects_unavailable RENAME TO projection_projects;\
+                     ALTER TABLE projection_threads RENAME TO projection_threads_unavailable",
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("thread table should become unavailable");
+        assert!(
+            callbacks
+                .workspace_for_thread("runtime-thread")
+                .await
+                .is_err()
+        );
+        assert!(
+            asset_context
+                .resolve_workspace_root("runtime-thread")
+                .await
+                .is_err()
+        );
+        callback_database
+            .call(|connection| {
+                connection.execute_batch(
+                    "ALTER TABLE projection_threads_unavailable RENAME TO projection_threads",
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("thread table should restore");
+
         runtime.shutdown().await;
     }
 
@@ -1167,5 +1221,65 @@ mod tests {
         assert!(diff.diff.contains("binary.dat"));
         assert!(diff.diff.contains("oversized.dat"));
         assert!(diff.truncated);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_review_maps_process_detached_head_and_unreadable_file_edges() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        assert!(
+            run_review_diff("\0", review_diff_args(false, Some("HEAD"), false))
+                .await
+                .is_err()
+        );
+        assert!(untracked_review_diff("\0").await.is_err());
+        assert!(
+            format!("{:?}", internal_error("injected review error"))
+                .contains("injected review error")
+        );
+
+        let repository = TempDir::new().expect("temporary repository");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repository.path())
+                .output()
+                .expect("git starts");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "--quiet"]);
+        git(&["checkout", "--quiet", "-b", "main"]);
+        git(&["config", "user.email", "test@t4code.local"]);
+        git(&["config", "user.name", "T4Code Test"]);
+        std::fs::write(repository.path().join("tracked.txt"), "base\n").expect("tracked file");
+        git(&["add", "tracked.txt"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        git(&["checkout", "--quiet", "--detach", "HEAD"]);
+
+        let detached = GitReviewBackend
+            .get_diff_preview(&ReviewDiffPreviewInput {
+                cwd: repository.path().to_string_lossy().into_owned(),
+                base_ref: Some("main".to_owned()),
+                ignore_whitespace: None,
+            })
+            .await
+            .expect("detached review")
+            .expect("detached preview");
+        assert_eq!(detached.sources[1].head_ref.as_deref(), Some("HEAD"));
+
+        let unreadable = repository.path().join("unreadable.txt");
+        std::fs::write(&unreadable, "secret\n").expect("unreadable fixture");
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000))
+            .expect("remove read permission");
+        let result = untracked_review_diff(&repository.path().to_string_lossy()).await;
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o600))
+            .expect("restore read permission");
+        assert!(result.is_err());
     }
 }
