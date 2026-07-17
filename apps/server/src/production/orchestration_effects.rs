@@ -167,6 +167,7 @@ pub async fn normalize_project_create_command(
     if let OrchestrationCommand::ProjectCreate {
         workspace_root,
         create_workspace_root_if_missing,
+        initialize_git,
         ..
     } = command
     {
@@ -175,6 +176,12 @@ pub async fn normalize_project_create_command(
             create_workspace_root_if_missing.unwrap_or(false),
         )
         .await?;
+        if initialize_git.unwrap_or(false) {
+            GitRepository::default()
+                .init(&normalized, &CancellationToken::new())
+                .await
+                .map_err(|error| OrchestrationEffectsError::Effect(error.to_string()))?;
+        }
         *workspace_root = normalized.to_string_lossy().into_owned();
     }
     Ok(())

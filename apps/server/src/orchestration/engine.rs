@@ -249,6 +249,12 @@ pub enum OrchestrationCommand {
         )]
         create_workspace_root_if_missing: Option<bool>,
         #[serde(
+            rename = "initializeGit",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        initialize_git: Option<bool>,
+        #[serde(
             rename = "defaultModelSelection",
             default,
             skip_serializing_if = "optional_nullable_is_missing"
