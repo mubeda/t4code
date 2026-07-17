@@ -964,7 +964,7 @@ impl GitRepository {
             .execute(
                 "GitVcsDriver.clone.inspectOrigin",
                 destination,
-                &strings(&["remote", "get-url", "origin"]),
+                &strings(&["config", "--get", "remote.origin.url"]),
                 true,
                 cancellation,
             )
