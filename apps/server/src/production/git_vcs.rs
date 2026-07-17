@@ -1396,6 +1396,41 @@ mod tests {
 mod tests {
     use super::*;
     use crate::RequestId;
+    use std::ffi::{OsStr, OsString};
+
+    struct EnvGuard {
+        saved: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl EnvGuard {
+        fn new(keys: &[&'static str]) -> Self {
+            Self {
+                saved: keys
+                    .iter()
+                    .map(|key| (*key, std::env::var_os(key)))
+                    .collect(),
+            }
+        }
+
+        fn set(key: &'static str, value: impl AsRef<OsStr>) {
+            // The external-process lock serializes environment-sensitive unit tests.
+            unsafe { std::env::set_var(key, value) };
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in self.saved.drain(..) {
+                // Restore every environment value before releasing the process lock.
+                unsafe {
+                    match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
 
     fn rpc_request(tag: &str, payload: Value) -> RpcRequest {
         RpcRequest {
@@ -1709,6 +1744,47 @@ mod tests {
         );
         assert!(invalid_action.recv().await.expect("action error").is_err());
 
+        let mut unsupported_action = services.stacked_action_stream(
+            rpc_request(
+                "git.runStackedAction",
+                json!({
+                    "actionId":"unsupported-action",
+                    "cwd":cwd,
+                    "action":"unsupported"
+                }),
+            ),
+            CancellationToken::new(),
+        );
+        let started = unsupported_action
+            .recv()
+            .await
+            .expect("action start chunk")
+            .expect("action start event");
+        assert_eq!(started[0]["kind"], "action_started");
+        let failed = unsupported_action
+            .recv()
+            .await
+            .expect("action failure chunk")
+            .expect("action failure event");
+        assert_eq!(failed[0]["kind"], "action_failed");
+        assert!(
+            failed[0]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("Unsupported Git action"))
+        );
+
+        let mut unavailable_status = services.status_stream(
+            rpc_request("subscribeVcsStatus", json!({"cwd":"\u{0}"})),
+            CancellationToken::new(),
+        );
+        assert!(
+            unavailable_status
+                .recv()
+                .await
+                .expect("unavailable status chunk")
+                .is_err()
+        );
+
         let branches =
             local_branch_names(&services.repository, &repository, &CancellationToken::new())
                 .await
@@ -1792,6 +1868,83 @@ mod tests {
             .await
             .is_err()
         );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let bare_remote = temporary.path().join("published.git");
+            tokio::fs::create_dir(&bare_remote)
+                .await
+                .expect("bare remote directory");
+            git(&bare_remote, &["init", "--bare"]);
+
+            let gh = temporary.path().join("gh");
+            tokio::fs::write(
+                &gh,
+                r#"#!/bin/sh
+case "$1:$2" in
+  repo:view)
+    printf '%s\n' '{"nameWithOwner":"owner/name","url":"https://github.test/owner/name","sshUrl":"git@github.test:owner/name.git"}'
+    ;;
+  repo:create)
+    git remote add origin "$T4CODE_TEST_REMOTE"
+    ;;
+  *)
+    exit 64
+    ;;
+esac
+"#,
+            )
+            .await
+            .expect("gh fixture");
+            std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o700))
+                .expect("gh fixture permissions");
+
+            let _environment = EnvGuard::new(&["PATH", "T4CODE_TEST_REMOTE"]);
+            let inherited_path = std::env::var_os("PATH").unwrap_or_default();
+            EnvGuard::set(
+                "PATH",
+                std::env::join_paths(
+                    std::iter::once(temporary.path().to_path_buf())
+                        .chain(std::env::split_paths(&inherited_path)),
+                )
+                .expect("fixture PATH"),
+            );
+            EnvGuard::set("T4CODE_TEST_REMOTE", &bare_remote);
+
+            let lookup = unary(
+                &services,
+                "sourceControl.lookupRepository",
+                json!({
+                    "provider":"github",
+                    "repository":"owner/name",
+                    "cwd":cwd
+                }),
+            )
+            .await
+            .expect("GitHub repository lookup should use the fixture CLI");
+            assert_eq!(lookup["nameWithOwner"], "owner/name");
+
+            let published = unary(
+                &services,
+                "sourceControl.publishRepository",
+                json!({
+                    "cwd":cwd,
+                    "provider":"github",
+                    "repository":"owner/name",
+                    "visibility":"private",
+                    "protocol":"ssh",
+                    "remoteName":"origin"
+                }),
+            )
+            .await
+            .expect("GitHub repository publish should use the fixture CLI");
+            assert_eq!(published["status"], "pushed");
+            assert_eq!(published["branch"], "main");
+            assert_eq!(published["remoteUrl"], "git@github.com:owner/name.git");
+            assert_eq!(published["upstreamBranch"], "origin/main");
+        }
 
         let invalid_action = StackedActionInput {
             action_id: "action-1".to_owned(),
