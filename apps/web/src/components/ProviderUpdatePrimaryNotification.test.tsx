@@ -189,6 +189,14 @@ const flush = async () => {
   await Promise.resolve();
 };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
 beforeEach(() => {
   testState.providers = [];
   testState.primaryEnvironment = { environmentId: EnvironmentId.make("environment-1") };
@@ -229,6 +237,32 @@ describe("render + effect wiring", () => {
     render();
     harness.runEffects();
     expect(testState.toastAdds).toHaveLength(0);
+  });
+
+  it("replaces a stale prompt when the available update set changes", () => {
+    const latestVersion = uniqueLatestVersion();
+    testState.providers = [provider({ latestVersion })];
+    render();
+    activeToastRef().current = { kind: "prompt", key: "stale:key", toastId: "toast-stale" };
+
+    harness.runEffects();
+
+    expect(testState.toastCloses).toContain("toast-stale");
+    expect(testState.toastAdds).toHaveLength(1);
+    expect(activeToastRef().current).toMatchObject({
+      kind: "prompt",
+      key: `codex:${latestVersion}`,
+    });
+  });
+
+  it("leaves cleanup idle when no notification toast was created", () => {
+    testState.providers = [];
+    render();
+    const cleanups = harness.runEffects();
+
+    for (const cleanup of cleanups) cleanup();
+
+    expect(testState.toastCloses).toHaveLength(0);
   });
 });
 
@@ -321,6 +355,38 @@ describe("one-click update prompt", () => {
     expect(testState.updateProvider).not.toHaveBeenCalled();
   });
 
+  it("does not start an update until a primary environment is available", () => {
+    const latestVersion = uniqueLatestVersion();
+    testState.primaryEnvironment = null;
+    renderPrompt(latestVersion);
+
+    (testState.toastAdds[0]!.actionProps as { onClick: () => void }).onClick();
+
+    expect(testState.updateProvider).not.toHaveBeenCalled();
+    expect(activeToastRef().current).toMatchObject({ kind: "prompt" });
+  });
+
+  it("does not overwrite a successor toast when an older update resolves", async () => {
+    const latestVersion = uniqueLatestVersion();
+    const request =
+      deferred<ReturnType<typeof AsyncResult.success<{ providers: ServerProvider[] }>>>();
+    testState.updateProvider.mockReturnValue(request.promise);
+    renderPrompt(latestVersion);
+
+    (testState.toastAdds[0]!.actionProps as { onClick: () => void }).onClick();
+    const updateCountBeforeResolution = testState.toastUpdates.length;
+    activeToastRef().current = {
+      kind: "prompt",
+      key: "successor:key",
+      toastId: "toast-successor",
+    };
+    request.resolve(AsyncResult.success({ providers: [] }));
+    await flush();
+
+    expect(testState.toastUpdates).toHaveLength(updateCountBeforeResolution);
+    expect(activeToastRef().current).toMatchObject({ toastId: "toast-successor" });
+  });
+
   it("dismisses the prompt through its close handler", () => {
     const latestVersion = uniqueLatestVersion();
     renderPrompt(latestVersion);
@@ -370,6 +436,22 @@ describe("settings-only prompt", () => {
       .leadingIcon;
     expect(renderToStaticMarkup(leadingIcon)).toContain("data-codex-icon");
   });
+
+  it("omits a leading glyph when multiple providers need updates", () => {
+    testState.providers = [
+      provider({ latestVersion: uniqueLatestVersion(), canUpdate: false }),
+      provider({
+        driver: "opencode",
+        instanceId: "opencode",
+        latestVersion: uniqueLatestVersion(),
+        canUpdate: false,
+      }),
+    ];
+    render();
+    harness.runEffects();
+
+    expect((testState.toastAdds[0]!.data as { leadingIcon?: unknown }).leadingIcon).toBeUndefined();
+  });
 });
 
 describe("live progress + unmount effects", () => {
@@ -415,5 +497,34 @@ describe("live progress + unmount effects", () => {
     for (const cleanup of cleanups) cleanup();
     expect(testState.toastCloses.length).toBeGreaterThanOrEqual(1);
     expect(activeToastRef().current).toBeNull();
+  });
+
+  it("keeps a non-terminal live update active", () => {
+    const latestVersion = uniqueLatestVersion();
+    const running = provider({
+      instanceId: "codex",
+      latestVersion,
+      updateState: {
+        status: "running",
+        startedAt: CHECKED_AT,
+        finishedAt: null,
+        message: "Updating provider.",
+        output: null,
+      },
+    });
+    testState.providers = [running];
+    render();
+    activeToastRef().current = {
+      kind: "update",
+      key: `codex:${latestVersion}`,
+      toastId: "toast-running",
+      providerInstanceIds: new Set([ProviderInstanceId.make("codex")]),
+      providerCount: 1,
+    };
+
+    harness.runEffects();
+
+    expect(testState.toastUpdates[0]).toMatchObject({ id: "toast-running" });
+    expect(activeToastRef().current).toMatchObject({ kind: "update", toastId: "toast-running" });
   });
 });

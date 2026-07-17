@@ -32,6 +32,13 @@ describe("rewriteMarkdownFileUriHref", () => {
       rewriteMarkdownFileUriHref(" <file:///D:/Programme/t4code/apps/web/src/markdown-links.ts> "),
     ).toBe("D:/Programme/t4code/apps/web/src/markdown-links.ts");
   });
+
+  it("rejects absent, malformed, non-file, and pathless destinations", () => {
+    expect(rewriteMarkdownFileUriHref(undefined)).toBeNull();
+    expect(rewriteMarkdownFileUriHref("not a valid URL")).toBeNull();
+    expect(rewriteMarkdownFileUriHref("https://example.com/a.ts")).toBeNull();
+    expect(rewriteMarkdownFileUriHref("file:")).toBe("/");
+  });
 });
 
 describe("resolveMarkdownFileLinkTarget", () => {
@@ -125,5 +132,36 @@ describe("resolveMarkdownFileLinkTarget", () => {
 
   it("does not treat app routes as file links", () => {
     expect(resolveMarkdownFileLinkTarget("/chat/settings")).toBeNull();
+  });
+
+  it("handles query strings, hash variants, relative prefixes, and missing cwd", () => {
+    expect(resolveMarkdownFileLinkTarget("/tmp/a.ts?raw=1")).toBe("/tmp/a.ts");
+    expect(resolveMarkdownFileLinkTarget("/custom/a.ts#section")).toBe("/custom/a.ts");
+    expect(resolveMarkdownFileLinkTarget("/chat/settings:12")).toBe("/chat/settings:12");
+    expect(resolveMarkdownFileLinkTarget("./src/a.ts", "/repo")).toBe("/repo/./src/a.ts");
+    expect(resolveMarkdownFileLinkTarget("src/a.ts")).toBeNull();
+    expect(resolveMarkdownFileLinkTarget(undefined)).toBeNull();
+    expect(resolveMarkdownFileLinkTarget("   ")).toBeNull();
+    expect(resolveMarkdownFileLinkTarget("#L12")).toBeNull();
+    expect(resolveMarkdownFileLinkTarget("?raw=1")).toBeNull();
+  });
+
+  it("parses optional positions and metadata fallbacks", () => {
+    expect(resolveMarkdownFileLinkTarget("/tmp/a.ts#L12")).toBe("/tmp/a.ts:12");
+    expect(resolveMarkdownFileLinkMeta("/tmp/a.ts:12:4")).toMatchObject({
+      basename: "a.ts",
+      workspaceRelativePath: null,
+      line: 12,
+      column: 4,
+    });
+    expect(resolveMarkdownFileLinkMeta("/tmp/a.ts")).toMatchObject({
+      basename: "a.ts",
+      workspaceRelativePath: null,
+    });
+    expect(resolveMarkdownFileLinkMeta("https://example.com/a.ts")).toBeNull();
+  });
+
+  it("preserves malformed percent escapes instead of throwing", () => {
+    expect(resolveMarkdownFileLinkTarget("file:///tmp/bad%E0%A4%A.md")).toBe("/tmp/bad%E0%A4%A.md");
   });
 });

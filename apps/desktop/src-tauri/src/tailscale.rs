@@ -1,5 +1,5 @@
 use serde_json::Value;
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 use t4code_server::process::configure_background_command;
 use tokio::process::Command;
 
@@ -91,7 +91,14 @@ pub fn build_tailscale_https_base_url(
 }
 
 pub async fn read_tailscale_status() -> Result<TailscaleStatus, String> {
-    let mut command = Command::new(tailscale_command());
+    read_tailscale_status_with(Path::new(tailscale_command()), TAILSCALE_STATUS_TIMEOUT).await
+}
+
+async fn read_tailscale_status_with(
+    command_path: &Path,
+    timeout: Duration,
+) -> Result<TailscaleStatus, String> {
+    let mut command = Command::new(command_path);
     configure_background_command(&mut command);
     let child = command
         .args(["status", "--json"])
@@ -100,9 +107,14 @@ pub async fn read_tailscale_status() -> Result<TailscaleStatus, String> {
         .spawn()
         .map_err(|error| format!("Failed to spawn tailscale status: {error}"))?;
 
-    let output = tokio::time::timeout(TAILSCALE_STATUS_TIMEOUT, child.wait_with_output())
+    let output = tokio::time::timeout(timeout, child.wait_with_output())
         .await
-        .map_err(|_| "tailscale status timed out after 1500ms.".to_string())?
+        .map_err(|_| {
+            format!(
+                "tailscale status timed out after {}ms.",
+                timeout.as_millis()
+            )
+        })?
         .map_err(|error| format!("Failed to read tailscale status output: {error}"))?;
 
     if !output.status.success() {
@@ -146,6 +158,14 @@ pub async fn probe_tailscale_https_endpoint(base_url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[cfg(unix)]
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
+    use std::path::{Path, PathBuf};
 
     const TAILSCALE_STATUS_JSON: &str = r#"{"Self":{"DNSName":"desktop.tail.ts.net.","TailscaleIPs":["100.100.100.100","fd7a:115c:a1e0::1","192.168.1.20"]}}"#;
 
@@ -156,6 +176,11 @@ mod tests {
         assert!(!is_tailscale_ipv4_address("100.128.0.1"));
         assert!(!is_tailscale_ipv4_address("192.168.1.44"));
         assert!(!is_tailscale_ipv4_address("not-an-ip"));
+        assert!(!is_tailscale_ipv4_address("nope.64.0.1"));
+        assert!(!is_tailscale_ipv4_address("100.nope.0.1"));
+        assert!(!is_tailscale_ipv4_address("100.64.nope.1"));
+        assert!(!is_tailscale_ipv4_address("100.64.0.nope"));
+        assert!(!is_tailscale_ipv4_address("100.64.0.256"));
     }
 
     #[test]
@@ -170,6 +195,27 @@ mod tests {
             status.tailnet_ipv4_addresses,
             vec!["100.100.100.100".to_string()]
         );
+
+        assert_eq!(
+            parse_tailscale_status(r#"{"Self":{"DNSName":" ... ","TailscaleIPs":[null,42]}}"#)
+                .unwrap(),
+            TailscaleStatus {
+                magic_dns_name: None,
+                tailnet_ipv4_addresses: Vec::new(),
+            }
+        );
+        assert_eq!(
+            parse_tailscale_status("{}").unwrap(),
+            TailscaleStatus {
+                magic_dns_name: None,
+                tailnet_ipv4_addresses: Vec::new(),
+            }
+        );
+        assert!(
+            parse_tailscale_status("not json")
+                .unwrap_err()
+                .contains("decode")
+        );
     }
 
     #[test]
@@ -181,6 +227,137 @@ mod tests {
         assert_eq!(
             build_tailscale_https_base_url("desktop.tail.ts.net", 8443).expect("url should build"),
             "https://desktop.tail.ts.net:8443/"
+        );
+        assert!(build_tailscale_https_base_url("desktop:invalid-port", 443).is_err());
+    }
+
+    #[tokio::test]
+    async fn command_and_probe_helpers_reject_invalid_endpoints_without_io() {
+        assert_eq!(
+            tailscale_command(),
+            if cfg!(target_os = "windows") {
+                "tailscale.exe"
+            } else {
+                "tailscale"
+            }
+        );
+        assert!(!probe_tailscale_https_endpoint("not a URL").await);
+    }
+
+    async fn probe_local_endpoint(status: &str) -> bool {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let response_status = status.to_owned();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 1024];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert!(request.starts_with("GET /.well-known/t4code/environment "));
+            stream
+                .write_all(
+                    format!("HTTP/1.1 {response_status}\r\nContent-Length: 0\r\n\r\n").as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+
+        let result =
+            probe_tailscale_https_endpoint(&format!("http://{address}/ignored?query=yes")).await;
+        server.await.unwrap();
+        result
+    }
+
+    #[tokio::test]
+    async fn probe_reports_successful_and_failed_http_responses() {
+        assert!(probe_local_endpoint("204 No Content").await);
+        assert!(!probe_local_endpoint("503 Service Unavailable").await);
+    }
+
+    #[cfg(unix)]
+    fn executable_script(directory: &Path, name: &str, body: &str) -> PathBuf {
+        let path = directory.join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    async fn read_status_fixture(
+        path: &Path,
+        timeout: Duration,
+    ) -> Result<TailscaleStatus, String> {
+        for _ in 0..10 {
+            let result = read_tailscale_status_with(path, timeout).await;
+            if result.as_ref().err().map(String::as_str)
+                != Some("tailscale status exited with code unknown.")
+            {
+                return result;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        Err(
+            "tailscale status fixture was repeatedly terminated by a concurrent process test."
+                .to_owned(),
+        )
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn status_command_reports_success_and_process_failures() {
+        let directory = tempfile::tempdir().unwrap();
+        let success = executable_script(
+            directory.path(),
+            "success",
+            &format!("printf '%s' '{TAILSCALE_STATUS_JSON}'"),
+        );
+        assert_eq!(
+            read_status_fixture(&success, Duration::from_secs(2))
+                .await
+                .unwrap()
+                .magic_dns_name
+                .as_deref(),
+            Some("desktop.tail.ts.net")
+        );
+
+        let failed = executable_script(directory.path(), "failed", "exit 7");
+        assert_eq!(
+            read_status_fixture(&failed, Duration::from_secs(1))
+                .await
+                .unwrap_err(),
+            "tailscale status exited with code 7."
+        );
+
+        let invalid_utf8 = executable_script(directory.path(), "invalid-utf8", "printf '\\377'");
+        assert!(
+            read_status_fixture(&invalid_utf8, Duration::from_secs(1))
+                .await
+                .unwrap_err()
+                .contains("non-UTF-8")
+        );
+
+        let invalid_json = executable_script(directory.path(), "invalid-json", "printf nope");
+        assert!(
+            read_status_fixture(&invalid_json, Duration::from_secs(1))
+                .await
+                .unwrap_err()
+                .contains("decode")
+        );
+
+        let slow = executable_script(directory.path(), "slow", "sleep 1");
+        assert_eq!(
+            read_status_fixture(&slow, Duration::from_millis(10))
+                .await
+                .unwrap_err(),
+            "tailscale status timed out after 10ms."
+        );
+
+        assert!(
+            read_status_fixture(&directory.path().join("missing"), Duration::from_secs(1))
+                .await
+                .unwrap_err()
+                .contains("Failed to spawn")
         );
     }
 }

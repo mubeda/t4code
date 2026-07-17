@@ -223,4 +223,43 @@ mod tests {
         assert_eq!(info.kind, ProviderKind::Gitlab);
         assert_eq!(info.base_url, "https://gitlab.example.test");
     }
+
+    #[test]
+    fn auth_and_remote_parsers_cover_filtered_accounts_and_host_variants() {
+        let github = parse_github_auth_status(
+            r#"{"hosts":{"github.com":[
+                {"state":"success","active":true,"host":"GITHUB.COM","login":"octo"},
+                {"state":"failure","error":" denied ","active":false,"host":"enterprise.test","login":"user"},
+                {"state":"success","active":false,"host":" ","login":"ignored"}
+            ]}}"#,
+        );
+        assert!(github.parsed);
+        assert_eq!(github.accounts.len(), 2);
+        assert_eq!(github.accounts[1].error.as_deref(), Some("denied"));
+
+        let gitlab = parse_gitlab_auth_status(
+            "gitlab.example.test:443\n  Logged in to gitlab.example.test as user\n\n[::1]:8443\n  not logged in\n",
+        );
+        assert_eq!(gitlab.len(), 2);
+        assert_eq!(gitlab[0].account.as_deref(), Some("user"));
+        assert_eq!(gitlab[1].account, None);
+
+        assert_eq!(
+            provider_from_remote("https://github.com/team/repo.git").kind,
+            ProviderKind::Github
+        );
+        assert_eq!(
+            provider_from_remote("https://dev.azure.com/team/repo").kind,
+            ProviderKind::AzureDevops
+        );
+        assert_eq!(
+            provider_from_remote("git@bitbucket.org:team/repo.git").kind,
+            ProviderKind::Bitbucket
+        );
+        assert_eq!(provider_from_remote("local").kind, ProviderKind::Unknown);
+        assert_eq!(
+            provider_from_remote("https://user@gitlab.example.test:8443/team/repo.git").base_url,
+            "https://gitlab.example.test"
+        );
+    }
 }

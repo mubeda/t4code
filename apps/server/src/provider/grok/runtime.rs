@@ -724,3 +724,28 @@ fn find_option_id(options: &[Value], kind: &str) -> Option<String> {
             .flatten()
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn option_lookup_requires_matching_kind_and_string_identifier() {
+        let options = json!([
+            {"kind":"mode","optionId":42},
+            {"kind":"model","optionId":"model-option"},
+            {"kind":"mode","optionId":"mode-option"}
+        ]);
+        let options = options.as_array().unwrap();
+
+        assert_eq!(
+            find_option_id(options, "model").as_deref(),
+            Some("model-option")
+        );
+        assert_eq!(
+            find_option_id(options, "mode").as_deref(),
+            Some("mode-option")
+        );
+        assert_eq!(find_option_id(options, "missing"), None);
+    }
+}

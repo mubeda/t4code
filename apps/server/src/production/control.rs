@@ -692,3 +692,214 @@ pub(crate) fn now_iso() -> String {
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::production::server_terminal::ProductionServerControl;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn unit_build_covers_server_control_settings_keybindings_and_streams() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let temp = tempfile::tempdir().expect("state directory");
+        let mut config = ServerConfig::new(temp.path());
+        config.environment_id = "environment-1".to_owned();
+        config.environment_label = "Environment One".to_owned();
+        let control = NativeServerControl::new(config.clone(), json!({"policy":"test"})).await;
+
+        let snapshot = control.config_snapshot().await;
+        assert_eq!(snapshot["environment"]["environmentId"], "environment-1");
+        assert_eq!(snapshot["auth"]["policy"], "test");
+        assert!(!current_directory(&config).is_empty());
+        assert!(!platform_os().is_empty());
+        assert!(!platform_arch().is_empty());
+        assert!(environment_descriptor(&config)["capabilities"]["repositoryIdentity"] == true);
+        let _ = available_editors();
+        assert!(!command_exists("definitely-not-a-t4code-editor"));
+
+        let call = |method, payload, cancellation| control.call(method, payload, cancellation);
+        assert!(
+            call("server.getSettings", json!({}), CancellationToken::new())
+                .await
+                .expect("settings")
+                .is_object()
+        );
+        assert!(
+            call("server.getConfig", json!({}), CancellationToken::new())
+                .await
+                .expect("config")
+                .is_object()
+        );
+        assert_eq!(
+            call(
+                "server.updateProvider",
+                json!({"provider":"codex"}),
+                CancellationToken::new(),
+            )
+            .await
+            .expect_err("provider update unavailable")["_tag"],
+            "ServerProviderUpdateError"
+        );
+        assert_eq!(
+            call("server.unknown", json!({}), CancellationToken::new())
+                .await
+                .expect_err("unknown method")["_tag"],
+            "InvalidRequest"
+        );
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert_eq!(
+            call("server.getConfig", json!({}), cancelled)
+                .await
+                .expect_err("cancelled call")["_tag"],
+            "RequestCancelled"
+        );
+        assert_eq!(
+            control
+                .update_settings(json!({}))
+                .await
+                .expect_err("missing patch")["operation"],
+            "normalize"
+        );
+        assert!(control.update_settings(json!({"patch":[]})).await.is_err());
+
+        let updated = control
+            .update_settings(json!({
+                "patch":{
+                    "enableAssistantStreaming":true,
+                    "observability":{
+                        "otlpTracesUrl":"https://traces.example",
+                        "otlpMetricsUrl":"https://metrics.example"
+                    },
+                    "providerInstances":{
+                        "work":{
+                            "driver":"codex",
+                            "environment":[
+                                {"name":"TOKEN","value":"secret","sensitive":true},
+                                {"name":"PLAIN","value":"visible","sensitive":false}
+                            ]
+                        }
+                    }
+                }
+            }))
+            .await
+            .expect("settings update");
+        assert_eq!(updated["enableAssistantStreaming"], true);
+        assert_eq!(
+            updated["providerInstances"]["work"]["environment"][0]["valueRedacted"],
+            true
+        );
+        assert!(secret_path(&control.state_directory, "work", "TOKEN").is_file());
+        let observability = observability_snapshot(&updated, &control.state_directory);
+        assert_eq!(observability["otlpTracesEnabled"], true);
+        assert_eq!(observability["otlpMetricsEnabled"], true);
+
+        let mut merge_target = json!({"nested":{"left":1},"replace":1});
+        merge_patch(
+            &mut merge_target,
+            json!({"nested":{"right":2},"replace":{"value":3}}),
+        );
+        assert_eq!(merge_target["nested"], json!({"left":1,"right":2}));
+        assert_eq!(merge_target["replace"]["value"], 3);
+        merge_patch(&mut merge_target, json!("scalar"));
+        assert_eq!(merge_target, "scalar");
+        let mut defaults = Value::Null;
+        apply_settings_defaults(&mut defaults);
+        apply_settings_patch(
+            &mut defaults,
+            json!({
+                "automaticGitFetchInterval":5000,
+                "textGenerationModelSelection":{"model":"custom"},
+                "providers":{"codex":{"enabled":false}}
+            }),
+        );
+        assert_eq!(defaults["providers"]["codex"]["enabled"], false);
+
+        let added = control
+            .update_keybinding(
+                "server.upsertKeybinding",
+                json!({"key":"ctrl+shift+k","command":"terminal.toggle"}),
+            )
+            .await
+            .expect("keybinding adds");
+        assert!(
+            !added["keybindings"]
+                .as_array()
+                .expect("keybindings")
+                .is_empty()
+        );
+        let removed = control
+            .update_keybinding(
+                "server.removeKeybinding",
+                json!({"key":"ctrl+shift+k","command":"terminal.toggle"}),
+            )
+            .await
+            .expect("keybinding removes");
+        assert!(
+            removed["keybindings"]
+                .as_array()
+                .expect("keybindings")
+                .is_empty()
+        );
+        assert!(
+            control
+                .update_keybinding("server.upsertKeybinding", json!({"key":"bad"}))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            settings_error(Path::new("settings.json"), "read", "bad")["_tag"],
+            "ServerSettingsError"
+        );
+        assert_eq!(
+            keybindings_error(Path::new("keys.json"), "bad")["_tag"],
+            "KeybindingsConfigParseError"
+        );
+
+        let refreshed = control.refresh_providers(&json!({})).await;
+        assert!(refreshed["providers"].is_array());
+        let _ = control
+            .merge_provider_snapshots(
+                vec![json!({"instanceId":"unit-provider","status":"disabled"})],
+                true,
+            )
+            .await;
+        control.publish_provider_snapshots(&[json!({"instanceId":"unit-provider"})]);
+        control.publish(json!({"type":"unit"}));
+        assert!(control.trace_diagnostics().is_object());
+
+        let lifecycle_cancellation = CancellationToken::new();
+        let mut lifecycle =
+            control.subscribe("subscribeServerLifecycle", lifecycle_cancellation.clone());
+        let welcome = lifecycle
+            .recv()
+            .await
+            .expect("lifecycle stream")
+            .expect("welcome batch");
+        assert_eq!(welcome[0]["type"], "welcome");
+        let ready = lifecycle
+            .recv()
+            .await
+            .expect("lifecycle stream")
+            .expect("ready batch");
+        assert_eq!(ready[0]["type"], "ready");
+        lifecycle_cancellation.cancel();
+
+        let config_cancellation = CancellationToken::new();
+        let mut config_stream =
+            control.subscribe("subscribeServerConfig", config_cancellation.clone());
+        let config_event = config_stream
+            .recv()
+            .await
+            .expect("config stream")
+            .expect("snapshot batch");
+        assert_eq!(config_event[0]["type"], "snapshot");
+        config_cancellation.cancel();
+
+        let unknown_cancellation = CancellationToken::new();
+        let mut unknown_stream = control.subscribe("unknown", unknown_cancellation);
+        assert!(unknown_stream.recv().await.is_none());
+        assert!(!now_iso().is_empty());
+    }
+}

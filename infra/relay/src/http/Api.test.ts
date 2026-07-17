@@ -15,6 +15,12 @@ import {
   relayCors,
   relayDocsRedirectRoute,
   relayNotFoundRoute,
+  clerkVerificationFailureReason,
+  hasExpectedClerkAudience,
+  isDpopAuthorizationHeader,
+  readHttpAuthorizationCredential,
+  resolveConnectClientKeyThumbprint,
+  safeAuthFailureReason,
   traceRelayHttpRequestWith,
   requireDpopProof,
   requireDpopThumbprint,
@@ -46,6 +52,38 @@ const relaySettings: RelayConfiguration.RelayConfiguration["Service"] = {
 };
 
 describe("relay client authentication", () => {
+  it("normalizes authorization headers and safe diagnostic reasons", () => {
+    expect(isDpopAuthorizationHeader(undefined)).toBe(false);
+    expect(isDpopAuthorizationHeader("Bearer token")).toBe(false);
+    expect(isDpopAuthorizationHeader("dpop token")).toBe(true);
+    expect(readHttpAuthorizationCredential(Redacted.make("   token"))).toBe("token");
+
+    expect(safeAuthFailureReason("jwt.expired-1")).toBe("jwt.expired-1");
+    expect(safeAuthFailureReason("unsafe reason!")).toBe("unknown");
+  });
+
+  it("classifies Clerk verification failures without leaking unsafe details", () => {
+    expect(clerkVerificationFailureReason(new Error("Invalid JWT audience claim relay"))).toBe(
+      "audience_mismatch",
+    );
+    expect(
+      clerkVerificationFailureReason(new Error("Invalid JWT audience claim array relay")),
+    ).toBe("audience_mismatch");
+    expect(clerkVerificationFailureReason({ reason: "token_expired" })).toBe("token_expired");
+    expect(clerkVerificationFailureReason({ reason: "unsafe reason!" })).toBe("unknown");
+    expect(clerkVerificationFailureReason({ reason: "" })).toBe("unknown");
+    expect(clerkVerificationFailureReason(new TypeError("failed"))).toBe("TypeError");
+    expect(clerkVerificationFailureReason(null)).toBe("unknown");
+  });
+
+  it("accepts only the configured Clerk audience", () => {
+    expect(hasExpectedClerkAudience("relay", "relay")).toBe(true);
+    expect(hasExpectedClerkAudience("other", "relay")).toBe(false);
+    expect(hasExpectedClerkAudience(["other", "relay"], "relay")).toBe(true);
+    expect(hasExpectedClerkAudience([1, "other"], "relay")).toBe(false);
+    expect(hasExpectedClerkAudience(null, "relay")).toBe(false);
+  });
+
   it.effect("preserves the existing Clerk session JWT path", () =>
     Effect.gen(function* () {
       vi.mocked(verifyToken).mockResolvedValue({
@@ -90,6 +128,64 @@ describe("relay client authentication", () => {
         secretKey: "clerk-secret-key",
         publishableKey: "pk_test_test",
       });
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          vi.mocked(verifyToken).mockReset();
+          vi.mocked(createClerkClient).mockReset();
+        }),
+      ),
+    ),
+  );
+
+  it.effect("falls back when a Clerk session token lacks the relay audience", () =>
+    Effect.gen(function* () {
+      vi.mocked(verifyToken).mockResolvedValue({ sub: "user_session", aud: "other" } as never);
+      vi.mocked(createClerkClient).mockReturnValue({
+        authenticateRequest: vi.fn().mockResolvedValue({
+          isAuthenticated: true,
+          toAuth: () => ({ userId: "user_oauth" }),
+        }),
+      } as never);
+
+      expect(yield* verifyRelayClientBearerToken(relaySettings, "oauth-token")).toEqual({
+        sub: "user_oauth",
+        mode: "clerk_oauth_bearer",
+      });
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          vi.mocked(verifyToken).mockReset();
+          vi.mocked(createClerkClient).mockReset();
+        }),
+      ),
+    ),
+  );
+
+  it.effect("rejects unauthenticated Clerk OAuth token states", () =>
+    Effect.gen(function* () {
+      vi.mocked(verifyToken).mockRejectedValue(new Error("not a session JWT"));
+      const authenticateRequest = vi
+        .fn()
+        .mockResolvedValueOnce({
+          isAuthenticated: false,
+          toAuth: () => ({ userId: "unexpected" }),
+        })
+        .mockResolvedValueOnce({
+          isAuthenticated: true,
+          toAuth: () => ({ userId: null }),
+        });
+      vi.mocked(createClerkClient).mockReturnValue({ authenticateRequest } as never);
+
+      const unauthenticated = yield* Effect.flip(
+        verifyRelayClientBearerToken(relaySettings, "oauth-token"),
+      );
+      const missingUser = yield* Effect.flip(
+        verifyRelayClientBearerToken(relaySettings, "oauth-token"),
+      );
+
+      expect(unauthenticated.message).toBe("Clerk token verification failed");
+      expect(missingUser.message).toBe("Clerk token verification failed");
     }).pipe(
       Effect.ensuring(
         Effect.sync(() => {
@@ -197,6 +293,26 @@ describe("relay environment unlink", () => {
 });
 
 describe("relay DPoP binding forwarding", () => {
+  it("resolves compatible client proof-key payload variants", () => {
+    expect(resolveConnectClientKeyThumbprint({ clientKeyThumbprint: "key" })).toBe("key");
+    expect(resolveConnectClientKeyThumbprint({ clientProofKeyThumbprint: "legacy" })).toBe(
+      "legacy",
+    );
+    expect(
+      resolveConnectClientKeyThumbprint({
+        clientKeyThumbprint: "same",
+        clientProofKeyThumbprint: "same",
+      }),
+    ).toBe("same");
+    expect(
+      resolveConnectClientKeyThumbprint({
+        clientKeyThumbprint: "new",
+        clientProofKeyThumbprint: "legacy",
+      }),
+    ).toBeNull();
+    expect(resolveConnectClientKeyThumbprint({})).toBeNull();
+  });
+
   it.effect("forwards present empty bindings and omits absent access-token bindings", () =>
     Effect.gen(function* () {
       const inputs: Array<
@@ -297,6 +413,22 @@ describe("relay request tracing", () => {
 });
 
 describe("relay routing fallback", () => {
+  it.effect("answers CORS preflight requests without running the route", () =>
+    Effect.gen(function* () {
+      const request = HttpServerRequest.fromWeb(
+        new Request("https://relay.test/v1/environments", { method: "OPTIONS" }),
+      );
+      const httpEffect = yield* HttpRouter.toHttpEffect(Layer.merge(relayNotFoundRoute, relayCors));
+      const response = yield* httpEffect.pipe(
+        Effect.provideService(HttpServerRequest.HttpServerRequest, request),
+      );
+
+      expect(response.status).toBe(204);
+      expect(response.headers["access-control-allow-methods"]).toContain("OPTIONS");
+      expect(response.headers["access-control-allow-headers"]).toContain("dpop");
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("redirects the relay root to the API docs", () =>
     Effect.gen(function* () {
       const request = HttpServerRequest.fromWeb(new Request("https://relay.test/"));

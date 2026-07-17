@@ -121,3 +121,52 @@ fn looks_like_windows_absolute(input: &str) -> bool {
         && bytes[1] == b':'
         && matches!(bytes[2], b'/' | b'\\')
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn browse_covers_relative_hidden_sorted_and_missing_directories() {
+        let root = tempfile::tempdir().unwrap();
+        for directory in ["Beta", "alpha", ".hidden"] {
+            std::fs::create_dir(root.path().join(directory)).unwrap();
+        }
+        std::fs::write(root.path().join("alpha.txt"), "file").unwrap();
+
+        let visible = browse("./", Some(root.path())).await.unwrap();
+        assert_eq!(
+            visible
+                .entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec![".hidden", "Beta", "alpha"]
+        );
+        let prefixed = browse("./a", Some(root.path())).await.unwrap();
+        assert_eq!(prefixed.entries.len(), 1);
+        assert_eq!(prefixed.entries[0].name, "alpha");
+        let hidden = browse("./.h", Some(root.path())).await.unwrap();
+        assert_eq!(hidden.entries[0].name, ".hidden");
+        assert!(
+            browse("./missing/", Some(root.path()))
+                .await
+                .unwrap()
+                .entries
+                .is_empty()
+        );
+        assert!(matches!(
+            browse("./relative", None).await,
+            Err(WorkspaceError::CurrentProjectRequired { .. })
+        ));
+
+        assert_eq!(expand_home("literal/path"), PathBuf::from("literal/path"));
+        assert!(!looks_like_windows_absolute("relative/path"));
+        assert!(looks_like_windows_absolute("C:\\Users"));
+        assert!(matches!(
+            browse("C:\\Users", Some(root.path())).await,
+            Err(WorkspaceError::WindowsPathUnsupported { .. })
+        ));
+    }
+}

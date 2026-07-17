@@ -580,6 +580,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_lifecycle_records_cover_restart_activity_and_completion_variants() {
+        let temp = TempDir::new().expect("temporary log directory");
+        let path = temp.path().join("terminal-lifecycle.log");
+        let log = TerminalOperationalLog::start(
+            path.clone(),
+            OperationalLogOptions {
+                max_file_bytes: 16 * 1024,
+                retained_files: 1,
+                queue_capacity: 16,
+            },
+        )
+        .await
+        .expect("terminal log starts");
+        let snapshot = TerminalSessionSnapshot {
+            thread_id: "thread-1".to_owned(),
+            terminal_id: "terminal-1".to_owned(),
+            cwd: "PRIVATE_CWD".to_owned(),
+            worktree_path: Some("PRIVATE_WORKTREE".to_owned()),
+            status: TerminalStatus::Running,
+            pid: Some(73),
+            history: "PRIVATE_HISTORY".to_owned(),
+            exit_code: None,
+            exit_signal: None,
+            label: "PRIVATE_LABEL".to_owned(),
+            updated_at: "PRIVATE_UPDATED_AT".to_owned(),
+            sequence: 2,
+        };
+
+        for event in [
+            TerminalEvent::Restarted {
+                thread_id: "thread-1".to_owned(),
+                terminal_id: "terminal-1".to_owned(),
+                sequence: 2,
+                snapshot,
+            },
+            TerminalEvent::Activity {
+                thread_id: "thread-1".to_owned(),
+                terminal_id: "terminal-1".to_owned(),
+                sequence: 3,
+                has_running_subprocess: true,
+                label: "PRIVATE_ACTIVITY_LABEL".to_owned(),
+            },
+            TerminalEvent::Exited {
+                thread_id: "thread-1".to_owned(),
+                terminal_id: "terminal-1".to_owned(),
+                sequence: 4,
+                exit_code: Some(7),
+                exit_signal: None,
+            },
+            TerminalEvent::Closed {
+                thread_id: "thread-1".to_owned(),
+                terminal_id: "terminal-1".to_owned(),
+                sequence: 5,
+            },
+            TerminalEvent::Error {
+                thread_id: "thread-1".to_owned(),
+                terminal_id: "terminal-1".to_owned(),
+                sequence: 6,
+                message: "PRIVATE_ERROR_MESSAGE".to_owned(),
+            },
+            TerminalEvent::Cleared {
+                thread_id: "thread-1".to_owned(),
+                terminal_id: "terminal-1".to_owned(),
+                sequence: 7,
+            },
+        ] {
+            assert!(log.record(&event));
+        }
+        log.shutdown().await.expect("terminal log shuts down");
+        log.shutdown()
+            .await
+            .expect("terminal log shutdown is idempotent");
+
+        let contents = std::fs::read_to_string(path).expect("read terminal lifecycle log");
+        let records = contents
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("terminal lifecycle record"))
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 6);
+        assert_eq!(records[0]["eventType"], "restart");
+        assert_eq!(records[0]["status"], "running");
+        assert_eq!(records[0]["pid"], 73);
+        assert_eq!(records[1]["activityType"], "subprocess");
+        assert_eq!(records[1]["hasRunningSubprocess"], true);
+        assert_eq!(records[2]["eventType"], "exit");
+        assert_eq!(records[2]["exitCode"], 7);
+        assert_eq!(records[3]["status"], "closed");
+        assert_eq!(records[4]["status"], "error");
+        assert_eq!(records[5]["eventType"], "clear");
+        for private_value in [
+            "PRIVATE_CWD",
+            "PRIVATE_WORKTREE",
+            "PRIVATE_HISTORY",
+            "PRIVATE_LABEL",
+            "PRIVATE_UPDATED_AT",
+            "PRIVATE_ACTIVITY_LABEL",
+            "PRIVATE_ERROR_MESSAGE",
+        ] {
+            assert!(!contents.contains(private_value));
+        }
+    }
+
+    #[tokio::test]
     async fn provider_records_persist_only_bounded_diagnostic_summaries() {
         let temp = TempDir::new().expect("temporary log directory");
         let path = temp.path().join("provider-events.log");

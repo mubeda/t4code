@@ -293,4 +293,315 @@ describe("terminalUiStateStore actions", () => {
 
     expect(useTerminalUiStateStore.getState()).toBe(before);
   });
+
+  it("migrates empty state and prefers the current persisted field", () => {
+    expect(migratePersistedTerminalUiStateStoreState(null, 0)).toEqual({
+      terminalUiStateByThreadKey: {},
+    });
+    const current = {
+      terminalOpen: false,
+      terminalHeight: 300,
+      terminalIds: [],
+      activeTerminalId: "",
+      terminalGroups: [],
+      activeTerminalGroupId: "",
+    };
+    expect(
+      migratePersistedTerminalUiStateStoreState(
+        {
+          terminalUiStateByThreadKey: { [scopedThreadKey(THREAD_REF)]: current },
+          terminalStateByThreadKey: { "legacy-thread": current },
+        },
+        4,
+      ),
+    ).toEqual({ terminalUiStateByThreadKey: { [scopedThreadKey(THREAD_REF)]: current } });
+    expect(migratePersistedTerminalUiStateStoreState({}, 5)).toEqual({
+      terminalUiStateByThreadKey: {},
+    });
+  });
+
+  it("normalizes malformed terminal ids, groups, active state, and height", () => {
+    const threadKey = scopedThreadKey(THREAD_REF);
+    useTerminalUiStateStore.setState({
+      terminalUiStateByThreadKey: {
+        [threadKey]: {
+          terminalOpen: true,
+          terminalHeight: Number.NaN,
+          terminalIds: [" a ", "", "a", "b", "c"],
+          activeTerminalId: "missing",
+          terminalGroups: [
+            { id: "", terminalIds: ["missing"] },
+            { id: "same", terminalIds: ["a", "a", "missing"], splitDirection: "vertical" },
+            { id: "same", terminalIds: ["b", "a"] },
+          ],
+          activeTerminalGroupId: "missing",
+        },
+      },
+      suppressedTerminalIdsByThreadKey: {},
+    });
+
+    useTerminalUiStateStore.getState().setTerminalHeight(THREAD_REF, 320);
+    expect(
+      selectThreadTerminalUiState(
+        useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
+        THREAD_REF,
+      ),
+    ).toEqual({
+      terminalOpen: true,
+      terminalHeight: 320,
+      terminalIds: ["a", "b", "c"],
+      activeTerminalId: "a",
+      terminalGroups: [
+        { id: "same", terminalIds: ["a"], splitDirection: "vertical" },
+        { id: "same-2", terminalIds: ["b"] },
+        { id: "group-c", terminalIds: ["c"] },
+      ],
+      activeTerminalGroupId: "same",
+    });
+  });
+
+  it("ignores invalid and already-satisfied terminal transitions", () => {
+    const store = useTerminalUiStateStore.getState();
+    store.newTerminal(THREAD_REF, "term-1");
+    const populated = useTerminalUiStateStore.getState();
+    store.newTerminal(THREAD_REF, "   ");
+    store.setTerminalOpen(THREAD_REF, true);
+    store.setTerminalHeight(THREAD_REF, 280);
+    store.setTerminalHeight(THREAD_REF, 0);
+    store.setTerminalHeight(THREAD_REF, Number.NaN);
+    store.setActiveTerminal(THREAD_REF, "missing");
+    store.setActiveTerminal(THREAD_REF, "term-1");
+    store.closeTerminal(THREAD_REF, "missing");
+    store.reconcileTerminalIds(THREAD_REF, ["term-1"]);
+    expect(useTerminalUiStateStore.getState().terminalUiStateByThreadKey).toEqual(
+      populated.terminalUiStateByThreadKey,
+    );
+  });
+
+  it("supports inactive ensure operations and moves an existing terminal between groups", () => {
+    const store = useTerminalUiStateStore.getState();
+    store.newTerminal(THREAD_REF, "term-1");
+    store.ensureTerminal(THREAD_REF, "term-2", { active: false });
+    let state = selectThreadTerminalUiState(
+      useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
+      THREAD_REF,
+    );
+    expect(state.activeTerminalId).toBe("term-1");
+    expect(state.terminalOpen).toBe(true);
+
+    store.setActiveTerminal(THREAD_REF, "term-2");
+    store.splitTerminal(THREAD_REF, "term-1");
+    state = selectThreadTerminalUiState(
+      useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
+      THREAD_REF,
+    );
+    expect(state.activeTerminalId).toBe("term-1");
+    expect(state.terminalGroups).toEqual([
+      { id: "group-term-2", terminalIds: ["term-2", "term-1"] },
+    ]);
+  });
+
+  it("normalizes same-sized malformed ids and group fields", () => {
+    const threadKey = scopedThreadKey(THREAD_REF);
+    const malformedStates = [
+      {
+        terminalOpen: true,
+        terminalHeight: 280,
+        terminalIds: [" term-a "],
+        activeTerminalId: "term-a",
+        terminalGroups: [{ id: "group-term-a", terminalIds: ["term-a"] }],
+        activeTerminalGroupId: "group-term-a",
+      },
+      {
+        terminalOpen: true,
+        terminalHeight: 280,
+        terminalIds: ["term-a"],
+        activeTerminalId: "term-a",
+        terminalGroups: [],
+        activeTerminalGroupId: "",
+      },
+      {
+        terminalOpen: true,
+        terminalHeight: 280,
+        terminalIds: ["term-a"],
+        activeTerminalId: "term-a",
+        terminalGroups: [{ id: "", terminalIds: ["term-a"] }],
+        activeTerminalGroupId: "",
+      },
+      {
+        terminalOpen: true,
+        terminalHeight: 280,
+        terminalIds: ["term-a"],
+        activeTerminalId: "term-a",
+        terminalGroups: [
+          { id: "group-term-a", terminalIds: [" term-a "], splitDirection: "diagonal" as never },
+        ],
+        activeTerminalGroupId: "group-term-a",
+      },
+    ];
+
+    for (const malformed of malformedStates) {
+      useTerminalUiStateStore.setState({
+        terminalUiStateByThreadKey: { [threadKey]: malformed },
+        suppressedTerminalIdsByThreadKey: {},
+      });
+      useTerminalUiStateStore.getState().setTerminalHeight(THREAD_REF, 300);
+      expect(
+        selectThreadTerminalUiState(
+          useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
+          THREAD_REF,
+        ).terminalIds,
+      ).toEqual(["term-a"]);
+    }
+  });
+
+  it("keeps populated groups when moving a terminal and reconciles to an empty server list", () => {
+    const store = useTerminalUiStateStore.getState();
+    store.splitTerminal(THREAD_REF, "term-a");
+    store.splitTerminal(THREAD_REF, "term-b");
+    store.splitTerminal(THREAD_REF, "term-c");
+    store.newTerminal(THREAD_REF, "term-b");
+    let state = selectThreadTerminalUiState(
+      useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
+      THREAD_REF,
+    );
+    expect(state.terminalGroups).toEqual([
+      { id: "group-term-a", terminalIds: ["term-a", "term-c"] },
+      { id: "group-term-b", terminalIds: ["term-b"] },
+    ]);
+
+    store.reconcileTerminalIds(THREAD_REF, []);
+    state = selectThreadTerminalUiState(
+      useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
+      THREAD_REF,
+    );
+    expect(state.terminalIds).toEqual([]);
+  });
+
+  it("uses default ensure options and removes one suppression while preserving another", () => {
+    const store = useTerminalUiStateStore.getState();
+    store.ensureTerminal(THREAD_REF, "term-a");
+    expect(
+      selectThreadTerminalUiState(
+        useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
+        THREAD_REF,
+      ).activeTerminalId,
+    ).toBe("term-a");
+
+    store.closeTerminal(THREAD_REF, "stale-a");
+    store.closeTerminal(THREAD_REF, "stale-b");
+    store.ensureTerminal(THREAD_REF, "stale-a");
+    expect(useTerminalUiStateStore.getState().suppressedTerminalIdsByThreadKey).toEqual({
+      [scopedThreadKey(THREAD_REF)]: ["stale-b"],
+    });
+  });
+
+  it("preserves a non-active terminal while closing another group", () => {
+    const store = useTerminalUiStateStore.getState();
+    store.newTerminal(THREAD_REF, "term-1");
+    store.newTerminal(THREAD_REF, "term-2");
+    store.setActiveTerminal(THREAD_REF, "term-1");
+    store.closeTerminal(THREAD_REF, "term-2");
+    const state = selectThreadTerminalUiState(
+      useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
+      THREAD_REF,
+    );
+    expect(state.activeTerminalId).toBe("term-1");
+    expect(state.terminalGroups).toEqual([{ id: "group-term-1", terminalIds: ["term-1"] }]);
+  });
+
+  it("clears suppression, removes state, and prunes only orphaned thread keys", () => {
+    const store = useTerminalUiStateStore.getState();
+    store.closeTerminal(THREAD_REF, "stale");
+    expect(useTerminalUiStateStore.getState().suppressedTerminalIdsByThreadKey).toEqual({
+      [scopedThreadKey(THREAD_REF)]: ["stale"],
+    });
+    store.clearTerminalUiState(THREAD_REF);
+    expect(useTerminalUiStateStore.getState().suppressedTerminalIdsByThreadKey).toEqual({});
+
+    store.newTerminal(THREAD_REF, "term-a");
+    store.newTerminal(OTHER_THREAD_REF, "term-b");
+    store.removeOrphanedTerminalUiStates(new Set([scopedThreadKey(THREAD_REF)]));
+    expect(Object.keys(useTerminalUiStateStore.getState().terminalUiStateByThreadKey)).toEqual([
+      scopedThreadKey(THREAD_REF),
+    ]);
+    const before = useTerminalUiStateStore.getState();
+    store.removeOrphanedTerminalUiStates(new Set([scopedThreadKey(THREAD_REF)]));
+    expect(useTerminalUiStateStore.getState()).toBe(before);
+    store.removeTerminalUiState(THREAD_REF);
+    store.removeTerminalUiState(THREAD_REF);
+    expect(useTerminalUiStateStore.getState().terminalUiStateByThreadKey).toEqual({});
+  });
+
+  it("returns defaults and ignores updates for an empty thread id", () => {
+    const emptyRef = { ...THREAD_REF, threadId: "" as ThreadId };
+    const before = useTerminalUiStateStore.getState();
+    useTerminalUiStateStore.getState().newTerminal(emptyRef, "term-a");
+    expect(useTerminalUiStateStore.getState()).toBe(before);
+    expect(selectThreadTerminalUiState({}, null).terminalIds).toEqual([]);
+    expect(selectThreadTerminalUiState({}, emptyRef).terminalIds).toEqual([]);
+  });
+
+  it("normalizes group equality mismatches and toggles an existing drawer closed", () => {
+    const threadKey = scopedThreadKey(THREAD_REF);
+    const malformedStates = [
+      {
+        terminalOpen: true,
+        terminalHeight: 280,
+        terminalIds: ["term-a", "term-b"],
+        activeTerminalId: "term-a",
+        terminalGroups: [],
+        activeTerminalGroupId: "group-term-a",
+      },
+      {
+        terminalOpen: true,
+        terminalHeight: 280,
+        terminalIds: ["term-a"],
+        activeTerminalId: "term-a",
+        terminalGroups: [{ id: "", terminalIds: ["term-a"] }],
+        activeTerminalGroupId: "group-term-a",
+      },
+      {
+        terminalOpen: true,
+        terminalHeight: 280,
+        terminalIds: ["term-a"],
+        activeTerminalId: "term-a",
+        terminalGroups: [{ id: "group-term-a", terminalIds: [" term-a "] }],
+        activeTerminalGroupId: "group-term-a",
+      },
+    ];
+
+    for (const malformed of malformedStates) {
+      useTerminalUiStateStore.setState({
+        terminalUiStateByThreadKey: { [threadKey]: malformed },
+        suppressedTerminalIdsByThreadKey: {},
+      });
+      useTerminalUiStateStore.getState().setTerminalHeight(THREAD_REF, 300);
+    }
+
+    useTerminalUiStateStore.getState().setTerminalOpen(THREAD_REF, false);
+    expect(
+      selectThreadTerminalUiState(
+        useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
+        THREAD_REF,
+      ).terminalOpen,
+    ).toBe(false);
+  });
+
+  it("reconciles around a retained active terminal and ensures an existing terminal", () => {
+    const store = useTerminalUiStateStore.getState();
+    store.newTerminal(THREAD_REF, "term-a");
+    store.newTerminal(THREAD_REF, "term-b");
+    store.setActiveTerminal(THREAD_REF, "term-a");
+    store.reconcileTerminalIds(THREAD_REF, ["term-b", "term-a"]);
+    store.ensureTerminal(THREAD_REF, "term-a", { active: false, open: true });
+
+    const state = selectThreadTerminalUiState(
+      useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
+      THREAD_REF,
+    );
+    expect(state.activeTerminalId).toBe("term-a");
+    expect(state.terminalIds).toEqual(["term-b", "term-a"]);
+    expect(state.terminalOpen).toBe(true);
+  });
 });

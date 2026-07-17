@@ -292,3 +292,95 @@ describe("newElementContextId", () => {
     expect(ids.size).toBe(10);
   });
 });
+
+describe("element context defensive branch coverage", () => {
+  it("normalizes absent optional payload fields and an empty stack", () => {
+    const result = normalizeElementContextSelection(
+      makePayload({
+        pageTitle: undefined as never,
+        selector: undefined as never,
+        componentName: undefined as never,
+        source: null,
+        stack: [],
+      }),
+    );
+    expect(result).toMatchObject({
+      pageTitle: null,
+      selector: null,
+      componentName: null,
+      source: null,
+    });
+  });
+
+  it("normalizes absent stack-frame properties", () => {
+    const result = normalizeElementContextSelection(
+      makePayload({
+        source: {
+          functionName: undefined as never,
+          fileName: undefined as never,
+          lineNumber: undefined as never,
+          columnNumber: undefined as never,
+        },
+      }),
+    );
+    expect(result?.source).toEqual({
+      functionName: null,
+      fileName: null,
+      lineNumber: null,
+      columnNumber: null,
+    });
+  });
+
+  it("deduplicates contexts without selector or component names", () => {
+    expect(elementContextDedupKey(makeSelection({ selector: null, componentName: null }))).toBe(
+      "https://example.com/dashboard||button|",
+    );
+  });
+
+  it("serializes a minimal source and omits every empty optional section", () => {
+    const minimal = makeSelection({
+      pageUrl: "",
+      selector: null,
+      componentName: null,
+      source: {
+        functionName: null,
+        fileName: "Component.tsx",
+        lineNumber: null,
+        columnNumber: null,
+      },
+      htmlPreview: " ",
+      styles: " ",
+    });
+    const block = buildElementContextBlock([
+      minimal,
+      {
+        ...minimal,
+        componentName: "SubmitButton",
+        source: {
+          functionName: null,
+          fileName: "Component.tsx",
+          lineNumber: 4,
+          columnNumber: null,
+        },
+      },
+    ]);
+    expect(block).not.toContain("url:");
+    expect(block).not.toContain("selector:");
+    expect(block).not.toContain("html:");
+    expect(block).not.toContain("styles:");
+    expect(block).toContain("source: Component.tsx\n");
+    expect(block).toContain("source: Component.tsx:4\n");
+    expect(block).toContain("\n\n- <SubmitButton>");
+  });
+
+  it("ignores preamble lines and retains blank lines inside parsed entries", () => {
+    const result = extractTrailingElementContexts(
+      "Prompt\n<element_context>\npreamble\n- <button>:\n  first\n\nignored\n  second\n</element_context>",
+    );
+    expect(result).toMatchObject({
+      promptText: "Prompt",
+      contextCount: 1,
+      contexts: [{ header: "<button>", body: "first\n\nsecond" }],
+    });
+  });
+});

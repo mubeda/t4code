@@ -350,5 +350,58 @@ mod tests {
         materialize_codex_shadow_home(&layout)
             .await
             .expect("overlay is idempotent");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{PermissionsExt, symlink};
+
+            symlink(shared.join("auth.json"), shadow.join("auth.json"))
+                .expect("private auth symlink");
+            assert!(matches!(
+                materialize_codex_shadow_home(&layout).await,
+                Err(CodexHomeLayoutError::PrivateAuthSymlink { .. })
+            ));
+            tokio::fs::remove_file(shadow.join("auth.json"))
+                .await
+                .unwrap();
+
+            let blocked = temporary.path().join("blocked");
+            tokio::fs::write(&blocked, "not a directory").await.unwrap();
+            let blocked_layout = resolve_codex_home_layout(
+                Some(blocked.join("shared").to_str().unwrap()),
+                Some(temporary.path().join("blocked-shadow").to_str().unwrap()),
+                temporary.path(),
+            );
+            assert!(matches!(
+                materialize_codex_shadow_home(&blocked_layout).await,
+                Err(CodexHomeLayoutError::FileSystem {
+                    operation: "makeDirectory",
+                    ..
+                })
+            ));
+
+            let protected_shared = temporary.path().join("protected-shared");
+            let protected_shadow = temporary.path().join("protected-shadow");
+            tokio::fs::create_dir(&protected_shared).await.unwrap();
+            tokio::fs::create_dir(&protected_shadow).await.unwrap();
+            tokio::fs::write(protected_shared.join("extra"), "shared")
+                .await
+                .unwrap();
+            let protected_layout = resolve_codex_home_layout(
+                Some(protected_shared.to_str().unwrap()),
+                Some(protected_shadow.to_str().unwrap()),
+                temporary.path(),
+            );
+            let mut permissions = std::fs::metadata(&protected_shadow).unwrap().permissions();
+            permissions.set_mode(0o500);
+            std::fs::set_permissions(&protected_shadow, permissions).unwrap();
+            assert!(matches!(
+                materialize_codex_shadow_home(&protected_layout).await,
+                Err(CodexHomeLayoutError::FileSystem { .. })
+            ));
+            let mut permissions = std::fs::metadata(&protected_shadow).unwrap().permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(&protected_shadow, permissions).unwrap();
+        }
     }
 }

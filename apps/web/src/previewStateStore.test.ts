@@ -1,6 +1,6 @@
 import { scopedThreadKey, scopeThreadRef } from "@t4code/client-runtime/environment";
 import { type EnvironmentId, type PreviewSessionSnapshot, ThreadId } from "@t4code/contracts";
-import { beforeEach, describe, expect, it } from "vite-plus/test";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   __testing,
@@ -17,7 +17,9 @@ import {
   resetPreviewStateForTests,
   setActivePreviewTab,
   updatePreviewServerSnapshot,
+  isPreviewSupportedInRuntime,
 } from "./previewStateStore";
+import { appAtomRegistry } from "./rpc/atomRegistry";
 
 const environmentId = "env-1" as EnvironmentId;
 const ref = scopeThreadRef(environmentId, ThreadId.make("thread-1"));
@@ -429,5 +431,186 @@ describe("previewStateStore (single-tab)", () => {
     removePreviewThread(ref);
     const state = readThreadPreviewState(ref);
     expect(state).toEqual(__testing.EMPTY_THREAD_PREVIEW_STATE);
+  });
+
+  it("closes a background tab without changing the active snapshot", () => {
+    const background = makeSnapshot({ tabId: "tab_background" });
+    const active = makeSnapshot({
+      tabId: "tab_active",
+      updatedAt: "2026-01-01T00:00:01.000Z",
+    });
+    applyPreviewServerSnapshot(ref, background);
+    applyPreviewServerSnapshot(ref, active);
+
+    applyPreviewServerEvent(ref, {
+      type: "closed",
+      threadId: "thread-1",
+      tabId: background.tabId,
+      createdAt: "2026-01-01T00:00:02.000Z",
+    });
+
+    expect(readThreadPreviewState(ref)).toMatchObject({
+      activeTabId: active.tabId,
+      snapshot: active,
+      sessions: { [active.tabId]: active },
+    });
+  });
+
+  it("handles idle, suppressed, and navigation-first server events", () => {
+    const idle = makeSnapshot({ tabId: "tab_idle", navStatus: { _tag: "Idle" } });
+    applyPreviewServerEvent(ref, {
+      type: "navigated",
+      threadId: "thread-1",
+      tabId: idle.tabId,
+      createdAt: idle.updatedAt,
+      snapshot: idle,
+    });
+    expect(readThreadPreviewState(ref).activeTabId).toBe(idle.tabId);
+    expect(readThreadPreviewState(ref).recentlySeenUrls).toEqual([]);
+
+    beginPreviewSessionClose(ref, idle.tabId);
+    applyPreviewServerEvent(ref, {
+      type: "opened",
+      threadId: "thread-1",
+      tabId: idle.tabId,
+      createdAt: idle.updatedAt,
+      snapshot: idle,
+    });
+    updatePreviewServerSnapshot(ref, {
+      ...idle,
+      updatedAt: "2026-01-01T00:00:02.000Z",
+    });
+    reconcilePreviewServerSessions(ref, [idle]);
+    expect(readThreadPreviewState(ref).sessions).toEqual({});
+  });
+
+  it("updates background failures and rejects older background mutations", () => {
+    const background = makeSnapshot({
+      tabId: "tab_background",
+      updatedAt: "2026-01-01T00:00:02.000Z",
+    });
+    const active = makeSnapshot({
+      tabId: "tab_active",
+      updatedAt: "2026-01-01T00:00:03.000Z",
+    });
+    applyPreviewServerSnapshot(ref, background);
+    applyPreviewServerSnapshot(ref, active);
+    applyPreviewServerEvent(ref, {
+      type: "failed",
+      threadId: "thread-1",
+      tabId: background.tabId,
+      createdAt: "2026-01-01T00:00:04.000Z",
+      url: "https://failed.test/",
+      title: "Failed",
+      code: 500,
+      description: "broken",
+    });
+    expect(readThreadPreviewState(ref).snapshot?.tabId).toBe(active.tabId);
+    expect(readThreadPreviewState(ref).sessions[background.tabId]?.navStatus._tag).toBe(
+      "LoadFailed",
+    );
+
+    updatePreviewServerSnapshot(ref, {
+      ...background,
+      updatedAt: "2026-01-01T00:00:01.000Z",
+    });
+    expect(readThreadPreviewState(ref).sessions[background.tabId]?.navStatus._tag).toBe(
+      "LoadFailed",
+    );
+  });
+
+  it("reconciles newer local sessions and removes inactive desktop overlays", () => {
+    const latest = makeSnapshot({ updatedAt: "2026-01-01T00:00:02.000Z" });
+    applyPreviewServerSnapshot(ref, latest);
+    applyPreviewDesktopState(ref, latest.tabId, {
+      canGoBack: false,
+      canGoForward: false,
+      loading: false,
+      zoomFactor: 1,
+      controller: "human",
+    });
+    reconcilePreviewServerSessions(ref, [{ ...latest, updatedAt: "2026-01-01T00:00:01.000Z" }]);
+    expect(readThreadPreviewState(ref).sessions[latest.tabId]).toEqual(latest);
+
+    applyPreviewDesktopState(ref, latest.tabId, null);
+    expect(readThreadPreviewState(ref).desktopByTabId).toEqual({});
+    expect(readThreadPreviewState(ref).desktopOverlay).toBeNull();
+  });
+
+  it("handles redundant close cancellation, tab activation, and blank URLs", () => {
+    const snapshot = makeSnapshot({ navStatus: { _tag: "Idle" } });
+    applyPreviewServerSnapshot(ref, null);
+    cancelPreviewSessionClose(ref, snapshot, snapshot.tabId);
+    setActivePreviewTab(ref, "missing");
+    rememberPreviewUrl(ref, "   ");
+    expect(readThreadPreviewState(ref)).toEqual(__testing.EMPTY_THREAD_PREVIEW_STATE);
+
+    applyPreviewServerSnapshot(ref, snapshot);
+    setActivePreviewTab(ref, snapshot.tabId);
+    beginPreviewSessionClose(ref, snapshot.tabId);
+    cancelPreviewSessionClose(ref, null, snapshot.tabId);
+    expect(readThreadPreviewState(ref).suppressedTabIds).toEqual(new Set());
+    expect(readThreadPreviewState(ref).snapshot).toBeNull();
+  });
+
+  it("detects desktop preview runtime support", () => {
+    expect(isPreviewSupportedInRuntime()).toBe(false);
+    vi.stubGlobal("window", { desktopBridge: { preview: {} } });
+    expect(isPreviewSupportedInRuntime()).toBe(true);
+    vi.stubGlobal("window", { desktopBridge: {} });
+    expect(isPreviewSupportedInRuntime()).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  it("repairs stale active ids while applying server events", () => {
+    const first = makeSnapshot({ tabId: "tab_first" });
+    const second = makeSnapshot({
+      tabId: "tab_second",
+      updatedAt: "2026-01-01T00:00:01.000Z",
+    });
+    const atom = previewStateAtom(scopedThreadKey(ref));
+    appAtomRegistry.set(atom, {
+      ...__testing.EMPTY_THREAD_PREVIEW_STATE,
+      sessions: { [first.tabId]: first, [second.tabId]: second },
+      activeTabId: "tab_stale",
+      snapshot: first,
+    });
+
+    applyPreviewServerEvent(ref, {
+      type: "closed",
+      threadId: "thread-1",
+      tabId: first.tabId,
+      createdAt: "2026-01-01T00:00:02.000Z",
+    });
+    expect(readThreadPreviewState(ref).activeTabId).toBe(second.tabId);
+
+    appAtomRegistry.set(atom, {
+      ...__testing.EMPTY_THREAD_PREVIEW_STATE,
+      activeTabId: "tab_stale",
+    });
+    applyPreviewServerEvent(ref, {
+      type: "navigated",
+      threadId: "thread-1",
+      tabId: first.tabId,
+      createdAt: first.updatedAt,
+      snapshot: first,
+    });
+    expect(readThreadPreviewState(ref).snapshot).toEqual(first);
+  });
+
+  it("restores an idle close cancellation and activates a tab without desktop overlay", () => {
+    const first = makeSnapshot({ tabId: "tab_first" });
+    const idle = makeSnapshot({ tabId: "tab_idle", navStatus: { _tag: "Idle" } });
+    applyPreviewServerSnapshot(ref, first);
+    applyPreviewServerSnapshot(ref, idle);
+    beginPreviewSessionClose(ref, idle.tabId);
+    cancelPreviewSessionClose(ref, idle, idle.tabId);
+    setActivePreviewTab(ref, first.tabId);
+
+    expect(readThreadPreviewState(ref)).toMatchObject({
+      activeTabId: first.tabId,
+      desktopOverlay: null,
+      recentlySeenUrls: [first.navStatus._tag === "Idle" ? "" : first.navStatus.url],
+    });
   });
 });

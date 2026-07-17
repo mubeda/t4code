@@ -115,6 +115,32 @@ impl ServerConfig {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owned_builder_inputs_cover_desktop_and_static_configuration() {
+        let state_dir = "state".to_owned();
+        let static_dir = "static".to_owned();
+        let config = ServerConfig::new(state_dir)
+            .with_static_dir(static_dir)
+            .with_desktop("desktop-token".to_owned())
+            .expect("desktop config should build");
+        assert_eq!(config.mode, ServerMode::Desktop);
+        assert_eq!(
+            config.desktop_bootstrap_token.as_deref(),
+            Some("desktop-token")
+        );
+        assert_eq!(config.static_dir, Some(PathBuf::from("static")));
+        assert!(
+            ServerConfig::new("state")
+                .with_desktop(String::new())
+                .is_err()
+        );
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "t4code", version, about = "Run the T4Code server.")]
 pub struct Cli {

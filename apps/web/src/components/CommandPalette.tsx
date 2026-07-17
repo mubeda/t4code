@@ -143,7 +143,7 @@ function getLocalFileManagerName(platform: string): string {
   return "Files";
 }
 
-function getEnvironmentBrowsePlatform(os: string | null | undefined): string {
+export function getEnvironmentBrowsePlatform(os: string | null | undefined): string {
   if (os === "windows") {
     return "Win32";
   }
@@ -166,7 +166,7 @@ type AddProjectRemoteProviderKind = Extract<
   SourceControlProviderKind,
   "github" | "gitlab" | "bitbucket" | "azure-devops"
 >;
-type AddProjectRemoteSource = AddProjectRemoteProviderKind | "url";
+export type AddProjectRemoteSource = AddProjectRemoteProviderKind | "url";
 
 type AddProjectCloneFlow =
   | {
@@ -212,7 +212,7 @@ function remoteProjectSourceLabel(source: AddProjectRemoteSource): string {
   }
 }
 
-function remoteProjectSourcePathHint(source: AddProjectRemoteSource): string {
+export function remoteProjectSourcePathHint(source: AddProjectRemoteSource): string {
   switch (source) {
     case "github":
       return "owner/repo";
@@ -261,7 +261,7 @@ function sourceProviderKind(source: AddProjectRemoteSource): AddProjectRemotePro
   return source === "url" ? null : source;
 }
 
-function sortAddProjectProviderSources(
+export function sortAddProjectProviderSources(
   readinessBySource: AddProjectRemoteSourceReadiness,
 ): ReadonlyArray<AddProjectRemoteProviderKind> {
   return REMOTE_PROJECT_PROVIDER_SOURCES.toSorted((left, right) => {
@@ -274,12 +274,12 @@ function sortAddProjectProviderSources(
   });
 }
 
-type AddProjectRemoteSourceReadiness = Record<
+export type AddProjectRemoteSourceReadiness = Record<
   AddProjectRemoteSource,
   { readonly ready: boolean; readonly hint: string | null }
 >;
 
-function buildAddProjectRemoteSourceReadiness(
+export function buildAddProjectRemoteSourceReadiness(
   discovery: SourceControlDiscoveryResult | null,
 ): AddProjectRemoteSourceReadiness {
   const unavailable = {
@@ -330,7 +330,7 @@ function buildAddProjectRemoteSourceReadiness(
   return readiness;
 }
 
-function errorMessage(error: unknown): string {
+export function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) {
     return error.message;
   }
@@ -341,18 +341,18 @@ interface CommandPaletteOpenIntent {
   readonly kind: "add-project";
 }
 
-interface CommandPaletteUiState {
+export interface CommandPaletteUiState {
   readonly open: boolean;
   readonly openIntent: CommandPaletteOpenIntent | null;
 }
 
-type CommandPaletteUiAction =
+export type CommandPaletteUiAction =
   | { readonly _tag: "SetOpen"; readonly open: boolean }
   | { readonly _tag: "Toggle" }
   | { readonly _tag: "OpenAddProject" }
   | { readonly _tag: "ClearOpenIntent" };
 
-function reduceCommandPaletteUiState(
+export function reduceCommandPaletteUiState(
   state: CommandPaletteUiState,
   action: CommandPaletteUiAction,
 ): CommandPaletteUiState {

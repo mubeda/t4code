@@ -3,17 +3,11 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
 
-const args = process.argv.slice(2);
-
-if (args.length === 0) {
-  console.error("Usage: node scripts/run-msvc-x64.mjs <command> [...args]");
-  process.exit(2);
-}
-
-function run(command, commandArgs, options = {}) {
+export function run(command, commandArgs, options = {}, spawnSync = NodeChildProcess.spawnSync) {
   return (
-    NodeChildProcess.spawnSync(command, commandArgs, {
+    spawnSync(command, commandArgs, {
       stdio: "inherit",
       shell: false,
       ...options,
@@ -21,8 +15,10 @@ function run(command, commandArgs, options = {}) {
   );
 }
 
-function discoverVcVarsAll() {
-  const programFilesX86 = process.env["ProgramFiles(x86)"];
+export function discoverVcVarsAll(options = {}) {
+  const programFilesX86 = options.programFilesX86 ?? process.env["ProgramFiles(x86)"];
+  const existsSync = options.existsSync ?? NodeFS.existsSync;
+  const spawnSync = options.spawnSync ?? NodeChildProcess.spawnSync;
   if (!programFilesX86) {
     return null;
   }
@@ -33,8 +29,8 @@ function discoverVcVarsAll() {
     "Installer",
     "vswhere.exe",
   );
-  if (NodeFS.existsSync(vswhere)) {
-    const result = NodeChildProcess.spawnSync(
+  if (existsSync(vswhere)) {
+    const result = spawnSync(
       vswhere,
       [
         "-latest",
@@ -56,7 +52,7 @@ function discoverVcVarsAll() {
         "Build",
         "vcvarsall.bat",
       );
-      if (NodeFS.existsSync(candidate)) {
+      if (existsSync(candidate)) {
         return candidate;
       }
     }
@@ -72,40 +68,62 @@ function discoverVcVarsAll() {
     "Build",
     "vcvarsall.bat",
   );
-  return NodeFS.existsSync(fallback) ? fallback : null;
+  return existsSync(fallback) ? fallback : null;
 }
 
-function quoteCmdArg(value) {
+export function quoteCmdArg(value) {
   if (/^[A-Za-z0-9_./:\\-]+$/.test(value)) {
     return value;
   }
   return `"${value.replaceAll('"', '\\"')}"`;
 }
 
-const vcvarsall = discoverVcVarsAll();
-if (!vcvarsall) {
-  process.exit(run(args[0], args.slice(1)));
+export function runMsvcX64(args, options = {}) {
+  const consoleError = options.consoleError ?? console.error;
+  const spawnSync = options.spawnSync ?? NodeChildProcess.spawnSync;
+  if (args.length === 0) {
+    consoleError("Usage: node scripts/run-msvc-x64.mjs <command> [...args]");
+    return 2;
+  }
+
+  const vcvarsall = discoverVcVarsAll({
+    programFilesX86: options.programFilesX86,
+    existsSync: options.existsSync,
+    spawnSync,
+  });
+  if (!vcvarsall) {
+    return run(args[0], args.slice(1), {}, spawnSync);
+  }
+
+  const comspec = options.comspec ?? process.env.ComSpec ?? "cmd.exe";
+  const scriptPath = NodePath.join(
+    options.tmpdir ?? NodeOS.tmpdir(),
+    `t4code-msvc-x64-${options.pid ?? process.pid}-${options.now?.() ?? Date.now()}.cmd`,
+  );
+  const writeFileSync = options.writeFileSync ?? NodeFS.writeFileSync;
+  const rmSync = options.rmSync ?? NodeFS.rmSync;
+  writeFileSync(
+    scriptPath,
+    [
+      "@echo off",
+      `call "${vcvarsall}" x64`,
+      "if errorlevel 1 exit /b %errorlevel%",
+      args.map(quoteCmdArg).join(" "),
+      "exit /b %errorlevel%",
+      "",
+    ].join("\r\n"),
+  );
+
+  const status = run(comspec, ["/d", "/c", scriptPath], {}, spawnSync);
+  try {
+    rmSync(scriptPath, { force: true });
+  } catch {}
+  return status;
 }
 
-const comspec = process.env.ComSpec ?? "cmd.exe";
-const scriptPath = NodePath.join(
-  NodeOS.tmpdir(),
-  `t4code-msvc-x64-${process.pid}-${Date.now()}.cmd`,
-);
-NodeFS.writeFileSync(
-  scriptPath,
-  [
-    "@echo off",
-    `call "${vcvarsall}" x64`,
-    "if errorlevel 1 exit /b %errorlevel%",
-    args.map(quoteCmdArg).join(" "),
-    "exit /b %errorlevel%",
-    "",
-  ].join("\r\n"),
-);
-
-const status = run(comspec, ["/d", "/c", scriptPath]);
-try {
-  NodeFS.rmSync(scriptPath, { force: true });
-} catch {}
-process.exit(status);
+if (
+  process.argv[1] !== undefined &&
+  import.meta.url === NodeURL.pathToFileURL(process.argv[1]).href
+) {
+  process.exit(runMsvcX64(process.argv.slice(2)));
+}

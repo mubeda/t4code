@@ -18,6 +18,21 @@ afterEach(() => {
 });
 
 describe("branding", () => {
+  it("falls back when the desktop bridge has no branding", async () => {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        desktopBridge: {
+          getAppBranding: () => undefined,
+        },
+      },
+    });
+
+    const branding = await import("./branding");
+
+    expect(branding.APP_BASE_NAME).toBe("T4Code");
+  });
+
   it("uses injected desktop branding when available", async () => {
     Object.defineProperty(globalThis, "window", {
       configurable: true,
@@ -48,6 +63,15 @@ describe("branding", () => {
     expect(branding.HOSTED_APP_CHANNEL_LABEL).toBe("Nightly");
     expect(branding.APP_STAGE_LABEL).toBe("Nightly");
     expect(branding.APP_DISPLAY_NAME).toBe("T4Code (Nightly)");
+  });
+
+  it("labels the latest hosted app channel", async () => {
+    vi.stubEnv("VITE_HOSTED_APP_CHANNEL", "latest");
+
+    const branding = await import("./branding");
+
+    expect(branding.HOSTED_APP_CHANNEL).toBe("latest");
+    expect(branding.HOSTED_APP_CHANNEL_LABEL).toBe("Latest");
   });
 
   it("ignores unknown hosted app channels", async () => {

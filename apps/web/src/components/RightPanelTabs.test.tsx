@@ -228,6 +228,9 @@ describe("RightPanelTabs mounted interactions", () => {
     const previewTab = buttonWithText("Project docs").parentElement!;
     await act(async () => {
       previewTab.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, button: 1 }));
+      previewTab.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, button: 0 }));
+      previewTab.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+      previewTab.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 1 }));
     });
     expect(onCloseSurface).toHaveBeenLastCalledWith(previewSurface);
   });
@@ -290,5 +293,120 @@ describe("RightPanelTabs mounted interactions", () => {
     await click(document.querySelector<HTMLButtonElement>('[aria-label="Add panel surface"]')!);
     await click(buttonWithText("Files"));
     expect(onAddFiles).toHaveBeenCalledOnce();
+  });
+
+  it("renders every surface title, icon, preview fallback, and terminal label", async () => {
+    const surfaces = [
+      { id: "diff", kind: "diff" },
+      { id: "source", kind: "sourceControl" },
+      { id: "files", kind: "files" },
+      { id: "terminal:1", kind: "terminal", activeTerminalId: "term-1" },
+      { id: "terminal:2", kind: "terminal", activeTerminalId: "term-2" },
+      { id: "plan", kind: "plan" },
+      { id: "preview:idle", kind: "preview", resourceId: "idle" },
+      { id: "preview:host", kind: "preview", resourceId: "host" },
+      { id: "preview:invalid", kind: "preview", resourceId: "invalid" },
+      { id: "preview:missing", kind: "preview", resourceId: "missing" },
+    ] as RightPanelSurface[];
+    await mount(
+      <RightPanelTabs
+        {...tabsProps({
+          maximized: true,
+          surfaces,
+          activeSurfaceId: "diff",
+          pendingSurfaceIds: new Set(["diff"]),
+          terminalLabelsById: new Map([["term-1", "Build shell"]]),
+          previewSessions: {
+            idle: snapshot({ _tag: "Idle" }),
+            host: snapshot({ _tag: "Success", url: "https://docs.example.test/path", title: " " }),
+            invalid: snapshot({ _tag: "Success", url: "not a url", title: "" }),
+          },
+        })}
+      />,
+    );
+
+    expect(document.body.textContent).toContain("Diff");
+    expect(document.body.textContent).toContain("Source Control");
+    expect(document.body.textContent).toContain("Files");
+    expect(document.body.textContent).toContain("Build shell");
+    expect(document.body.textContent).toContain("Terminal 2");
+    expect(document.body.textContent).toContain("Plan");
+    expect(document.body.textContent).toContain("docs.example.test");
+    expect(document.body.textContent?.match(/Browser/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(document.querySelector('[aria-label="Close Diff"] span')).not.toBeNull();
+  });
+
+  it("falls back to the globe after a preview favicon fails", async () => {
+    await mount(<RightPanelTabs {...tabsProps()} />);
+    const favicon = document.querySelector<HTMLImageElement>('img[src*="example.test"]');
+    expect(favicon).not.toBeNull();
+
+    await act(async () => favicon?.dispatchEvent(new Event("error", { bubbles: true })));
+
+    expect(document.querySelector<HTMLImageElement>('img[src*="example.test"]')).toBeNull();
+  });
+
+  it("dispatches every native context-menu close action and ignores unavailable menus", async () => {
+    const onCloseSurface = vi.fn();
+    const onCloseOtherSurfaces = vi.fn();
+    const onCloseSurfacesToRight = vi.fn();
+    const onCloseAllSurfaces = vi.fn();
+    await mount(
+      <RightPanelTabs
+        {...tabsProps({
+          onCloseSurface,
+          onCloseOtherSurfaces,
+          onCloseSurfacesToRight,
+          onCloseAllSurfaces,
+        })}
+      />,
+    );
+    const previewTab = buttonWithText("Project docs").parentElement!;
+    for (const action of ["close", "close-others", "close-to-right", "close-all", null]) {
+      testState.contextMenuShow.mockResolvedValueOnce(action);
+      await act(async () => {
+        previewTab.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+      });
+    }
+    expect(onCloseSurface).toHaveBeenCalledWith(previewSurface);
+    expect(onCloseOtherSurfaces).toHaveBeenCalledWith(previewSurface);
+    expect(onCloseSurfacesToRight).toHaveBeenCalledWith(previewSurface);
+    expect(onCloseAllSurfaces).toHaveBeenCalledOnce();
+
+    testState.contextMenuShow.mockResolvedValueOnce("copy-path");
+    await act(async () => {
+      previewTab.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    });
+
+    testState.localApiAvailable = false;
+    const callsBeforeUnavailable = testState.contextMenuShow.mock.calls.length;
+    await act(async () => {
+      previewTab.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    });
+    expect(testState.contextMenuShow).toHaveBeenCalledTimes(callsBeforeUnavailable);
+  });
+
+  it("ignores non-middle auxiliary clicks and exposes every disabled add action", async () => {
+    const onCloseSurface = vi.fn();
+    await mount(
+      <RightPanelTabs
+        {...tabsProps({
+          surfaces: [],
+          activeSurfaceId: null,
+          browserAvailable: false,
+          diffAvailable: false,
+          filesAvailable: false,
+          sourceControlAvailable: false,
+          onCloseSurface,
+        })}
+      />,
+    );
+    expect(document.querySelectorAll('[aria-disabled="true"]')).toHaveLength(4);
+
+    await act(async () => {
+      document.body.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, button: 0 }));
+      document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+    });
+    expect(onCloseSurface).not.toHaveBeenCalled();
   });
 });

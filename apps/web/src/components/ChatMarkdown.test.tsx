@@ -1,11 +1,24 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { DEFAULT_CLIENT_SETTINGS } from "@t4code/contracts/settings";
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { vi } from "vite-plus/test";
 import { __setClientSettingsForTests } from "../hooks/useSettings";
+
+vi.mock("./ui/menu", () => ({
+  Menu: ({ children }: { children?: ReactNode }) => <>{children}</>,
+  MenuTrigger: ({ render, children }: { render?: ReactNode; children?: ReactNode }) => (
+    <>{render ?? children}</>
+  ),
+  MenuPopup: ({ children }: { children?: ReactNode }) => <>{children}</>,
+  MenuItem: ({ children, onClick }: { children?: ReactNode; onClick?: () => void }) => (
+    <button type="button" role="menuitem" onClick={onClick}>
+      {children}
+    </button>
+  ),
+}));
 
 let ChatMarkdownComponent: typeof import("./ChatMarkdown").default | null = null;
 let domWindow: Window | null = null;
@@ -115,6 +128,63 @@ async function renderMarkdownUntilHighlighted(text: string, options: RenderOptio
 }
 
 describe("ChatMarkdown", () => {
+  describe("markdown helper edge cases", () => {
+    it("parses task markers only from the requested list-item line", async () => {
+      const { findTaskListMarkerOffset } = await import("./ChatMarkdown");
+
+      expect(findTaskListMarkerOffset("- ordinary\n- [ ] later", 0)).toBeNull();
+      expect(findTaskListMarkerOffset("prefix\n2) [X] task\nnext", 7)).toBe(10);
+    });
+
+    it("flattens React nodes and rejects malformed code blocks", async () => {
+      const { extractCodeBlock, nodeToPlainText } = await import("./ChatMarkdown");
+      const nested = (
+        <code className="language-ts">
+          one
+          <strong>2</strong>
+        </code>
+      );
+
+      expect(nodeToPlainText(nested)).toBe("one2");
+      expect(nodeToPlainText(true)).toBe("");
+      expect(extractCodeBlock(null)).toBeNull();
+      expect(extractCodeBlock([<code key="a">a</code>, <code key="b">b</code>])).toBeNull();
+      expect(extractCodeBlock(<span>not code</span>)).toBeNull();
+      expect(extractCodeBlock(nested)).toEqual({ className: "language-ts", code: "one2" });
+    });
+
+    it("estimates highlight memory and disambiguates duplicate file basenames", async () => {
+      const { buildFileLinkParentSuffixByPath, estimateHighlightedSize } =
+        await import("./ChatMarkdown");
+
+      expect(estimateHighlightedSize("12345", "x")).toBe(10);
+      expect(estimateHighlightedSize("x", "12345")).toBe(15);
+
+      const suffixes = buildFileLinkParentSuffixByPath([
+        "file.ts",
+        "./file.ts",
+        "src/a/file.ts",
+        "src/b/file.ts",
+        "src/b/file.ts",
+      ]);
+      expect(suffixes.has("file.ts")).toBe(false);
+      expect(suffixes.get("src/a/file.ts")).toBe("src/a");
+      expect(suffixes.get("src/b/file.ts")).toBe("src/b");
+    });
+
+    it("extracts markdown hrefs and rejects unsupported external hosts", async () => {
+      const { extractMarkdownLinkHrefs, resolveExternalLinkHost } = await import("./ChatMarkdown");
+
+      expect(
+        extractMarkdownLinkHrefs('[one](https://one.test) [two](file:///tmp/two "x")'),
+      ).toEqual(["https://one.test", "file:///tmp/two"]);
+      expect(resolveExternalLinkHost(undefined)).toBeNull();
+      expect(resolveExternalLinkHost("mailto:test@example.com")).toBeNull();
+      expect(resolveExternalLinkHost("not a url")).toBeNull();
+      expect(resolveExternalLinkHost("https://example.com/path")).toBe("example.com");
+    });
+  });
+
   describe("basic markdown", () => {
     it("renders paragraphs with inline emphasis inside the chat-markdown wrapper", async () => {
       const markup = await renderMarkdown("Hello **world** and *stars*");
@@ -618,6 +688,196 @@ describe("ChatMarkdown", () => {
       expect(markup).toContain("first");
       expect(markup).toContain("second");
       expect(markup).not.toContain("chat-markdown-codeblock");
+    });
+  });
+
+  describe("mounted interaction edge cases", () => {
+    it("ignores a task checkbox when its source marker metadata is missing", async () => {
+      const onTaskListChange = vi.fn();
+      const container = await mountMarkdown("- [ ] alpha", { onTaskListChange });
+      const item = container.querySelector("li");
+      const checkbox = container.querySelector<HTMLInputElement>('input[aria-label="Toggle task"]');
+      item?.removeAttribute("data-task-marker-offset");
+
+      await click(checkbox!);
+
+      expect(onTaskListChange).not.toHaveBeenCalled();
+    });
+
+    it("expands collapsed tables and measures every header column", async () => {
+      __setClientSettingsForTests({ ...DEFAULT_CLIENT_SETTINGS, wordWrap: false });
+      const container = await mountMarkdown(["| A | B |", "| - | - |", "| one | two |"].join("\n"));
+      const cells = [...container.querySelectorAll<HTMLElement>("th, td")];
+      const headerCells = [...container.querySelectorAll<HTMLElement>("th")];
+      const table = container.querySelector<HTMLTableElement>("table")!;
+      Object.defineProperty(table, "tHead", {
+        configurable: true,
+        value: { rows: [{ cells: headerCells }] },
+      });
+      cells.forEach((cell, index) => {
+        vi.spyOn(cell, "getBoundingClientRect").mockReturnValue({
+          width: 20 + index,
+        } as DOMRect);
+      });
+
+      await click(
+        container.querySelector<HTMLButtonElement>('button[aria-label="Expand table cells"]')!,
+      );
+
+      expect(
+        container.querySelector(".chat-markdown-table-container")?.getAttribute("data-expanded"),
+      ).toBe("true");
+      expect(container.querySelectorAll("th")[0]?.style.minWidth).not.toBe("");
+    });
+
+    it("copies tables as Markdown and CSV and replaces the copied-state timer", async () => {
+      const writeText = vi.fn(async () => {});
+      installClipboard(writeText);
+      const container = await mountMarkdown(["| A | B |", "| - | - |", "| one | two |"].join("\n"));
+
+      const chooseCopyFormat = async (label: string) => {
+        const item = Array.from(
+          document.querySelectorAll<HTMLElement>("[role=menuitem], [data-slot=menu-item]"),
+        ).find((candidate) => candidate.textContent === label);
+        expect(item).toBeDefined();
+        await click(item!);
+        await act(async () => Promise.resolve());
+      };
+
+      await chooseCopyFormat("Copy as Markdown");
+      expect(writeText).toHaveBeenCalledWith("| A | B |\n| --- | --- |\n| one | two |");
+      expect(container.querySelector('button[aria-label="Copied"]')).not.toBeNull();
+
+      await chooseCopyFormat("Copy as CSV");
+      expect(writeText).toHaveBeenCalledWith("A,B\none,two");
+      expect(writeText).toHaveBeenCalledTimes(2);
+    });
+
+    it("ignores unavailable table clipboards and reports copy failures", async () => {
+      const failure = new Error("table copy failed");
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      await mountMarkdown(["| A | B |", "| - | - |", "| one | two |"].join("\n"));
+      const chooseMarkdown = async () => {
+        const item = Array.from(
+          document.querySelectorAll<HTMLElement>("[role=menuitem], [data-slot=menu-item]"),
+        ).find((candidate) => candidate.textContent === "Copy as Markdown");
+        expect(item).toBeDefined();
+        await click(item!);
+        await act(async () => Promise.resolve());
+      };
+
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+      await chooseMarkdown();
+      expect(consoleError).not.toHaveBeenCalled();
+
+      installClipboard(vi.fn(async () => Promise.reject(failure)));
+      await chooseMarkdown();
+      expect(consoleError).toHaveBeenCalledWith(
+        "[chat-markdown] action failed",
+        { operation: "copy-table", format: "markdown" },
+        failure,
+      );
+    });
+
+    it("toggles details content through the rendered summary", async () => {
+      const container = await mountMarkdown(
+        ["<details>", "<summary>More</summary>", "", "Body", "", "</details>"].join("\n"),
+      );
+      const details = container.querySelector<HTMLElement>("[data-markdown-details]");
+      expect(details?.dataset.markdownDetailsOpen).toBe("false");
+
+      await click(container.querySelector<HTMLElement>("[data-markdown-details-summary]")!);
+
+      expect(details?.dataset.markdownDetailsOpen).toBe("true");
+    });
+
+    it("navigates valid fragment links and preserves modified clicks", async () => {
+      const container = await mountMarkdown("# Target\n\n[Jump](#target)");
+      const target = document.createElement("div");
+      target.id = "target";
+      document.body.append(target);
+      const anchor = container.querySelector<HTMLAnchorElement>('a[href="#target"]');
+      const scrollIntoView = vi.fn();
+      Object.defineProperty(target, "scrollIntoView", {
+        configurable: true,
+        value: scrollIntoView,
+      });
+
+      await act(async () =>
+        anchor!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })),
+      );
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
+      expect(window.location.hash).toBe("#target");
+
+      scrollIntoView.mockClear();
+      await act(async () =>
+        anchor!.dispatchEvent(
+          new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true }),
+        ),
+      );
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    });
+
+    it("normalizes sanitized fragment ids and ignores unsupported click gestures", async () => {
+      const container = await mountMarkdown("[Jump](#section)");
+      const markdownRoot = container.querySelector<HTMLElement>(".chat-markdown")!;
+      const target = document.createElement("div");
+      target.id = "user-content-user-content-section";
+      const scrollIntoView = vi.fn();
+      Object.defineProperty(target, "scrollIntoView", {
+        configurable: true,
+        value: scrollIntoView,
+      });
+      markdownRoot.append(target);
+      const anchor = container.querySelector<HTMLAnchorElement>('a[href="#section"]')!;
+
+      await act(async () =>
+        anchor.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })),
+      );
+      expect(scrollIntoView).toHaveBeenCalledOnce();
+
+      for (const init of [{ button: 1 }, { metaKey: true }, { shiftKey: true }, { altKey: true }]) {
+        await act(async () =>
+          anchor.dispatchEvent(
+            new MouseEvent("click", { bubbles: true, cancelable: true, ...init }),
+          ),
+        );
+      }
+      expect(scrollIntoView).toHaveBeenCalledOnce();
+    });
+
+    it("leaves missing and malformed fragment targets to normal browser handling", async () => {
+      const container = await mountMarkdown("[Missing](#missing) [Malformed](#%E0%A4%A)");
+      const anchors = [...container.querySelectorAll<HTMLAnchorElement>('a[href^="#"]')];
+
+      for (const anchor of anchors) {
+        const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+        await act(async () => anchor.dispatchEvent(event));
+        expect(event.defaultPrevented).toBe(false);
+      }
+    });
+
+    it("reports code clipboard failure and ignores an unavailable clipboard", async () => {
+      const container = await mountMarkdown(
+        ["```ts title=sample.ts", "const x = 1;", "```"].join("\n"),
+      );
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+      await click(container.querySelector<HTMLButtonElement>('button[aria-label="Copy code"]')!);
+
+      const failure = new Error("copy failed");
+      installClipboard(vi.fn(async () => Promise.reject(failure)));
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      await click(container.querySelector<HTMLButtonElement>('button[aria-label="Copy code"]')!);
+      await act(async () => Promise.resolve());
+      expect(consoleError).toHaveBeenCalledWith(
+        "[chat-markdown] action failed",
+        {
+          operation: "copy-code-block",
+          language: "ts",
+          fenceTitle: "sample.ts",
+        },
+        failure,
+      );
     });
   });
 });

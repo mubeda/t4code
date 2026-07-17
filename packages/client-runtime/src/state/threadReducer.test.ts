@@ -42,6 +42,18 @@ const baseThread: OrchestrationThread = {
   session: null,
 };
 
+function event(type: string, payload: Record<string, unknown>, sequence = 100) {
+  return {
+    ...baseEventFields,
+    sequence,
+    occurredAt: `2026-04-02T${String(sequence % 24).padStart(2, "0")}:00:00.000Z`,
+    aggregateKind: "thread",
+    aggregateId: ThreadId.make("thread-1"),
+    type,
+    payload: { threadId: ThreadId.make("thread-1"), ...payload },
+  } as any;
+}
+
 describe("applyThreadDetailEvent", () => {
   describe("project events", () => {
     it("returns unchanged for project.created", () => {
@@ -695,6 +707,744 @@ describe("applyThreadDetailEvent", () => {
         },
       } as any);
       expect(result.kind).toBe("unchanged");
+    });
+  });
+
+  describe("remaining lifecycle variants", () => {
+    it.each(["project.meta-updated", "project.deleted"])("ignores %s", (type) => {
+      expect(applyThreadDetailEvent(baseThread, event(type, {})).kind).toBe("unchanged");
+    });
+
+    it("updates runtime and interaction modes", () => {
+      const runtime = applyThreadDetailEvent(
+        baseThread,
+        event("thread.runtime-mode-set", {
+          runtimeMode: "read-only",
+          updatedAt: "runtime-updated",
+        }),
+      );
+      const interaction = applyThreadDetailEvent(
+        baseThread,
+        event("thread.interaction-mode-set", {
+          interactionMode: "plan",
+          updatedAt: "interaction-updated",
+        }),
+      );
+
+      expect(runtime).toMatchObject({
+        kind: "updated",
+        thread: { runtimeMode: "read-only", updatedAt: "runtime-updated" },
+      });
+      expect(interaction).toMatchObject({
+        kind: "updated",
+        thread: { interactionMode: "plan", updatedAt: "interaction-updated" },
+      });
+    });
+
+    it("patches all optional metadata and preserves omitted fields", () => {
+      const patched = applyThreadDetailEvent(
+        baseThread,
+        event("thread.meta-updated", {
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("claude"),
+            model: "claude-opus",
+          },
+          worktreePath: "/tmp/worktree",
+          updatedAt: "patched",
+        }),
+      );
+      const omitted = applyThreadDetailEvent(
+        baseThread,
+        event("thread.meta-updated", { updatedAt: "omitted" }),
+      );
+
+      expect(patched).toMatchObject({
+        kind: "updated",
+        thread: {
+          title: "Test Thread",
+          modelSelection: { model: "claude-opus" },
+          branch: null,
+          worktreePath: "/tmp/worktree",
+        },
+      });
+      expect(omitted).toMatchObject({
+        kind: "updated",
+        thread: {
+          title: "Test Thread",
+          modelSelection: baseThread.modelSelection,
+          branch: null,
+          worktreePath: null,
+        },
+      });
+    });
+
+    it("applies turn-start requests with and without a model override", () => {
+      const withModel = applyThreadDetailEvent(
+        baseThread,
+        event("thread.turn-start-requested", {
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("claude"),
+            model: "claude-sonnet",
+          },
+          runtimeMode: "read-only",
+          interactionMode: "plan",
+        }),
+      );
+      const withoutModel = applyThreadDetailEvent(
+        baseThread,
+        event("thread.turn-start-requested", {
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        }),
+      );
+
+      expect(withModel).toMatchObject({
+        kind: "updated",
+        thread: { modelSelection: { model: "claude-sonnet" }, runtimeMode: "read-only" },
+      });
+      expect(withoutModel).toMatchObject({
+        kind: "updated",
+        thread: { modelSelection: baseThread.modelSelection },
+      });
+    });
+
+    it("only interrupts the matching latest turn and fills missing timestamps", () => {
+      const latestTurn = {
+        turnId: TurnId.make("turn-1"),
+        state: "running" as const,
+        requestedAt: "requested",
+        startedAt: null,
+        completedAt: null,
+        assistantMessageId: null,
+      };
+      expect(
+        applyThreadDetailEvent(baseThread, event("thread.turn-interrupt-requested", {})).kind,
+      ).toBe("unchanged");
+      expect(
+        applyThreadDetailEvent(
+          { ...baseThread, latestTurn },
+          event("thread.turn-interrupt-requested", {
+            turnId: TurnId.make("turn-other"),
+            createdAt: "interrupt",
+          }),
+        ).kind,
+      ).toBe("unchanged");
+      expect(
+        applyThreadDetailEvent(
+          { ...baseThread, latestTurn },
+          event("thread.turn-interrupt-requested", {
+            turnId: TurnId.make("turn-1"),
+            createdAt: "interrupt",
+          }),
+        ),
+      ).toMatchObject({
+        kind: "updated",
+        thread: {
+          latestTurn: { state: "interrupted", startedAt: "interrupt", completedAt: "interrupt" },
+        },
+      });
+    });
+  });
+
+  describe("message merge variants", () => {
+    const existingMessage = {
+      id: MessageId.make("msg-existing"),
+      role: "assistant" as const,
+      text: "existing",
+      turnId: TurnId.make("turn-1"),
+      streaming: true,
+      createdAt: "created",
+      updatedAt: "old-updated",
+    };
+
+    it("merges a completed message without erasing text and preserves other messages", () => {
+      const result = applyThreadDetailEvent(
+        {
+          ...baseThread,
+          messages: [{ ...existingMessage, id: MessageId.make("msg-other") }, existingMessage],
+        },
+        event("thread.message-sent", {
+          messageId: existingMessage.id,
+          role: "assistant",
+          text: "",
+          turnId: TurnId.make("turn-1"),
+          streaming: false,
+          attachments: [{ type: "image", name: "image.png", url: "data:image/png;base64,eA==" }],
+          createdAt: "created",
+          updatedAt: "new-updated",
+        }),
+      );
+
+      expect(result).toMatchObject({
+        kind: "updated",
+        thread: {
+          messages: [
+            { id: "msg-other", text: "existing" },
+            {
+              id: "msg-existing",
+              text: "existing",
+              streaming: false,
+              updatedAt: "new-updated",
+              attachments: [{ name: "image.png" }],
+            },
+          ],
+        },
+      });
+    });
+
+    it("replaces existing text for a completed message", () => {
+      const result = applyThreadDetailEvent(
+        {
+          ...baseThread,
+          messages: [existingMessage],
+          latestTurn: {
+            turnId: TurnId.make("turn-1"),
+            state: "running",
+            requestedAt: "requested",
+            startedAt: "started",
+            completedAt: null,
+            assistantMessageId: null,
+          },
+        },
+        event("thread.message-sent", {
+          messageId: existingMessage.id,
+          role: "assistant",
+          text: "replacement",
+          turnId: TurnId.make("turn-1"),
+          streaming: false,
+          createdAt: "created",
+          updatedAt: "updated",
+        }),
+      );
+      expect(result).toMatchObject({
+        kind: "updated",
+        thread: { messages: [{ text: "replacement", turnId: "turn-1" }] },
+      });
+    });
+
+    it.each(["interrupted", "error"] as const)(
+      "preserves a previously %s turn when the final assistant message arrives",
+      (state) => {
+        const result = applyThreadDetailEvent(
+          {
+            ...baseThread,
+            latestTurn: {
+              turnId: TurnId.make("turn-1"),
+              state,
+              requestedAt: "requested",
+              startedAt: "started",
+              completedAt: null,
+              assistantMessageId: null,
+            },
+          },
+          event("thread.message-sent", {
+            messageId: MessageId.make(`msg-${state}`),
+            role: "assistant",
+            text: "done",
+            turnId: TurnId.make("turn-1"),
+            streaming: false,
+            createdAt: "created",
+            updatedAt: "completed",
+          }),
+        );
+        expect(result).toMatchObject({ kind: "updated", thread: { latestTurn: { state } } });
+      },
+    );
+
+    it("starts an assistant turn and rebinds only its checkpoint", () => {
+      const result = applyThreadDetailEvent(
+        {
+          ...baseThread,
+          checkpoints: [
+            {
+              turnId: TurnId.make("turn-2"),
+              checkpointTurnCount: 2,
+              checkpointRef: CheckpointRef.make("ref-2"),
+              status: "ready",
+              files: [],
+              assistantMessageId: null,
+              completedAt: "checkpoint",
+            },
+            {
+              turnId: TurnId.make("other-turn"),
+              checkpointTurnCount: 3,
+              checkpointRef: CheckpointRef.make("ref-3"),
+              status: "ready",
+              files: [],
+              assistantMessageId: null,
+              completedAt: "checkpoint",
+            },
+          ],
+        },
+        event("thread.message-sent", {
+          messageId: MessageId.make("msg-turn-2"),
+          role: "assistant",
+          text: "partial",
+          turnId: TurnId.make("turn-2"),
+          streaming: true,
+          createdAt: "created",
+          updatedAt: "updated",
+        }),
+      );
+
+      expect(result).toMatchObject({
+        kind: "updated",
+        thread: {
+          latestTurn: {
+            turnId: "turn-2",
+            state: "running",
+            requestedAt: "created",
+            startedAt: "created",
+            completedAt: null,
+          },
+          checkpoints: [
+            { turnId: "turn-2", assistantMessageId: "msg-turn-2" },
+            { turnId: "other-turn", assistantMessageId: null },
+          ],
+        },
+      });
+    });
+
+    it("uses the event time when an existing turn has not started", () => {
+      const result = applyThreadDetailEvent(
+        {
+          ...baseThread,
+          latestTurn: {
+            turnId: TurnId.make("turn-1"),
+            state: "running",
+            requestedAt: "requested",
+            startedAt: null,
+            completedAt: null,
+            assistantMessageId: null,
+          },
+        },
+        event("thread.message-sent", {
+          messageId: MessageId.make("msg-started"),
+          role: "assistant",
+          text: "stream",
+          turnId: TurnId.make("turn-1"),
+          streaming: true,
+          createdAt: "started-by-message",
+          updatedAt: "updated",
+        }),
+      );
+      expect(result).toMatchObject({
+        kind: "updated",
+        thread: { latestTurn: { startedAt: "started-by-message" } },
+      });
+    });
+  });
+
+  describe("session settlement variants", () => {
+    it.each([
+      ["idle", "completed"],
+      ["error", "error"],
+      ["interrupted", "interrupted"],
+      ["stopped", "interrupted"],
+    ] as const)("maps %s sessions to %s turns", (status, state) => {
+      const result = applyThreadDetailEvent(
+        {
+          ...baseThread,
+          latestTurn: {
+            turnId: TurnId.make("turn-1"),
+            state: "running",
+            requestedAt: "requested",
+            startedAt: "started",
+            completedAt: "placeholder",
+            assistantMessageId: null,
+          },
+        },
+        event("thread.session-set", {
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status,
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: status === "error" ? "failed" : null,
+            updatedAt: "session-ended",
+          },
+        }),
+      );
+      expect(result).toMatchObject({
+        kind: "updated",
+        thread: { latestTurn: { state, completedAt: "session-ended" } },
+      });
+    });
+
+    it("keeps a turn unsettled while a session is starting", () => {
+      const latestTurn = {
+        turnId: TurnId.make("turn-1"),
+        state: "running" as const,
+        requestedAt: "requested",
+        startedAt: "started",
+        completedAt: null,
+        assistantMessageId: null,
+      };
+      const result = applyThreadDetailEvent(
+        { ...baseThread, latestTurn },
+        event("thread.session-set", {
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "starting",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: "starting",
+          },
+        }),
+      );
+      expect(result).toMatchObject({ kind: "updated", thread: { latestTurn } });
+    });
+
+    it("preserves timing and message identity when the same running turn resumes", () => {
+      const latestTurn = {
+        turnId: TurnId.make("turn-1"),
+        state: "running" as const,
+        requestedAt: "requested",
+        startedAt: null,
+        completedAt: "placeholder",
+        assistantMessageId: MessageId.make("assistant"),
+      };
+      const result = applyThreadDetailEvent(
+        { ...baseThread, latestTurn },
+        event("thread.session-set", {
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "running",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: TurnId.make("turn-1"),
+            lastError: null,
+            updatedAt: "resumed",
+          },
+        }),
+      );
+      expect(result).toMatchObject({
+        kind: "updated",
+        thread: {
+          latestTurn: {
+            requestedAt: "requested",
+            startedAt: "resumed",
+            completedAt: null,
+            assistantMessageId: "assistant",
+          },
+        },
+      });
+    });
+  });
+
+  describe("ordered collections and checkpoint guards", () => {
+    it("replaces and sorts proposed plans", () => {
+      const plan = (id: string, createdAt: string) => ({
+        id,
+        turnId: null,
+        planMarkdown: id,
+        implementedAt: null,
+        implementationThreadId: null,
+        createdAt,
+        updatedAt: createdAt,
+      });
+      const result = applyThreadDetailEvent(
+        { ...baseThread, proposedPlans: [plan("b", "2026-04-02"), plan("old", "2026-04-01")] },
+        event("thread.proposed-plan-upserted", {
+          proposedPlan: plan("old", "2026-04-02"),
+        }),
+      );
+      expect(result).toMatchObject({
+        kind: "updated",
+        thread: { proposedPlans: [{ id: "b" }, { id: "old" }] },
+      });
+    });
+
+    it("rejects a missing downgrade and replaces checkpoints in turn order", () => {
+      const existing = {
+        turnId: TurnId.make("turn-2"),
+        checkpointTurnCount: 2,
+        checkpointRef: CheckpointRef.make("ready-ref"),
+        status: "ready" as const,
+        files: [],
+        assistantMessageId: null,
+        completedAt: "ready",
+      };
+      const rejected = applyThreadDetailEvent(
+        { ...baseThread, checkpoints: [existing] },
+        event("thread.turn-diff-completed", {
+          turnId: TurnId.make("turn-2"),
+          checkpointTurnCount: 2,
+          checkpointRef: CheckpointRef.make("missing-ref"),
+          status: "missing",
+          files: [],
+          assistantMessageId: null,
+          completedAt: "missing",
+        }),
+      );
+      expect(rejected.kind).toBe("unchanged");
+
+      const replaced = applyThreadDetailEvent(
+        {
+          ...baseThread,
+          checkpoints: [
+            existing,
+            {
+              turnId: TurnId.make("turn-3"),
+              checkpointTurnCount: 3,
+              checkpointRef: existing.checkpointRef,
+              status: existing.status,
+              files: existing.files,
+              assistantMessageId: existing.assistantMessageId,
+              completedAt: existing.completedAt,
+            },
+          ],
+        },
+        event("thread.turn-diff-completed", {
+          turnId: TurnId.make("turn-1"),
+          checkpointTurnCount: 1,
+          checkpointRef: CheckpointRef.make("error-ref"),
+          status: "error",
+          files: [],
+          assistantMessageId: null,
+          completedAt: "error",
+        }),
+      );
+      expect(replaced).toMatchObject({
+        kind: "updated",
+        thread: {
+          checkpoints: [{ turnId: "turn-1" }, { turnId: "turn-2" }, { turnId: "turn-3" }],
+          latestTurn: { state: "error" },
+        },
+      });
+    });
+
+    it("keeps a live turn running when its mid-turn diff completes", () => {
+      const latestTurn = {
+        turnId: TurnId.make("turn-live"),
+        state: "running" as const,
+        requestedAt: "requested",
+        startedAt: "started",
+        completedAt: null,
+        assistantMessageId: null,
+      };
+      const result = applyThreadDetailEvent(
+        {
+          ...baseThread,
+          latestTurn,
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "running",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: TurnId.make("turn-live"),
+            lastError: null,
+            updatedAt: "running",
+          },
+        },
+        event("thread.turn-diff-completed", {
+          turnId: TurnId.make("turn-live"),
+          checkpointTurnCount: 1,
+          checkpointRef: CheckpointRef.make("live-ref"),
+          status: "missing",
+          files: [],
+          assistantMessageId: null,
+          completedAt: "mid-turn",
+        }),
+      );
+      expect(result).toMatchObject({ kind: "updated", thread: { latestTurn } });
+    });
+
+    it("does not replace an unrelated latest turn with a completed diff", () => {
+      const latestTurn = {
+        turnId: TurnId.make("newer-turn"),
+        state: "running" as const,
+        requestedAt: "requested",
+        startedAt: "started",
+        completedAt: null,
+        assistantMessageId: null,
+      };
+      const result = applyThreadDetailEvent(
+        { ...baseThread, latestTurn },
+        event("thread.turn-diff-completed", {
+          turnId: TurnId.make("older-turn"),
+          checkpointTurnCount: 1,
+          checkpointRef: CheckpointRef.make("older-ref"),
+          status: "ready",
+          files: [],
+          assistantMessageId: null,
+          completedAt: "older-completed",
+        }),
+      );
+      expect(result).toMatchObject({ kind: "updated", thread: { latestTurn } });
+    });
+
+    it("replaces duplicate activities and orders missing sequences by time and id", () => {
+      const activity = (id: string, createdAt: string, sequence?: number) => ({
+        id: EventId.make(id),
+        tone: "tool" as const,
+        kind: "command" as const,
+        summary: id,
+        payload: {},
+        turnId: null,
+        ...(sequence === undefined ? {} : { sequence }),
+        createdAt,
+      });
+      const result = applyThreadDetailEvent(
+        {
+          ...baseThread,
+          activities: [
+            activity("same", "2026-04-03"),
+            activity("z", "2026-04-02"),
+            activity("a", "2026-04-02"),
+            activity("numbered", "2026-04-04", 1),
+          ],
+        },
+        event("thread.activity-appended", {
+          activity: activity("same", "2026-04-01"),
+        }),
+      );
+      expect(result).toMatchObject({
+        kind: "updated",
+        thread: { activities: [{ id: "numbered" }, { id: "same" }, { id: "a" }, { id: "z" }] },
+      });
+    });
+  });
+
+  describe("revert and forward compatibility", () => {
+    it("clears the latest turn and retains system and unbound messages when no checkpoint remains", () => {
+      const result = applyThreadDetailEvent(
+        {
+          ...baseThread,
+          messages: [
+            {
+              id: MessageId.make("system"),
+              role: "system",
+              text: "system",
+              turnId: TurnId.make("removed"),
+              streaming: false,
+              createdAt: "created",
+              updatedAt: "updated",
+            },
+            {
+              id: MessageId.make("unbound"),
+              role: "user",
+              text: "unbound",
+              turnId: null,
+              streaming: false,
+              createdAt: "created",
+              updatedAt: "updated",
+            },
+            {
+              id: MessageId.make("removed"),
+              role: "assistant",
+              text: "removed",
+              turnId: TurnId.make("removed"),
+              streaming: false,
+              createdAt: "created",
+              updatedAt: "updated",
+            },
+          ],
+          proposedPlans: [
+            {
+              id: "global-plan",
+              turnId: null,
+              planMarkdown: "global",
+              implementedAt: null,
+              implementationThreadId: null,
+              createdAt: "created",
+              updatedAt: "updated",
+            },
+            {
+              id: "removed-plan",
+              turnId: TurnId.make("removed"),
+              planMarkdown: "removed",
+              implementedAt: null,
+              implementationThreadId: null,
+              createdAt: "created",
+              updatedAt: "updated",
+            },
+          ],
+          activities: [
+            {
+              id: EventId.make("global-activity"),
+              tone: "info",
+              kind: "status",
+              summary: "global",
+              payload: {},
+              turnId: null,
+              createdAt: "created",
+            },
+            {
+              id: EventId.make("removed-activity"),
+              tone: "info",
+              kind: "status",
+              summary: "removed",
+              payload: {},
+              turnId: TurnId.make("removed"),
+              createdAt: "created",
+            },
+          ],
+          checkpoints: [
+            {
+              turnId: TurnId.make("removed-checkpoint"),
+              checkpointTurnCount: 2,
+              checkpointRef: CheckpointRef.make("removed-ref"),
+              status: "missing",
+              files: [],
+              assistantMessageId: null,
+              completedAt: "completed",
+            },
+          ],
+        },
+        event("thread.reverted", { turnCount: 0 }),
+      );
+      expect(result).toMatchObject({
+        kind: "updated",
+        thread: {
+          latestTurn: null,
+          messages: [{ id: "system" }, { id: "unbound" }],
+          proposedPlans: [{ id: "global-plan" }],
+          activities: [{ id: "global-activity" }],
+          checkpoints: [],
+        },
+      });
+    });
+
+    it("restores a retained missing checkpoint without an assistant message", () => {
+      const result = applyThreadDetailEvent(
+        {
+          ...baseThread,
+          checkpoints: [
+            {
+              turnId: TurnId.make("turn-missing"),
+              checkpointTurnCount: 1,
+              checkpointRef: CheckpointRef.make("missing-ref"),
+              status: "missing",
+              files: [],
+              assistantMessageId: null,
+              completedAt: "missing-completed",
+            },
+          ],
+        },
+        event("thread.reverted", { turnCount: 1 }),
+      );
+      expect(result).toMatchObject({
+        kind: "updated",
+        thread: {
+          latestTurn: {
+            turnId: "turn-missing",
+            state: "completed",
+            assistantMessageId: null,
+          },
+        },
+      });
+    });
+
+    it.each([
+      "thread.user-input-response-requested",
+      "thread.checkpoint-revert-requested",
+      "thread.future-event",
+    ])("ignores %s", (type) => {
+      expect(applyThreadDetailEvent(baseThread, event(type, {})).kind).toBe("unchanged");
     });
   });
 });

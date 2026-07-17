@@ -3,10 +3,12 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
+  getProviderInstanceModels,
   isProviderInstancePickerReady,
   isProviderInstancePickerVisible,
   resolveSelectableProviderInstance,
   resolveProviderDriverKindForInstanceSelection,
+  sortProviderInstanceEntries,
 } from "./providerInstances";
 
 function provider(input: {
@@ -140,9 +142,57 @@ describe("deriveProviderInstanceEntries", () => {
     expect(entry?.driverKind).toBe("codex");
     expect(entry?.isDefault).toBe(false);
   });
+
+  it("humanizes custom instance ids and groups defaults before custom instances", () => {
+    const custom = provider({
+      provider: ProviderDriverKind.make("codex"),
+      instanceId: "codex__personal-work",
+      displayName: "Codex",
+    });
+    const defaultProvider = provider({
+      provider: ProviderDriverKind.make("codex"),
+      instanceId: "codex",
+    });
+    const entries = deriveProviderInstanceEntries([custom, defaultProvider]);
+
+    expect(entries[0]?.displayName).toBe("Codex Personal Work");
+    expect(sortProviderInstanceEntries(entries).map((entry) => entry.instanceId)).toEqual([
+      "codex",
+      "codex__personal-work",
+    ]);
+  });
+
+  it("returns models only for an exact provider instance", () => {
+    const snapshot = {
+      ...provider({ provider: ProviderDriverKind.make("codex"), instanceId: "codex" }),
+      models: [{ slug: "gpt-test", name: "GPT Test", isCustom: true, capabilities: null }],
+    };
+
+    expect(getProviderInstanceModels([snapshot], ProviderInstanceId.make("codex"))).toEqual(
+      snapshot.models,
+    );
+    expect(
+      getProviderInstanceModels([snapshot], ProviderInstanceId.make("missing-provider")),
+    ).toEqual([]);
+  });
 });
 
 describe("resolveSelectableProviderInstance", () => {
+  it("selects the first sendable instance when no preference is provided", () => {
+    const available = ProviderInstanceId.make("claudeAgent");
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("codex"),
+        instanceId: "codex",
+        enabled: false,
+      }),
+      provider({ provider: ProviderDriverKind.make("claudeAgent"), instanceId: available }),
+    ];
+
+    expect(resolveSelectableProviderInstance(providers, undefined)).toBe(available);
+    expect(resolveSelectableProviderInstance([], undefined)).toBeUndefined();
+  });
+
   it("returns the requested instance when it is enabled and available", () => {
     const requested = ProviderInstanceId.make("claude_work");
     const providers = [

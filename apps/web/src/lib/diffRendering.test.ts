@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vite-plus/test";
-import { buildPatchCacheKey, getRenderablePatch } from "./diffRendering";
+import {
+  buildFileDiffRenderKey,
+  buildPatchCacheKey,
+  compactPartialHunkOffsets,
+  fnv1a32,
+  getDiffCollapseIconClassName,
+  getRenderablePatch,
+  resolveDiffThemeName,
+  resolveFileDiffPath,
+} from "./diffRendering";
 
 describe("buildPatchCacheKey", () => {
   it("returns a stable cache key for identical content", () => {
@@ -80,5 +89,66 @@ describe("getRenderablePatch", () => {
     expect(parsed?.kind).toBe("files");
     if (parsed?.kind !== "files") return;
     expect(parsed.files[0]?.hunks[0]?.unifiedLineStart).toBe(47);
+  });
+
+  it("returns null for absent content and raw text for unsupported patches", () => {
+    expect(getRenderablePatch(undefined)).toBeNull();
+    expect(getRenderablePatch("   ")).toBeNull();
+    expect(getRenderablePatch("plain text")).toEqual({
+      kind: "raw",
+      text: "plain text",
+      reason: "Unsupported diff format. Showing raw patch.",
+    });
+  });
+
+  it("leaves complete files unchanged and compacts partial files without cache keys", () => {
+    const complete = { isPartial: false } as never;
+    expect(compactPartialHunkOffsets(complete)).toBe(complete);
+    const partial = {
+      isPartial: true,
+      cacheKey: undefined,
+      hunks: [
+        { splitLineCount: 2, unifiedLineCount: 3, splitLineStart: 10, unifiedLineStart: 20 },
+        { splitLineCount: 4, unifiedLineCount: 5, splitLineStart: 30, unifiedLineStart: 40 },
+      ],
+      splitLineCount: 0,
+      unifiedLineCount: 0,
+    } as never;
+    expect(compactPartialHunkOffsets(partial)).toMatchObject({
+      splitLineCount: 6,
+      unifiedLineCount: 8,
+      hunks: [
+        { splitLineStart: 0, unifiedLineStart: 0 },
+        { splitLineStart: 2, unifiedLineStart: 3 },
+      ],
+    });
+  });
+});
+
+describe("diff rendering metadata helpers", () => {
+  it("resolves themes, hashes, paths, and render-key fallbacks", () => {
+    expect(resolveDiffThemeName("dark")).toBe("pierre-dark");
+    expect(resolveDiffThemeName("light")).toBe("pierre-light");
+    expect(fnv1a32("")).toBe(0x811c9dc5);
+    expect(fnv1a32("abc", 1, 3)).not.toBe(fnv1a32("abc"));
+    expect(resolveFileDiffPath({ name: "a/src/app.ts" } as never)).toBe("src/app.ts");
+    expect(resolveFileDiffPath({ name: "b/src/app.ts" } as never)).toBe("src/app.ts");
+    expect(resolveFileDiffPath({ name: null, prevName: "old.ts" } as never)).toBe("old.ts");
+    expect(resolveFileDiffPath({ name: null, prevName: null } as never)).toBe("");
+    expect(buildFileDiffRenderKey({ cacheKey: "cached" } as never)).toBe("cached");
+    expect(
+      buildFileDiffRenderKey({ cacheKey: null, prevName: null, name: "new.ts" } as never),
+    ).toBe("none:new.ts");
+  });
+
+  it.each([
+    ["new", "addition"],
+    ["deleted", "deletion"],
+    ["change", "modified"],
+    ["rename-pure", "modified"],
+    ["rename-changed", "modified"],
+    ["unknown", "muted"],
+  ])("maps %s diff collapse colors", (type, expected) => {
+    expect(getDiffCollapseIconClassName({ type } as never)).toContain(expected);
   });
 });

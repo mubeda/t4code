@@ -445,3 +445,26 @@ fn platform_arch() -> &'static str {
 fn internal_server_error() -> Response {
     (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error").into_response()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn route_helpers_preserve_runtime_methods_and_internal_error_status() {
+        assert_eq!(RouteMethod::Delete.as_str(), "DELETE");
+        assert_eq!(RouteMethod::Get.as_str(), "GET");
+        assert_eq!(RouteMethod::Post.as_str(), "POST");
+        assert_eq!(
+            route(RouteMethod::Delete, "/runtime"),
+            RouteSpec {
+                method: "DELETE",
+                path: "/runtime",
+            }
+        );
+        assert_eq!(
+            internal_server_error().status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+}

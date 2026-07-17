@@ -407,3 +407,91 @@ fn resolve_command(input: &ProcessRunInput) -> ResolvedCommand {
         args: input.args.clone(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FailingReader;
+
+    impl AsyncRead for FailingReader {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _context: &mut std::task::Context<'_>,
+            _buffer: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Err(std::io::Error::other("injected read failure")))
+        }
+    }
+
+    #[tokio::test]
+    async fn runner_covers_unit_build_success_spawn_timeout_and_cancellation() {
+        let runner = ProcessRunner;
+        let output = runner
+            .run(
+                ProcessRunInput::for_test_output(7)
+                    .with_max_output_bytes(5)
+                    .with_output_mode(OutputMode::Truncate),
+            )
+            .await
+            .unwrap();
+        assert_eq!(output.stdout, "xxxxx");
+        assert!(output.stdout_truncated);
+
+        let spawn = runner
+            .run(ProcessRunInput::new(
+                "definitely-not-a-real-t4code-command",
+                Vec::<String>::new(),
+            ))
+            .await
+            .unwrap_err();
+        assert!(matches!(spawn, ProcessError::Spawn { .. }));
+
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let cancelled = runner
+            .run_with_cancellation(
+                ProcessRunInput::for_test_sleep(Duration::from_secs(1)),
+                cancellation,
+            )
+            .await
+            .unwrap_err();
+        assert!(cancelled.is_cancelled());
+
+        let timed_out = runner
+            .run(
+                ProcessRunInput::for_test_sleep(Duration::from_secs(1))
+                    .with_timeout(Duration::ZERO)
+                    .with_timeout_behavior(TimeoutBehavior::TimedOutResult),
+            )
+            .await
+            .unwrap();
+        assert!(timed_out.timed_out);
+    }
+
+    #[tokio::test]
+    async fn output_collection_covers_limits_markers_and_read_failures() {
+        let error = collect_output(&b"abcdef"[..], "stdout", 3, OutputMode::Error, "")
+            .await
+            .unwrap_err();
+        assert_eq!(error.output_limit(), Some(("stdout", 3)));
+
+        let truncated = collect_output(&b"abcdef"[..], "stderr", 4, OutputMode::Truncate, "++")
+            .await
+            .unwrap();
+        assert_eq!(truncated.bytes, b"ab++");
+        assert!(truncated.truncated);
+
+        assert!(matches!(
+            collect_output(FailingReader, "stdout", 10, OutputMode::Error, "").await,
+            Err(ProcessError::Read {
+                stream: "stdout",
+                ..
+            })
+        ));
+        let input = ProcessRunInput::new("command", ["one", "two"]);
+        let resolved = resolve_command(&input);
+        assert_eq!(resolved.command, "command");
+        assert_eq!(resolved.args, vec!["one", "two"]);
+    }
+}

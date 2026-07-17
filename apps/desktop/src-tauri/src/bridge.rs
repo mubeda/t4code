@@ -7,9 +7,7 @@ use std::{
     time::Duration,
 };
 use t4code_server::process::configure_background_std_command;
-use tauri::AppHandle;
-use tauri::Manager;
-use tauri::State;
+use tauri::{AppHandle, Manager, Runtime, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_opener::OpenerExt;
 
@@ -34,6 +32,11 @@ use crate::tailscale::{
     read_tailscale_status,
 };
 use crate::updates::DesktopUpdateManager;
+
+#[cfg(test)]
+pub(crate) type DesktopRuntime = tauri::test::MockRuntime;
+#[cfg(not(test))]
+pub(crate) type DesktopRuntime = tauri::Wry;
 
 const AUTH_ACCESS_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:access_token";
 const AUTH_ENVIRONMENT_BOOTSTRAP_TOKEN_TYPE: &str =
@@ -172,15 +175,15 @@ async fn remote_post_json(
     remote_json_response(operation, response).await
 }
 
-fn client_settings_path(app: &AppHandle) -> Result<PathBuf, String> {
+fn client_settings_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(state_dir(app)?.join(CLIENT_SETTINGS_FILE_NAME))
 }
 
-fn connection_catalog_path(app: &AppHandle) -> Result<PathBuf, String> {
+fn connection_catalog_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(state_dir(app)?.join(CONNECTION_CATALOG_FILE_NAME))
 }
 
-fn desktop_settings_path(app: &AppHandle) -> Result<PathBuf, String> {
+fn desktop_settings_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(state_dir(app)?.join(DESKTOP_SETTINGS_FILE_NAME))
 }
 
@@ -355,7 +358,7 @@ fn clear_connection_catalog_document(path: &Path) -> Result<(), String> {
     }
 }
 
-fn read_desktop_settings(app: &AppHandle) -> Result<DesktopSettings, String> {
+fn read_desktop_settings<R: Runtime>(app: &AppHandle<R>) -> Result<DesktopSettings, String> {
     let path = desktop_settings_path(app)?;
     let Some(value) = read_json_file(&path)? else {
         return Ok(default_desktop_settings());
@@ -364,13 +367,16 @@ fn read_desktop_settings(app: &AppHandle) -> Result<DesktopSettings, String> {
     Ok(normalize_desktop_settings_document(document))
 }
 
-fn write_desktop_settings(app: &AppHandle, settings: &DesktopSettings) -> Result<(), String> {
+fn write_desktop_settings<R: Runtime>(
+    app: &AppHandle<R>,
+    settings: &DesktopSettings,
+) -> Result<(), String> {
     let path = desktop_settings_path(app)?;
     write_json_file(&path, &desktop_settings_to_value(settings))
 }
 
-fn update_desktop_settings(
-    app: &AppHandle,
+fn update_desktop_settings<R: Runtime>(
+    app: &AppHandle<R>,
     update: impl FnOnce(&mut DesktopSettings),
 ) -> Result<DesktopSettings, String> {
     let mut settings = read_desktop_settings(app)?;
@@ -801,8 +807,8 @@ fn wsl_unc_path_to_linux_path(windows_path: &str) -> Option<String> {
     }
 }
 
-fn resolve_pick_folder_dialog_default_path(
-    app: &AppHandle,
+fn resolve_pick_folder_dialog_default_path<R: Runtime>(
+    app: &AppHandle<R>,
     settings: &DesktopSettings,
     raw_options: Option<&Value>,
 ) -> Option<PathBuf> {
@@ -862,7 +868,7 @@ pub fn desktop_bridge_get_bridge_metadata() -> Value {
 }
 
 #[tauri::command]
-pub fn desktop_bridge_get_app_branding(app: AppHandle) -> Option<Value> {
+pub fn desktop_bridge_get_app_branding(app: AppHandle<DesktopRuntime>) -> Option<Value> {
     Some(app_branding(&app))
 }
 
@@ -874,26 +880,33 @@ pub fn desktop_bridge_get_local_environment_bootstraps(
 }
 
 #[tauri::command]
-pub fn desktop_bridge_get_client_settings(app: AppHandle) -> Result<Option<Value>, String> {
+pub fn desktop_bridge_get_client_settings(
+    app: AppHandle<DesktopRuntime>,
+) -> Result<Option<Value>, String> {
     let path = client_settings_path(&app)?;
     read_json_file(&path).map(|value| value.map(normalize_client_settings_document))
 }
 
 #[tauri::command]
-pub fn desktop_bridge_set_client_settings(app: AppHandle, settings: Value) -> Result<(), String> {
+pub fn desktop_bridge_set_client_settings(
+    app: AppHandle<DesktopRuntime>,
+    settings: Value,
+) -> Result<(), String> {
     let path = client_settings_path(&app)?;
     write_json_file(&path, &settings)
 }
 
 #[tauri::command]
-pub fn desktop_bridge_get_connection_catalog(app: AppHandle) -> Result<Option<String>, String> {
+pub fn desktop_bridge_get_connection_catalog(
+    app: AppHandle<DesktopRuntime>,
+) -> Result<Option<String>, String> {
     let path = connection_catalog_path(&app)?;
     read_connection_catalog_document(&path)
 }
 
 #[tauri::command]
 pub fn desktop_bridge_set_connection_catalog(
-    app: AppHandle,
+    app: AppHandle<DesktopRuntime>,
     catalog: String,
 ) -> Result<bool, String> {
     let path = connection_catalog_path(&app)?;
@@ -901,7 +914,9 @@ pub fn desktop_bridge_set_connection_catalog(
 }
 
 #[tauri::command]
-pub fn desktop_bridge_clear_connection_catalog(app: AppHandle) -> Result<(), String> {
+pub fn desktop_bridge_clear_connection_catalog(
+    app: AppHandle<DesktopRuntime>,
+) -> Result<(), String> {
     let path = connection_catalog_path(&app)?;
     clear_connection_catalog_document(&path)
 }
@@ -974,7 +989,7 @@ pub async fn desktop_bridge_issue_ssh_web_socket_ticket(
 
 #[tauri::command]
 pub fn desktop_bridge_get_server_exposure_state(
-    app: AppHandle,
+    app: AppHandle<DesktopRuntime>,
     backend: State<'_, BackendSupervisor>,
 ) -> Result<Value, String> {
     read_desktop_settings(&app)
@@ -983,7 +998,7 @@ pub fn desktop_bridge_get_server_exposure_state(
 
 #[tauri::command]
 pub async fn desktop_bridge_set_server_exposure_mode(
-    app: AppHandle,
+    app: AppHandle<DesktopRuntime>,
     backend: State<'_, BackendSupervisor>,
     mode: String,
 ) -> Result<Value, String> {
@@ -1000,7 +1015,7 @@ pub async fn desktop_bridge_set_server_exposure_mode(
 
 #[tauri::command]
 pub async fn desktop_bridge_set_tailscale_serve_enabled(
-    app: AppHandle,
+    app: AppHandle<DesktopRuntime>,
     backend: State<'_, BackendSupervisor>,
     input: Value,
 ) -> Result<Value, String> {
@@ -1021,13 +1036,13 @@ pub async fn desktop_bridge_set_tailscale_serve_enabled(
 }
 
 #[tauri::command]
-pub fn desktop_bridge_get_wsl_state(app: AppHandle) -> Result<Value, String> {
+pub fn desktop_bridge_get_wsl_state(app: AppHandle<DesktopRuntime>) -> Result<Value, String> {
     read_desktop_settings(&app).map(|settings| wsl_state(&settings))
 }
 
 #[tauri::command]
 pub fn desktop_bridge_set_wsl_backend_enabled(
-    app: AppHandle,
+    app: AppHandle<DesktopRuntime>,
     enabled: bool,
 ) -> Result<Value, String> {
     update_desktop_settings(&app, |settings| {
@@ -1041,7 +1056,7 @@ pub fn desktop_bridge_set_wsl_backend_enabled(
 
 #[tauri::command]
 pub fn desktop_bridge_set_wsl_distro(
-    app: AppHandle,
+    app: AppHandle<DesktopRuntime>,
     distro: Option<String>,
 ) -> Result<Value, String> {
     update_desktop_settings(&app, |settings| {
@@ -1051,7 +1066,10 @@ pub fn desktop_bridge_set_wsl_distro(
 }
 
 #[tauri::command]
-pub fn desktop_bridge_set_wsl_only(app: AppHandle, enabled: bool) -> Result<Value, String> {
+pub fn desktop_bridge_set_wsl_only(
+    app: AppHandle<DesktopRuntime>,
+    enabled: bool,
+) -> Result<Value, String> {
     update_desktop_settings(&app, |settings| {
         settings.wsl_only = enabled;
     })
@@ -1060,7 +1078,7 @@ pub fn desktop_bridge_set_wsl_only(app: AppHandle, enabled: bool) -> Result<Valu
 
 #[tauri::command]
 pub fn desktop_bridge_get_update_state(
-    app: AppHandle,
+    app: AppHandle<DesktopRuntime>,
     updates: State<'_, DesktopUpdateManager>,
 ) -> Result<Value, String> {
     read_desktop_settings(&app).map(|settings| updates.state(&app, &settings.update_channel))
@@ -1068,7 +1086,7 @@ pub fn desktop_bridge_get_update_state(
 
 #[tauri::command]
 pub fn desktop_bridge_set_update_channel(
-    app: AppHandle,
+    app: AppHandle<DesktopRuntime>,
     updates: State<'_, DesktopUpdateManager>,
     channel: String,
 ) -> Result<Value, String> {
@@ -1091,7 +1109,7 @@ fn dialog_file_path_to_string(path: tauri_plugin_dialog::FilePath) -> Result<Str
 
 #[tauri::command]
 pub fn desktop_bridge_pick_folder(
-    app: AppHandle,
+    app: AppHandle<DesktopRuntime>,
     options: Option<Value>,
 ) -> Result<Option<String>, String> {
     let title = options
@@ -1150,7 +1168,7 @@ fn validate_diagnostic_archive_bytes(bytes: &[u8]) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn desktop_bridge_save_diagnostic_logs(
-    app: AppHandle,
+    app: AppHandle<DesktopRuntime>,
     filename: String,
     bytes: Vec<u8>,
 ) -> Result<Option<String>, String> {
@@ -1180,7 +1198,7 @@ pub async fn desktop_bridge_save_diagnostic_logs(
 }
 
 #[tauri::command]
-pub fn desktop_bridge_confirm(app: AppHandle, message: String) -> bool {
+pub fn desktop_bridge_confirm(app: AppHandle<DesktopRuntime>, message: String) -> bool {
     app.dialog()
         .message(message)
         .title("T4Code")
@@ -1189,7 +1207,10 @@ pub fn desktop_bridge_confirm(app: AppHandle, message: String) -> bool {
 }
 
 #[tauri::command]
-pub fn desktop_bridge_open_external(app: AppHandle, url: String) -> Result<bool, String> {
+pub fn desktop_bridge_open_external(
+    app: AppHandle<DesktopRuntime>,
+    url: String,
+) -> Result<bool, String> {
     let parsed = url::Url::parse(&url).map_err(|error| error.to_string())?;
     match parsed.scheme() {
         "http" | "https" => app
@@ -1202,7 +1223,9 @@ pub fn desktop_bridge_open_external(app: AppHandle, url: String) -> Result<bool,
 }
 
 #[tauri::command]
-pub fn desktop_bridge_discover_ssh_hosts(app: AppHandle) -> Result<Vec<Value>, String> {
+pub fn desktop_bridge_discover_ssh_hosts(
+    app: AppHandle<DesktopRuntime>,
+) -> Result<Vec<Value>, String> {
     let home_dir = app.path().home_dir().ok().or_else(default_home_dir);
     discover_ssh_hosts(home_dir)
         .map(|hosts| hosts.into_iter().map(|host| host.to_value()).collect())
@@ -1210,7 +1233,7 @@ pub fn desktop_bridge_discover_ssh_hosts(app: AppHandle) -> Result<Vec<Value>, S
 
 #[tauri::command]
 pub async fn desktop_bridge_ensure_ssh_environment(
-    app: AppHandle,
+    app: AppHandle<DesktopRuntime>,
     ssh: State<'_, SshEnvironmentManager>,
     prompts: State<'_, SshPasswordPromptManager>,
     target: SshEnvironmentTarget,
@@ -1225,7 +1248,7 @@ pub async fn desktop_bridge_ensure_ssh_environment(
 
 #[tauri::command]
 pub async fn desktop_bridge_disconnect_ssh_environment(
-    app: AppHandle,
+    app: AppHandle<DesktopRuntime>,
     ssh: State<'_, SshEnvironmentManager>,
     prompts: State<'_, SshPasswordPromptManager>,
     target: SshEnvironmentTarget,
@@ -1260,7 +1283,10 @@ pub async fn desktop_bridge_get_advertised_endpoints(
 }
 
 #[tauri::command]
-pub fn desktop_bridge_set_theme(app: AppHandle, theme: String) -> Result<(), String> {
+pub fn desktop_bridge_set_theme(
+    app: AppHandle<DesktopRuntime>,
+    theme: String,
+) -> Result<(), String> {
     let native_theme = desktop_theme_to_tauri_theme(&theme)?;
     for window in app.webview_windows().values() {
         window
@@ -1272,7 +1298,7 @@ pub fn desktop_bridge_set_theme(app: AppHandle, theme: String) -> Result<(), Str
 
 #[tauri::command]
 pub async fn desktop_bridge_show_context_menu(
-    app: AppHandle,
+    app: AppHandle<DesktopRuntime>,
     context_menus: State<'_, NativeContextMenuManager>,
     items: Vec<Value>,
     position: Option<ContextMenuPosition>,
@@ -1296,7 +1322,7 @@ pub async fn desktop_bridge_show_context_menu(
 
 #[tauri::command]
 pub async fn desktop_bridge_check_for_update(
-    app: AppHandle,
+    app: AppHandle<DesktopRuntime>,
     updates: State<'_, DesktopUpdateManager>,
 ) -> Result<Value, String> {
     let settings = read_desktop_settings(&app)?;
@@ -1307,7 +1333,7 @@ pub async fn desktop_bridge_check_for_update(
 
 #[tauri::command]
 pub async fn desktop_bridge_download_update(
-    app: AppHandle,
+    app: AppHandle<DesktopRuntime>,
     updates: State<'_, DesktopUpdateManager>,
 ) -> Result<Value, String> {
     let settings = read_desktop_settings(&app)?;
@@ -1316,7 +1342,7 @@ pub async fn desktop_bridge_download_update(
 
 #[tauri::command]
 pub fn desktop_bridge_install_update(
-    app: AppHandle,
+    app: AppHandle<DesktopRuntime>,
     updates: State<'_, DesktopUpdateManager>,
 ) -> Result<Value, String> {
     let settings = read_desktop_settings(&app)?;
@@ -1605,6 +1631,48 @@ mod tests {
         assert!(error.starts_with(&format!("Could not remove {}:", directory.path().display())));
     }
 
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn connection_catalog_storage_fails_closed_without_platform_protection() {
+        let directory = tempfile::tempdir().expect("temporary directory should create");
+        let path = directory.path().join("catalog.json");
+
+        assert!(
+            connection_catalog_to_value("{\"connections\":[]}")
+                .expect_err("catalog protection should be unavailable")
+                .contains("not implemented")
+        );
+        assert!(
+            write_connection_catalog_document(&path, "{\"connections\":[]}")
+                .expect_err("unprotected catalog should not write")
+                .contains("not implemented")
+        );
+        assert_eq!(
+            read_connection_catalog_document(&path).expect("missing catalog should read"),
+            None,
+        );
+    }
+
+    #[tokio::test]
+    async fn platform_state_helpers_cover_non_wsl_and_disabled_tailscale_paths() {
+        let settings = default_desktop_settings();
+        let state = wsl_state(&settings);
+        if !cfg!(target_os = "windows") {
+            assert_eq!(state["available"], false);
+            assert_eq!(state["distros"], json!([]));
+        }
+
+        let mut config = test_run_config();
+        config.server_exposure_mode = "local-only".to_string();
+        config.tailscale_serve_enabled = false;
+        assert!(
+            tailscale_advertised_endpoints_for_config(&config)
+                .await
+                .expect("disabled Tailscale discovery should succeed")
+                .is_empty()
+        );
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn protects_connection_catalog_documents() {
@@ -1788,7 +1856,9 @@ mod tests {
             "unknown"
         );
         assert!(normalize_http_base_url("ssh://example.test").is_err());
+        assert!(normalize_http_base_url("not a URL").is_err());
         assert!(derive_ws_base_url("ssh://example.test/").is_err());
+        assert!(derive_ws_base_url("not a URL").is_err());
         assert!(hosted_https_compatibility("not a URL").is_err());
     }
 
@@ -2166,6 +2236,28 @@ mod tests {
         requests
             .recv()
             .expect("malformed response request should be captured");
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("closed endpoint fixture");
+        let base_url = format!(
+            "http://{}",
+            listener.local_addr().expect("closed endpoint address")
+        );
+        drop(listener);
+        assert!(
+            desktop_bridge_fetch_environment_descriptor(base_url.clone())
+                .await
+                .is_err()
+        );
+        assert!(
+            desktop_bridge_issue_ssh_web_socket_ticket(base_url.clone(), "token".to_string(),)
+                .await
+                .is_err()
+        );
+        assert!(
+            desktop_bridge_bootstrap_ssh_bearer_session(base_url, "credential".to_string())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -2224,5 +2316,358 @@ mod tests {
         let request = requests.recv().expect("request should be captured");
         assert!(request.starts_with("POST /api/auth/websocket-ticket HTTP/1.1"));
         assert!(request.contains("authorization: Bearer bearer-token"));
+    }
+
+    #[test]
+    fn tauri_ipc_handlers_preserve_runtime_agnostic_bridge_contracts() {
+        use tauri::test::{INVOKE_KEY, get_ipc_response, mock_builder, mock_context, noop_assets};
+
+        let mut context = mock_context(noop_assets());
+        context
+            .config_mut()
+            .plugins
+            .0
+            .insert("updater".to_owned(), json!({"pubkey":"","windows":null}));
+        context.config_mut().identifier = format!("com.t4code.bridge-tests-{}", std::process::id());
+        let app = mock_builder()
+            .manage(BackendSupervisor::new())
+            .manage(NativeContextMenuManager::new())
+            .manage(SshEnvironmentManager::new())
+            .manage(SshPasswordPromptManager::new())
+            .manage(DesktopUpdateManager::new())
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .invoke_handler(tauri::generate_handler![
+                desktop_bridge_get_bridge_metadata,
+                desktop_bridge_get_app_branding,
+                desktop_bridge_get_local_environment_bootstraps,
+                desktop_bridge_get_client_settings,
+                desktop_bridge_set_client_settings,
+                desktop_bridge_get_connection_catalog,
+                desktop_bridge_set_connection_catalog,
+                desktop_bridge_clear_connection_catalog,
+                desktop_bridge_discover_ssh_hosts,
+                desktop_bridge_ensure_ssh_environment,
+                desktop_bridge_disconnect_ssh_environment,
+                desktop_bridge_fetch_environment_descriptor,
+                desktop_bridge_bootstrap_ssh_bearer_session,
+                desktop_bridge_fetch_ssh_session_state,
+                desktop_bridge_issue_ssh_web_socket_ticket,
+                desktop_bridge_resolve_ssh_password_prompt,
+                desktop_bridge_get_server_exposure_state,
+                desktop_bridge_set_server_exposure_mode,
+                desktop_bridge_set_tailscale_serve_enabled,
+                desktop_bridge_get_advertised_endpoints,
+                desktop_bridge_get_wsl_state,
+                desktop_bridge_set_wsl_backend_enabled,
+                desktop_bridge_set_wsl_distro,
+                desktop_bridge_set_wsl_only,
+                desktop_bridge_set_theme,
+                desktop_bridge_show_context_menu,
+                desktop_bridge_get_update_state,
+                desktop_bridge_set_update_channel,
+                desktop_bridge_check_for_update,
+                desktop_bridge_download_update,
+                desktop_bridge_install_update,
+                desktop_bridge_pick_folder,
+                desktop_bridge_save_diagnostic_logs,
+                desktop_bridge_confirm,
+                desktop_bridge_open_external,
+            ])
+            .build(context)
+            .expect("mock Tauri app");
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview");
+        let invoke = |cmd: &str, body: Value| {
+            get_ipc_response(
+                &webview,
+                tauri::webview::InvokeRequest {
+                    cmd: cmd.to_owned(),
+                    callback: tauri::ipc::CallbackFn(0),
+                    error: tauri::ipc::CallbackFn(1),
+                    url: "tauri://localhost".parse().unwrap(),
+                    body: tauri::ipc::InvokeBody::Json(body),
+                    headers: Default::default(),
+                    invoke_key: INVOKE_KEY.to_owned(),
+                },
+            )
+            .map(|body| body.deserialize::<Value>().unwrap())
+        };
+        let test_state_dir = state_dir(app.handle()).expect("mock state directory");
+        let _ = fs::remove_dir_all(&test_state_dir);
+
+        let metadata = invoke("desktop_bridge_get_bridge_metadata", json!({})).unwrap();
+        assert_eq!(metadata["host"], "tauri");
+        assert_eq!(
+            invoke("desktop_bridge_get_local_environment_bootstraps", json!({})).unwrap(),
+            json!([])
+        );
+        assert!(
+            invoke("desktop_bridge_get_app_branding", json!({})).unwrap()["displayName"]
+                .is_string()
+        );
+        let client_settings = invoke("desktop_bridge_get_client_settings", json!({})).unwrap();
+        assert!(client_settings.is_null() || client_settings.is_object());
+        let catalog = invoke("desktop_bridge_get_connection_catalog", json!({})).unwrap();
+        assert!(catalog.is_null() || catalog.is_string());
+        let _ = invoke("desktop_bridge_discover_ssh_hosts", json!({}));
+        assert!(invoke("desktop_bridge_get_wsl_state", json!({})).unwrap()["enabled"].is_boolean());
+        assert!(
+            invoke("desktop_bridge_get_server_exposure_state", json!({}))
+                .unwrap()
+                .is_object()
+        );
+        assert_eq!(
+            invoke("desktop_bridge_get_advertised_endpoints", json!({})).unwrap(),
+            json!([])
+        );
+        assert_eq!(
+            invoke(
+                "desktop_bridge_show_context_menu",
+                json!({"items":[],"position":null}),
+            )
+            .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            invoke(
+                "desktop_bridge_open_external",
+                json!({"url":"file:///tmp/blocked"}),
+            )
+            .unwrap(),
+            false
+        );
+        assert!(invoke("desktop_bridge_set_theme", json!({"theme":"unsupported"}),).is_err());
+        assert!(invoke("desktop_bridge_set_theme", json!({"theme":"dark"})).is_ok());
+        for command in [
+            "desktop_bridge_get_update_state",
+            "desktop_bridge_check_for_update",
+            "desktop_bridge_download_update",
+            "desktop_bridge_install_update",
+        ] {
+            assert!(
+                invoke(command, json!({})).unwrap().is_object(),
+                "{command} should return its update state",
+            );
+        }
+        assert!(
+            invoke(
+                "desktop_bridge_set_server_exposure_mode",
+                json!({"mode":"unsupported"}),
+            )
+            .is_err()
+        );
+        assert!(
+            invoke(
+                "desktop_bridge_set_client_settings",
+                json!({"settings":{"theme":"dark"}}),
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            invoke("desktop_bridge_get_client_settings", json!({})).unwrap()["theme"],
+            "dark"
+        );
+        assert!(
+            invoke(
+                "desktop_bridge_set_connection_catalog",
+                json!({"catalog":"test-catalog"}),
+            )
+            .is_err(),
+            "catalog persistence must fail closed without platform protection",
+        );
+        assert!(invoke("desktop_bridge_clear_connection_catalog", json!({})).is_ok());
+        assert!(
+            invoke(
+                "desktop_bridge_set_server_exposure_mode",
+                json!({"mode":"local-only"}),
+            )
+            .is_ok()
+        );
+        assert!(
+            invoke(
+                "desktop_bridge_set_tailscale_serve_enabled",
+                json!({"input":{"enabled":false,"port":443}}),
+            )
+            .is_ok()
+        );
+        assert!(
+            invoke(
+                "desktop_bridge_set_wsl_backend_enabled",
+                json!({"enabled":false}),
+            )
+            .is_ok()
+        );
+        assert!(
+            invoke(
+                "desktop_bridge_set_wsl_distro",
+                json!({"distro":"Ubuntu-24.04"}),
+            )
+            .is_ok()
+        );
+        assert!(invoke("desktop_bridge_set_wsl_only", json!({"enabled":true}),).is_ok());
+        assert!(
+            invoke(
+                "desktop_bridge_set_update_channel",
+                json!({"channel":"latest"}),
+            )
+            .is_ok()
+        );
+        let invalid_target = json!({
+            "target": {"alias":"","hostname":"","username":null,"port":null},
+            "options": null,
+        });
+        assert!(invoke("desktop_bridge_ensure_ssh_environment", invalid_target).is_err());
+        assert!(
+            invoke(
+                "desktop_bridge_disconnect_ssh_environment",
+                json!({
+                    "target": {"alias":"","hostname":"","username":null,"port":null},
+                }),
+            )
+            .is_err()
+        );
+        let unreachable_target = json!({
+            "alias":"unreachable-localhost",
+            "hostname":"127.0.0.1",
+            "username":null,
+            "port":1,
+        });
+        assert!(
+            invoke(
+                "desktop_bridge_ensure_ssh_environment",
+                json!({"target":unreachable_target,"options":null}),
+            )
+            .is_err()
+        );
+        assert!(
+            invoke(
+                "desktop_bridge_disconnect_ssh_environment",
+                json!({"target":unreachable_target}),
+            )
+            .is_err()
+        );
+        assert!(
+            invoke(
+                "desktop_bridge_set_update_channel",
+                json!({"channel":"unsupported"}),
+            )
+            .is_err()
+        );
+        assert!(
+            invoke(
+                "desktop_bridge_save_diagnostic_logs",
+                json!({"filename":"../blocked.zip","bytes":[80,75]}),
+            )
+            .is_err()
+        );
+        let handle = app.handle();
+        assert!(app_branding(handle)["displayName"].is_string());
+        assert!(
+            client_settings_path(handle)
+                .unwrap()
+                .ends_with(CLIENT_SETTINGS_FILE_NAME)
+        );
+        assert!(
+            connection_catalog_path(handle)
+                .unwrap()
+                .ends_with(CONNECTION_CATALOG_FILE_NAME)
+        );
+        assert!(
+            desktop_settings_path(handle)
+                .unwrap()
+                .ends_with(DESKTOP_SETTINGS_FILE_NAME)
+        );
+        let settings = read_desktop_settings(handle).expect("desktop settings should read");
+        assert!(
+            resolve_pick_folder_dialog_default_path(
+                handle,
+                &settings,
+                Some(&json!({"initialPath":test_state_dir})),
+            )
+            .is_some()
+        );
+        assert!(
+            resolve_pick_folder_dialog_default_path(
+                handle,
+                &settings,
+                Some(&json!({"targetEnvironmentId":"wsl:Ubuntu-24.04"})),
+            )
+            .is_some()
+        );
+        assert!(
+            dialog_file_path_to_string(tauri_plugin_dialog::FilePath::Path(
+                test_state_dir.join("selected"),
+            ))
+            .expect("filesystem dialog path should normalize")
+            .ends_with("selected")
+        );
+        assert!(
+            dialog_file_path_to_string(tauri_plugin_dialog::FilePath::Url(
+                url::Url::parse("https://example.test/not-a-file").unwrap(),
+            ))
+            .is_err()
+        );
+        assert!(invoke("desktop_bridge_open_external", json!({"url":"not a URL"}),).is_err());
+
+        for (command, arguments) in [
+            (
+                "desktop_bridge_fetch_environment_descriptor",
+                json!({"httpBaseUrl":"file:///tmp/blocked"}),
+            ),
+            (
+                "desktop_bridge_bootstrap_ssh_bearer_session",
+                json!({
+                    "httpBaseUrl":"file:///tmp/blocked",
+                    "credential":"credential",
+                }),
+            ),
+            (
+                "desktop_bridge_fetch_ssh_session_state",
+                json!({
+                    "httpBaseUrl":"file:///tmp/blocked",
+                    "bearerToken":"bearer-token",
+                }),
+            ),
+            (
+                "desktop_bridge_issue_ssh_web_socket_ticket",
+                json!({
+                    "httpBaseUrl":"file:///tmp/blocked",
+                    "bearerToken":"bearer-token",
+                }),
+            ),
+        ] {
+            let error = invoke(command, arguments).unwrap_err();
+            assert!(
+                error
+                    .as_str()
+                    .is_some_and(|error| error.contains("must use HTTP or HTTPS")),
+                "unexpected validation result for {command}: {error}",
+            );
+        }
+
+        assert!(
+            invoke(
+                "desktop_bridge_resolve_ssh_password_prompt",
+                json!({"requestId":"missing","password":null}),
+            )
+            .is_err()
+        );
+        for command in [
+            "desktop_bridge_set_client_settings",
+            "desktop_bridge_set_connection_catalog",
+            "desktop_bridge_ensure_ssh_environment",
+            "desktop_bridge_disconnect_ssh_environment",
+            "desktop_bridge_set_tailscale_serve_enabled",
+            "desktop_bridge_set_wsl_backend_enabled",
+            "desktop_bridge_set_wsl_only",
+            "desktop_bridge_confirm",
+        ] {
+            assert!(
+                invoke(command, json!({})).is_err(),
+                "{command} should reject missing command arguments",
+            );
+        }
+        let _ = fs::remove_dir_all(test_state_dir);
     }
 }
