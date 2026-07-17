@@ -7,6 +7,11 @@ export type AddProjectCommandResult<T> =
   | { readonly _tag: "Success"; readonly value: T }
   | { readonly _tag: "Failure"; readonly error: unknown | null };
 
+type AddProjectCommandSuccess<T> = Extract<
+  AddProjectCommandResult<T>,
+  { readonly _tag: "Success" }
+>;
+
 export interface AddProjectRecord {
   readonly id: ProjectId;
   readonly environmentId: EnvironmentId;
@@ -41,6 +46,25 @@ interface ProjectPathInput {
 }
 
 export function createAddProjectOperations(dependencies: AddProjectOperationsDependencies) {
+  async function executeCommand<T>(
+    failureTitle: string,
+    command: () => Promise<AddProjectCommandResult<T>>,
+  ): Promise<AddProjectCommandSuccess<T> | null> {
+    try {
+      const result = await command();
+      if (result._tag === "Failure") {
+        if (result.error !== null) {
+          dependencies.reportFailure(failureTitle, result.error);
+        }
+        return null;
+      }
+      return result;
+    } catch (error) {
+      dependencies.reportFailure(failureTitle, error ?? new Error("Command failed unexpectedly."));
+      return null;
+    }
+  }
+
   async function registerOrOpen(
     input: ProjectPathInput & {
       readonly createWorkspaceRootIfMissing: boolean;
@@ -54,27 +78,27 @@ export function createAddProjectOperations(dependencies: AddProjectOperationsDep
     );
     const projectId = existing?.id ?? newProjectId();
     if (!existing) {
-      const created = await dependencies.createProject({
-        environmentId: input.environmentId,
-        projectId,
-        title: inferProjectTitleFromPath(input.workspaceRoot),
-        workspaceRoot: input.workspaceRoot,
-        createWorkspaceRootIfMissing: input.createWorkspaceRootIfMissing,
-        initializeGit: input.initializeGit,
-      });
-      if (created._tag === "Failure") {
-        if (created.error !== null) dependencies.reportFailure(input.failureTitle, created.error);
+      const created = await executeCommand(input.failureTitle, () =>
+        dependencies.createProject({
+          environmentId: input.environmentId,
+          projectId,
+          title: inferProjectTitleFromPath(input.workspaceRoot),
+          workspaceRoot: input.workspaceRoot,
+          createWorkspaceRootIfMissing: input.createWorkspaceRootIfMissing,
+          initializeGit: input.initializeGit,
+        }),
+      );
+      if (created === null) {
         return false;
       }
     }
-    const opened = await dependencies.openProject({
-      environmentId: input.environmentId,
-      projectId,
-    });
-    if (opened._tag === "Failure") {
-      if (opened.error !== null) {
-        dependencies.reportFailure("Failed to open project", opened.error);
-      }
+    const opened = await executeCommand("Failed to open project", () =>
+      dependencies.openProject({
+        environmentId: input.environmentId,
+        projectId,
+      }),
+    );
+    if (opened === null) {
       return false;
     }
     return true;
@@ -100,9 +124,10 @@ export function createAddProjectOperations(dependencies: AddProjectOperationsDep
       readonly url: string;
       readonly parentDir: string;
     }): Promise<boolean> => {
-      const cloned = await dependencies.cloneRepository(input);
-      if (cloned._tag === "Failure") {
-        if (cloned.error !== null) dependencies.reportFailure("Clone failed", cloned.error);
+      const cloned = await executeCommand("Clone failed", () =>
+        dependencies.cloneRepository(input),
+      );
+      if (cloned === null) {
         return false;
       }
       return registerOrOpen({
