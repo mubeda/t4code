@@ -992,3 +992,101 @@ fn fixture_paths_are_language_neutral() {
     assert_eq!(value["readLimitBytes"], 1024 * 1024);
     assert_eq!(value["maxSearchLimit"], 200);
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn public_workspace_service_maps_filesystem_failures() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = TempDir::new().expect("root");
+    let service = WorkspaceService::default();
+    let blocker = root.path().join("blocker");
+    std::fs::write(&blocker, "not a directory").expect("blocker");
+
+    for result in [
+        service
+            .write_file(root.path(), "blocker/file.txt", "contents")
+            .await,
+        service
+            .create_entry(root.path(), "blocker/directory", EntryKind::Directory)
+            .await,
+        service
+            .create_entry(root.path(), "blocker/file.txt", EntryKind::File)
+            .await,
+        service
+            .rename_entry(root.path(), "blocker", "blocker/renamed")
+            .await,
+    ] {
+        assert!(matches!(result, Err(WorkspaceError::Operation { .. })));
+    }
+
+    std::fs::create_dir(root.path().join("write-target")).expect("write target");
+    assert!(matches!(
+        service
+            .write_file(root.path(), "write-target", "contents")
+            .await,
+        Err(WorkspaceError::Operation { .. })
+    ));
+
+    let locked = root.path().join("locked");
+    std::fs::create_dir(&locked).expect("locked directory");
+    let mut locked_permissions = std::fs::metadata(&locked).unwrap().permissions();
+    locked_permissions.set_mode(0o500);
+    std::fs::set_permissions(&locked, locked_permissions).expect("lock directory");
+    for result in [
+        service
+            .create_entry(
+                root.path(),
+                "locked/missing/directory",
+                EntryKind::Directory,
+            )
+            .await,
+        service
+            .create_entry(root.path(), "locked/missing/file.txt", EntryKind::File)
+            .await,
+        service
+            .rename_entry(root.path(), "blocker", "locked/missing/renamed")
+            .await,
+    ] {
+        assert!(matches!(result, Err(WorkspaceError::Operation { .. })));
+    }
+    let mut locked_permissions = std::fs::metadata(&locked).unwrap().permissions();
+    locked_permissions.set_mode(0o700);
+    std::fs::set_permissions(&locked, locked_permissions).expect("unlock directory");
+
+    std::fs::write(root.path().join("source.txt"), "copy source").expect("source");
+    let mut source_permissions = std::fs::metadata(root.path().join("source.txt"))
+        .unwrap()
+        .permissions();
+    source_permissions.set_mode(0o000);
+    std::fs::set_permissions(root.path().join("source.txt"), source_permissions)
+        .expect("lock source");
+    let copy_result = service.duplicate_entry(root.path(), "source.txt").await;
+    let mut source_permissions = std::fs::metadata(root.path().join("source.txt"))
+        .unwrap()
+        .permissions();
+    source_permissions.set_mode(0o600);
+    std::fs::set_permissions(root.path().join("source.txt"), source_permissions)
+        .expect("unlock source");
+    assert!(matches!(copy_result, Err(WorkspaceError::Operation { .. })));
+
+    for entry in ["rename-source", "delete-file"] {
+        std::fs::write(root.path().join(entry), entry).expect("fixture file");
+    }
+    std::fs::create_dir(root.path().join("delete-directory")).expect("fixture directory");
+    let mut root_permissions = std::fs::metadata(root.path()).unwrap().permissions();
+    root_permissions.set_mode(0o500);
+    std::fs::set_permissions(root.path(), root_permissions).expect("lock root");
+    for result in [
+        service
+            .rename_entry(root.path(), "rename-source", "rename-target")
+            .await,
+        service.delete_entry(root.path(), "delete-file").await,
+        service.delete_entry(root.path(), "delete-directory").await,
+    ] {
+        assert!(matches!(result, Err(WorkspaceError::Operation { .. })));
+    }
+    let mut root_permissions = std::fs::metadata(root.path()).unwrap().permissions();
+    root_permissions.set_mode(0o700);
+    std::fs::set_permissions(root.path(), root_permissions).expect("unlock root");
+}

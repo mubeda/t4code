@@ -113,6 +113,40 @@ describe("environment shell projections", () => {
     expect(harness.registry.get(harness.summaryAtom)).toBe(summary);
   });
 
+  it("prioritizes the first error and newest available snapshot", () => {
+    const harness = makeHarness();
+    harness.registry.set(
+      harness.shellStateAtom(ENVIRONMENT_ID),
+      shellState({
+        status: "live",
+        updatedAt: "2026-07-01T00:00:00.000Z",
+        error: "Primary failed.",
+      }),
+    );
+    harness.registry.set(
+      harness.shellStateAtom(OTHER_ENVIRONMENT_ID),
+      shellState({
+        status: "cached",
+        updatedAt: "2026-06-01T00:00:00.000Z",
+        error: "Secondary failed.",
+      }),
+    );
+
+    expect(harness.registry.get(harness.summaryAtom)).toMatchObject({
+      hasSnapshot: true,
+      firstError: "Primary failed.",
+      latestSnapshotUpdatedAt: "2026-07-01T00:00:00.000Z",
+    });
+
+    harness.registry.set(
+      harness.shellStateAtom(OTHER_ENVIRONMENT_ID),
+      shellState({ status: "empty", error: "Secondary failed." }),
+    );
+    expect(harness.registry.get(harness.summaryAtom).latestSnapshotUpdatedAt).toBe(
+      "2026-07-01T00:00:00.000Z",
+    );
+  });
+
   it("preserves server-config map identity until a config reference changes", () => {
     const harness = makeHarness();
     const empty = harness.registry.get(harness.serverConfigsAtom);
@@ -126,5 +160,9 @@ describe("environment shell projections", () => {
 
     harness.registry.set(harness.configAtom(ENVIRONMENT_ID), config);
     expect(harness.registry.get(harness.serverConfigsAtom)).toBe(withConfig);
+
+    const replacement = { cwd: "/other" } as ServerConfig;
+    harness.registry.set(harness.configAtom(ENVIRONMENT_ID), replacement);
+    expect(harness.registry.get(harness.serverConfigsAtom).get(ENVIRONMENT_ID)).toBe(replacement);
   });
 });

@@ -346,6 +346,40 @@ mod tests {
                 .count(),
             1
         );
+
+        let directory_source = temp.path().join("directory-source");
+        fs::create_dir(&directory_source).await.unwrap();
+        assert!(matches!(
+            read_json::<Value>(&directory_source).await,
+            Err(StateFileError::Read { .. })
+        ));
+
+        let parent_file = temp.path().join("parent-file");
+        fs::write(&parent_file, "blocker").await.unwrap();
+        assert!(matches!(
+            write_bytes_atomically(parent_file.join("state.json"), b"value").await,
+            Err(StateFileError::CreateDirectory { .. })
+        ));
+
+        let directory_target = temp.path().join("directory-target");
+        fs::create_dir(&directory_target).await.unwrap();
+        assert!(matches!(
+            write_bytes_atomically(&directory_target, b"value").await,
+            Err(StateFileError::Persist { .. })
+        ));
+        assert!(!should_replace_with_backup(&std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "fixture",
+        )));
+        #[cfg(not(windows))]
+        assert!(
+            replace_existing_atomically(
+                std::path::Path::new("temporary"),
+                std::path::Path::new("target"),
+            )
+            .await
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -360,6 +394,13 @@ mod tests {
 
         assert!(paths.logs_dir.is_dir());
         assert!(paths.server_log.is_file());
+
+        fs::remove_file(&paths.server_log).await.unwrap();
+        fs::create_dir(&paths.server_log).await.unwrap();
+        assert!(matches!(
+            paths.ensure_directories().await,
+            Err(StateFileError::Persist { .. })
+        ));
     }
 
     #[tokio::test]

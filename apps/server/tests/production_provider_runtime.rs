@@ -11,6 +11,10 @@ use std::{
     time::Duration,
 };
 
+use axum::{
+    Json, Router,
+    routing::{get, post},
+};
 use futures_util::{SinkExt, StreamExt};
 use provider_runtime::{
     BoxRuntimeFuture, NativeProviderDriverFactory, ProviderDriver, ProviderDriverFactory,
@@ -38,8 +42,8 @@ use t4code_server::{
     },
 };
 use tempfile::TempDir;
-use tokio::sync::mpsc;
 use tokio::time::timeout;
+use tokio::{net::TcpListener, sync::mpsc};
 use tokio_tungstenite::{WebSocketStream, connect_async, tungstenite::Message};
 
 const NOW: &str = "2026-07-10T10:00:00.000Z";
@@ -338,6 +342,19 @@ fn launch() -> ProviderLaunchRequest {
         mcp: None,
         codex_home: None,
     }
+}
+
+fn image_attachment(temp: &TempDir) -> Value {
+    let directory = temp.path().join("attachments");
+    std::fs::create_dir_all(&directory).expect("attachment directory");
+    std::fs::write(directory.join("image-1"), b"image bytes").expect("attachment image");
+    json!({
+        "type":"image",
+        "id":"image-1",
+        "name":"screen.png",
+        "mimeType":"image/png",
+        "sizeBytes":11,
+    })
 }
 
 fn persisted_runtime(thread_id: &str, status: &str, last_seen_at: &str) -> ProviderSessionRuntime {
@@ -2149,4 +2166,430 @@ async fn native_factory_routes_resume_to_the_native_adapter_without_a_fallback()
         error,
         ProviderRuntimeError::Spawn { provider, .. } if provider == "opencode"
     ));
+}
+
+#[tokio::test]
+async fn native_factory_routes_every_supported_provider_to_its_native_adapter() {
+    let factory = NativeProviderDriverFactory::new(TempDir::new().unwrap().path().to_path_buf());
+
+    for provider in [
+        "codex",
+        "cursor",
+        "grok",
+        "opencode",
+        "claude",
+        "claudeAgent",
+    ] {
+        let mut request = launch();
+        request.provider = provider.to_owned();
+        request.binary_path = format!("t4code-missing-{provider}-native-fixture");
+
+        let error = match factory.create(request).await {
+            Ok(_) => panic!("missing {provider} executable unexpectedly spawned"),
+            Err(error) => error,
+        };
+
+        assert!(
+            matches!(error, ProviderRuntimeError::Spawn { provider: ref actual, .. } if actual == provider),
+            "unexpected native adapter error for {provider}: {error:?}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_claude_driver_supports_the_complete_live_command_surface() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().unwrap();
+    let executable = temp.path().join("claude-fixture.sh");
+    std::fs::write(
+        &executable,
+        "#!/bin/sh\nprintf '%s\\n' 'ignored non-json output'\nprintf '%s\\n' 'fixture warning' >&2\ncat >/dev/null\n",
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&executable, permissions).unwrap();
+
+    let factory = NativeProviderDriverFactory::new(temp.path().join("attachments"));
+    let mut request = launch();
+    request.provider = "claudeAgent".to_owned();
+    request.binary_path = executable.to_string_lossy().into_owned();
+    request.cwd = temp.path().to_path_buf();
+    request.runtime_mode = "approval-required".to_owned();
+    request.interaction_mode = "default".to_owned();
+    request.model = Some("claude-sonnet".to_owned());
+    request.agent = Some("reviewer".to_owned());
+    request.resume_cursor = Some(json!({"sessionId":"claude-session"}));
+
+    let driver = factory.create(request).await.unwrap();
+    let started = driver.start().await.unwrap();
+    assert_eq!(
+        started.resume_cursor,
+        Some(json!({"sessionId":"claude-session"}))
+    );
+    assert_eq!(
+        started.runtime_payload,
+        Some(json!({"transport":"stream-json"}))
+    );
+
+    assert!(
+        driver
+            .send(
+                "hello".to_owned(),
+                vec![image_attachment(&temp)],
+                "default".to_owned(),
+            )
+            .await
+            .unwrap()
+            .is_some()
+    );
+    driver.interrupt(None).await.unwrap();
+    driver
+        .approve("approval-1".to_owned(), "acceptForSession".to_owned())
+        .await
+        .unwrap();
+    driver
+        .approve("approval-2".to_owned(), "deny".to_owned())
+        .await
+        .unwrap();
+    driver
+        .set_mode("auto-accept-edits".to_owned())
+        .await
+        .unwrap();
+    driver.set_mode("full-access".to_owned()).await.unwrap();
+    driver
+        .set_interaction_mode("plan".to_owned())
+        .await
+        .unwrap();
+    driver
+        .set_interaction_mode("default".to_owned())
+        .await
+        .unwrap();
+    assert!(matches!(
+        driver.set_model("other".to_owned()).await,
+        Err(ProviderRuntimeError::UnsupportedCapability { provider, .. }) if provider == "claude"
+    ));
+    assert!(matches!(
+        driver.rollback(1).await,
+        Err(ProviderRuntimeError::UnsupportedCapability { provider, .. }) if provider == "claude"
+    ));
+
+    let event = timeout(Duration::from_secs(2), driver.next_event())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(event.event_type, "session.stderr");
+    assert_eq!(event.payload, json!({"message":"fixture warning"}));
+    driver.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_opencode_driver_supports_session_turn_and_control_commands() {
+    let app = Router::new()
+        .route(
+            "/session",
+            post(|| async { Json(json!({"id":"native-opencode-session"})) }),
+        )
+        .route("/event", get(|| async { "" }))
+        .route(
+            "/session/{session_id}/prompt_async",
+            post(|| async { Json(json!({})) }),
+        )
+        .route(
+            "/session/{session_id}/command",
+            post(|| async { Json(json!({})) }),
+        )
+        .route(
+            "/session/{session_id}/abort",
+            post(|| async { Json(json!({})) }),
+        )
+        .route(
+            "/session/{session_id}/message",
+            get(|| async { Json(json!({"data":[]})) }),
+        )
+        .route(
+            "/session/{session_id}/revert",
+            post(|| async { Json(json!({})) }),
+        );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let temp = TempDir::new().unwrap();
+    let factory = NativeProviderDriverFactory::new(temp.path().join("attachments"));
+    let mut request = launch();
+    request.provider = "opencode".to_owned();
+    request.cwd = temp.path().to_path_buf();
+    request.endpoint = Some(format!("http://{address}"));
+    request.server_password = Some("secret".to_owned());
+    request.agent = Some("reviewer".to_owned());
+    request.model = Some("openai/gpt-5".to_owned());
+
+    let driver = factory.create(request).await.unwrap();
+    let started = driver.start().await.unwrap();
+    assert_eq!(
+        started.resume_cursor,
+        Some(json!({"sessionId":"native-opencode-session"}))
+    );
+    assert!(
+        driver
+            .send(
+                "hello".to_owned(),
+                vec![image_attachment(&temp)],
+                "default".to_owned(),
+            )
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        driver
+            .send(
+                "/review src/provider".to_owned(),
+                Vec::new(),
+                "default".to_owned(),
+            )
+            .await
+            .unwrap()
+            .is_some()
+    );
+    driver.interrupt(None).await.unwrap();
+    driver.set_model("openai/gpt-5.4".to_owned()).await.unwrap();
+    driver.rollback(0).await.unwrap();
+    assert!(matches!(
+        driver.rollback(-1).await,
+        Err(ProviderRuntimeError::Provider { provider, .. }) if provider == "opencode"
+    ));
+    assert!(matches!(
+        driver.set_mode("full-access".to_owned()).await,
+        Err(ProviderRuntimeError::UnsupportedCapability { provider, .. }) if provider == "opencode"
+    ));
+    assert!(matches!(
+        driver
+            .approve("unknown".to_owned(), "accept".to_owned())
+            .await,
+        Err(ProviderRuntimeError::Provider { provider, .. }) if provider == "opencode"
+    ));
+    assert!(matches!(
+        driver.answer("unknown".to_owned(), json!({})).await,
+        Err(ProviderRuntimeError::Provider { provider, .. }) if provider == "opencode"
+    ));
+    let event = timeout(Duration::from_secs(2), driver.next_event())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(event.event_type, "session.started");
+    driver.shutdown().await.unwrap();
+    server.abort();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_codex_driver_supports_session_turn_and_control_commands() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().unwrap();
+    let executable = temp.path().join("codex-fixture.sh");
+    std::fs::write(
+        &executable,
+        r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"id":%s,"result":{"userAgent":"fixture"}}\n' "$id" ;;
+    *'"method":"thread/start"'*) printf '{"id":%s,"result":{"cwd":"/tmp","model":"gpt-5","thread":{"id":"native-codex-thread"}}}\n' "$id" ;;
+    *'"method":"thread/goal/set"'*) printf '{"id":%s,"result":{"goal":{"status":"active"}}}\n' "$id" ;;
+    *'"method":"turn/start"'*) printf '{"id":%s,"result":{"turn":{"id":"native-codex-turn"}}}\n' "$id" ;;
+    *'"method":"turn/interrupt"'*) printf '{"id":%s,"result":{}}\n' "$id" ;;
+    *'"method":"thread/rollback"'*) printf '{"id":%s,"result":{"thread":{"id":"native-codex-thread","turns":[]}}}\n' "$id" ;;
+    *'"method":"shutdown"'*) printf '{"id":%s,"result":null}\n' "$id" ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&executable, permissions).unwrap();
+
+    let factory = NativeProviderDriverFactory::new(temp.path().join("attachments"));
+    let mut request = launch();
+    request.provider = "codex".to_owned();
+    request.binary_path = executable.to_string_lossy().into_owned();
+    request.cwd = temp.path().to_path_buf();
+    let driver = factory.create(request).await.unwrap();
+
+    let started = timeout(Duration::from_secs(2), driver.start())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        started.resume_cursor,
+        Some(json!({"threadId":"native-codex-thread"}))
+    );
+    assert!(
+        driver
+            .send(
+                "hello".to_owned(),
+                vec![image_attachment(&temp)],
+                "default".to_owned(),
+            )
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        driver
+            .send(
+                "/goal finish coverage".to_owned(),
+                Vec::new(),
+                "default".to_owned(),
+            )
+            .await
+            .unwrap()
+            .is_some()
+    );
+    driver.interrupt(None).await.unwrap();
+    driver.rollback(0).await.unwrap();
+    assert!(matches!(
+        driver.rollback(-1).await,
+        Err(ProviderRuntimeError::Provider { provider, .. }) if provider == "codex"
+    ));
+    assert!(matches!(
+        driver.set_mode("approval-required".to_owned()).await,
+        Err(ProviderRuntimeError::UnsupportedCapability { provider, .. }) if provider == "codex"
+    ));
+    assert!(matches!(
+        driver.set_model("other".to_owned()).await,
+        Err(ProviderRuntimeError::UnsupportedCapability { provider, .. }) if provider == "codex"
+    ));
+    assert!(matches!(
+        driver
+            .approve("unknown".to_owned(), "accept".to_owned())
+            .await,
+        Err(ProviderRuntimeError::Provider { provider, .. }) if provider == "codex"
+    ));
+    assert!(matches!(
+        driver.answer("unknown".to_owned(), json!({})).await,
+        Err(ProviderRuntimeError::Provider { provider, .. }) if provider == "codex"
+    ));
+    driver.shutdown().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_acp_drivers_support_session_turn_and_control_commands() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().unwrap();
+    let executable = temp.path().join("acp-fixture.sh");
+    std::fs::write(
+        &executable,
+        r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*|*'"method":"authenticate"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    *'"method":"session/new"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"cursor-session","configOptions":[{"id":"model","category":"model"}],"modes":{"currentModeId":"ask","availableModes":[{"id":"ask","name":"Ask"},{"id":"code","name":"Agent"},{"id":"architect","name":"Plan"}]}}}\n' "$id" ;;
+    *'"method":"session/create"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"grok-session","modes":{"currentModeId":"code","availableModes":[{"id":"code","name":"Agent"},{"id":"ask","name":"Ask"}]}}}\n' "$id" ;;
+    *'"method":"session/set_config_option"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[]}}\n' "$id" ;;
+    *'"method":"session/set_mode"'*|*'"method":"session/set_model"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    *'"method":"session/prompt"'*) sleep 0.1; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id" ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&executable, permissions).unwrap();
+    let factory = NativeProviderDriverFactory::new(temp.path().join("attachments"));
+
+    let mut cursor_request = launch();
+    cursor_request.provider = "cursor".to_owned();
+    cursor_request.binary_path = executable.to_string_lossy().into_owned();
+    cursor_request.cwd = temp.path().to_path_buf();
+    cursor_request.model = Some("gpt-5.4".to_owned());
+    cursor_request.runtime_mode = "approval-required".to_owned();
+    let cursor = factory.create(cursor_request).await.unwrap();
+    assert_eq!(
+        cursor.start().await.unwrap().resume_cursor,
+        Some(json!({"schemaVersion":1,"sessionId":"cursor-session"}))
+    );
+    let cursor_turn = cursor
+        .send(
+            "hello".to_owned(),
+            vec![image_attachment(&temp)],
+            "default".to_owned(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    cursor.interrupt(Some(cursor_turn)).await.unwrap();
+    cursor.set_model("gpt-5.5".to_owned()).await.unwrap();
+    cursor
+        .set_mode("auto-accept-edits".to_owned())
+        .await
+        .unwrap();
+    cursor
+        .set_interaction_mode("plan".to_owned())
+        .await
+        .unwrap();
+    assert!(matches!(
+        cursor.rollback(1).await,
+        Err(ProviderRuntimeError::UnsupportedCapability { provider, .. }) if provider == "cursor"
+    ));
+    assert!(matches!(
+        cursor
+            .approve("unknown".to_owned(), "accept".to_owned())
+            .await,
+        Err(ProviderRuntimeError::Provider { provider, .. }) if provider == "cursor"
+    ));
+    assert!(matches!(
+        cursor.answer("unknown".to_owned(), json!({})).await,
+        Err(ProviderRuntimeError::Provider { provider, .. }) if provider == "cursor"
+    ));
+    cursor.shutdown().await.unwrap();
+
+    let mut grok_request = launch();
+    grok_request.provider = "grok".to_owned();
+    grok_request.binary_path = executable.to_string_lossy().into_owned();
+    grok_request.cwd = temp.path().to_path_buf();
+    grok_request.runtime_mode = "approval-required".to_owned();
+    let grok = factory.create(grok_request).await.unwrap();
+    assert_eq!(
+        grok.start().await.unwrap().resume_cursor,
+        Some(json!({"schemaVersion":1,"sessionId":"grok-session"}))
+    );
+    let grok_turn = grok
+        .send(
+            "hello".to_owned(),
+            vec![image_attachment(&temp)],
+            "default".to_owned(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    grok.interrupt(Some(grok_turn)).await.unwrap();
+    grok.interrupt(None).await.unwrap();
+    grok.set_model("grok-build".to_owned()).await.unwrap();
+    grok.set_mode("full-access".to_owned()).await.unwrap();
+    grok.set_interaction_mode("default".to_owned())
+        .await
+        .unwrap();
+    assert!(matches!(
+        grok.rollback(1).await,
+        Err(ProviderRuntimeError::UnsupportedCapability { provider, .. }) if provider == "grok"
+    ));
+    assert!(matches!(
+        grok.approve("unknown".to_owned(), "accept".to_owned()).await,
+        Err(ProviderRuntimeError::Provider { provider, .. }) if provider == "grok"
+    ));
+    assert!(matches!(
+        grok.answer("unknown".to_owned(), json!({})).await,
+        Err(ProviderRuntimeError::Provider { provider, .. }) if provider == "grok"
+    ));
+    grok.shutdown().await.unwrap();
 }

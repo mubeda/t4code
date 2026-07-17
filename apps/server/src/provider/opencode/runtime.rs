@@ -949,4 +949,69 @@ mod tests {
             "action": "allow"
         })));
     }
+
+    #[tokio::test]
+    async fn unit_runtime_events_cover_constructor_collection_and_sse_fallbacks() {
+        let runtime = super::OpenCodeSessionRuntime::new(
+            "http://127.0.0.1:1/",
+            "unit-thread",
+            "/tmp/unit",
+            Some("openai/gpt-5"),
+        );
+        let password_runtime = super::OpenCodeSessionRuntime::new_with_password(
+            "http://127.0.0.1:1",
+            "password-thread",
+            "/tmp/unit",
+            None,
+            Some("secret"),
+        )
+        .unwrap();
+        assert!(
+            password_runtime
+                .request_url("/event")
+                .unwrap()
+                .contains("directory=")
+        );
+        let invalid = super::OpenCodeSessionRuntime::new(
+            "not a valid base",
+            "invalid-thread",
+            "/tmp/unit",
+            None,
+        );
+        assert!(invalid.request_url("/event").is_err());
+
+        runtime
+            .handle_sse_event(
+                "session-1",
+                json!({"type":"message.updated","properties":{"sessionID":"other"}}),
+            )
+            .await;
+        runtime
+            .handle_sse_event(
+                "session-1",
+                json!({"type":"message.updated","properties":{}}),
+            )
+            .await;
+        let turn_id = runtime.begin_turn().await;
+        runtime.handle_sse_event("session-1", json!({"type":"message.updated","properties":{"info":{"sessionID":"session-1","role":"assistant","id":"assistant-1"}}})).await;
+        runtime.handle_sse_event("session-1", json!({"type":"message.part.updated","properties":{"part":{"sessionID":"session-1","type":"tool","messageID":"assistant-1"}}})).await;
+        runtime.handle_sse_event("session-1", json!({"type":"message.part.updated","properties":{"part":{"sessionID":"session-1","type":"text","messageID":"assistant-1","text":"hello"}}})).await;
+        runtime.handle_sse_event("session-1", json!({"type":"question.asked","properties":{"sessionID":"session-1","questions":[{"header":"Choice","question":"Continue?"}]}})).await;
+        runtime.handle_sse_event("session-1", json!({"type":"permission.asked","properties":{"sessionID":"session-1","permission":"bash","patterns":["git status"]}})).await;
+        runtime.handle_sse_event("session-1", json!({"type":"session.status","properties":{"sessionID":"session-1","status":{"type":"idle"}}})).await;
+        runtime
+            .handle_sse_event(
+                "session-1",
+                json!({"type":"session.error","properties":{"sessionID":"session-1"}}),
+            )
+            .await;
+
+        let events = runtime.collect_events(5).await;
+        assert_eq!(events[0].event_type, "turn.started");
+        assert_eq!(events[0].turn_id.as_deref(), Some(turn_id.as_str()));
+        assert_eq!(events[1].event_type, "content.delta");
+        assert_eq!(events[2].event_type, "user-input.requested");
+        assert_eq!(events[3].event_type, "request.opened");
+        assert_eq!(events[4].event_type, "turn.completed");
+    }
 }

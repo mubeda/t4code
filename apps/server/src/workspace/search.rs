@@ -282,3 +282,113 @@ fn subsequence_offset(candidate: &str, query: &str) -> Option<usize> {
     }
     Some(offset)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn search_index_covers_ignores_scoring_limits_and_cancellation() {
+        let root = tempfile::tempdir().unwrap();
+        for directory in ["src", "node_modules", ".git", "ignored"] {
+            std::fs::create_dir(root.path().join(directory)).unwrap();
+        }
+        std::fs::write(
+            root.path().join(".gitignore"),
+            "ignored\n*.tmp\n!important\n",
+        )
+        .unwrap();
+        std::fs::write(root.path().join("src/main.rs"), "fn main() {}").unwrap();
+        std::fs::write(root.path().join("src/map_renderer.rs"), "").unwrap();
+        std::fs::write(root.path().join("ignored/secret.rs"), "").unwrap();
+        std::fs::write(root.path().join("node_modules/package.js"), "").unwrap();
+
+        let index = WorkspaceSearchIndex::new(root.path().to_path_buf(), SearchLimits::default());
+        index.refresh(CancellationToken::new()).await.unwrap();
+        let listed = index.list().await;
+        assert!(
+            listed
+                .entries
+                .iter()
+                .any(|entry| entry.path == "src/main.rs")
+        );
+        assert!(
+            !listed
+                .entries
+                .iter()
+                .any(|entry| entry.path.contains("ignored"))
+        );
+        assert!(index.memory_bytes().await > 0);
+        assert_eq!(
+            index.search("main.rs", 10).await.entries[0].path,
+            "src/main.rs"
+        );
+        assert_eq!(
+            index.search("renderer", 10).await.entries[0].path,
+            "src/map_renderer.rs"
+        );
+        assert_eq!(
+            index.search("@smr", 10).await.entries[0].path,
+            "src/map_renderer.rs"
+        );
+        assert!(index.search("does-not-exist", 0).await.entries.is_empty());
+
+        let limited = WorkspaceSearchIndex::new(
+            root.path().to_path_buf(),
+            SearchLimits {
+                max_entries: 1,
+                max_memory_bytes: usize::MAX,
+                max_path_bytes: usize::MAX,
+            },
+        );
+        limited.refresh(CancellationToken::new()).await.unwrap();
+        assert!(limited.list().await.truncated);
+
+        let memory_limited = WorkspaceSearchIndex::new(
+            root.path().to_path_buf(),
+            SearchLimits {
+                max_entries: usize::MAX,
+                max_memory_bytes: 1,
+                max_path_bytes: 1,
+            },
+        );
+        memory_limited
+            .refresh(CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(memory_limited.list().await.truncated);
+
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert!(matches!(
+            index.refresh(cancelled).await,
+            Err(WorkspaceError::Cancelled)
+        ));
+        let file = root.path().join("not-directory");
+        std::fs::write(&file, "file").unwrap();
+        let invalid = WorkspaceSearchIndex::new(file, SearchLimits::default());
+        assert!(matches!(
+            invalid.refresh(CancellationToken::new()).await,
+            Err(WorkspaceError::RootNotDirectory { .. })
+        ));
+    }
+
+    #[test]
+    fn search_helpers_cover_ranking_ignore_and_subsequence_edges() {
+        let rules = HashSet::from(["build".to_owned(), "secret.txt".to_owned()]);
+        assert!(should_ignore(".git/config", false, &rules));
+        assert!(should_ignore("build/output.js", false, &rules));
+        assert!(should_ignore("src/secret.txt", false, &rules));
+        assert!(!should_ignore("src/public.txt", false, &rules));
+
+        assert_eq!(fuzzy_score("src/main.rs", ""), Some((3, 0)));
+        assert_eq!(fuzzy_score("src/main.rs", "main.rs"), Some((0, 0)));
+        assert_eq!(fuzzy_score("src/main.rs", "main"), Some((1, 0)));
+        assert_eq!(fuzzy_score("source/main.rs", "source"), Some((2, 0)));
+        assert!(fuzzy_score("src/map_renderer.rs", "mpr").is_some());
+        assert_eq!(fuzzy_score("src/main.rs", "zzz"), None);
+        assert_eq!(subsequence_offset("renderer", "rer"), Some(6));
+        assert_eq!(subsequence_offset("renderer", "zzz"), None);
+        assert!(entry_kind_rank(EntryKind::File) < entry_kind_rank(EntryKind::Directory));
+    }
+}

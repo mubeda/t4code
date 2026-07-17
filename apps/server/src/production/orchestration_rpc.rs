@@ -513,6 +513,7 @@ struct FullDiffInput {
 mod tests {
     use super::*;
     use crate::{
+        RequestId,
         orchestration::engine::EngineOptions,
         persistence::{Database, run_migrations},
     };
@@ -535,6 +536,18 @@ mod tests {
 
     fn decode_command(value: Value) -> OrchestrationCommand {
         serde_json::from_value(value).expect("command decodes")
+    }
+
+    fn request(tag: &str, payload: Value) -> RpcRequest {
+        RpcRequest {
+            id: RequestId::try_from("1").unwrap(),
+            tag: tag.to_owned(),
+            payload,
+            headers: Vec::new(),
+            trace_id: None,
+            span_id: None,
+            sampled: None,
+        }
     }
 
     fn assert_empty_thread_contract(thread: &Value, expected_kind: &str) {
@@ -678,14 +691,109 @@ mod tests {
             })))
             .await
             .expect("legacy activity stored");
+        for command in [
+            json!({"type":"thread.session.set","commandId":"session","threadId":default_id,"session":{"threadId":default_id,"status":"running","providerName":"codex","providerInstanceId":"codex","runtimeMode":"full-access","activeTurnId":"turn-1","lastError":null,"updatedAt":CREATED_AT},"createdAt":CREATED_AT}),
+            json!({"type":"thread.message.assistant.delta","commandId":"assistant-delta","threadId":default_id,"messageId":"assistant-1","delta":"working","turnId":"turn-1","createdAt":CREATED_AT}),
+            json!({"type":"thread.proposed-plan.upsert","commandId":"plan","threadId":default_id,"proposedPlan":{"id":"plan-1","turnId":"turn-1","planMarkdown":"# Plan","createdAt":CREATED_AT,"updatedAt":CREATED_AT},"createdAt":CREATED_AT}),
+            json!({"type":"thread.turn.diff.complete","commandId":"checkpoint","threadId":default_id,"turnId":"turn-1","completedAt":CREATED_AT,"checkpointRef":"checkpoint-1","status":"ready","files":[],"assistantMessageId":"assistant-1","checkpointTurnCount":1,"createdAt":CREATED_AT}),
+        ] {
+            engine
+                .dispatch(decode_command(command))
+                .await
+                .expect("populated snapshot fixture command");
+        }
 
         let snapshot = thread_snapshot(&engine, &default_id)
             .await
             .expect("thread snapshot");
-        let message = &snapshot["thread"]["messages"][0];
+        let message = snapshot["thread"]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "user")
+            .unwrap();
         assert_eq!(message["streaming"], json!(false));
         assert!(message.get("isStreaming").is_none());
         assert_eq!(snapshot["thread"]["activities"][0]["tone"], json!("info"));
+        assert_eq!(
+            snapshot["thread"]["proposedPlans"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            snapshot["thread"]["checkpoints"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(snapshot["thread"]["session"]["status"], "running");
+        assert_eq!(snapshot["thread"]["latestTurn"]["turnId"], "turn-1");
+        engine.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn query_and_stream_boundaries_cover_registered_orchestration_adapters() {
+        let engine = migrated_engine().await;
+        let mut registry = RpcRegistry::empty();
+        register_orchestration_rpc(&mut registry, engine.clone());
+        assert!(
+            registry
+                .validate_complete()
+                .expect_err("focused registry is incomplete")
+                .contains("server.getConfig")
+        );
+
+        assert!(
+            handle_query(&engine, request("orchestration.unknown", json!({})))
+                .await
+                .is_err()
+        );
+        assert!(
+            handle_query(
+                &engine,
+                request("orchestration.getTurnDiff", json!({"threadId":"t1"})),
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            diff(&engine, "t1".to_owned(), 2, 1).await.is_err(),
+            "reversed turn bounds must fail"
+        );
+        assert_eq!(
+            handle_query(
+                &engine,
+                request(
+                    "orchestration.getFullThreadDiff",
+                    json!({"threadId":"t1","toTurnCount":0}),
+                ),
+            )
+            .await
+            .unwrap()["diff"],
+            json!("")
+        );
+
+        let cancellation = CancellationToken::new();
+        let mut shell = shell_stream(engine.clone(), cancellation.clone());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), shell.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                .is_ok()
+        );
+        cancellation.cancel();
+
+        let mut malformed = thread_stream(
+            engine.clone(),
+            request("orchestration.subscribeThread", json!({})),
+            CancellationToken::new(),
+        );
+        assert!(malformed.recv().await.unwrap().is_err());
+
+        let (sender, receiver) = mpsc::channel(1);
+        drop(receiver);
+        assert!(send_snapshot(&sender, Ok(json!({}))).await.is_err());
         engine.shutdown().await;
     }
 }

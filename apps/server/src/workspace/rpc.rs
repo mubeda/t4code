@@ -486,3 +486,226 @@ struct BrowseInput {
 struct AssetCreateUrlInput {
     resource: AssetResource,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn rpc_error_mappers_cover_workspace_filesystem_and_asset_variants() {
+        let missing_root = std::env::temp_dir().join("t4code-missing-workspace-rpc-root");
+        let missing_cwd = missing_root.to_string_lossy().into_owned();
+        let rpc = WorkspaceRpc::new(WorkspaceService::default());
+        for (method, payload, tag) in [
+            (
+                "projects.readFile",
+                json!({"cwd":missing_cwd,"relativePath":"missing.txt"}),
+                "ProjectReadFileError",
+            ),
+            (
+                "projects.writeFile",
+                json!({"cwd":missing_cwd,"relativePath":"missing.txt","contents":"x"}),
+                "ProjectWriteFileError",
+            ),
+            (
+                "projects.createEntry",
+                json!({"cwd":missing_cwd,"relativePath":"missing.txt","kind":"file"}),
+                "ProjectCreateEntryError",
+            ),
+            (
+                "projects.renameEntry",
+                json!({"cwd":missing_cwd,"fromRelativePath":"from.txt","toRelativePath":"to.txt"}),
+                "ProjectRenameEntryError",
+            ),
+            (
+                "projects.deleteEntry",
+                json!({"cwd":missing_cwd,"relativePath":"missing.txt"}),
+                "ProjectDeleteEntryError",
+            ),
+            (
+                "projects.duplicateEntry",
+                json!({"cwd":missing_cwd,"relativePath":"missing.txt"}),
+                "ProjectDuplicateEntryError",
+            ),
+            (
+                "projects.listEntries",
+                json!({"cwd":missing_cwd}),
+                "ProjectListEntriesError",
+            ),
+            (
+                "projects.searchEntries",
+                json!({"cwd":missing_cwd,"query":"x","limit":10}),
+                "ProjectSearchEntriesError",
+            ),
+        ] {
+            let error = rpc.handle(method, payload).await.unwrap_err();
+            assert_eq!(error["_tag"], tag);
+        }
+        rpc.refresh_index(&missing_root).await;
+        rpc.invalidate_index(&missing_cwd).await;
+
+        let root_error = WorkspaceError::RootNotFound {
+            path: missing_root.clone(),
+        };
+        assert_eq!(
+            entries_wire_error("Entries", &missing_cwd, &root_error)["failure"],
+            "workspace_root_not_found"
+        );
+        assert_eq!(
+            entries_wire_error(
+                "Entries",
+                &missing_cwd,
+                &WorkspaceError::RootNotDirectory {
+                    path: missing_root.clone(),
+                },
+            )["failure"],
+            "workspace_root_not_directory"
+        );
+        assert_eq!(
+            entries_wire_error("Entries", &missing_cwd, &WorkspaceError::Cancelled)["failure"],
+            "search_index_scan_timed_out"
+        );
+        assert_eq!(
+            entries_wire_error(
+                "Entries",
+                &missing_cwd,
+                &WorkspaceError::InvalidRequest("bad".to_owned()),
+            )["failure"],
+            "search_index_search_failed"
+        );
+
+        let browse = BrowseInput {
+            partial_path: "relative".to_owned(),
+            cwd: None,
+        };
+        assert_eq!(
+            filesystem_wire_error(
+                &browse,
+                &WorkspaceError::WindowsPathUnsupported {
+                    partial_path: "C:\\temp".to_owned(),
+                },
+            )["failure"],
+            "windows_path_unsupported"
+        );
+        assert_eq!(
+            filesystem_wire_error(
+                &browse,
+                &WorkspaceError::CurrentProjectRequired {
+                    partial_path: "relative".to_owned(),
+                },
+            )["failure"],
+            "current_project_required"
+        );
+        assert_eq!(
+            filesystem_wire_error(&browse, &WorkspaceError::Cancelled)["failure"],
+            "read_directory_failed"
+        );
+
+        for tag in [
+            "AssetWorkspaceContextNotFoundError",
+            "AssetWorkspaceContextResolutionError",
+            "AssetWorkspaceRootNormalizationError",
+            "AssetWorkspacePathValidationError",
+            "AssetPreviewTypeValidationError",
+            "AssetWorkspaceAssetInspectionError",
+            "AssetWorkspaceAssetNotFoundError",
+            "AssetWorkspaceResolutionError",
+            "AssetAttachmentNotFoundError",
+            "AssetProjectFaviconResolutionError",
+            "AssetProjectFaviconInspectionError",
+            "AssetProjectFaviconNotFoundError",
+            "AssetSigningKeyLoadError",
+            "UnknownAssetError",
+        ] {
+            assert!(!asset_message(tag).is_empty());
+        }
+
+        let workspace = AssetResource::WorkspaceFile {
+            thread_id: "thread-1".to_owned(),
+            path: "preview.html".to_owned(),
+        };
+        let attachment = AssetResource::Attachment {
+            attachment_id: "attachment-1".to_owned(),
+        };
+        let favicon = AssetResource::ProjectFavicon {
+            cwd: missing_cwd.clone(),
+        };
+        let operation_error = || {
+            WorkspaceError::operation(
+                "stat",
+                missing_root.clone(),
+                std::io::Error::other("failed"),
+            )
+        };
+        for (resource, error, tag) in [
+            (
+                &workspace,
+                AssetError::WorkspaceContextRequired,
+                "AssetWorkspaceContextNotFoundError",
+            ),
+            (
+                &workspace,
+                AssetError::UnsupportedPreviewType("txt".to_owned()),
+                "AssetPreviewTypeValidationError",
+            ),
+            (
+                &workspace,
+                AssetError::NotFound("missing".to_owned()),
+                "AssetWorkspaceAssetNotFoundError",
+            ),
+            (
+                &attachment,
+                AssetError::NotFound("missing".to_owned()),
+                "AssetAttachmentNotFoundError",
+            ),
+            (
+                &favicon,
+                AssetError::NotFound("missing".to_owned()),
+                "AssetProjectFaviconNotFoundError",
+            ),
+            (
+                &workspace,
+                AssetError::Workspace(WorkspaceError::RootNotFound {
+                    path: missing_root.clone(),
+                }),
+                "AssetWorkspaceRootNormalizationError",
+            ),
+            (
+                &workspace,
+                AssetError::Workspace(WorkspaceError::PathOutsideRoot {
+                    relative_path: "../outside".to_owned(),
+                }),
+                "AssetWorkspacePathValidationError",
+            ),
+            (
+                &workspace,
+                AssetError::Workspace(operation_error()),
+                "AssetWorkspaceAssetInspectionError",
+            ),
+            (
+                &favicon,
+                AssetError::Workspace(WorkspaceError::RootNotDirectory {
+                    path: missing_root.clone(),
+                }),
+                "AssetWorkspaceRootNormalizationError",
+            ),
+            (
+                &favicon,
+                AssetError::Workspace(operation_error()),
+                "AssetProjectFaviconInspectionError",
+            ),
+        ] {
+            assert_eq!(asset_wire_from_error(resource, &error)["_tag"], tag);
+        }
+        let encoding = serde_json::from_str::<Value>("").unwrap_err();
+        assert_eq!(
+            asset_wire_from_error(&workspace, &AssetError::Encoding(encoding))["_tag"],
+            "AssetSigningKeyLoadError"
+        );
+        assert_eq!(
+            review_wire_error(ReviewError::Backend("failed".to_owned()))["_tag"],
+            "Defect"
+        );
+        assert_eq!(defect("failed")["message"], "failed");
+    }
+}

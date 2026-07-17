@@ -70,6 +70,10 @@ function whenAnd(left: KeybindingWhenNode, right: KeybindingWhenNode): Keybindin
   return { type: "and", left, right };
 }
 
+function whenOr(left: KeybindingWhenNode, right: KeybindingWhenNode): KeybindingWhenNode {
+  return { type: "or", left, right };
+}
+
 interface TestBinding {
   shortcut: KeybindingShortcut;
   command: KeybindingCommand;
@@ -283,6 +287,27 @@ describe("split/new/close terminal shortcuts", () => {
     );
     assert.isFalse(
       isTerminalNewShortcut(event({ key: "m", ctrlKey: true }), keybindings, {
+        platform: "Linux",
+      }),
+    );
+  });
+
+  it("supports disjunctions and the Esc key alias", () => {
+    const keybindings = compile([
+      {
+        shortcut: modShortcut("escape"),
+        command: "terminal.new",
+        whenAst: whenOr(whenIdentifier("terminalFocus"), whenIdentifier("terminalOpen")),
+      },
+    ]);
+    assert.isTrue(
+      isTerminalNewShortcut(event({ key: "Esc", ctrlKey: true }), keybindings, {
+        platform: "Linux",
+        context: { terminalOpen: true },
+      }),
+    );
+    assert.isFalse(
+      isTerminalNewShortcut(event({ key: "Esc", ctrlKey: true }), keybindings, {
         platform: "Linux",
       }),
     );
@@ -637,6 +662,30 @@ describe("resolveShortcutCommand", () => {
       "rightPanel.toggle",
     );
   });
+
+  it("skips sparse bindings and can use the runtime platform default", () => {
+    const sparseBindings: unknown[] = [];
+    sparseBindings.length = 2;
+    const sparse = sparseBindings as ResolvedKeybindingsConfig;
+    assert.isNull(resolveShortcutCommand(event({ key: "x" }), sparse, { platform: "Linux" }));
+
+    const originalNavigator = globalThis.navigator;
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: { platform: "Linux" },
+    });
+    try {
+      assert.strictEqual(
+        resolveShortcutCommand(event({ key: "j", ctrlKey: true }), DEFAULT_BINDINGS),
+        "terminal.toggle",
+      );
+    } finally {
+      Object.defineProperty(globalThis, "navigator", {
+        configurable: true,
+        value: originalNavigator,
+      });
+    }
+  });
 });
 
 describe("formatShortcutLabel", () => {
@@ -657,6 +706,43 @@ describe("formatShortcutLabel", () => {
   it("formats labels for plus key", () => {
     assert.strictEqual(formatShortcutLabel(modShortcut("+"), "MacIntel"), "⌘+");
     assert.strictEqual(formatShortcutLabel(modShortcut("+"), "Linux"), "Ctrl++");
+  });
+
+  it("formats named keys and every explicit modifier", () => {
+    for (const [key, label] of [
+      [" ", "Space"],
+      ["escape", "Esc"],
+      ["arrowup", "Up"],
+      ["arrowdown", "Down"],
+      ["arrowleft", "Left"],
+      ["arrowright", "Right"],
+      ["backspace", "Backspace"],
+    ] as const) {
+      assert.strictEqual(
+        formatShortcutLabel(
+          {
+            key,
+            modKey: false,
+            metaKey: false,
+            ctrlKey: false,
+            shiftKey: false,
+            altKey: false,
+          },
+          "Linux",
+        ),
+        label,
+      );
+    }
+    const allModifiers = {
+      key: "x",
+      modKey: false,
+      metaKey: true,
+      ctrlKey: true,
+      shiftKey: true,
+      altKey: true,
+    } satisfies KeybindingShortcut;
+    assert.strictEqual(formatShortcutLabel(allModifiers, "Linux"), "Ctrl+Alt+Shift+Meta+X");
+    assert.strictEqual(formatShortcutLabel(allModifiers, "MacIntel"), "⌃⌥⇧⌘X");
   });
 });
 
@@ -693,6 +779,7 @@ describe("terminalDeleteShortcutData", () => {
         "MacIntel",
       ),
     );
+    assert.isNull(terminalDeleteShortcutData(event({ key: "Delete", metaKey: true }), "MacIntel"));
   });
 
   it("ignores non-keydown events", () => {
@@ -736,6 +823,10 @@ describe("terminalNavigationShortcutData", () => {
     assert.strictEqual(
       terminalNavigationShortcutData(event({ key: "ArrowRight", ctrlKey: true }), "Linux"),
       "\u001bf",
+    );
+    assert.strictEqual(
+      terminalNavigationShortcutData(event({ key: "ArrowLeft", altKey: true }), "Linux"),
+      "\u001bb",
     );
   });
 

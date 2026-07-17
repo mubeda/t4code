@@ -609,6 +609,11 @@ async fn connect_routes_validate_payload_origin_and_runtime_failures() {
         json!({
             "relayUrl":"https://relay.example",
             "cloudUserId":"cloud-user",
+            "environmentCredential":"secret"
+        }),
+        json!({
+            "relayUrl":"https://relay.example",
+            "cloudUserId":"cloud-user",
             "environmentCredential":"secret",
             "cloudMintPublicKey":"not-a-key"
         }),
@@ -882,6 +887,31 @@ async fn cloud_health_and_mint_fail_closed_at_each_dependency() {
         .lock()
         .await
         .remove(RELAY_HEALTH_RESPONSE_TYP);
+
+    let mut invalid_mint = harness
+        .controls
+        .proof("invalid-mint", "environment:connect");
+    invalid_mint.subject = "different-user".into();
+    harness
+        .controls
+        .verify_results
+        .lock()
+        .await
+        .insert("invalid-mint".into(), Ok(invalid_mint));
+    assert_eq!(
+        error(
+            harness
+                .service
+                .json(
+                    JsonOperation::ConnectMintCredential,
+                    Some(json!({"proof":"invalid-mint"})),
+                    context(HeaderMap::new()),
+                )
+                .await
+        )
+        .status,
+        StatusCode::UNAUTHORIZED
+    );
 
     *harness.controls.pairing_result.lock().await = Err("pairing".into());
     assert_eq!(
@@ -1549,6 +1579,173 @@ async fn sqlite_failures_map_to_route_specific_errors_without_partial_responses(
         "EnvironmentHttpInternalServerError",
         "Could not remove environment relay configuration.",
     );
+
+    let missing_secrets = self::harness(4, 4).await;
+    Connection::open(&missing_secrets.database_path)
+        .unwrap()
+        .execute_batch("DROP TABLE connect_native_secrets;")
+        .unwrap();
+    assert!(
+        missing_secrets
+            .service
+            .read_secret("relay-url")
+            .await
+            .is_err()
+    );
+    assert!(missing_secrets.service.read_link_state().await.is_err());
+    assert!(
+        missing_secrets
+            .service
+            .required_link_material()
+            .await
+            .is_err()
+    );
+
+    let malformed_rows = self::harness(4, 4).await;
+    Connection::open(&malformed_rows.database_path)
+        .unwrap()
+        .execute_batch(
+            "DROP TABLE connect_native_secrets;
+             CREATE TABLE connect_native_secrets(name BLOB, value BLOB);
+             INSERT INTO connect_native_secrets(name, value) VALUES ('relay-url', x'FF');",
+        )
+        .unwrap();
+    assert!(malformed_rows.service.read_link_state().await.is_err());
+
+    let deferred_secret_commit = self::harness(4, 4).await;
+    Connection::open(&deferred_secret_commit.database_path)
+        .unwrap()
+        .execute_batch(
+            "PRAGMA foreign_keys=OFF;
+             DROP TABLE connect_native_secrets;
+             CREATE TABLE secret_values(value TEXT PRIMARY KEY);
+             CREATE TABLE connect_native_secrets(
+               name TEXT PRIMARY KEY NOT NULL,
+               value TEXT NOT NULL REFERENCES secret_values(value) DEFERRABLE INITIALLY DEFERRED
+             ) STRICT;
+             PRAGMA foreign_keys=ON;",
+        )
+        .unwrap();
+    assert!(
+        deferred_secret_commit
+            .service
+            .replace_link_config(LinkConfig {
+                relay_url: "https://relay.test".into(),
+                relay_issuer: "https://issuer.test".into(),
+                cloud_user_id: "user".into(),
+                environment_credential: "credential".into(),
+                cloud_mint_public_key: "key".into(),
+                endpoint_runtime: json!({}),
+            })
+            .await
+            .is_err()
+    );
+
+    let deferred_delete_commit = self::harness(4, 4).await;
+    let deferred_delete_connection =
+        Connection::open(&deferred_delete_commit.database_path).unwrap();
+    deferred_delete_connection
+        .execute_batch(
+            "CREATE TABLE secret_references(
+               name TEXT REFERENCES connect_native_secrets(name) DEFERRABLE INITIALLY DEFERRED
+             );
+             INSERT INTO connect_native_secrets(name, value) VALUES ('relay-url', 'https://relay.test');
+             INSERT INTO secret_references(name) VALUES ('relay-url');",
+        )
+        .unwrap();
+    assert!(
+        deferred_delete_commit
+            .service
+            .clear_link_config()
+            .await
+            .is_err()
+    );
+
+    let replay_without_rowid = self::harness(4, 4).await;
+    Connection::open(&replay_without_rowid.database_path)
+        .unwrap()
+        .execute_batch(
+            "DROP TABLE connect_native_replay;
+             CREATE TABLE connect_native_replay(
+               kind TEXT NOT NULL,
+               value TEXT NOT NULL,
+               consumed_at INTEGER NOT NULL,
+               PRIMARY KEY(kind, value)
+             ) WITHOUT ROWID;",
+        )
+        .unwrap();
+    assert!(
+        replay_without_rowid
+            .service
+            .consume_replay("health", "jti", "nonce", 1_700_000_000)
+            .await
+            .is_err()
+    );
+
+    let fail_second_replay_insert = self::harness(4, 4).await;
+    Connection::open(&fail_second_replay_insert.database_path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER fail_nonce_insert
+             BEFORE INSERT ON connect_native_replay
+             WHEN NEW.kind LIKE '%:nonce'
+             BEGIN SELECT RAISE(FAIL, 'nonce insert failed'); END;",
+        )
+        .unwrap();
+    assert!(
+        fail_second_replay_insert
+            .service
+            .consume_replay("health", "jti", "nonce", 1_700_000_000)
+            .await
+            .is_err()
+    );
+
+    let deferred_replay_commit = self::harness(4, 4).await;
+    Connection::open(&deferred_replay_commit.database_path)
+        .unwrap()
+        .execute_batch(
+            "PRAGMA foreign_keys=OFF;
+             DROP TABLE connect_native_replay;
+             CREATE TABLE replay_values(value TEXT PRIMARY KEY);
+             CREATE TABLE connect_native_replay(
+               kind TEXT NOT NULL,
+               value TEXT NOT NULL REFERENCES replay_values(value) DEFERRABLE INITIALLY DEFERRED,
+               consumed_at INTEGER NOT NULL,
+               PRIMARY KEY(kind, value)
+             ) STRICT;
+             PRAGMA foreign_keys=ON;",
+        )
+        .unwrap();
+    assert!(
+        deferred_replay_commit
+            .service
+            .consume_replay("health", "jti", "nonce", 1_700_000_000)
+            .await
+            .is_err()
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let initialization_failure = TempDir::new().unwrap();
+        let read_only_path = initialization_failure.path().join("connect.sqlite3");
+        initialize_database(&read_only_path).unwrap();
+        let mut file_permissions = std::fs::metadata(&read_only_path).unwrap().permissions();
+        file_permissions.set_mode(0o400);
+        std::fs::set_permissions(&read_only_path, file_permissions).unwrap();
+        let mut directory_permissions = std::fs::metadata(initialization_failure.path())
+            .unwrap()
+            .permissions();
+        directory_permissions.set_mode(0o500);
+        std::fs::set_permissions(initialization_failure.path(), directory_permissions).unwrap();
+        assert!(initialize_database(&read_only_path).is_err());
+        let mut directory_permissions = std::fs::metadata(initialization_failure.path())
+            .unwrap()
+            .permissions();
+        directory_permissions.set_mode(0o700);
+        std::fs::set_permissions(initialization_failure.path(), directory_permissions).unwrap();
+    }
 }
 
 #[test]
@@ -1572,4 +1769,32 @@ fn json_rpc_helpers_preserve_ids_headers_and_errors() {
     let error = ConnectMcpError::invalid_mcp_credential();
     assert_eq!(error.headers[header::WWW_AUTHENTICATE.as_str()], "Bearer");
     let _http = error.into_http();
+}
+
+#[tokio::test]
+async fn owned_credential_scope_inputs_issue_and_replace_thread_credentials() {
+    let harness = harness(2, 2).await;
+    let first = harness
+        .service
+        .issue_mcp_credential("thread-owned".to_string(), "provider-owned".to_string())
+        .await
+        .expect("owned credential inputs should issue");
+    let replacement = harness
+        .service
+        .issue_mcp_credential("thread-owned".to_string(), "provider-next".to_string())
+        .await
+        .expect("same thread credential should replace");
+
+    assert_ne!(first.authorization_header, replacement.authorization_header);
+    assert_eq!(replacement.thread_id, "thread-owned");
+    assert_eq!(replacement.provider_instance_id, "provider-next");
+}
+
+#[test]
+fn database_initialization_reports_parent_directory_creation_failures() {
+    let temp = TempDir::new().expect("temporary directory");
+    let blocker = temp.path().join("blocker");
+    std::fs::write(&blocker, b"file").expect("blocker should write");
+
+    assert!(initialize_database(&blocker.join("connect.sqlite3")).is_err());
 }

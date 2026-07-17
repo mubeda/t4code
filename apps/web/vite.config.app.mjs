@@ -77,11 +77,13 @@ function resolveDevProxyTarget(wsUrl) {
 
 const devProxyTarget = resolveDevProxyTarget(configuredWsUrl);
 
-export default defineConfig(() => {
+export default defineConfig(({ mode } = {}) => {
   return {
     plugins: [
       tanstackRouter({
-        autoCodeSplitting: true,
+        // Unit tests inspect route component behavior directly. Keep the source
+        // components available instead of replacing them with lazy wrappers.
+        autoCodeSplitting: mode !== "test",
         routeFileIgnorePattern: "\\.test\\.(ts|tsx)$",
       }),
       react(),

@@ -349,3 +349,45 @@ fn boolean_descriptor(id: &str, label: &str, current: Option<&Value>) -> Value {
         }),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn about_and_model_fallbacks_cover_cursor_payload_boundaries() {
+        let failed = parse_about_output(1, "grok-cli 1.2.3\n", "failure");
+        assert_eq!(failed.version.as_deref(), Some("1.2.3"));
+        assert_eq!(failed.status, "error");
+
+        let authenticated = parse_about_output(
+            0,
+            r#"{"cliVersion":"2.0.0","userEmail":"user@example.test","subscriptionTier":"pro"}"#,
+            "",
+        );
+        assert_eq!(authenticated.auth["type"], "pro");
+        assert_eq!(authenticated.status, "ready");
+
+        let unauthenticated = parse_about_output(
+            0,
+            r#"{"cliVersion":"2.0.0","userEmail":"Not logged in"}"#,
+            "",
+        );
+        assert_eq!(unauthenticated.auth["status"], "unauthenticated");
+
+        let text = parse_about_output(0, "CLI Version 3.0.0\nUser Email user@example.test\n", "");
+        assert_eq!(text.version.as_deref(), Some("3.0.0"));
+        assert_eq!(text.auth["email"], "user@example.test");
+
+        assert!(discover_models_from_list_available_models(&json!({}), &[]).is_err());
+        assert!(discover_models_from_list_available_models(&json!({"models":[{}]}), &[]).is_err());
+        let models = discover_models_from_list_available_models(
+            &json!({"models":[{"value":"model[fast]"}]}),
+            &[" ".to_owned(), "model".to_owned(), "custom".to_owned()],
+        )
+        .unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].name, "model[fast]");
+        assert_eq!(models[1].slug, "custom");
+    }
+}

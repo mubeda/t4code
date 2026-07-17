@@ -88,6 +88,21 @@ describe("statusBarPresentation", () => {
     expect(vm.terminalCountLabel).toBe("11");
   });
 
+  it("uses empty resource labels when no process data is available", () => {
+    const vm = buildResourceSummaryViewModel({
+      diagnostics: null,
+      resourceHistory: null,
+      terminalCount: -1,
+    });
+
+    expect(vm).toEqual({
+      memoryLabel: "--",
+      cpuLabel: "--",
+      processCountLabel: "0",
+      terminalCountLabel: "0",
+    });
+  });
+
   it("formats top process rows with per-process CPU instead of aggregate CPU", () => {
     const vm = buildResourceTopProcessViewModel({
       processKey: "123:t4code server",

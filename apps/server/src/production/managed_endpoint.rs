@@ -11,6 +11,7 @@ use super::connect_mcp::EndpointRuntime;
 #[derive(Clone, Default)]
 pub struct ManagedEndpointRuntime {
     state: Arc<Mutex<Option<ActiveConnector>>>,
+    executable_override: Option<PathBuf>,
 }
 
 struct ActiveConnector {
@@ -30,6 +31,14 @@ struct ManagedEndpointConfig {
 
 impl ManagedEndpointRuntime {
     #[must_use]
+    pub fn with_executable_override(executable: PathBuf) -> Self {
+        Self {
+            state: Arc::default(),
+            executable_override: Some(executable),
+        }
+    }
+
+    #[must_use]
     pub fn endpoint(&self) -> EndpointRuntime {
         let runtime = self.clone();
         EndpointRuntime::new(move |config| {
@@ -46,7 +55,7 @@ impl ManagedEndpointRuntime {
         }
     }
 
-    async fn apply(&self, value: Value) -> Result<Value, String> {
+    pub async fn apply(&self, value: Value) -> Result<Value, String> {
         if value.is_null() {
             self.shutdown().await;
             return Ok(json!({ "status": "disabled" }));
@@ -84,11 +93,14 @@ impl ManagedEndpointRuntime {
             let _ = active.child.wait().await;
             *state = None;
         }
-        let Some(executable) = executable_on_path(if cfg!(windows) {
-            "t4code-connect.exe"
-        } else {
-            "t4code-connect"
-        }) else {
+        let executable = self.executable_override.clone().or_else(|| {
+            executable_on_path(if cfg!(windows) {
+                "t4code-connect.exe"
+            } else {
+                "t4code-connect"
+            })
+        });
+        let Some(executable) = executable else {
             return Ok(failed_status(&config, "The relay client is not installed."));
         };
         let mut command = tokio::process::Command::new(executable);
@@ -137,4 +149,69 @@ fn executable_on_path(name: &str) -> Option<PathBuf> {
         .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
         .map(|directory| directory.join(name))
         .find(|candidate| candidate.is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn disabled_invalid_and_unsupported_configs_are_bounded() {
+        let runtime = ManagedEndpointRuntime::default();
+
+        assert_eq!(
+            runtime.apply(Value::Null).await.unwrap(),
+            json!({"status":"disabled"})
+        );
+        assert!(
+            runtime
+                .apply(json!({"providerKind":"cloudflare_tunnel"}))
+                .await
+                .unwrap_err()
+                .starts_with("invalid managed endpoint config:")
+        );
+        assert_eq!(
+            runtime
+                .apply(json!({
+                    "providerKind":"future_provider",
+                    "connectorToken":"ignored",
+                    "tunnelId":"tunnel-1",
+                    "tunnelName":"Future tunnel",
+                }))
+                .await
+                .unwrap(),
+            json!({"status":"unsupported","providerKind":"future_provider"})
+        );
+        assert_eq!(
+            runtime
+                .apply(json!({
+                    "providerKind":"cloudflare_tunnel",
+                    "connectorToken":"  ",
+                }))
+                .await
+                .unwrap_err(),
+            "connector token must not be empty"
+        );
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn missing_connector_executable_returns_actionable_status() {
+        let runtime = ManagedEndpointRuntime::default();
+        let status = runtime
+            .apply(json!({
+                "providerKind":"cloudflare_tunnel",
+                "connectorToken":"fixture-token",
+                "tunnelId":"tunnel-1",
+                "tunnelName":"Fixture tunnel",
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(status["providerKind"], "cloudflare_tunnel");
+        assert_eq!(status["tunnelId"], "tunnel-1");
+        assert_eq!(status["tunnelName"], "Fixture tunnel");
+        assert_eq!(status["status"], "failed");
+        assert_eq!(status["reason"], "The relay client is not installed.");
+    }
 }

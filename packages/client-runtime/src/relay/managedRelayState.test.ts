@@ -4,11 +4,12 @@ import type {
   RelayEnvironmentStatusResponse,
 } from "@t4code/contracts/relay";
 import { describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
-import { Atom, AtomRegistry } from "effect/unstable/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
 import { afterEach, vi } from "vite-plus/test";
 
 import * as ManagedRelay from "./managedRelay.ts";
@@ -121,6 +122,34 @@ describe("createManagedRelayQueryManager", () => {
       expect(yield* Fiber.join(readsFiber)).toEqual([token, token]);
       expect(yield* session.readClerkToken()).toBe(token);
       expect(readClerkToken).toHaveBeenCalledTimes(1);
+    }),
+  );
+
+  it.effect("does not cache tokens without numeric expiry metadata", () =>
+    Effect.gen(function* () {
+      const token = `${btoa("{}").replaceAll("=", "")}.${btoa("{}").replaceAll("=", "")}.signature`;
+      const readClerkToken = vi.fn(() => Promise.resolve(token));
+      const session = createManagedRelaySession({ accountId: "account-1", readClerkToken });
+
+      expect(yield* session.readClerkToken()).toBe(token);
+      expect(yield* session.readClerkToken()).toBe(token);
+      expect(readClerkToken).toHaveBeenCalledTimes(2);
+    }),
+  );
+
+  it.effect("handles empty, externally supplied, and already available sessions", () =>
+    Effect.gen(function* () {
+      setManagedRelaySession(registry, null);
+      registry.set(managedRelaySessionAtom, {
+        accountId: "account-1",
+        readClerkToken: () => Effect.succeed("external-token"),
+      });
+      setManagedRelaySession(registry, {
+        accountId: "account-1",
+        readClerkToken: () => Promise.resolve("replacement-token"),
+      });
+
+      expect(yield* waitForManagedRelayClerkToken(registry)).toBe("replacement-token");
     }),
   );
 
@@ -317,6 +346,58 @@ describe("createManagedRelayQueryManager", () => {
         "Relay returned status for a different environment.",
       );
     });
+  });
+
+  it("rejects status responses for a different endpoint or descriptor", async () => {
+    const responses: RelayEnvironmentStatusResponse[] = [
+      {
+        environmentId: environment.environmentId,
+        endpoint: { ...environment.endpoint, wsBaseUrl: "wss://different.example.test" },
+        status: "online",
+        checkedAt: "2026-06-01T00:00:00.000Z",
+      },
+      {
+        environmentId: environment.environmentId,
+        endpoint: environment.endpoint,
+        status: "online",
+        checkedAt: "2026-06-01T00:00:00.000Z",
+        descriptor: { environmentId: EnvironmentId.make("different") } as never,
+      },
+    ];
+
+    for (const [index, response] of responses.entries()) {
+      if (index > 0) {
+        resetRegistry();
+      }
+      const manager = createManager({
+        getEnvironmentStatus: () => Effect.succeed(response),
+      });
+      setSession();
+      const atom = manager.environmentStatusAtom({ accountId: "account-1", environment });
+      registry.get(atom);
+      await vi.waitFor(() => {
+        expect(readManagedRelaySnapshotState(registry.get(atom)).error).not.toBeNull();
+      });
+    }
+  });
+
+  it("rejects queries for a different account and refreshes status explicitly", async () => {
+    const manager = createManager();
+    setSession();
+    const atom = manager.environmentStatusAtom({ accountId: "account-2", environment });
+    registry.get(atom);
+    await vi.waitFor(() => {
+      expect(readManagedRelaySnapshotState(registry.get(atom)).error).toBe(
+        "Sign in to T4 Cloud before loading relay data.",
+      );
+    });
+    manager.refreshEnvironmentStatus(registry, { accountId: "account-2", environment });
+  });
+
+  it("uses a safe message for non-error snapshot failures", () => {
+    expect(readManagedRelaySnapshotState(AsyncResult.failure(Cause.fail("opaque"))).error).toBe(
+      "Could not load T4 Cloud data.",
+    );
   });
 
   it("exposes relay trace IDs alongside snapshot errors", async () => {

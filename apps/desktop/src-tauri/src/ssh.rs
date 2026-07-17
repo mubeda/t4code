@@ -9,7 +9,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use t4code_server::process::configure_background_command;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Runtime};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::sync::oneshot;
 use tokio::{
@@ -367,9 +367,9 @@ impl SshEnvironmentManager {
         }
     }
 
-    pub async fn ensure_environment(
+    pub async fn ensure_environment<R: Runtime>(
         &self,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         prompts: &SshPasswordPromptManager,
         target: SshEnvironmentTarget,
         options: Option<SshEnvironmentEnsureOptions>,
@@ -456,9 +456,9 @@ impl SshEnvironmentManager {
         Ok(bootstrap)
     }
 
-    pub async fn disconnect_environment(
+    pub async fn disconnect_environment<R: Runtime>(
         &self,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         prompts: &SshPasswordPromptManager,
         target: SshEnvironmentTarget,
     ) -> Result<(), String> {
@@ -500,9 +500,9 @@ impl SshEnvironmentManager {
         }
     }
 
-    async fn prompt_for_password(
+    async fn prompt_for_password<R: Runtime>(
         &self,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         prompts: &SshPasswordPromptManager,
         target: &SshEnvironmentTarget,
         attempt: u8,
@@ -526,9 +526,9 @@ impl SshEnvironmentManager {
             .map_err(|error| error.to_string())
     }
 
-    async fn run_with_ssh_auth<T, F, Fut>(
+    async fn run_with_ssh_auth<R: Runtime, T, F, Fut>(
         &self,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         prompts: &SshPasswordPromptManager,
         key: &str,
         target: &SshEnvironmentTarget,
@@ -1118,9 +1118,9 @@ impl SshPasswordPromptManager {
         }
     }
 
-    pub async fn request_password(
+    pub async fn request_password<R: Runtime>(
         &self,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         request: SshPasswordRequest,
     ) -> PendingPromptResult {
         let request_id = Uuid::new_v4().simple().to_string();
@@ -1574,6 +1574,56 @@ mod tests {
     }
 
     #[test]
+    fn environment_manager_caches_clears_and_misses_auth_and_tunnels() {
+        let manager = SshEnvironmentManager::default();
+        assert_eq!(manager.cached_auth_secret("target"), None);
+        manager
+            .remember_auth_secret("target", "secret".to_string())
+            .expect("authentication secret should cache");
+        assert_eq!(
+            manager.cached_auth_secret("target").as_deref(),
+            Some("secret")
+        );
+        manager.clear_auth_secret("target");
+        assert_eq!(manager.cached_auth_secret("target"), None);
+        assert_eq!(
+            manager
+                .take_existing_bootstrap_if_running("missing-target")
+                .expect("missing tunnel should be inspectable"),
+            None,
+        );
+    }
+
+    #[tokio::test]
+    async fn environment_manager_reports_unreachable_ssh_targets() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder()
+            .build(mock_context(noop_assets()))
+            .expect("mock Tauri app");
+        let manager = SshEnvironmentManager::new();
+        let prompts = SshPasswordPromptManager::with_timeout(Duration::ZERO);
+        let target = SshEnvironmentTarget {
+            alias: "unreachable-localhost".to_string(),
+            hostname: "127.0.0.1".to_string(),
+            username: None,
+            port: Some(1),
+        };
+
+        let ensure_error = manager
+            .ensure_environment(app.handle(), &prompts, target.clone(), None)
+            .await
+            .expect_err("an unreachable SSH target should not launch");
+        assert!(ensure_error.contains("SSH launch command failed"));
+
+        let disconnect_error = manager
+            .disconnect_environment(app.handle(), &prompts, target)
+            .await
+            .expect_err("an unreachable SSH target should not disconnect remotely");
+        assert!(disconnect_error.contains("SSH stop command failed"));
+    }
+
+    #[test]
     fn discovers_ssh_config_hosts_across_included_files() {
         let home_dir = unique_temp_home();
         let ssh_dir = home_dir.join(".ssh");
@@ -2007,7 +2057,7 @@ mod tests {
 
     #[tokio::test]
     async fn password_prompt_resolution_rejects_blank_or_expired_ids() {
-        let manager = SshPasswordPromptManager::new();
+        let manager = SshPasswordPromptManager::default();
 
         assert_eq!(
             manager.resolve(SshPasswordPromptResolution {
@@ -2636,6 +2686,9 @@ mod tests {
 
     #[test]
     fn discovery_handles_empty_inputs_precedence_values_and_io_errors() {
+        if let Some(home) = default_home_dir() {
+            assert!(!home.as_os_str().is_empty());
+        }
         assert_eq!(discover_ssh_hosts(None), Ok(Vec::new()));
         assert_eq!(discover_ssh_hosts(Some(PathBuf::new())), Ok(Vec::new()));
 

@@ -277,3 +277,231 @@ impl WorkspaceService {
         entries::browse(partial_path, cwd).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn service_covers_file_and_directory_lifecycle_edges() {
+        let root = TempDir::new().unwrap();
+        let service = WorkspaceService::new(0);
+
+        assert_eq!(
+            service
+                .write_file(root.path(), "nested/file.txt", "hello")
+                .await
+                .unwrap(),
+            "nested/file.txt"
+        );
+        let read = service
+            .read_file(root.path(), "nested/file.txt")
+            .await
+            .unwrap();
+        assert_eq!(read.contents, "hello");
+        assert_eq!(read.byte_length, 5);
+        assert!(!read.truncated);
+
+        assert_eq!(
+            service
+                .create_entry(root.path(), "empty", EntryKind::Directory)
+                .await
+                .unwrap(),
+            "empty"
+        );
+        assert_eq!(
+            service
+                .create_entry(root.path(), "new/file.rs", EntryKind::File)
+                .await
+                .unwrap(),
+            "new/file.rs"
+        );
+        assert!(matches!(
+            service
+                .create_entry(root.path(), "new/file.rs", EntryKind::File)
+                .await,
+            Err(WorkspaceError::AlreadyExists { .. })
+        ));
+        assert!(matches!(
+            service.read_file(root.path(), "empty").await,
+            Err(WorkspaceError::NotFile { .. })
+        ));
+
+        assert_eq!(
+            service
+                .rename_entry(root.path(), "new/file.rs", "renamed/file.rs")
+                .await
+                .unwrap(),
+            "renamed/file.rs"
+        );
+        assert!(matches!(
+            service.rename_entry(root.path(), "missing", "unused").await,
+            Err(WorkspaceError::NotFound { .. })
+        ));
+        service
+            .write_file(root.path(), "occupied", "occupied")
+            .await
+            .unwrap();
+        assert!(matches!(
+            service
+                .rename_entry(root.path(), "renamed/file.rs", "occupied")
+                .await,
+            Err(WorkspaceError::AlreadyExists { .. })
+        ));
+
+        assert_eq!(
+            service
+                .duplicate_entry(root.path(), "renamed/file.rs")
+                .await
+                .unwrap(),
+            "renamed/file copy.rs"
+        );
+        assert_eq!(
+            service
+                .duplicate_entry(root.path(), "renamed/file.rs")
+                .await
+                .unwrap(),
+            "renamed/file copy 2.rs"
+        );
+        assert!(matches!(
+            service.duplicate_entry(root.path(), "empty").await,
+            Err(WorkspaceError::NotFile { .. })
+        ));
+        assert!(matches!(
+            service.duplicate_entry(root.path(), "missing").await,
+            Err(WorkspaceError::NotFound { .. })
+        ));
+
+        std::fs::write(root.path().join("binary.dat"), b"binary\0payload").unwrap();
+        assert!(matches!(
+            service.read_file(root.path(), "binary.dat").await,
+            Err(WorkspaceError::BinaryFile { .. })
+        ));
+        let browsed = service.browse("./r", Some(root.path())).await.unwrap();
+        assert!(!browsed.entries.is_empty());
+
+        assert_eq!(
+            service
+                .delete_entry(root.path(), "renamed/file copy.rs")
+                .await
+                .unwrap(),
+            "renamed/file copy.rs"
+        );
+        assert_eq!(
+            service.delete_entry(root.path(), "empty").await.unwrap(),
+            "empty"
+        );
+        assert!(matches!(
+            service.delete_entry(root.path(), "missing").await,
+            Err(WorkspaceError::NotFound { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn service_maps_concurrency_and_filesystem_failures_to_workspace_errors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = TempDir::new().unwrap();
+        let service = WorkspaceService::default();
+        let blocker = root.path().join("blocker");
+        std::fs::write(&blocker, "not a directory").unwrap();
+
+        for result in [
+            service
+                .write_file(root.path(), "blocker/file.txt", "contents")
+                .await,
+            service
+                .create_entry(root.path(), "blocker/directory", EntryKind::Directory)
+                .await,
+            service
+                .create_entry(root.path(), "blocker/file.txt", EntryKind::File)
+                .await,
+            service
+                .rename_entry(root.path(), "blocker", "blocker/renamed")
+                .await,
+        ] {
+            assert!(matches!(result, Err(WorkspaceError::Operation { .. })));
+        }
+
+        std::fs::write(root.path().join("source.txt"), "copy source").unwrap();
+        let mut source_permissions = std::fs::metadata(root.path().join("source.txt"))
+            .unwrap()
+            .permissions();
+        source_permissions.set_mode(0o000);
+        std::fs::set_permissions(root.path().join("source.txt"), source_permissions).unwrap();
+        let copy_result = service.duplicate_entry(root.path(), "source.txt").await;
+        let mut source_permissions = std::fs::metadata(root.path().join("source.txt"))
+            .unwrap()
+            .permissions();
+        source_permissions.set_mode(0o600);
+        std::fs::set_permissions(root.path().join("source.txt"), source_permissions).unwrap();
+        assert!(matches!(copy_result, Err(WorkspaceError::Operation { .. })));
+
+        let unreadable = root.path().join("unreadable.txt");
+        std::fs::write(&unreadable, "private").unwrap();
+        let mut unreadable_permissions = std::fs::metadata(&unreadable).unwrap().permissions();
+        unreadable_permissions.set_mode(0o000);
+        std::fs::set_permissions(&unreadable, unreadable_permissions).unwrap();
+        let read_result = service.read_file(root.path(), "unreadable.txt").await;
+        let mut unreadable_permissions = std::fs::metadata(&unreadable).unwrap().permissions();
+        unreadable_permissions.set_mode(0o600);
+        std::fs::set_permissions(&unreadable, unreadable_permissions).unwrap();
+        assert!(matches!(read_result, Err(WorkspaceError::Operation { .. })));
+
+        std::fs::create_dir(root.path().join("write-target")).unwrap();
+        assert!(matches!(
+            service
+                .write_file(root.path(), "write-target", "contents")
+                .await,
+            Err(WorkspaceError::Operation { .. })
+        ));
+
+        let locked = root.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        let mut locked_permissions = std::fs::metadata(&locked).unwrap().permissions();
+        locked_permissions.set_mode(0o500);
+        std::fs::set_permissions(&locked, locked_permissions).unwrap();
+        for result in [
+            service
+                .create_entry(root.path(), "locked/directory", EntryKind::Directory)
+                .await,
+            service
+                .create_entry(root.path(), "locked/file.txt", EntryKind::File)
+                .await,
+        ] {
+            assert!(matches!(result, Err(WorkspaceError::Operation { .. })));
+        }
+        let mut locked_permissions = std::fs::metadata(&locked).unwrap().permissions();
+        locked_permissions.set_mode(0o700);
+        std::fs::set_permissions(&locked, locked_permissions).unwrap();
+
+        for entry in ["rename-source", "delete-file"] {
+            std::fs::write(root.path().join(entry), entry).unwrap();
+        }
+        std::fs::create_dir(root.path().join("delete-directory")).unwrap();
+        let mut root_permissions = std::fs::metadata(root.path()).unwrap().permissions();
+        root_permissions.set_mode(0o500);
+        std::fs::set_permissions(root.path(), root_permissions).unwrap();
+        for result in [
+            service
+                .rename_entry(root.path(), "rename-source", "rename-target")
+                .await,
+            service.delete_entry(root.path(), "delete-file").await,
+            service.delete_entry(root.path(), "delete-directory").await,
+        ] {
+            assert!(matches!(result, Err(WorkspaceError::Operation { .. })));
+        }
+        let mut root_permissions = std::fs::metadata(root.path()).unwrap().permissions();
+        root_permissions.set_mode(0o700);
+        std::fs::set_permissions(root.path(), root_permissions).unwrap();
+
+        let closed = WorkspaceService::default();
+        closed.permits.close();
+        assert!(matches!(
+            closed.browse(".", Some(root.path())).await,
+            Err(WorkspaceError::Cancelled)
+        ));
+    }
+}

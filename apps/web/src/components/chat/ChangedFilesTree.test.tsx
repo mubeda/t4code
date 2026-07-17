@@ -2,9 +2,23 @@ import { TurnId } from "@t4code/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ChangedFilesTree } from "./ChangedFilesTree";
+import { ChangedFilesCard, ChangedFilesTree } from "./ChangedFilesTree";
 
 describe("ChangedFilesTree", () => {
+  it("renders an empty tree without directory controls or file rows", () => {
+    expect(
+      renderToStaticMarkup(
+        <ChangedFilesTree
+          turnId={TurnId.make("turn-empty")}
+          files={[]}
+          allDirectoriesExpanded={false}
+          resolvedTheme="dark"
+          onOpenTurnDiff={() => {}}
+        />,
+      ),
+    ).toBe('<div class="space-y-0.5"></div>');
+  });
+
   it.each([
     {
       name: "a compacted single-chain directory",
@@ -143,4 +157,44 @@ describe("ChangedFilesTree", () => {
       }
     },
   );
+});
+
+describe("ChangedFilesCard", () => {
+  it("shows zero-stat files and the expand action", () => {
+    const markup = renderToStaticMarkup(
+      <ChangedFilesCard
+        turnId={TurnId.make("turn-zero")}
+        files={[{ path: "README.md", kind: "modified", additions: 0, deletions: 0 }]}
+        allDirectoriesExpanded={false}
+        resolvedTheme="light"
+        onToggleAllDirectories={() => {}}
+        onOpenTurnDiff={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("1 changed files");
+    expect(markup).toContain("Expand all");
+    expect(markup).not.toContain("Collapse all");
+  });
+
+  it("shows aggregate stats and the collapse action for an expanded tree", () => {
+    const markup = renderToStaticMarkup(
+      <ChangedFilesCard
+        turnId={TurnId.make("turn-stats")}
+        files={[
+          { path: "src/a.ts", kind: "added", additions: 4, deletions: 0 },
+          { path: "src/b.ts", kind: "deleted", additions: 0, deletions: 2 },
+        ]}
+        allDirectoriesExpanded
+        resolvedTheme="dark"
+        onToggleAllDirectories={() => {}}
+        onOpenTurnDiff={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("2 changed files");
+    expect(markup).toContain("Collapse all");
+    expect(markup).toContain("+4");
+    expect(markup).toContain("-2");
+  });
 });

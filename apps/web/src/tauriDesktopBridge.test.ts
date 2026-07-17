@@ -1,4 +1,4 @@
-import type { DesktopBridge } from "@t4code/contracts";
+import { DEFAULT_CLIENT_SETTINGS, type DesktopBridge } from "@t4code/contracts";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 type TauriEventHandler = (event: { payload: unknown }) => void;
@@ -38,6 +38,8 @@ function installTauriHarness(options?: {
   readonly rejectContextMenu?: unknown;
   readonly rejectSshProvisioning?: boolean;
   readonly localEnvironmentBootstraps?: readonly unknown[] | (() => readonly unknown[]);
+  readonly rejectFallbackCommands?: boolean;
+  readonly rejectListeners?: boolean;
 }) {
   const listeners = new Map<string, TauriEventHandler>();
   const unlisteners = new Map<string, ReturnType<typeof vi.fn>>();
@@ -105,11 +107,17 @@ function installTauriHarness(options?: {
             : (options?.localEnvironmentBootstraps ?? [defaultLocalEnvironmentBootstrap]),
         );
       case "desktop_bridge_get_connection_catalog":
-        return Promise.resolve("native-catalog");
+        return options?.rejectFallbackCommands
+          ? Promise.reject(new Error("native catalog unavailable"))
+          : Promise.resolve("native-catalog");
       case "desktop_bridge_set_connection_catalog":
-        return Promise.resolve(args?.catalog === "saved-catalog");
+        return options?.rejectFallbackCommands
+          ? Promise.reject(new Error("native catalog unavailable"))
+          : Promise.resolve(args?.catalog === "saved-catalog");
       case "desktop_bridge_clear_connection_catalog":
-        return Promise.resolve(undefined);
+        return options?.rejectFallbackCommands
+          ? Promise.reject(new Error("native catalog unavailable"))
+          : Promise.resolve(undefined);
       case "desktop_bridge_fetch_environment_descriptor":
         return Promise.resolve({ environmentId: "ssh-env" });
       case "desktop_bridge_bootstrap_ssh_bearer_session":
@@ -119,11 +127,16 @@ function installTauriHarness(options?: {
       case "desktop_bridge_issue_ssh_web_socket_ticket":
         return Promise.resolve({ ticket: "ws-ticket" });
       default:
-        return Promise.resolve(null);
+        return options?.rejectFallbackCommands
+          ? Promise.reject(new Error(`unsupported fallback command: ${command}`))
+          : Promise.resolve(null);
     }
   });
 
   const listen = vi.fn(async (event: string, handler: TauriEventHandler) => {
+    if (options?.rejectListeners) {
+      throw new Error(`listener unavailable: ${event}`);
+    }
     listeners.set(event, handler);
     const unlisten = vi.fn(() => {
       listeners.delete(event);
@@ -389,6 +402,62 @@ describe("tauriDesktopBridge", () => {
     });
   });
 
+  it("routes the remaining desktop bridge capabilities through Tauri commands", async () => {
+    const harness = installTauriHarness();
+    const bridge = await installBridge();
+    const sshTarget = {
+      alias: "host-1",
+      hostname: "example.test",
+      username: null,
+      port: null,
+    };
+
+    await expect(bridge.getClientSettings()).resolves.toBeNull();
+    await expect(bridge.setClientSettings({} as never)).resolves.toBeNull();
+    await expect(bridge.discoverSshHosts()).resolves.toBeNull();
+    await expect(bridge.disconnectSshEnvironment(sshTarget)).resolves.toBeNull();
+    await expect(bridge.resolveSshPasswordPrompt?.("request-1", "secret")).resolves.toBeNull();
+    await expect(bridge.getServerExposureState()).resolves.toBeNull();
+    await expect(bridge.setServerExposureMode("network-accessible")).resolves.toBeNull();
+    await expect(
+      bridge.setTailscaleServeEnabled({ enabled: true, port: 8443 }),
+    ).resolves.toBeNull();
+    await expect(bridge.getAdvertisedEndpoints()).resolves.toBeNull();
+    await expect(bridge.getWslState()).resolves.toBeNull();
+    await expect(bridge.setWslBackendEnabled(true)).resolves.toBeNull();
+    await expect(bridge.setWslDistro("Ubuntu")).resolves.toBeNull();
+    await expect(bridge.setWslOnly(true)).resolves.toBeNull();
+    await expect(bridge.pickFolder({ initialPath: "/workspace" })).resolves.toBeNull();
+    await expect(bridge.confirm("Continue?")).resolves.toBeNull();
+    await expect(bridge.setTheme("dark")).resolves.toBeNull();
+    await expect(bridge.openExternal("https://example.test")).resolves.toBeNull();
+    await expect(bridge.getUpdateState()).resolves.toBeNull();
+    await expect(bridge.setUpdateChannel("nightly")).resolves.toBeNull();
+
+    const passwordRequests: unknown[] = [];
+    const disposePasswordPrompt = bridge.onSshPasswordPrompt?.((request) =>
+      passwordRequests.push(request),
+    );
+    await Promise.resolve();
+    harness.listeners.get("desktop:ssh-password-prompt")?.({
+      payload: { requestId: "request-1", prompt: "Password" },
+    });
+    expect(passwordRequests).toEqual([{ requestId: "request-1", prompt: "Password" }]);
+    disposePasswordPrompt?.();
+
+    expect(harness.invoke).toHaveBeenCalledWith("desktop_bridge_get_client_settings", undefined);
+    expect(harness.invoke).toHaveBeenCalledWith("desktop_bridge_discover_ssh_hosts", undefined);
+    expect(harness.invoke).toHaveBeenCalledWith("desktop_bridge_disconnect_ssh_environment", {
+      target: sshTarget,
+    });
+    expect(harness.invoke).toHaveBeenCalledWith("desktop_bridge_set_wsl_backend_enabled", {
+      enabled: true,
+    });
+    expect(harness.invoke).toHaveBeenCalledWith("desktop_bridge_set_update_channel", {
+      channel: "nightly",
+    });
+  });
+
   it("wraps Tauri event listeners and tears them down", async () => {
     const harness = installTauriHarness();
     const bridge = await installBridge();
@@ -483,5 +552,122 @@ describe("tauriDesktopBridge", () => {
     ]);
     expect(await bridge.getLocalEnvironmentBearerToken()).toBe("bearer-for-bootstrap-token-2");
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses browser fallbacks when optional native capabilities reject", async () => {
+    const storage = new Map<string, string>([["t4code.connectionCatalog", "legacy-catalog"]]);
+    const localStorage = {
+      getItem: vi.fn((key: string) => storage.get(key) ?? null),
+      setItem: vi.fn((key: string, value: string) => storage.set(key, value)),
+      removeItem: vi.fn((key: string) => storage.delete(key)),
+    };
+    const harness = installTauriHarness({ rejectFallbackCommands: true });
+    Object.assign(window, {
+      confirm: vi.fn(() => true),
+      open: vi.fn(),
+      localStorage,
+    });
+    vi.stubGlobal("localStorage", localStorage);
+    const bridge = await installBridge();
+
+    await expect(bridge.getClientSettings()).resolves.toBeNull();
+    await expect(bridge.setClientSettings(DEFAULT_CLIENT_SETTINGS)).resolves.toBeUndefined();
+    await expect(bridge.getClientSettings()).resolves.toEqual(DEFAULT_CLIENT_SETTINGS);
+    await expect(bridge.getConnectionCatalog!()).resolves.toBe("legacy-catalog");
+    await expect(bridge.setConnectionCatalog!("browser-catalog")).resolves.toBe(true);
+    await expect(bridge.clearConnectionCatalog!()).resolves.toBeUndefined();
+    await expect(bridge.discoverSshHosts()).resolves.toEqual([]);
+    await expect(
+      bridge.disconnectSshEnvironment({
+        alias: "fallback",
+        hostname: "fallback.test",
+        username: null,
+        port: null,
+      }),
+    ).resolves.toBeUndefined();
+    await expect(bridge.getAdvertisedEndpoints()).resolves.toEqual([]);
+    await expect(bridge.pickFolder()).resolves.toBeNull();
+    await expect(bridge.confirm("Continue?")).resolves.toBe(true);
+    await expect(bridge.setTheme("dark")).resolves.toBeUndefined();
+    await expect(bridge.openExternal("https://example.test/path")).resolves.toBe(true);
+    await expect(bridge.openExternal("file:///tmp/secret")).resolves.toBe(false);
+    await expect(bridge.openExternal("not a URL")).resolves.toBe(false);
+
+    await expect(bridge.getServerExposureState()).resolves.toMatchObject({ mode: "local-only" });
+    await expect(bridge.setServerExposureMode("network-accessible")).resolves.toMatchObject({
+      mode: "local-only",
+    });
+    await expect(
+      bridge.setTailscaleServeEnabled({ enabled: true, port: 8443 }),
+    ).resolves.toMatchObject({ tailscaleServeEnabled: false });
+    await expect(bridge.getWslState()).resolves.toMatchObject({ enabled: false, distros: [] });
+    await expect(bridge.setWslBackendEnabled(true)).resolves.toMatchObject({ enabled: false });
+    await expect(bridge.setWslDistro("Ubuntu")).resolves.toMatchObject({ distro: null });
+    await expect(bridge.setWslOnly(true)).resolves.toMatchObject({ wslOnly: false });
+    await expect(bridge.getUpdateState()).resolves.toMatchObject({ status: "disabled" });
+    await expect(bridge.setUpdateChannel("nightly")).resolves.toMatchObject({
+      channel: "nightly",
+    });
+
+    expect(window.open).toHaveBeenCalledWith(
+      "https://example.test/path",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    expect(localStorage.setItem).toHaveBeenCalledWith(
+      "t4code.connectionCatalog",
+      "browser-catalog",
+    );
+    expect(localStorage.removeItem).toHaveBeenCalled();
+    expect(harness.invoke).toHaveBeenCalledWith("desktop_bridge_get_update_state", undefined);
+  });
+
+  it("fails closed when browser catalog storage and event subscription are unavailable", async () => {
+    const localStorage = {
+      getItem: vi.fn(() => {
+        throw new Error("storage blocked");
+      }),
+      setItem: vi.fn(() => {
+        throw new Error("storage blocked");
+      }),
+      removeItem: vi.fn(() => {
+        throw new Error("storage blocked");
+      }),
+    };
+    installTauriHarness({ rejectFallbackCommands: true, rejectListeners: true });
+    Object.assign(window, { localStorage });
+    vi.stubGlobal("localStorage", localStorage);
+    const bridge = await installBridge();
+
+    await expect(bridge.getConnectionCatalog!()).resolves.toBeNull();
+    await expect(bridge.setConnectionCatalog!("catalog")).resolves.toBe(false);
+    await expect(bridge.clearConnectionCatalog!()).resolves.toBeUndefined();
+    const dispose = bridge.onMenuAction(() => {
+      throw new Error("listener must stay inactive");
+    });
+    dispose();
+    await Promise.resolve();
+
+    expect(localStorage.getItem).toHaveBeenCalled();
+    expect(localStorage.setItem).toHaveBeenCalled();
+    expect(localStorage.removeItem).toHaveBeenCalled();
+  });
+
+  it("retries bearer-token exchange after HTTP and payload failures", async () => {
+    installTauriHarness();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: "" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: "recovered" }) });
+    vi.stubGlobal("fetch", fetchMock);
+    const bridge = await installBridge();
+
+    await expect(bridge.getLocalEnvironmentBearerToken()).rejects.toThrowError(/failed: 503/u);
+    await expect(bridge.getLocalEnvironmentBearerToken()).rejects.toThrowError(
+      /did not include a token/u,
+    );
+    await expect(bridge.getLocalEnvironmentBearerToken()).resolves.toBe("recovered");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });

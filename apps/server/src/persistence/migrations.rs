@@ -1327,7 +1327,7 @@ fn migration_033(transaction: &Transaction<'_>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MIGRATIONS, run_migrations};
+    use super::{MIGRATIONS, Migration, migration_001, run_migrations};
 
     #[test]
     fn exposes_all_ordered_migration_metadata() {
@@ -1339,6 +1339,10 @@ mod tests {
         assert_eq!(ids, (1..=33).collect::<Vec<_>>());
         assert_eq!(MIGRATIONS[0].name, "OrchestrationEvents");
         assert_eq!(MIGRATIONS[32].name, "ProjectionThreadsKind");
+
+        let migration = Migration::new(99, "RuntimeFixture", migration_001);
+        assert_eq!(migration.id, 99);
+        assert_eq!(migration.name, "RuntimeFixture");
     }
 
     #[test]

@@ -78,4 +78,83 @@ describe("browser target resolver", () => {
     const { resolveDiscoveredServerUrl } = await import("./browserTargetResolver");
     expect(resolveDiscoveredServerUrl(EnvironmentId.make("environment-1"), "   ")).toBe("   ");
   });
+
+  it("returns direct URL targets without reading connection state", async () => {
+    const { resolveBrowserNavigationTarget } = await import("./browserTargetResolver");
+    expect(
+      resolveBrowserNavigationTarget(EnvironmentId.make("environment-1"), {
+        kind: "url",
+        url: "https://example.test/docs",
+      }),
+    ).toEqual({
+      requestedUrl: "https://example.test/docs",
+      resolvedUrl: "https://example.test/docs",
+      resolutionKind: "direct",
+      environmentId: "environment-1",
+    });
+    expect(readPreparedConnection).not.toHaveBeenCalled();
+  });
+
+  it("rejects disconnected environment ports", async () => {
+    readPreparedConnection.mockReturnValue(null);
+    const { resolveBrowserNavigationTarget } = await import("./browserTargetResolver");
+    expect(() =>
+      resolveBrowserNavigationTarget(EnvironmentId.make("environment-1"), {
+        kind: "environment-port",
+        port: 3000,
+      }),
+    ).toThrow("is not connected");
+  });
+
+  it.each([
+    "http://localhost:4321",
+    "http://machine.local:4321",
+    "http://machine.ts.net:4321",
+    "http://10.0.0.1:4321",
+    "http://172.16.0.1:4321",
+    "http://172.31.255.1:4321",
+    "http://192.168.1.1:4321",
+    "http://127.1.2.3:4321",
+    "http://169.254.2.3:4321",
+  ])("accepts private environment host %s", async (httpBaseUrl) => {
+    readPreparedConnection.mockReturnValue({ httpBaseUrl });
+    const { resolveBrowserNavigationTarget } = await import("./browserTargetResolver");
+    const result = resolveBrowserNavigationTarget(EnvironmentId.make("environment-1"), {
+      kind: "environment-port",
+      port: 8443,
+      protocol: "https",
+      path: "health",
+    });
+    expect(result.resolvedUrl).toContain(":8443/health");
+    expect(result.requestedUrl).toBe("https://localhost:8443/health");
+  });
+
+  it.each([
+    "http://172.15.0.1:4321",
+    "http://172.32.0.1:4321",
+    "http://192.167.1.1:4321",
+    "http://1.2.3:4321",
+    "http://1.example.test:4321",
+  ])("rejects non-private environment host %s", async (httpBaseUrl) => {
+    readPreparedConnection.mockReturnValue({ httpBaseUrl });
+    const { resolveBrowserNavigationTarget } = await import("./browserTargetResolver");
+    expect(() =>
+      resolveBrowserNavigationTarget(EnvironmentId.make("environment-1"), {
+        kind: "environment-port",
+        port: 3000,
+      }),
+    ).toThrow(/authenticated preview gateway/);
+  });
+
+  it("maps wildcard HTTPS discovery and returns raw input when disconnected", async () => {
+    const { resolveDiscoveredServerUrl } = await import("./browserTargetResolver");
+    readPreparedConnection.mockReturnValue({ httpBaseUrl: "http://10.0.0.2:4321" });
+    expect(
+      resolveDiscoveredServerUrl(EnvironmentId.make("environment-1"), "https://0.0.0.0/path"),
+    ).toBe("https://10.0.0.2/path");
+    readPreparedConnection.mockReturnValue(null);
+    expect(
+      resolveDiscoveredServerUrl(EnvironmentId.make("environment-1"), "localhost:3000/path"),
+    ).toBe("localhost:3000/path");
+  });
 });
