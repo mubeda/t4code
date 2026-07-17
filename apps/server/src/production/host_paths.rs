@@ -137,7 +137,7 @@ async fn canonicalize_missing_path(path: &Path) -> Result<PathBuf, HostPathError
                 for component in missing_components.iter().rev() {
                     canonical.push(component);
                 }
-                return Ok(normalize_lexically(&canonical));
+                return Ok(normalize_host_path_lexically(&canonical));
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let Some(component) = ancestor.file_name() else {
@@ -159,7 +159,8 @@ async fn canonicalize_missing_path(path: &Path) -> Result<PathBuf, HostPathError
     }
 }
 
-fn normalize_lexically(path: &Path) -> PathBuf {
+#[must_use]
+pub fn normalize_host_path_lexically(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {

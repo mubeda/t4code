@@ -34,7 +34,10 @@ use crate::{
 };
 
 pub use super::host_paths::process_compatible_path;
-use super::host_paths::{HostPathError, resolve_host_directory, resolve_host_directory_identity};
+use super::host_paths::{
+    HostPathError, normalize_host_path_lexically, resolve_host_directory,
+    resolve_host_directory_identity,
+};
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const GIT_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
@@ -147,6 +150,12 @@ fn map_host_path_error(error: HostPathError) -> OrchestrationEffectsError {
 struct ProductionProjectCommandEffects;
 
 impl ProjectCommandEffects for ProductionProjectCommandEffects {
+    fn normalize_workspace_root_lexically(&self, workspace_root: &str) -> String {
+        normalize_host_path_lexically(Path::new(workspace_root))
+            .to_string_lossy()
+            .into_owned()
+    }
+
     fn canonicalize_workspace_root<'a>(
         &'a self,
         workspace_root: &'a str,
