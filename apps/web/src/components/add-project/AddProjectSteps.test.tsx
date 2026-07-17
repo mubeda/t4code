@@ -74,6 +74,7 @@ async function mountLauncher(overrides: Partial<AddProjectStartStepProps> = {}):
       hosts={[localHost, remoteHost]}
       selectedEnvironmentId={localHost.environmentId}
       busy={false}
+      error={null}
       onSelectHost={vi.fn()}
       onBrowse={vi.fn()}
       onOpenClone={vi.fn()}
@@ -104,6 +105,7 @@ describe("Add Project presentational steps", () => {
         hosts={[localHost, remoteHost]}
         selectedEnvironmentId={localHost.environmentId}
         busy={false}
+        error={null}
         onSelectHost={vi.fn()}
         onBrowse={vi.fn()}
         onOpenClone={vi.fn()}
@@ -162,6 +164,7 @@ describe("Add Project presentational steps", () => {
     expect(onOpenClone).not.toHaveBeenCalled();
     expect(onOpenCreate).not.toHaveBeenCalled();
     expect(document.body.textContent).not.toContain("↵");
+    expect(buttonWithText("Local Mac").disabled).toBe(true);
   });
 
   it("wraps launcher focus at both ends", async () => {
@@ -182,6 +185,15 @@ describe("Add Project presentational steps", () => {
     expect(buttonWithText("Local Mac").disabled).toBe(true);
   });
 
+  it("renders launcher failures as an accessible alert", async () => {
+    await mountLauncher({
+      error: "Start the matching WSL backend, then choose the folder again.",
+    } as Partial<AddProjectStartStepProps>);
+
+    const alert = document.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("Start the matching WSL backend");
+  });
+
   it("submits a non-empty host path with Enter", async () => {
     const onSubmit = vi.fn();
     await mount(
@@ -197,6 +209,9 @@ describe("Add Project presentational steps", () => {
     const input = document.querySelector("input");
     if (!(input instanceof HTMLInputElement)) throw new Error("Missing host path input");
 
+    expect(document.body.textContent).toContain("Open project folder");
+    expect(document.body.textContent).toContain("Build server");
+    expect(buttonWithText("Open project")).toBeDefined();
     await keyDown(input, "Enter");
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
@@ -207,6 +222,7 @@ describe("Add Project presentational steps", () => {
       <AddProjectCloneStep
         url=""
         parentDir="~/"
+        platform="Linux"
         error={null}
         busy={false}
         canPickParent
@@ -225,6 +241,7 @@ describe("Add Project presentational steps", () => {
       <AddProjectCloneStep
         url="not-a-url"
         parentDir="~/projects/"
+        platform="Linux"
         error="Remote clone failed."
         busy={false}
         canPickParent
@@ -251,6 +268,7 @@ describe("Add Project presentational steps", () => {
       <AddProjectCloneStep
         url="git@github.com:openai/codex.git"
         parentDir="projects"
+        platform="Linux"
         error={null}
         busy={false}
         canPickParent
@@ -276,6 +294,7 @@ describe("Add Project presentational steps", () => {
       <AddProjectCloneStep
         url="https://github.com/openai/codex.git"
         parentDir="~/projects/"
+        platform="Linux"
         error={null}
         busy={false}
         canPickParent={false}
@@ -292,12 +311,53 @@ describe("Add Project presentational steps", () => {
     expect(onClone).toHaveBeenCalledTimes(1);
   });
 
+  it("hides the clone parent picker when the host cannot route it", async () => {
+    await mount(
+      <AddProjectCloneStep
+        url="https://github.com/openai/codex.git"
+        parentDir="~/projects/"
+        platform="Linux"
+        error={null}
+        busy={false}
+        canPickParent={false}
+        onUrlChange={vi.fn()}
+        onParentDirChange={vi.fn()}
+        onPickParent={vi.fn()}
+        onClone={vi.fn()}
+      />,
+    );
+
+    expect(document.querySelector('[aria-label="Choose parent folder"]')).toBeNull();
+  });
+
+  it("disables clone while the selected host platform is not ready", async () => {
+    const onClone = vi.fn();
+    await mount(
+      <AddProjectCloneStep
+        url="https://github.com/openai/codex.git"
+        parentDir="~/projects/"
+        platform={null}
+        error={null}
+        busy={false}
+        canPickParent={false}
+        onUrlChange={vi.fn()}
+        onParentDirChange={vi.fn()}
+        onPickParent={vi.fn()}
+        onClone={onClone}
+      />,
+    );
+
+    expect(document.body.textContent).toContain("Host platform information is still loading.");
+    expect(buttonWithText("Clone").disabled).toBe(true);
+  });
+
   it("suppresses clone submission while busy", async () => {
     const onClone = vi.fn();
     await mount(
       <AddProjectCloneStep
         url="https://github.com/openai/codex.git"
         parentDir="~/projects/"
+        platform="Linux"
         error={null}
         busy
         canPickParent
@@ -385,5 +445,24 @@ describe("Add Project presentational steps", () => {
     expect(buttonWithText("Creating…").disabled).toBe(true);
     await submit(form);
     expect(onCreate).not.toHaveBeenCalled();
+  });
+
+  it("disables create while the selected host platform is not ready", async () => {
+    await mount(
+      <AddProjectCreateStep
+        name="demo"
+        parentDir="~/projects/"
+        platform={null}
+        error={null}
+        busy={false}
+        canPickParent={false}
+        onNameChange={vi.fn()}
+        onParentDirChange={vi.fn()}
+        onPickParent={vi.fn()}
+        onCreate={vi.fn()}
+      />,
+    );
+
+    expect(buttonWithText("Create project").disabled).toBe(true);
   });
 });

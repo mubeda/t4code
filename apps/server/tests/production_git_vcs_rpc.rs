@@ -1320,6 +1320,58 @@ async fn clone_pull_and_worktree_lifecycle_round_trip_over_rpc() {
 }
 
 #[tokio::test]
+async fn clone_resolves_a_home_relative_parent_before_running_git() {
+    if relaunch_with_isolated_git_config("clone_resolves_a_home_relative_parent_before_running_git")
+    {
+        return;
+    }
+
+    let home = dirs::home_dir()
+        .and_then(|path| fs::canonicalize(path).ok())
+        .expect("canonical home directory");
+    let home_temp = TempDir::new_in(&home).expect("temporary directory in home");
+    let relative = home_temp
+        .path()
+        .strip_prefix(&home)
+        .expect("temporary directory is inside home")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let clone_parent = home_temp.path().join("clones");
+    fs::create_dir(&clone_parent).expect("clone parent");
+
+    let server_temp = TempDir::new().expect("temporary server directory");
+    let remote = TempDir::new().expect("clone remote");
+    initialize_repository(&remote);
+    commit_file(remote.path(), "tracked.txt", "base\n", "initial");
+
+    let mut server = GitServerHarness::start(&server_temp).await;
+    request(
+        server.socket(),
+        "411",
+        "vcs.clone",
+        json!({
+            "url": local_file_url(remote.path()),
+            "parentDir": format!("~/{relative}/clones"),
+            "directoryName": "consumer"
+        }),
+    )
+    .await;
+    let clone_result = success_value(server.socket(), "411").await;
+    let cloned = PathBuf::from(
+        clone_result["path"]
+            .as_str()
+            .expect("clone destination path"),
+    );
+    assert_eq!(
+        canonical_path(&cloned),
+        canonical_path(clone_parent.join("consumer"))
+    );
+    assert!(cloned.join(".git").is_dir());
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
 async fn source_control_discovery_and_typed_errors_are_deterministic() {
     if relaunch_with_isolated_git_config(
         "source_control_discovery_and_typed_errors_are_deterministic",

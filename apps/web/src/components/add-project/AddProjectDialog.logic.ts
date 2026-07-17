@@ -12,14 +12,14 @@ export type AddProjectStep = "start" | "host-path" | "clone" | "create";
 export interface AddProjectHostOption {
   readonly environmentId: EnvironmentId;
   readonly label: string;
-  readonly platform: string;
+  readonly platform: string | null;
   readonly baseDirectory: string;
   readonly isPrimary: boolean;
   readonly desktopInstanceId: string | null;
   readonly nativePickerAvailable: boolean;
 }
 
-export function getEnvironmentBrowsePlatform(os: string | null | undefined): string {
+export function getEnvironmentBrowsePlatform(os: string | null | undefined): string | null {
   if (os === "windows") {
     return "Win32";
   }
@@ -29,7 +29,7 @@ export function getEnvironmentBrowsePlatform(os: string | null | undefined): str
   if (os === "linux") {
     return "Linux";
   }
-  return typeof navigator === "undefined" ? "" : navigator.platform;
+  return null;
 }
 
 export function defaultAddProjectParent(value: string | null | undefined): string {
@@ -47,9 +47,10 @@ export function validateProjectName(value: string): string | null {
   return null;
 }
 
-export function validateAddProjectPath(value: string, platform: string): string | null {
+export function validateAddProjectPath(value: string, platform: string | null): string | null {
   const path = value.trim();
   if (path.length === 0) return "Enter a project path.";
+  if (platform === null) return "Host platform information is still loading.";
   if (isUnsupportedWindowsProjectPath(path, platform)) {
     return "Windows-style paths are only supported on Windows.";
   }
@@ -71,7 +72,7 @@ const scpStyleGitCloneUrlPattern = /^(?:[^@\s/:]+@)?[^@:\s/]+:[^\s]+$/;
 export function validateGitCloneUrl(value: string): string | null {
   const url = value.trim();
   if (url.length === 0) return "Enter a Git URL.";
-  if (url !== value || /\s/.test(url)) return "Enter a valid Git repository URL.";
+  if (/\s/.test(url)) return "Enter a valid Git repository URL.";
   if (isWindowsAbsolutePath(url)) return "Enter a valid Git repository URL.";
   if (!url.includes("://") && scpStyleGitCloneUrlPattern.test(url)) return null;
 
@@ -90,9 +91,13 @@ export function validateGitCloneUrl(value: string): string | null {
   return "Enter a valid Git repository URL.";
 }
 
-export function validateGitCloneParentPath(value: string): string | null {
+export function validateGitCloneParentPath(value: string, platform: string | null): string | null {
   const path = value.trim();
   if (path.length === 0) return "Enter a clone parent folder.";
+  if (platform === null) return "Host platform information is still loading.";
+  if (isUnsupportedWindowsProjectPath(path, platform)) {
+    return "Windows-style paths are only supported on Windows.";
+  }
   if (
     path === "~" ||
     path.startsWith("~/") ||

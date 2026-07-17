@@ -1,5 +1,5 @@
 import { EnvironmentId } from "@t4code/contracts";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   defaultAddProjectParent,
@@ -24,14 +24,12 @@ const localHost: AddProjectHostOption = {
 };
 
 describe("Add Project rules", () => {
-  it("resolves browse platforms including browser and server fallbacks", () => {
+  it("resolves only authoritative server browse platforms", () => {
     expect(getEnvironmentBrowsePlatform("linux")).toBe("Linux");
-
-    vi.stubGlobal("navigator", { platform: "FallbackOS" });
-    expect(getEnvironmentBrowsePlatform(null)).toBe("FallbackOS");
-    vi.stubGlobal("navigator", undefined);
-    expect(getEnvironmentBrowsePlatform(undefined)).toBe("");
-    vi.unstubAllGlobals();
+    expect(getEnvironmentBrowsePlatform("windows")).toBe("Win32");
+    expect(getEnvironmentBrowsePlatform("darwin")).toBe("MacIntel");
+    expect(getEnvironmentBrowsePlatform(null)).toBeNull();
+    expect(getEnvironmentBrowsePlatform(undefined)).toBeNull();
   });
 
   it("uses the environment base directory and falls back to home", () => {
@@ -65,6 +63,7 @@ describe("Add Project rules", () => {
     expect(validateGitCloneUrl("ssh://git@git.example.com/team/project.git")).toBeNull();
     expect(validateGitCloneUrl("git://git.example.com/team/project.git")).toBeNull();
     expect(validateGitCloneUrl("git@github.com:openai/codex.git")).toBeNull();
+    expect(validateGitCloneUrl("  https://github.com/openai/codex.git  ")).toBeNull();
   });
 
   it("accepts a userless SCP-style domain remote", () => {
@@ -93,17 +92,28 @@ describe("Add Project rules", () => {
   });
 
   it("accepts home-relative, POSIX, and Windows clone parent paths", () => {
-    expect(validateGitCloneParentPath("~/projects")).toBeNull();
-    expect(validateGitCloneParentPath("/srv/projects")).toBeNull();
-    expect(validateGitCloneParentPath("C:\\projects")).toBeNull();
-    expect(validateGitCloneParentPath("\\\\server\\projects")).toBeNull();
+    expect(validateGitCloneParentPath("~/projects", "Linux")).toBeNull();
+    expect(validateGitCloneParentPath("/srv/projects", "Linux")).toBeNull();
+    expect(validateGitCloneParentPath("C:\\projects", "Win32")).toBeNull();
+    expect(validateGitCloneParentPath("\\\\server\\projects", "Win32")).toBeNull();
   });
 
-  it("rejects empty and relative clone parent paths", () => {
-    expect(validateGitCloneParentPath("")).toBe("Enter a clone parent folder.");
-    expect(validateGitCloneParentPath("projects")).toBe("Enter an absolute or home-relative path.");
-    expect(validateGitCloneParentPath("./projects")).toBe(
+  it("rejects clone parents that do not match the authoritative host platform", () => {
+    expect(validateGitCloneParentPath("", "Linux")).toBe("Enter a clone parent folder.");
+    expect(validateGitCloneParentPath("projects", "Linux")).toBe(
       "Enter an absolute or home-relative path.",
+    );
+    expect(validateGitCloneParentPath("./projects", "Linux")).toBe(
+      "Enter an absolute or home-relative path.",
+    );
+    expect(validateGitCloneParentPath("C:\\projects", "Linux")).toBe(
+      "Windows-style paths are only supported on Windows.",
+    );
+    expect(validateGitCloneParentPath("~/projects", null)).toBe(
+      "Host platform information is still loading.",
+    );
+    expect(validateAddProjectPath("~/projects", null)).toBe(
+      "Host platform information is still loading.",
     );
   });
 

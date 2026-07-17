@@ -31,7 +31,7 @@ export interface AddProjectOperationsDependencies {
     readonly workspaceRoot: string;
     readonly createWorkspaceRootIfMissing: boolean;
     readonly initializeGit: boolean;
-  }) => Promise<AddProjectCommandResult<void>>;
+  }) => Promise<AddProjectCommandResult<{ readonly projectId: ProjectId }>>;
   readonly cloneRepository: (input: {
     readonly environmentId: EnvironmentId;
     readonly url: string;
@@ -95,7 +95,7 @@ export function createAddProjectOperations(dependencies: AddProjectOperationsDep
       dependencies.getProjects().filter((project) => project.environmentId === input.environmentId),
       input.workspaceRoot,
     );
-    const projectId = existing?.id ?? newProjectId();
+    let projectId = existing?.id ?? newProjectId();
     if (!existing) {
       const created = await executeCommand(input.failureTitle, input.shouldContinue, () =>
         dependencies.createProject({
@@ -110,6 +110,7 @@ export function createAddProjectOperations(dependencies: AddProjectOperationsDep
       if (created === null || !input.shouldContinue()) {
         return false;
       }
+      projectId = created.value.projectId;
     }
     if (!input.shouldContinue()) {
       return false;

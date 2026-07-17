@@ -67,6 +67,20 @@ fn test_config(temp: &TempDir) -> ServerConfig {
         .with_unsafe_no_auth()
 }
 
+fn tempdir_in_home() -> (TempDir, String) {
+    let home = dirs::home_dir()
+        .and_then(|path| std::fs::canonicalize(path).ok())
+        .expect("canonical home directory");
+    let temp = TempDir::new_in(&home).expect("temporary directory in home");
+    let relative = temp
+        .path()
+        .strip_prefix(&home)
+        .expect("temporary directory is inside home")
+        .to_string_lossy()
+        .replace('\\', "/");
+    (temp, format!("~/{relative}"))
+}
+
 async fn harness() -> Harness {
     let temp = TempDir::new().expect("temporary base directory");
     let database = Database::open_in_memory().await.expect("database");
@@ -182,6 +196,125 @@ async fn project_create_can_initialize_git_before_registration() {
                 .projects
                 .iter()
                 .any(|project| project.project_id == "git-project")
+        );
+        socket.close(None).await.expect("close WebSocket");
+    })
+    .catch_unwind()
+    .await;
+    finish_test(harness, outcome).await;
+}
+
+#[tokio::test]
+async fn project_create_resolves_home_relative_paths_and_reuses_canonical_duplicates() {
+    let harness = harness().await;
+    let (home_temp, home_relative_root) = tempdir_in_home();
+    let outcome = AssertUnwindSafe(async {
+        let mut socket = harness.connect().await;
+        let existing = home_temp.path().join("existing");
+        std::fs::create_dir(&existing).expect("existing workspace");
+
+        let existing_result = dispatch_command(
+            &mut socket,
+            "11",
+            json!({
+                "type": "project.create",
+                "commandId": "create-home-existing",
+                "projectId": "home-existing",
+                "title": "Home Existing",
+                "workspaceRoot": format!("{home_relative_root}/existing"),
+                "createWorkspaceRootIfMissing": false,
+                "initializeGit": false,
+                "createdAt": CREATED_AT,
+            }),
+        )
+        .await;
+        assert_eq!(existing_result["projectId"], json!("home-existing"));
+
+        let duplicate_result = dispatch_command(
+            &mut socket,
+            "12",
+            json!({
+                "type": "project.create",
+                "commandId": "create-home-existing-duplicate",
+                "projectId": "home-existing-duplicate",
+                "title": "Home Existing Duplicate",
+                "workspaceRoot": std::fs::canonicalize(&existing).expect("canonical existing path"),
+                "createWorkspaceRootIfMissing": false,
+                "initializeGit": false,
+                "createdAt": CREATED_AT,
+            }),
+        )
+        .await;
+        assert_eq!(duplicate_result["projectId"], json!("home-existing"));
+
+        let created = home_temp.path().join("created");
+        let created_result = dispatch_command(
+            &mut socket,
+            "13",
+            json!({
+                "type": "project.create",
+                "commandId": "create-home-created",
+                "projectId": "home-created",
+                "title": "Home Created",
+                "workspaceRoot": format!("{home_relative_root}/created"),
+                "createWorkspaceRootIfMissing": true,
+                "initializeGit": true,
+                "createdAt": CREATED_AT,
+            }),
+        )
+        .await;
+        assert_eq!(created_result["projectId"], json!("home-created"));
+        assert!(created.join(".git").is_dir());
+
+        let snapshot = load_snapshot(&harness.engine.repositories())
+            .await
+            .expect("snapshot");
+        let canonical_existing = std::fs::canonicalize(&existing)
+            .expect("canonical existing path")
+            .to_string_lossy()
+            .into_owned();
+        let canonical_created = std::fs::canonicalize(&created)
+            .expect("canonical created path")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            snapshot
+                .projects
+                .iter()
+                .filter(|project| project.workspace_root == canonical_existing)
+                .count(),
+            1
+        );
+        assert!(
+            snapshot
+                .projects
+                .iter()
+                .any(|project| project.workspace_root == canonical_created)
+        );
+
+        let named_user_path = "~t4code-final-review-user/project";
+        rpc_request(
+            &mut socket,
+            "14",
+            "orchestration.dispatchCommand",
+            json!({
+                "type": "project.create",
+                "commandId": "do-not-expand-named-user",
+                "projectId": "named-user",
+                "title": "Named User",
+                "workspaceRoot": named_user_path,
+                "createWorkspaceRootIfMissing": false,
+                "initializeGit": false,
+                "createdAt": CREATED_AT,
+            }),
+        )
+        .await;
+        let named_user_error = expect_failure(&mut socket, "14").await;
+        assert!(
+            named_user_error["message"]
+                .as_str()
+                .is_some_and(|message| message.contains(named_user_path)),
+            "named-user tilde paths must remain literal"
         );
         socket.close(None).await.expect("close WebSocket");
     })

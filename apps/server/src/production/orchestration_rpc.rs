@@ -49,12 +49,22 @@ fn register_orchestration_rpc_inner(
                 .dispatch(command.clone())
                 .await
                 .map_err(|error| orchestration_error("OrchestrationDispatchCommandError", error))?;
-            if let Some((provider, settings_root)) = provider {
+            let should_route = match (&command, &result.project_id) {
+                (
+                    OrchestrationCommand::ProjectCreate { project_id, .. },
+                    Some(resolved_project_id),
+                ) => project_id == resolved_project_id,
+                _ => true,
+            };
+            if let Some((provider, settings_root)) = provider
+                && should_route
+            {
                 route_orchestration_command(&provider, &dispatch, &settings_root, command)
                     .await
                     .map_err(provider_command_error)?;
             }
-            Ok(json!({ "sequence": result.sequence }))
+            serde_json::to_value(result)
+                .map_err(|error| invalid_request(&request.tag, error.to_string()))
         }
     });
 
