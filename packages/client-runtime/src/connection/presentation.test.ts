@@ -181,4 +181,119 @@ describe("connection presentation", () => {
       traceId: null,
     });
   });
+
+  it("presents blocked and backoff states with and without failure details", () => {
+    expect(presentConnectionState(supervisorState({ phase: "backoff" }))).toEqual({
+      phase: "reconnecting",
+      error: null,
+      traceId: null,
+    });
+    expect(
+      presentConnectionState(
+        supervisorState({
+          phase: "blocked",
+          lastFailure: new ConnectionTransientError({
+            reason: "transport",
+            detail: "Access blocked.",
+            traceId: "trace-blocked",
+          }),
+        }),
+      ),
+    ).toEqual({ phase: "error", error: "Access blocked.", traceId: "trace-blocked" });
+    expect(presentConnectionState(supervisorState({ phase: "blocked" }))).toEqual({
+      phase: "error",
+      error: null,
+      traceId: null,
+    });
+    expect(
+      presentConnectionState(
+        supervisorState({
+          phase: "connecting",
+          attempt: 1,
+          lastFailure: new ConnectionTransientError({
+            reason: "transport",
+            detail: "Previous failure.",
+          }),
+        }),
+      ).phase,
+    ).toBe("reconnecting");
+  });
+
+  it("formats every connection status with optional error details", () => {
+    expect(connectionStatusText({ phase: "available", error: null, traceId: null })).toBe(
+      "Available",
+    );
+    expect(connectionStatusText({ phase: "offline", error: null, traceId: null })).toBe("Offline");
+    expect(connectionStatusText({ phase: "connecting", error: null, traceId: null })).toBe(
+      "Connecting...",
+    );
+    expect(connectionStatusText({ phase: "reconnecting", error: null, traceId: null })).toBe(
+      "Reconnecting...",
+    );
+    expect(connectionStatusText({ phase: "connected", error: null, traceId: null })).toBe(
+      "Connected",
+    );
+    expect(connectionStatusText({ phase: "error", error: null, traceId: null })).toBe(
+      "Connection failed",
+    );
+    expect(connectionStatusText({ phase: "error", error: "Denied", traceId: null })).toBe(
+      "Connection failed. Reason: Denied",
+    );
+  });
+
+  it("formats display URLs for every connection target and profile state", () => {
+    const entry = (target: unknown, profile: Option.Option<unknown>) =>
+      ({ target, profile }) as ConnectionCatalogEntry;
+    expect(
+      connectionCatalogDisplayUrl(
+        entry(
+          { _tag: "PrimaryConnectionTarget", httpBaseUrl: "http://localhost:3000" },
+          Option.none(),
+        ),
+      ),
+    ).toBe("http://localhost:3000");
+    expect(
+      connectionCatalogDisplayUrl(entry({ _tag: "RelayConnectionTarget" }, Option.none())),
+    ).toBeNull();
+    expect(
+      connectionCatalogDisplayUrl(
+        entry(
+          { _tag: "BearerConnectionTarget" },
+          Option.some({ _tag: "BearerConnectionProfile", httpBaseUrl: "https://remote.test" }),
+        ),
+      ),
+    ).toBe("https://remote.test");
+    expect(
+      connectionCatalogDisplayUrl(
+        entry({ _tag: "BearerConnectionTarget" }, Option.some({ _tag: "SshConnectionProfile" })),
+      ),
+    ).toBeNull();
+    expect(
+      connectionCatalogDisplayUrl(
+        entry(
+          { _tag: "SshConnectionTarget" },
+          Option.some({
+            _tag: "SshConnectionProfile",
+            target: { username: "dev", hostname: "host.test" },
+          }),
+        ),
+      ),
+    ).toBe("dev@host.test");
+    expect(
+      connectionCatalogDisplayUrl(entry({ _tag: "SshConnectionTarget" }, Option.none())),
+    ).toBeNull();
+  });
+
+  it("formats every phase message and gives phase-level offline precedence", () => {
+    expect(connectionPhaseMessage("connected", "Remote", "online")).toBe("Connected");
+    expect(connectionPhaseMessage("available", "Remote", "online")).toBe("Available");
+    expect(connectionPhaseMessage("connecting", "Remote", "online")).toBe(
+      "Connecting to Remote...",
+    );
+    expect(connectionPhaseMessage("reconnecting", "Remote", "online")).toBe(
+      "Reconnecting to Remote...",
+    );
+    expect(connectionPhaseMessage("error", "Remote", "online")).toBe("Connection failed");
+    expect(connectionPhaseMessage("offline", "Remote", "online")).toBe("You are offline");
+  });
 });

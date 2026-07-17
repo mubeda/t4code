@@ -150,6 +150,11 @@ describe("centerPanelStore", () => {
       expect(store().byThreadKey).toEqual({});
       expect(stateOf().activeSurfaceId).toBe(HOST_SURFACE_ID);
     });
+
+    it("ignores unknown surfaces without creating thread state", () => {
+      store().closeSurface(HOST, "chat:missing");
+      expect(store().byThreadKey).toEqual({});
+    });
   });
 
   describe("closeOtherSurfaces (host survives)", () => {
@@ -168,6 +173,13 @@ describe("centerPanelStore", () => {
       store().closeOtherSurfaces(HOST, HOST_SURFACE_ID);
       expect(store().byThreadKey).toEqual({});
       expect(surfaceIds()).toEqual([HOST_SURFACE_ID]);
+    });
+
+    it("ignores an unknown target", () => {
+      store().openChatPanel(HOST, PANEL_A);
+      const before = store().byThreadKey;
+      store().closeOtherSurfaces(HOST, "terminal:missing");
+      expect(store().byThreadKey).toBe(before);
     });
   });
 
@@ -194,6 +206,19 @@ describe("centerPanelStore", () => {
       store().closeSurfacesToRight(HOST, `chat:${PANEL_A}`);
       expect(stateOf().activeSurfaceId).toBe(`chat:${PANEL_A}`);
     });
+
+    it("keeps an active surface inside the retained range and ignores edge targets", () => {
+      store().openChatPanel(HOST, PANEL_A);
+      store().openChatPanel(HOST, PANEL_B);
+      store().activateSurface(HOST, HOST_SURFACE_ID);
+      store().closeSurfacesToRight(HOST, `chat:${PANEL_A}`);
+      expect(stateOf().activeSurfaceId).toBe(HOST_SURFACE_ID);
+
+      const before = store().byThreadKey;
+      store().closeSurfacesToRight(HOST, `chat:${PANEL_A}`);
+      store().closeSurfacesToRight(HOST, "chat:missing");
+      expect(store().byThreadKey).toBe(before);
+    });
   });
 
   describe("closeAllSurfaces", () => {
@@ -207,6 +232,13 @@ describe("centerPanelStore", () => {
         "environment-1:host-1": { surfaces: [], activeSurfaceId: null },
       });
     });
+
+    it("keeps an already empty state stable", () => {
+      store().closeAllSurfaces(HOST);
+      const before = store().byThreadKey;
+      store().closeAllSurfaces(HOST);
+      expect(store().byThreadKey).toBe(before);
+    });
   });
 
   describe("removeThread", () => {
@@ -214,6 +246,12 @@ describe("centerPanelStore", () => {
       store().openChatPanel(HOST, PANEL_A);
       store().removeThread(HOST);
       expect(store().byThreadKey).toEqual({});
+    });
+
+    it("keeps state stable when the thread has no stored entry", () => {
+      const before = store();
+      store().removeThread(HOST);
+      expect(store()).toBe(before);
     });
   });
 
@@ -277,6 +315,49 @@ describe("centerPanelStore", () => {
         },
       });
       expect(migrated.byThreadKey).toEqual({});
+    });
+
+    it("sanitizes duplicate, malformed, and partially typed persisted surfaces", () => {
+      const migrated = migratePersistedCenterPanelState({
+        byThreadKey: {
+          malformed: null,
+          "environment-1:host-1": {
+            activeSurfaceId: 42,
+            surfaces: [
+              null,
+              { id: `chat:${PANEL_A}`, kind: "chat", threadId: PANEL_A, providerLabel: 42 },
+              { id: `chat:${PANEL_A}`, kind: "chat", threadId: PANEL_A },
+              { id: "terminal:missing", kind: "terminal" },
+              { id: "unknown", kind: "unknown" },
+            ],
+          },
+          "environment-1:host-2": { activeSurfaceId: null, surfaces: "not-an-array" },
+        },
+      });
+
+      expect(migrated.byThreadKey["environment-1:host-1"]).toEqual({
+        activeSurfaceId: HOST_SURFACE_ID,
+        surfaces: [
+          { id: HOST_SURFACE_ID, kind: "chat-host" },
+          { id: `chat:${PANEL_A}`, kind: "chat", threadId: PANEL_A },
+        ],
+      });
+      expect(migrated.byThreadKey.malformed).toBeUndefined();
+      expect(migrated.byThreadKey["environment-1:host-2"]).toBeUndefined();
+    });
+
+    it("returns null when an active surface id has no matching surface", () => {
+      expect(
+        selectActiveCenterSurface(
+          {
+            "environment-1:host-1": {
+              activeSurfaceId: "missing",
+              surfaces: [],
+            },
+          },
+          HOST,
+        ),
+      ).toBeNull();
     });
   });
 });

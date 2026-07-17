@@ -74,6 +74,100 @@ async fn observe_initial_remote(
     }
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn provider_cli_service_covers_success_exit_and_payload_failures_in_public_build() {
+    use source_control::{
+        CreatePullRequestInput, ProviderKind, PullRequestService, ResolvePullRequestInput,
+    };
+    use std::os::unix::fs::PermissionsExt;
+
+    let temporary = tempfile::tempdir().expect("provider CLI directory");
+    let script = r#"#!/bin/sh
+case "$*" in
+  *fail*) exit 7 ;;
+  *invalid*) printf '%s\n' 'not-json'; exit 0 ;;
+esac
+case "$(basename "$0"):$*" in
+  gh:*create*) printf '%s\n' 'https://github.com/example/repo/pull/42' ;;
+  gh:*) printf '%s\n' '{"number":42,"title":"GitHub PR","url":"https://github.test/42","baseRefName":"main","headRefName":"feature","state":"OPEN"}' ;;
+  glab:*) printf '%s\n' '{"iid":43,"title":"GitLab MR","web_url":"https://gitlab.test/43","target_branch":"main","source_branch":"feature","state":"opened"}' ;;
+  az:*list*) printf '%s\n' '[{"pullRequestId":44,"title":"Azure PR","url":"https://azure.test/44","targetRefName":"refs/heads/main","sourceRefName":"refs/heads/feature","status":"active"}]' ;;
+  az:*) printf '%s\n' '{"pullRequestId":44,"title":"Azure PR","url":"https://azure.test/44","targetRefName":"refs/heads/main","sourceRefName":"refs/heads/feature","status":"active"}' ;;
+esac
+"#;
+    for command in ["gh", "glab", "az"] {
+        let path = temporary.path().join(command);
+        fs::write(&path, script).expect("provider fixture should write");
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+    let service = PullRequestService::with_provider_commands(
+        temporary.path().join("gh").to_string_lossy(),
+        temporary.path().join("glab").to_string_lossy(),
+        temporary.path().join("az").to_string_lossy(),
+    );
+    let cancellation = CancellationToken::new();
+    let azure_current = service
+        .resolve_current(
+            ResolvePullRequestInput {
+                cwd: temporary.path().to_path_buf(),
+                provider: ProviderKind::AzureDevops,
+                reference: "feature".to_owned(),
+            },
+            &cancellation,
+        )
+        .await
+        .unwrap();
+    assert_eq!(azure_current.number, 44);
+
+    for (provider, expected) in [
+        (ProviderKind::Github, 42),
+        (ProviderKind::Gitlab, 43),
+        (ProviderKind::AzureDevops, 44),
+    ] {
+        let input = |reference: &str| ResolvePullRequestInput {
+            cwd: temporary.path().to_path_buf(),
+            provider,
+            reference: reference.to_owned(),
+        };
+        assert_eq!(
+            service
+                .resolve(input(&expected.to_string()), &cancellation)
+                .await
+                .unwrap()
+                .number,
+            expected
+        );
+        assert!(service.resolve(input("fail"), &cancellation).await.is_err());
+        assert!(
+            service
+                .resolve(input("invalid"), &cancellation)
+                .await
+                .is_err()
+        );
+
+        let create = |head_branch: &str| CreatePullRequestInput {
+            cwd: temporary.path().to_path_buf(),
+            provider,
+            base_branch: "main".to_owned(),
+            head_branch: head_branch.to_owned(),
+            title: "Fixture".to_owned(),
+            body: "Body".to_owned(),
+        };
+        assert_eq!(
+            service
+                .create(create("feature"), &cancellation)
+                .await
+                .unwrap()
+                .number,
+            expected
+        );
+        assert!(service.create(create("fail"), &cancellation).await.is_err());
+    }
+}
+
 #[tokio::test]
 async fn unborn_head_can_be_unstaged_and_has_empty_history() {
     let repo = init_repo();

@@ -228,6 +228,37 @@ mod tests {
     }
 
     #[test]
+    fn file_and_path_failures_cover_configuration_boundaries() {
+        assert!(is_development_build());
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let invalid_json = temp.path().join("invalid.json");
+        fs::write(&invalid_json, "{").expect("invalid JSON fixture");
+        assert!(
+            read_json_file(&invalid_json)
+                .unwrap_err()
+                .contains("decode")
+        );
+
+        let directory = temp.path().join("directory");
+        fs::create_dir(&directory).expect("directory fixture");
+        assert!(read_json_file(&directory).unwrap_err().contains("read"));
+
+        let parent_file = temp.path().join("parent-file");
+        fs::write(&parent_file, "blocker").expect("parent fixture");
+        assert!(write_json_file(&parent_file.join("settings.json"), &json!({})).is_err());
+
+        assert_eq!(resolve_default_path_from_home(temp.path(), None), None);
+        assert_eq!(
+            resolve_default_path_from_home(temp.path(), Some(&json!({"initialPath":" "}))),
+            None
+        );
+        assert_eq!(
+            resolve_default_path_from_home(temp.path(), Some(&json!({"initialPath":"~\\nested"}))),
+            Some(temp.path().join("nested"))
+        );
+    }
+
+    #[test]
     fn resolves_pick_folder_default_paths() {
         let home = PathBuf::from("C:/Users/example");
 

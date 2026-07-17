@@ -143,7 +143,7 @@ const highlightedCodeCache = new LRUCache<string>(
 );
 const highlighterPromiseCache = new Map<string, Promise<DiffsHighlighter>>();
 
-function findTaskListMarkerOffset(markdown: string, listItemStart: number): number | null {
+export function findTaskListMarkerOffset(markdown: string, listItemStart: number): number | null {
   const firstLineEnd = markdown.indexOf("\n", listItemStart);
   const firstLine = markdown.slice(
     listItemStart,
@@ -231,7 +231,7 @@ function remarkPreserveCodeMeta() {
   };
 }
 
-function nodeToPlainText(node: ReactNode): string {
+export function nodeToPlainText(node: ReactNode): string {
   if (typeof node === "string" || typeof node === "number") {
     return String(node);
   }
@@ -244,7 +244,7 @@ function nodeToPlainText(node: ReactNode): string {
   return "";
 }
 
-function extractCodeBlock(
+export function extractCodeBlock(
   children: ReactNode,
 ): { className: string | undefined; code: string } | null {
   const childNodes = Children.toArray(children);
@@ -270,7 +270,7 @@ function createHighlightCacheKey(code: string, language: string, themeName: Diff
   return `${fnv1a32(code).toString(36)}:${code.length}:${language}:${themeName}`;
 }
 
-function estimateHighlightedSize(html: string, code: string): number {
+export function estimateHighlightedSize(html: string, code: string): number {
   return Math.max(html.length * 2, code.length * 3);
 }
 
@@ -740,7 +740,9 @@ function pathParentSegments(path: string): string[] {
   return segments.slice(0, -1);
 }
 
-function buildFileLinkParentSuffixByPath(filePaths: ReadonlyArray<string>): Map<string, string> {
+export function buildFileLinkParentSuffixByPath(
+  filePaths: ReadonlyArray<string>,
+): Map<string, string> {
   const groups = new Map<string, Set<string>>();
   for (const filePath of filePaths) {
     const pathSegments = filePath
@@ -794,7 +796,7 @@ function buildFileLinkParentSuffixByPath(filePaths: ReadonlyArray<string>): Map<
   return suffixByPath;
 }
 
-function extractMarkdownLinkHrefs(text: string): string[] {
+export function extractMarkdownLinkHrefs(text: string): string[] {
   const hrefs: string[] = [];
   for (const match of text.matchAll(MARKDOWN_LINK_HREF_PATTERN)) {
     const href = match[1]?.trim();
@@ -814,7 +816,7 @@ const MARKDOWN_LINK_FAVICON_CLASS_NAME = "block size-full shrink-0 select-none";
 /** Hosts whose favicon request already failed this session — skip straight to the globe. */
 const failedFaviconHosts = new Set<string>();
 
-function resolveExternalLinkHost(href: string | undefined): string | null {
+export function resolveExternalLinkHost(href: string | undefined): string | null {
   if (!href) return null;
   try {
     const url = new URL(href);

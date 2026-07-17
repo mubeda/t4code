@@ -185,3 +185,25 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use process_wrap::tokio::CommandWrap;
+
+    use super::{
+        configure_background_command, configure_background_command_wrap,
+        configure_background_std_command,
+    };
+
+    #[test]
+    fn background_configuration_is_a_noop_on_unix_commands() {
+        let mut tokio_command = tokio::process::Command::new("true");
+        configure_background_command(&mut tokio_command);
+
+        let mut std_command = std::process::Command::new("true");
+        configure_background_std_command(&mut std_command);
+
+        let mut wrapped_command = CommandWrap::with_new("true", |_| {});
+        configure_background_command_wrap(&mut wrapped_command);
+    }
+}

@@ -80,4 +80,57 @@ describe("projectScriptKeybindings", () => {
 
     expect(value).toBe("mod+shift+k");
   });
+
+  it("skips sparse and unrelated bindings and formats every modifier and named key", () => {
+    const command = commandForProjectScript("format");
+    const unrelated = commandForProjectScript("lint");
+    const sparse = [
+      undefined,
+      {
+        command: unrelated,
+        shortcut: {
+          key: "x",
+          metaKey: false,
+          ctrlKey: false,
+          shiftKey: false,
+          altKey: false,
+          modKey: false,
+        },
+      },
+      {
+        command,
+        shortcut: {
+          key: " ",
+          metaKey: true,
+          ctrlKey: true,
+          shiftKey: true,
+          altKey: true,
+          modKey: true,
+        },
+      },
+    ] as never;
+
+    expect(keybindingValueForCommand(sparse, command)).toBe("mod+ctrl+meta+alt+shift+space");
+    expect(keybindingValueForCommand(sparse, unrelated)).toBe("x");
+    expect(keybindingValueForCommand([], command)).toBeNull();
+
+    expect(
+      keybindingValueForCommand(
+        [
+          {
+            command,
+            shortcut: {
+              key: "escape",
+              metaKey: false,
+              ctrlKey: false,
+              shiftKey: false,
+              altKey: false,
+              modKey: false,
+            },
+          },
+        ],
+        command,
+      ),
+    ).toBe("esc");
+  });
 });

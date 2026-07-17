@@ -128,4 +128,53 @@ describe("LocalApi", () => {
 
     expect(readLocalApi()).toBe(nativeApi);
   });
+
+  it("uses browser dialogs and returns no folder without a desktop bridge", async () => {
+    const confirm = vi.fn().mockReturnValue(true);
+    Object.defineProperty(testWindow(), "confirm", { configurable: true, value: confirm });
+    const { createLocalApi } = await import("./localApi");
+    const api = createLocalApi();
+
+    await expect(api.dialogs.pickFolder()).resolves.toBeNull();
+    await expect(api.dialogs.confirm("Continue?")).resolves.toBe(true);
+    expect(confirm).toHaveBeenCalledWith("Continue?");
+  });
+
+  it("delegates confirmation and external links to a desktop bridge", async () => {
+    const confirm = vi.fn().mockResolvedValue(false);
+    const openExternal = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    testWindow().desktopBridge = { confirm, openExternal } as unknown as DesktopBridge;
+    const { createLocalApi } = await import("./localApi");
+    const api = createLocalApi();
+
+    await expect(api.dialogs.confirm("Continue?")).resolves.toBe(false);
+    await expect(api.shell.openExternal("https://example.test/one")).resolves.toBeUndefined();
+    await expect(api.shell.openExternal("https://example.test/two")).rejects.toThrow(
+      "Unable to open link.",
+    );
+  });
+
+  it("opens external links in a protected browser tab", async () => {
+    const open = vi.fn();
+    Object.defineProperty(testWindow(), "open", { configurable: true, value: open });
+    const { createLocalApi } = await import("./localApi");
+
+    await createLocalApi().shell.openExternal("https://example.test");
+
+    expect(open).toHaveBeenCalledWith("https://example.test", "_blank", "noopener,noreferrer");
+  });
+
+  it("caches browser facades and rejects ensureLocalApi without a window", async () => {
+    const { ensureLocalApi, readLocalApi } = await import("./localApi");
+    const first = readLocalApi();
+    expect(first).toBeDefined();
+    expect(readLocalApi()).toBe(first);
+    expect(ensureLocalApi()).toBe(first);
+
+    vi.resetModules();
+    Reflect.deleteProperty(globalThis, "window");
+    const withoutWindow = await import("./localApi");
+    expect(withoutWindow.readLocalApi()).toBeUndefined();
+    expect(() => withoutWindow.ensureLocalApi()).toThrow("Local API not found");
+  });
 });

@@ -254,11 +254,11 @@ export const relayDpopClientAuthLayer = Layer.effect(
   }),
 );
 
-function isDpopAuthorizationHeader(value: string | undefined): boolean {
+export function isDpopAuthorizationHeader(value: string | undefined): boolean {
   return /^DPoP +/iu.test(value ?? "");
 }
 
-function readHttpAuthorizationCredential(credential: Redacted.Redacted<string>): string {
+export function readHttpAuthorizationCredential(credential: Redacted.Redacted<string>): string {
   // Effect beta.73 leaves the scheme separator in decoded HTTP credentials.
   return Redacted.value(credential).trimStart();
 }
@@ -756,7 +756,9 @@ function mapErrorTags<
     >;
 }
 
-function resolveConnectClientKeyThumbprint(payload: RelayEnvironmentConnectRequest): string | null {
+export function resolveConnectClientKeyThumbprint(
+  payload: RelayEnvironmentConnectRequest,
+): string | null {
   const requestedThumbprint = payload.clientKeyThumbprint ?? payload.clientProofKeyThumbprint;
   if (!requestedThumbprint) {
     return null;
@@ -771,11 +773,11 @@ function resolveConnectClientKeyThumbprint(payload: RelayEnvironmentConnectReque
   return requestedThumbprint;
 }
 
-function safeAuthFailureReason(value: string): string {
+export function safeAuthFailureReason(value: string): string {
   return /^[a-z0-9._-]+$/i.test(value) ? value : "unknown";
 }
 
-function clerkVerificationFailureReason(cause: unknown): string {
+export function clerkVerificationFailureReason(cause: unknown): string {
   if (
     cause instanceof Error &&
     (cause.message.startsWith("Invalid JWT audience claim ") ||
@@ -795,7 +797,7 @@ function clerkVerificationFailureReason(cause: unknown): string {
   return "unknown";
 }
 
-function hasExpectedClerkAudience(audience: unknown, expectedAudience: string): boolean {
+export function hasExpectedClerkAudience(audience: unknown, expectedAudience: string): boolean {
   return typeof audience === "string"
     ? audience === expectedAudience
     : Array.isArray(audience) &&

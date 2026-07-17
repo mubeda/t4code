@@ -18,7 +18,7 @@ use t4code_server::{
     DESKTOP_SHUTDOWN_TOKEN_HEADER as SERVER_BACKEND_SHUTDOWN_TOKEN_HEADER, ServerConfig,
     ServerRuntime,
 };
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt as TokioAsyncWriteExt},
     process::{Child, Command},
@@ -446,13 +446,16 @@ impl BackendSupervisor {
             .last_error = Some(error.into());
     }
 
-    pub async fn start_default(&self, app: AppHandle) -> Result<BackendRunConfig, String> {
+    pub async fn start_default<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+    ) -> Result<BackendRunConfig, String> {
         self.start_default_with_reason(app, "started").await
     }
 
-    async fn start_default_with_reason(
+    async fn start_default_with_reason<R: Runtime>(
         &self,
-        app: AppHandle,
+        app: AppHandle<R>,
         reason: &'static str,
     ) -> Result<BackendRunConfig, String> {
         let mut plans = default_launch_plans(&app)?;
@@ -478,9 +481,9 @@ impl BackendSupervisor {
         Ok(primary_config)
     }
 
-    pub async fn restart_default_if_active(
+    pub async fn restart_default_if_active<R: Runtime>(
         &self,
-        app: AppHandle,
+        app: AppHandle<R>,
     ) -> Result<Option<BackendRunConfig>, String> {
         let is_active = {
             let state = self
@@ -674,8 +677,8 @@ impl BackendSupervisor {
     }
 }
 
-fn emit_backend_ready(
-    app: &AppHandle,
+fn emit_backend_ready<R: Runtime>(
+    app: &AppHandle<R>,
     reason: &'static str,
     bootstraps: Vec<Value>,
 ) -> Result<(), String> {
@@ -1289,8 +1292,8 @@ fn resolve_wsl_primary_launch_plan(
     )
 }
 
-fn resolve_wsl_secondary_launch_plan(
-    app: &AppHandle,
+fn resolve_wsl_secondary_launch_plan<R: Runtime>(
+    app: &AppHandle<R>,
     settings: &BackendDesktopSettings,
     primary_port: u16,
 ) -> Result<BackendLaunchPlan, String> {
@@ -1311,7 +1314,7 @@ fn resolve_wsl_secondary_launch_plan(
     )
 }
 
-fn default_launch_plans(app: &AppHandle) -> Result<Vec<BackendLaunchPlan>, String> {
+fn default_launch_plans<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<BackendLaunchPlan>, String> {
     let base_dir = desktop_base_dir(app)?;
     let log_path = primary_backend_log_path(app)?;
     let port = std::env::var("T4CODE_PORT")
@@ -1391,13 +1394,13 @@ fn wsl_server_binary_candidates() -> Result<Vec<PathBuf>, String> {
     Ok(candidates)
 }
 
-fn primary_backend_log_path(app: &AppHandle) -> Result<PathBuf, String> {
+fn primary_backend_log_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(state_dir(app)?
         .join("logs")
         .join(PRIMARY_BACKEND_LOG_FILE_NAME))
 }
 
-fn wsl_backend_log_path(app: &AppHandle, distro: &str) -> Result<PathBuf, String> {
+fn wsl_backend_log_path<R: Runtime>(app: &AppHandle<R>, distro: &str) -> Result<PathBuf, String> {
     let filename = format!(
         "{WSL_BACKEND_LOG_FILE_PREFIX}{}{WSL_BACKEND_LOG_FILE_EXTENSION}",
         sanitize_backend_log_file_segment(distro)
@@ -1525,7 +1528,9 @@ fn normalize_wsl_distro(value: Option<String>) -> Option<String> {
         })
 }
 
-fn read_backend_desktop_settings(app: &AppHandle) -> Result<BackendDesktopSettings, String> {
+fn read_backend_desktop_settings<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<BackendDesktopSettings, String> {
     let path = desktop_base_dir(app)?
         .join(if cfg!(debug_assertions) {
             "dev"
@@ -1566,7 +1571,7 @@ fn decode_backend_desktop_settings(raw: Option<&str>) -> BackendDesktopSettings 
     }
 }
 
-fn desktop_base_dir(app: &AppHandle) -> Result<PathBuf, String> {
+fn desktop_base_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     match std::env::var_os(T4CODE_HOME_ENV) {
         Some(value) if !value.is_empty() => Ok(PathBuf::from(value)),
         _ => app
@@ -2088,6 +2093,20 @@ mod tests {
         assert!(!supervisor.restart_still_desired("missing"));
 
         let plan = BackendLaunchPlan::local(PathBuf::from("C:/state"), local_test_config(4_250));
+        supervisor.schedule_restart(
+            plan.clone(),
+            BackendReadinessConfig::default(),
+            BackendRestartConfig::default(),
+            "missing slot".to_string(),
+        );
+        assert!(
+            supervisor
+                .state
+                .lock()
+                .expect("backend supervisor mutex poisoned")
+                .slots
+                .is_empty()
+        );
         let mut state = supervisor
             .state
             .lock()
@@ -2227,6 +2246,54 @@ mod tests {
         assert_eq!(resolve_wsl_distro(&settings), Ok("Debian".to_string()));
     }
 
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unavailable_wsl_commands_fail_through_native_resolution_helpers() {
+        let settings = BackendDesktopSettings {
+            server_exposure_mode: "local-only".to_string(),
+            tailscale_serve_enabled: false,
+            tailscale_serve_port: 443,
+            wsl_backend_enabled: true,
+            wsl_only: true,
+            wsl_distro: Some("Missing".to_string()),
+        };
+
+        assert!(
+            list_wsl_distros()
+                .unwrap_err()
+                .contains("Could not list WSL")
+        );
+        assert!(
+            resolve_wsl_path("Missing", Path::new("/tmp/repository"))
+                .unwrap_err()
+                .contains("Could not run wsl.exe")
+        );
+        assert_eq!(resolve_wsl_renderer_host("Missing"), None);
+        assert!(resolve_wsl_server_binary("Missing").is_err());
+        assert!(
+            resolve_wsl_launch_plan_for_distro(
+                "Missing".to_string(),
+                3773,
+                "token".to_string(),
+                PathBuf::from("backend.log"),
+                "wsl:Missing".to_string(),
+                "WSL Missing".to_string(),
+            )
+            .is_err()
+        );
+        assert!(
+            resolve_wsl_primary_launch_plan(
+                &settings,
+                3773,
+                "token".to_string(),
+                PathBuf::from("backend.log"),
+            )
+            .is_err()
+        );
+        let _ = select_desktop_backend_port();
+        let _ = resolve_lan_advertised_host();
+    }
+
     #[test]
     fn normalizes_tailscale_ports_and_local_only_exposure() {
         assert_eq!(normalize_tailscale_serve_port(None), 443);
@@ -2361,6 +2428,60 @@ mod tests {
                 advertised_host: None,
             }
         );
+    }
+
+    #[test]
+    fn mock_runtime_resolves_default_backend_paths_and_launch_plan() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder()
+            .build(mock_context(noop_assets()))
+            .expect("mock Tauri app");
+        let handle = app.handle();
+        assert!(desktop_base_dir(handle).unwrap().is_absolute());
+        assert!(
+            primary_backend_log_path(handle)
+                .unwrap()
+                .ends_with(PRIMARY_BACKEND_LOG_FILE_NAME)
+        );
+        assert!(
+            wsl_backend_log_path(handle, "Ubuntu Test")
+                .unwrap()
+                .ends_with("server-child-wsl-Ubuntu_Test.log")
+        );
+        assert!(!default_launch_plans(handle).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn mock_runtime_starts_restarts_and_stops_the_default_backend() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let mut context = mock_context(noop_assets());
+        context.config_mut().identifier =
+            format!("com.t4code.backend-tests-{}", std::process::id());
+        let app = mock_builder().build(context).expect("mock Tauri app");
+        let base_dir = desktop_base_dir(app.handle()).expect("desktop base directory");
+        let _ = fs::remove_dir_all(&base_dir);
+        let supervisor = BackendSupervisor::new();
+
+        let started = supervisor
+            .start_default(app.handle().clone())
+            .await
+            .expect("default backend should start");
+        assert_ne!(started.port, 0);
+
+        let restarted = supervisor
+            .restart_default_if_active(app.handle().clone())
+            .await
+            .expect("default backend should restart")
+            .expect("active backend should produce a replacement config");
+        assert_ne!(restarted.port, 0);
+
+        supervisor
+            .stop(BackendShutdownConfig::default())
+            .await
+            .expect("default backend should stop");
+        let _ = fs::remove_dir_all(base_dir);
     }
 
     #[test]
@@ -2758,6 +2879,41 @@ mod tests {
         )
         .await
         .expect("already exited child should be accepted");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_managed_backend_terminates_a_live_child() {
+        let process = Command::new("sh")
+            .args(["-c", "exec sleep 30"])
+            .spawn()
+            .expect("fixture child should start");
+        let child = ManagedBackendChild::new(9, local_test_config(1), process);
+        let observed_child = child.clone();
+        assert_eq!(
+            format!("{child:?}"),
+            "ManagedBackendChild { run_id: 9, .. }"
+        );
+
+        stop_managed_backend(
+            ManagedBackend::Child(Box::new(child)),
+            BackendShutdownConfig {
+                timeout: Duration::from_secs(2),
+            },
+        )
+        .await
+        .expect("live child should stop after soft termination");
+
+        assert!(observed_child.stop_requested.load(Ordering::SeqCst));
+        assert!(
+            observed_child
+                .child
+                .lock()
+                .await
+                .try_wait()
+                .expect("child status should remain inspectable")
+                .is_some()
+        );
     }
 
     #[cfg(windows)]

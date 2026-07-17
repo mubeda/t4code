@@ -3,7 +3,7 @@ use std::{path::PathBuf, time::Duration};
 use serde_json::{Value, json};
 use t4code_server::provider::codex::{
     BuildTurnStartInput, CodexRuntimeMode, CodexSessionOptions, CodexSessionRuntime,
-    ConnectionConfig, IncomingEvent, JsonRpcConnection, RuntimeEventStableView,
+    ConnectionConfig, IncomingEvent, JsonRpcConnection, RuntimeEvent, RuntimeEventStableView,
     build_initialize_params, build_turn_start_params, is_recoverable_thread_resume_error,
     parse_model_list_response, parse_skills_list_response, probe_provider,
 };
@@ -438,6 +438,489 @@ async fn reconnect_resume_fallback_and_shutdown_stay_correlated() {
     peer_b_task.await.expect("peer b");
 }
 
+#[tokio::test]
+async fn codex_runtime_covers_auto_edit_resume_requests_and_stream_edges() {
+    let (connection, incoming, mut peer) = scripted_peer();
+    let runtime = CodexSessionRuntime::new(
+        CodexSessionOptions {
+            version: "0.1.1".to_owned(),
+            thread_id: "codex-edge-thread".to_owned(),
+            cwd: "/tmp/codex-edge".to_owned(),
+            runtime_mode: CodexRuntimeMode::AutoAcceptEdits,
+            model: None,
+            service_tier: Some("fast".to_owned()),
+            effort: Some("high".to_owned()),
+            resume_cursor: Some("resume-edge".to_owned()),
+        },
+        connection,
+        incoming,
+    );
+    assert!(
+        runtime
+            .set_goal("  ")
+            .await
+            .expect_err("empty goals must fail")
+            .to_string()
+            .contains("between 1 and 4000")
+    );
+    assert!(
+        runtime
+            .set_goal(&"x".repeat(4_001))
+            .await
+            .expect_err("oversized goals must fail")
+            .to_string()
+            .contains("between 1 and 4000")
+    );
+    assert!(
+        runtime
+            .respond_to_request("missing", "accept")
+            .await
+            .expect_err("unknown approvals must fail")
+            .to_string()
+            .contains("Unknown pending request id missing")
+    );
+    assert!(
+        runtime
+            .respond_to_user_input("missing-input", json!({}))
+            .await
+            .expect_err("unknown prompts must fail")
+            .to_string()
+            .contains("Unknown pending request id missing-input")
+    );
+
+    peer.expect_request("initialize", build_initialize_params("0.1.1"))
+        .respond(json!({}));
+    peer.expect_notification("initialized");
+    peer.expect_request(
+        "thread/resume",
+        json!({
+            "threadId": "resume-edge",
+            "cwd": "/tmp/codex-edge",
+            "approvalPolicy": "on-request",
+            "sandbox": "workspace-write",
+            "model": null,
+            "serviceTier": "fast",
+        }),
+    )
+    .respond(json!({ "thread": { "id": "provider-edge" } }));
+
+    peer.expect_request(
+        "turn/start",
+        codex_edge_turn_params("provider-edge", "invalid turn"),
+    )
+    .respond(json!({}));
+
+    peer.expect_request(
+        "turn/start",
+        codex_edge_turn_params("provider-edge", "file approval"),
+    )
+    .respond(json!({ "turn": { "id": "file-turn" } }))
+    .emit_notification(json!({
+        "method": "thread/started",
+        "params": { "thread": { "id": "provider-updated" } }
+    }))
+    .emit_notification(json!({
+        "method": "turn/started",
+        "params": { "turn": {} }
+    }))
+    .emit_notification(json!({
+        "method": "turn/started",
+        "params": { "turn": { "id": "file-turn" } }
+    }))
+    .emit_notification(json!({
+        "method": "item/started",
+        "params": {
+            "turnId": "file-turn",
+            "item": { "type": "fileChange", "id": "not-command" }
+        }
+    }))
+    .emit_notification(json!({
+        "method": "item/started",
+        "params": {
+            "turnId": "file-turn",
+            "item": { "type": "commandExecution", "id": "command-without-detail" }
+        }
+    }))
+    .emit_request(json!({
+        "id": 6001,
+        "method": "item/fileChange/requestApproval",
+        "params": { "turnId": "file-turn" }
+    }))
+    .expect_response(json!({
+        "id": 6001,
+        "result": { "decision": "decline" }
+    }))
+    .emit_notification(json!({
+        "method": "turn/completed",
+        "params": {
+            "turn": {
+                "id": "file-turn",
+                "status": "failed",
+                "error": { "message": "provider failed" }
+            }
+        }
+    }));
+
+    peer.expect_request(
+        "turn/start",
+        codex_edge_turn_params("provider-updated", "user input"),
+    )
+    .respond(json!({ "turn": { "id": "input-turn" } }))
+    .emit_request(json!({
+        "id": 6002,
+        "method": "item/tool/requestUserInput",
+        "params": {
+            "turnId": "input-turn",
+            "questions": [
+                {
+                    "id": "single",
+                    "header": "Single",
+                    "question": "Choose one",
+                    "options": [{ "label": "yes" }]
+                },
+                { "id": "invalid" }
+            ]
+        }
+    }))
+    .expect_response(json!({
+        "id": 6002,
+        "result": {
+            "answers": {
+                "single": { "answers": ["yes"] },
+                "many": { "answers": ["a", "b"] },
+                "ignored": { "answers": [] }
+            }
+        }
+    }))
+    .emit_notification(json!({
+        "method": "turn/completed",
+        "params": { "turn": { "id": "input-turn" } }
+    }));
+
+    peer.expect_request(
+        "turn/start",
+        codex_edge_turn_params("provider-updated", "generic cancellation"),
+    )
+    .respond(json!({ "turn": { "id": "cancel-input-turn" } }))
+    .emit_request(json!({
+        "id": 6003,
+        "method": "item/tool/requestUserInput",
+        "params": { "turnId": "cancel-input-turn", "questions": null }
+    }))
+    .expect_response(json!({
+        "id": 6003,
+        "result": { "decision": "cancel" }
+    }))
+    .emit_notification(json!({
+        "method": "turn/completed",
+        "params": { "turn": { "id": "cancel-input-turn", "status": "completed" } }
+    }));
+
+    peer.expect_request(
+        "turn/start",
+        codex_edge_turn_params("provider-updated", "unknown request"),
+    )
+    .respond(json!({ "turn": { "id": "unknown-turn" } }))
+    .emit_request(json!({
+        "id": 6004,
+        "method": "unsupported/request",
+        "params": {}
+    }))
+    .expect_response(json!({
+        "id": 6004,
+        "error": {
+            "code": -32601,
+            "message": "Method not found: unsupported/request",
+            "data": null
+        }
+    }))
+    .emit_notification(json!({
+        "method": "ignored/notification",
+        "params": {}
+    }))
+    .emit_notification(json!({
+        "method": "turn/completed",
+        "params": { "turn": { "id": "unknown-turn", "status": "completed" } }
+    }));
+
+    peer.expect_request(
+        "turn/start",
+        codex_edge_turn_params("provider-updated", "interrupt"),
+    )
+    .emit_stderr("ordinary provider warning")
+    .emit_stderr("FAILED TO CONNECT TO WEBSOCKET while streaming")
+    .respond(json!({ "turn": { "id": "interrupt-turn" } }));
+    peer.expect_request(
+        "turn/interrupt",
+        json!({ "threadId": "provider-updated", "turnId": "explicit-turn" }),
+    )
+    .respond(json!({}));
+
+    let peer_task = tokio::spawn(peer.run());
+    let session = runtime.start().await.expect("resumed session");
+    assert_eq!(session.resume_cursor.as_deref(), Some("provider-edge"));
+    assert_eq!(session.cwd, "/tmp/codex-edge");
+    runtime.collect_events(2).await;
+    runtime
+        .interrupt_turn(None)
+        .await
+        .expect("no active turn is a no-op");
+
+    assert!(
+        runtime
+            .send_turn(Some("invalid turn".to_owned()), Vec::new(), None)
+            .await
+            .expect_err("missing turn ids must fail")
+            .to_string()
+            .contains("missing turn.id")
+    );
+
+    runtime
+        .send_turn(Some("file approval".to_owned()), Vec::new(), None)
+        .await
+        .expect("file turn");
+    let file_request = next_codex_event_matching(&runtime, |event| {
+        event.request_id.as_deref() == Some("approval:6001")
+    })
+    .await;
+    assert_eq!(
+        file_request.payload["requestType"],
+        json!("file_change_approval")
+    );
+    assert_eq!(file_request.payload["detail"], "");
+    runtime
+        .respond_to_request("approval:6001", "decline")
+        .await
+        .expect("file decision");
+    let failed = next_codex_event_matching(&runtime, |event| {
+        event.event_type == "turn.completed" && event.turn_id.as_deref() == Some("file-turn")
+    })
+    .await;
+    assert_eq!(failed.payload["state"], "failed");
+    assert_eq!(failed.payload["error"]["message"], "provider failed");
+
+    runtime
+        .send_turn(Some("user input".to_owned()), Vec::new(), None)
+        .await
+        .expect("input turn");
+    let input_request = next_codex_event_matching(&runtime, |event| {
+        event.request_id.as_deref() == Some("user-input:6002")
+    })
+    .await;
+    assert_eq!(
+        input_request.payload["questions"].as_array().unwrap().len(),
+        1
+    );
+    runtime
+        .respond_to_user_input(
+            "user-input:6002",
+            json!({
+                "single": "yes",
+                "many": ["a", "b"],
+                "ignored": 42,
+            }),
+        )
+        .await
+        .expect("input response");
+    let resolved = next_codex_event_matching(&runtime, |event| {
+        event.request_id.as_deref() == Some("user-input:6002")
+            && event.event_type == "user-input.resolved"
+    })
+    .await;
+    assert_eq!(resolved.payload["answers"]["single"], "yes");
+    assert_eq!(resolved.payload["answers"]["many"], json!(["a", "b"]));
+
+    runtime
+        .send_turn(Some("generic cancellation".to_owned()), Vec::new(), None)
+        .await
+        .expect("generic cancellation turn");
+    next_codex_event_matching(&runtime, |event| {
+        event.request_id.as_deref() == Some("user-input:6003")
+    })
+    .await;
+    runtime
+        .respond_to_request("user-input:6003", "cancel")
+        .await
+        .expect("generic cancellation");
+
+    runtime
+        .send_turn(Some("unknown request".to_owned()), Vec::new(), None)
+        .await
+        .expect("unknown request turn");
+    next_codex_event_matching(&runtime, |event| {
+        event.event_type == "turn.completed" && event.turn_id.as_deref() == Some("unknown-turn")
+    })
+    .await;
+
+    runtime
+        .send_turn(Some("interrupt".to_owned()), Vec::new(), None)
+        .await
+        .expect("interrupt turn");
+    runtime
+        .interrupt_turn(Some("explicit-turn".to_owned()))
+        .await
+        .expect("explicit interrupt");
+    peer_task.await.expect("peer");
+
+    let mut saw_warning = false;
+    let mut saw_fatal = false;
+    let mut saw_exit = false;
+    for _ in 0..12 {
+        let event = timeout(Duration::from_secs(2), runtime.next_event())
+            .await
+            .expect("edge event timeout")
+            .expect("edge event");
+        saw_warning |= event.event_type == "runtime.warning";
+        saw_fatal |= event.event_type == "runtime.error"
+            && event.payload["class"] == json!("provider_error");
+        saw_exit |= event.event_type == "session.exited";
+        if saw_warning && saw_fatal && saw_exit {
+            break;
+        }
+    }
+    assert!(saw_warning && saw_fatal && saw_exit);
+}
+
+#[tokio::test]
+async fn codex_runtime_and_probe_reject_invalid_provider_payloads() {
+    let (probe_connection, _probe_incoming, mut probe_peer) = scripted_peer();
+    probe_peer
+        .expect_request("initialize", build_initialize_params("0.1.1"))
+        .respond(json!({}));
+    probe_peer.expect_notification("initialized");
+    probe_peer
+        .expect_request("account/read", json!({}))
+        .respond(json!({}));
+    probe_peer
+        .expect_request("model/list", json!({}))
+        .respond(json!({ "nextCursor": null }));
+    let probe_task = tokio::spawn(probe_peer.run());
+    assert!(
+        probe_provider(&probe_connection, "0.1.1", "/tmp", &[])
+            .await
+            .expect_err("model data is required")
+            .to_string()
+            .contains("missing data array")
+    );
+    probe_task.await.expect("probe peer");
+
+    let (missing_connection, missing_incoming, mut missing_peer) = scripted_peer();
+    let missing_runtime = CodexSessionRuntime::new(
+        codex_invalid_options(None),
+        missing_connection,
+        missing_incoming,
+    );
+    assert!(
+        missing_runtime
+            .send_turn(Some("before start".to_owned()), Vec::new(), None)
+            .await
+            .expect_err("turns require a provider thread")
+            .to_string()
+            .contains("missing a provider thread id")
+    );
+    missing_peer
+        .expect_request("initialize", build_initialize_params("0.1.1"))
+        .respond(json!({}));
+    missing_peer.expect_notification("initialized");
+    missing_peer
+        .expect_request(
+            "thread/start",
+            json!({
+                "cwd": "/tmp/codex-invalid",
+                "approvalPolicy": "untrusted",
+                "sandbox": "read-only",
+                "model": null,
+                "serviceTier": null,
+            }),
+        )
+        .respond(json!({}));
+    let missing_task = tokio::spawn(missing_peer.run());
+    assert!(
+        missing_runtime
+            .start()
+            .await
+            .expect_err("thread identifiers are required")
+            .to_string()
+            .contains("missing thread.id")
+    );
+    missing_task.await.expect("missing peer");
+
+    let (resume_connection, resume_incoming, mut resume_peer) = scripted_peer();
+    let resume_runtime = CodexSessionRuntime::new(
+        codex_invalid_options(Some("unavailable-thread")),
+        resume_connection,
+        resume_incoming,
+    );
+    resume_peer
+        .expect_request("initialize", build_initialize_params("0.1.1"))
+        .respond(json!({}));
+    resume_peer.expect_notification("initialized");
+    resume_peer
+        .expect_request(
+            "thread/resume",
+            json!({
+                "threadId": "unavailable-thread",
+                "cwd": "/tmp/codex-invalid",
+                "approvalPolicy": "untrusted",
+                "sandbox": "read-only",
+                "model": null,
+                "serviceTier": null,
+            }),
+        )
+        .respond_error(json!({ "code": -32000, "message": "permission denied" }));
+    let resume_task = tokio::spawn(resume_peer.run());
+    assert!(
+        resume_runtime
+            .start()
+            .await
+            .expect_err("non-recoverable resume errors must propagate")
+            .to_string()
+            .contains("permission denied")
+    );
+    resume_task.await.expect("resume peer");
+}
+
+fn codex_invalid_options(resume_cursor: Option<&str>) -> CodexSessionOptions {
+    CodexSessionOptions {
+        version: "0.1.1".to_owned(),
+        thread_id: "codex-invalid-thread".to_owned(),
+        cwd: "/tmp/codex-invalid".to_owned(),
+        runtime_mode: CodexRuntimeMode::ApprovalRequired,
+        model: None,
+        service_tier: None,
+        effort: None,
+        resume_cursor: resume_cursor.map(str::to_owned),
+    }
+}
+
+fn codex_edge_turn_params(provider_thread_id: &str, prompt: &str) -> Value {
+    build_turn_start_params(&BuildTurnStartInput {
+        thread_id: provider_thread_id.to_owned(),
+        runtime_mode: CodexRuntimeMode::AutoAcceptEdits,
+        prompt: Some(prompt.to_owned()),
+        attachments: Vec::new(),
+        model: None,
+        service_tier: Some("fast".to_owned()),
+        effort: Some("high".to_owned()),
+        interaction_mode: None,
+    })
+}
+
+async fn next_codex_event_matching(
+    runtime: &CodexSessionRuntime,
+    predicate: impl Fn(&RuntimeEvent) -> bool,
+) -> RuntimeEvent {
+    loop {
+        let event = timeout(Duration::from_secs(5), runtime.next_event())
+            .await
+            .expect("Codex event timeout")
+            .expect("Codex event");
+        if predicate(&event) {
+            return event;
+        }
+    }
+}
+
 fn fixture(name: &str) -> Value {
     serde_json::from_str(
         &std::fs::read_to_string(fixture_directory().join(name)).expect("fixture file"),
@@ -504,6 +987,7 @@ impl ScriptedPeer {
             response_error: None,
             emits: Vec::new(),
             expected_follow_up_response: None,
+            stderr_messages: Vec::new(),
         });
         self.steps.last_mut().expect("request step")
     }
@@ -517,7 +1001,7 @@ impl ScriptedPeer {
     async fn run(self) {
         let mut reader = BufReader::new(self.stdin);
         let mut writer = self.stdout;
-        let _stderr = self.stderr;
+        let mut stderr = self.stderr;
         for step in self.steps {
             match step {
                 PeerStep::ExpectRequest {
@@ -527,10 +1011,14 @@ impl ScriptedPeer {
                     response_error,
                     emits,
                     expected_follow_up_response,
+                    stderr_messages,
                 } => {
                     let message = read_json_message(&mut reader).await;
                     assert_eq!(message["method"], method);
                     assert_eq!(message["params"], params);
+                    for message in stderr_messages {
+                        write_line(&mut stderr, &message).await;
+                    }
                     if let Some(result) = response {
                         write_json(
                             &mut writer,
@@ -574,6 +1062,7 @@ impl ScriptedPeer {
                 }
             }
         }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -585,6 +1074,7 @@ enum PeerStep {
         response_error: Option<Value>,
         emits: Vec<Value>,
         expected_follow_up_response: Option<Value>,
+        stderr_messages: Vec<String>,
     },
     ExpectNotification {
         method: String,
@@ -630,6 +1120,16 @@ impl PeerStep {
         }
         self
     }
+
+    fn emit_stderr(&mut self, message: &str) -> &mut Self {
+        if let PeerStep::ExpectRequest {
+            stderr_messages, ..
+        } = self
+        {
+            stderr_messages.push(message.to_owned());
+        }
+        self
+    }
 }
 
 async fn read_json_message<R>(reader: &mut BufReader<R>) -> Value
@@ -657,4 +1157,17 @@ where
         .await
         .expect("write json");
     writer.flush().await.expect("flush json");
+}
+
+async fn write_line<W>(writer: &mut W, value: &str)
+where
+    W: AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+
+    writer
+        .write_all(format!("{value}\n").as_bytes())
+        .await
+        .expect("write line");
+    writer.flush().await.expect("flush line");
 }

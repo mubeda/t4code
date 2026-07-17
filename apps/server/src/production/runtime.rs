@@ -714,10 +714,347 @@ const FALLBACK_FAVICON: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewB
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        assets::{AssetIssueRequest, AssetResource},
+        persistence::run_migrations,
+    };
+    use axum::http::{HeaderMap, Uri};
     use tempfile::TempDir;
+
+    fn route_context() -> RouteContext {
+        RouteContext {
+            headers: HeaderMap::new(),
+            uri: Uri::from_static("/test"),
+            cancellation: CancellationToken::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn production_runtime_covers_core_routes_assets_diagnostics_and_shutdown() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let state = TempDir::new().expect("temporary state directory");
+        let config = ServerConfig::new(state.path()).with_bind("127.0.0.1", 0);
+        let database = Database::open_in_memory()
+            .await
+            .expect("in-memory database should open");
+        database
+            .call(|connection| {
+                run_migrations(connection, None)?;
+                Ok(())
+            })
+            .await
+            .expect("database should migrate");
+        let auth = AuthService::new(&config, vec![7_u8; 32]);
+        let runtime = ProductionRuntime::start(&config, database, auth, vec![9_u8; 32])
+            .await
+            .expect("production runtime should start");
+
+        let snapshot = runtime
+            .json(JsonOperation::OrchestrationSnapshot, None, route_context())
+            .await
+            .expect("snapshot route should succeed");
+        assert_eq!(snapshot.status, StatusCode::OK);
+        assert!(snapshot.body.is_object());
+
+        assert!(
+            runtime
+                .json(JsonOperation::OrchestrationDispatch, None, route_context())
+                .await
+                .is_err(),
+            "missing dispatch payload should fail",
+        );
+
+        assert!(
+            runtime
+                .json(
+                    JsonOperation::OrchestrationDispatch,
+                    Some(json!({"_tag":"UnknownCommand"})),
+                    route_context(),
+                )
+                .await
+                .is_err(),
+            "malformed dispatch payload should fail",
+        );
+
+        let callback_workspace = state.path().join("callback-workspace");
+        tokio::fs::create_dir_all(&callback_workspace)
+            .await
+            .expect("callback workspace should create");
+        runtime
+            .json(
+                JsonOperation::OrchestrationDispatch,
+                Some(json!({
+                    "type":"project.create",
+                    "commandId":"runtime-project-create",
+                    "projectId":"runtime-project",
+                    "title":"Runtime project",
+                    "workspaceRoot":callback_workspace,
+                    "createdAt":"2026-01-01T00:00:00Z"
+                })),
+                route_context(),
+            )
+            .await
+            .expect("project dispatch should succeed");
+        runtime
+            .json(
+                JsonOperation::OrchestrationDispatch,
+                Some(json!({
+                    "type":"thread.create",
+                    "commandId":"runtime-thread-create",
+                    "threadId":"runtime-thread",
+                    "projectId":"runtime-project",
+                    "title":"Runtime thread",
+                    "modelSelection":{"provider":"codex","model":"auto"},
+                    "runtimeMode":"approval-required",
+                    "interactionMode":"default",
+                    "branch":null,
+                    "worktreePath":null,
+                    "createdAt":"2026-01-01T00:00:00Z"
+                })),
+                route_context(),
+            )
+            .await
+            .expect("thread dispatch should succeed");
+
+        let callbacks = RuntimeEffectCallbacks {
+            repositories: runtime.orchestration.repositories(),
+            provider: runtime.provider_runtime.clone(),
+            terminals: runtime.terminal_services.clone(),
+            workspace: WorkspaceRpc::new(WorkspaceService::default()),
+        };
+        let canonical_callback_workspace =
+            std::fs::canonicalize(&callback_workspace).expect("callback workspace canonical path");
+        assert_eq!(
+            callbacks
+                .workspace_for_thread("runtime-thread")
+                .await
+                .expect("thread workspace should resolve"),
+            Some(process_compatible_path(
+                canonical_callback_workspace.clone()
+            )),
+        );
+        assert_eq!(
+            callbacks
+                .workspace_for_thread("missing-thread")
+                .await
+                .expect("missing thread should resolve"),
+            None,
+        );
+        assert!(
+            callbacks
+                .rollback_provider("missing-thread", 1)
+                .await
+                .is_err()
+        );
+        callbacks
+            .stop_provider("missing-thread")
+            .await
+            .expect("missing provider session should already be stopped");
+        callbacks
+            .refresh_workspace(&callback_workspace)
+            .await
+            .expect("workspace index should refresh");
+        callbacks
+            .close_terminals("runtime-thread")
+            .await
+            .expect("thread terminals should close");
+        callbacks
+            .launch_setup_script(SetupScriptLaunch {
+                thread_id: "runtime-thread".to_owned(),
+                terminal_id: "runtime-setup-terminal".to_owned(),
+                script_id: "runtime-setup".to_owned(),
+                script_name: "Runtime setup".to_owned(),
+                command: "echo coverage".to_owned(),
+                cwd: callback_workspace.clone(),
+                worktree_path: callback_workspace.clone(),
+                env: Default::default(),
+            })
+            .await
+            .expect("setup script should launch");
+        callbacks
+            .close_terminals("runtime-thread")
+            .await
+            .expect("setup terminal should close");
+
+        let asset_context = ProjectionAssetContext {
+            repositories: runtime.orchestration.repositories(),
+        };
+        assert_eq!(
+            asset_context
+                .resolve_workspace_root("runtime-thread")
+                .await
+                .expect("asset workspace should resolve"),
+            Some(process_compatible_path(canonical_callback_workspace)),
+        );
+        assert_eq!(
+            asset_context
+                .resolve_workspace_root("missing-thread")
+                .await
+                .expect("missing asset workspace should resolve"),
+            None,
+        );
+
+        assert!(
+            runtime
+                .json(JsonOperation::ObservabilityTraces, None, route_context())
+                .await
+                .is_err(),
+            "missing trace payload should fail",
+        );
+        let trace_payload = json!({
+            "resourceSpans": [{
+                "scopeSpans": [{
+                    "spans": [{"name":"runtime-test","traceId":"trace-1","spanId":"span-1"}]
+                }]
+            }]
+        });
+        let trace = runtime
+            .json(
+                JsonOperation::ObservabilityTraces,
+                Some(trace_payload.clone()),
+                route_context(),
+            )
+            .await
+            .expect("trace route should accept payload");
+        assert_eq!(trace.status, StatusCode::ACCEPTED);
+        assert_eq!(runtime.trace_records(), vec![trace_payload]);
+
+        assert!(
+            runtime
+                .json(JsonOperation::ConnectLinkState, None, route_context())
+                .await
+                .is_err(),
+            "connect operation should be owned by its route adapter",
+        );
+        assert!(
+            runtime
+                .asset("invalid-token".to_string(), "missing.png".to_string())
+                .await
+                .is_err(),
+            "invalid asset token should fail",
+        );
+
+        let attachment_id = "runtime-test.png";
+        let attachment_path = config.state_dir().join("attachments").join(attachment_id);
+        tokio::fs::create_dir_all(attachment_path.parent().expect("attachment parent"))
+            .await
+            .expect("attachment directory should create");
+        tokio::fs::write(&attachment_path, b"png-bytes")
+            .await
+            .expect("attachment should write");
+        let issued = runtime
+            .asset_access
+            .issue(AssetIssueRequest {
+                resource: AssetResource::Attachment {
+                    attachment_id: attachment_id.to_string(),
+                },
+                workspace_root: None,
+            })
+            .await
+            .expect("attachment URL should issue");
+        let mut asset_parts = issued.relative_url.rsplitn(2, '/');
+        let asset_path = asset_parts.next().expect("asset filename");
+        let asset_token = asset_parts.next().expect("asset token path");
+        let asset_token = asset_token.rsplit('/').next().expect("asset token");
+        let asset = runtime
+            .asset(asset_token.to_string(), asset_path.to_string())
+            .await
+            .expect("attachment asset should resolve");
+        assert_eq!(asset.content_type, "image/png");
+        assert_eq!(asset.bytes, b"png-bytes");
+
+        let favicon_root = state.path().join("favicon-project");
+        tokio::fs::create_dir_all(&favicon_root)
+            .await
+            .expect("favicon project should create");
+        let issued = runtime
+            .asset_access
+            .issue(AssetIssueRequest {
+                resource: AssetResource::ProjectFavicon {
+                    cwd: favicon_root.to_string_lossy().into_owned(),
+                },
+                workspace_root: None,
+            })
+            .await
+            .expect("fallback favicon URL should issue");
+        let mut asset_parts = issued.relative_url.rsplitn(2, '/');
+        let asset_path = asset_parts.next().expect("favicon filename");
+        let asset_token = asset_parts.next().expect("favicon token path");
+        let asset_token = asset_token.rsplit('/').next().expect("favicon token");
+        let favicon = runtime
+            .asset(asset_token.to_string(), asset_path.to_string())
+            .await
+            .expect("fallback favicon should resolve");
+        assert_eq!(favicon.content_type, "image/svg+xml");
+        assert!(favicon.bytes.starts_with(b"<svg"));
+
+        let diagnostics = runtime
+            .diagnostic_logs("frontend runtime test".to_string())
+            .await
+            .expect("diagnostic bundle should build");
+        assert!(diagnostics.filename.ends_with(".zip"));
+        assert!(diagnostics.bytes.starts_with(b"PK"));
+
+        let callback_database = callbacks.repositories.database().clone();
+        callback_database
+            .call(|connection| {
+                connection.execute_batch(
+                    "ALTER TABLE projection_projects RENAME TO projection_projects_unavailable",
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("project table should become unavailable");
+        assert!(
+            callbacks
+                .workspace_for_thread("runtime-thread")
+                .await
+                .is_err()
+        );
+        assert!(
+            asset_context
+                .resolve_workspace_root("runtime-thread")
+                .await
+                .is_err()
+        );
+        callback_database
+            .call(|connection| {
+                connection.execute_batch(
+                    "ALTER TABLE projection_projects_unavailable RENAME TO projection_projects;\
+                     ALTER TABLE projection_threads RENAME TO projection_threads_unavailable",
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("thread table should become unavailable");
+        assert!(
+            callbacks
+                .workspace_for_thread("runtime-thread")
+                .await
+                .is_err()
+        );
+        assert!(
+            asset_context
+                .resolve_workspace_root("runtime-thread")
+                .await
+                .is_err()
+        );
+        callback_database
+            .call(|connection| {
+                connection.execute_batch(
+                    "ALTER TABLE projection_threads_unavailable RENAME TO projection_threads",
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("thread table should restore");
+
+        runtime.shutdown().await;
+    }
 
     #[tokio::test]
     async fn git_review_backend_includes_untracked_files() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
         let repository = TempDir::new().expect("temporary repository");
         assert!(
             std::process::Command::new("git")
@@ -751,6 +1088,7 @@ mod tests {
 
     #[tokio::test]
     async fn git_review_backend_includes_staged_changes_and_branch_range() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
         let repository = TempDir::new().expect("temporary repository");
         let git = |args: &[&str]| {
             let output = std::process::Command::new("git")
@@ -795,5 +1133,153 @@ mod tests {
         assert_eq!(preview.sources[1].base_ref.as_deref(), Some("main"));
         assert!(preview.sources[1].diff.contains("+++ b/branch.txt"));
         assert!(preview.sources[1].diff.contains("+feature"));
+    }
+
+    #[test]
+    fn review_diff_helpers_cover_empty_binary_text_and_whitespace_options() {
+        assert_eq!(
+            review_diff_args(true, Some("main...HEAD"), true),
+            vec![
+                "diff",
+                "--no-ext-diff",
+                "--patch",
+                "--minimal",
+                "--ignore-all-space",
+                "main...HEAD",
+            ]
+        );
+        assert_eq!(
+            review_diff_args(false, None, false),
+            vec!["diff", "--no-ext-diff", "--patch", "--minimal", "--"]
+        );
+        assert_eq!(join_review_diffs("", ""), "");
+        assert_eq!(join_review_diffs("left\n", "right\n"), "left\nright");
+        assert!(binary_untracked_diff("image.bin").contains("Binary files"));
+        assert!(text_untracked_diff("empty.txt", "").contains("+1,0"));
+        assert!(text_untracked_diff("lines.txt", "first\nsecond\n").contains("+second\n"));
+        assert!(
+            text_untracked_diff("unterminated.txt", "last")
+                .contains("\\ No newline at end of file")
+        );
+
+        let source = review_source(
+            "working-tree",
+            "working-tree",
+            "Dirty worktree",
+            Some("HEAD".to_owned()),
+            None,
+            "diff".to_owned(),
+            true,
+        );
+        assert_eq!(source.id, "working-tree");
+        assert_eq!(source.diff_hash.len(), 64);
+        assert!(source.truncated);
+        assert!(now_millis() > 0);
+        assert!(now_iso().contains('T'));
+    }
+
+    #[tokio::test]
+    async fn git_review_backend_returns_an_empty_preview_outside_a_repository() {
+        let directory = TempDir::new().expect("temporary directory");
+        let preview = GitReviewBackend
+            .get_diff_preview(&ReviewDiffPreviewInput {
+                cwd: directory.path().to_string_lossy().into_owned(),
+                base_ref: None,
+                ignore_whitespace: None,
+            })
+            .await
+            .expect("review succeeds")
+            .expect("review preview");
+
+        assert!(preview.sources.is_empty());
+        assert!(preview.generated_at > 0);
+    }
+
+    #[tokio::test]
+    async fn untracked_review_diff_marks_binary_and_oversized_files() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let repository = TempDir::new().expect("temporary repository");
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(repository.path())
+                .status()
+                .expect("git starts")
+                .success()
+        );
+        std::fs::write(repository.path().join("binary.dat"), b"binary\0payload")
+            .expect("binary fixture");
+        std::fs::write(
+            repository.path().join("oversized.dat"),
+            vec![b'x'; MAX_UNTRACKED_REVIEW_FILE_BYTES as usize + 1],
+        )
+        .expect("oversized fixture");
+
+        let diff = untracked_review_diff(&repository.path().to_string_lossy())
+            .await
+            .expect("untracked diff");
+        assert!(diff.diff.contains("binary.dat"));
+        assert!(diff.diff.contains("oversized.dat"));
+        assert!(diff.truncated);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_review_maps_process_detached_head_and_unreadable_file_edges() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        assert!(
+            run_review_diff("\0", review_diff_args(false, Some("HEAD"), false))
+                .await
+                .is_err()
+        );
+        assert!(untracked_review_diff("\0").await.is_err());
+        assert!(
+            format!("{:?}", internal_error("injected review error"))
+                .contains("injected review error")
+        );
+
+        let repository = TempDir::new().expect("temporary repository");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repository.path())
+                .output()
+                .expect("git starts");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "--quiet"]);
+        git(&["checkout", "--quiet", "-b", "main"]);
+        git(&["config", "user.email", "test@t4code.local"]);
+        git(&["config", "user.name", "T4Code Test"]);
+        std::fs::write(repository.path().join("tracked.txt"), "base\n").expect("tracked file");
+        git(&["add", "tracked.txt"]);
+        git(&["commit", "--quiet", "-m", "base"]);
+        git(&["checkout", "--quiet", "--detach", "HEAD"]);
+
+        let detached = GitReviewBackend
+            .get_diff_preview(&ReviewDiffPreviewInput {
+                cwd: repository.path().to_string_lossy().into_owned(),
+                base_ref: Some("main".to_owned()),
+                ignore_whitespace: None,
+            })
+            .await
+            .expect("detached review")
+            .expect("detached preview");
+        assert_eq!(detached.sources[1].head_ref.as_deref(), Some("HEAD"));
+
+        let unreadable = repository.path().join("unreadable.txt");
+        std::fs::write(&unreadable, "secret\n").expect("unreadable fixture");
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000))
+            .expect("remove read permission");
+        let result = untracked_review_diff(&repository.path().to_string_lossy()).await;
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o600))
+            .expect("restore read permission");
+        assert!(result.is_err());
     }
 }

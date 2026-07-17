@@ -125,6 +125,21 @@ mod tests {
         assert!(unprotect_string("not base64").is_err());
     }
 
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn non_windows_catalog_protection_fails_closed_after_valid_encoding() {
+        assert!(
+            protect_string("catalog")
+                .unwrap_err()
+                .contains("not implemented")
+        );
+        assert!(
+            unprotect_string(&STANDARD.encode("encrypted"))
+                .unwrap_err()
+                .contains("not implemented")
+        );
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn round_trips_strings_with_windows_dpapi() {

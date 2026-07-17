@@ -109,3 +109,26 @@ pub const ACTIVE_RPC_METHODS: &[RpcMethodSpec] = &[
     unary("vcs.switchRef"),
     unary("vcs.unstageFiles"),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn method_spec_constructors_preserve_name_and_mode_at_runtime() {
+        assert_eq!(
+            unary("runtime.unary"),
+            RpcMethodSpec {
+                name: "runtime.unary",
+                mode: MethodMode::Unary,
+            }
+        );
+        assert_eq!(
+            stream("runtime.stream"),
+            RpcMethodSpec {
+                name: "runtime.stream",
+                mode: MethodMode::Stream,
+            }
+        );
+    }
+}

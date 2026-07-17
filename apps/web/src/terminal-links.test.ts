@@ -5,6 +5,7 @@ import {
   extractTerminalLinks,
   isTerminalLinkActivation,
   resolvePathLinkTarget,
+  splitPathAndPosition,
   resolveWrappedTerminalLinkRange,
   wrappedTerminalLinkRangeIntersectsBufferLine,
   type TerminalBufferLineLike,
@@ -80,6 +81,15 @@ describe("extractTerminalLinks", () => {
       },
     ]);
   });
+
+  it("trims only unbalanced closing delimiters and keeps balanced ones", () => {
+    expect(extractTerminalLinks("(https://example.test/a(b)) [./a[b].ts] {./a{b}.ts}")).toEqual([
+      expect.objectContaining({ kind: "url", text: "https://example.test/a(b)" }),
+      expect.objectContaining({ kind: "path", text: "./a[b].ts" }),
+      expect.objectContaining({ kind: "path", text: "./a{b}.ts" }),
+    ]);
+    expect(extractTerminalLinks("...,,,!!!")).toEqual([]);
+  });
 });
 
 describe("collectWrappedTerminalLinkLine", () => {
@@ -133,6 +143,20 @@ describe("collectWrappedTerminalLinkLine", () => {
       },
     ]);
   });
+
+  it("returns null for missing anchors or broken wrapped predecessors", () => {
+    expect(collectWrappedTerminalLinkLine(1, () => undefined)).toBeNull();
+    const lines = [undefined, createBufferLine("continued", true)];
+    expect(collectWrappedTerminalLinkLine(2, (index) => lines[index])).toBeNull();
+  });
+
+  it("stops at the first missing continuation line", () => {
+    const lines = [createBufferLine("first"), undefined, createBufferLine("later", true)];
+    expect(collectWrappedTerminalLinkLine(1, (index) => lines[index])).toEqual({
+      text: "first",
+      segments: [{ bufferLineNumber: 1, text: "first", startIndex: 0, endIndex: 5 }],
+    });
+  });
 });
 
 describe("resolveWrappedTerminalLinkRange", () => {
@@ -173,9 +197,42 @@ describe("resolveWrappedTerminalLinkRange", () => {
     expect(wrappedTerminalLinkRangeIntersectsBufferLine(range, 3)).toBe(true);
     expect(wrappedTerminalLinkRangeIntersectsBufferLine(range, 4)).toBe(false);
   });
+
+  it("clamps character positions beyond the final or an empty segment list", () => {
+    expect(
+      resolveWrappedTerminalLinkRange(
+        {
+          text: "abc",
+          segments: [{ bufferLineNumber: 7, text: "abc", startIndex: 0, endIndex: 3 }],
+        },
+        { start: 9, end: 11 },
+      ),
+    ).toEqual({ start: { x: 3, y: 7 }, end: { x: 3, y: 7 } });
+    expect(
+      resolveWrappedTerminalLinkRange({ text: "", segments: [] }, { start: 0, end: 1 }),
+    ).toEqual({ start: { x: 1, y: 1 }, end: { x: 1, y: 1 } });
+  });
 });
 
 describe("resolvePathLinkTarget", () => {
+  it("splits absent, line-only, and line-column suffixes", () => {
+    expect(splitPathAndPosition("src/a.ts")).toEqual({
+      path: "src/a.ts",
+      line: undefined,
+      column: undefined,
+    });
+    expect(splitPathAndPosition("src/a.ts:4")).toEqual({
+      path: "src/a.ts",
+      line: "4",
+      column: undefined,
+    });
+    expect(splitPathAndPosition("src/a.ts:4:2")).toEqual({
+      path: "src/a.ts",
+      line: "4",
+      column: "2",
+    });
+  });
+
   it("resolves relative paths against cwd", () => {
     expect(
       resolvePathLinkTarget(
@@ -195,6 +252,24 @@ describe("resolvePathLinkTarget", () => {
     expect(
       resolvePathLinkTarget("C:/Users/julius/project/src/main.ts:12", "C:\\Users\\julius\\project"),
     ).toBe("C:/Users/julius/project/src/main.ts:12");
+  });
+
+  it("expands home paths for macOS, Linux, and Windows cwd styles", () => {
+    expect(resolvePathLinkTarget("~/src/a.ts", "/Users/alice/project")).toBe(
+      "/Users/alice/src/a.ts",
+    );
+    expect(resolvePathLinkTarget("~/src/a.ts:2", "/home/alice/project")).toBe(
+      "/home/alice/src/a.ts:2",
+    );
+    expect(resolvePathLinkTarget("~/src/a.ts", "C:\\Users\\alice\\project")).toBe(
+      "C:\\Users\\alice\\src\\a.ts",
+    );
+    expect(resolvePathLinkTarget("~/src/a.ts", "/opt/project")).toBe("~/src/a.ts");
+  });
+
+  it("joins relative Windows paths and trims existing cwd separators", () => {
+    expect(resolvePathLinkTarget("src/a.ts", "C:\\repo\\")).toBe("C:\\repo\\src\\a.ts");
+    expect(resolvePathLinkTarget("/absolute/a.ts", "/repo///")).toBe("/absolute/a.ts");
   });
 });
 
@@ -239,5 +314,11 @@ describe("isTerminalLinkActivation", () => {
         "Linux",
       ),
     ).toBe(false);
+  });
+
+  it("rejects unknown platforms and conflicting modifier keys", () => {
+    expect(isTerminalLinkActivation({ metaKey: true, ctrlKey: false }, "")).toBe(false);
+    expect(isTerminalLinkActivation({ metaKey: true, ctrlKey: true }, "MacIntel")).toBe(false);
+    expect(isTerminalLinkActivation({ metaKey: true, ctrlKey: true }, "Linux")).toBe(false);
   });
 });

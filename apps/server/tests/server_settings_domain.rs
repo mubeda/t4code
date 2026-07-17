@@ -244,3 +244,93 @@ async fn missing_redacted_secret_returns_the_expected_read_error() {
         } if instance_id == "codex_personal" && environment_variable == "OPENROUTER_API_KEY"
     ));
 }
+
+fn sensitive_instance_patch(value: &str, value_redacted: bool) -> ServerSettingsPatch {
+    ServerSettingsPatch {
+        provider_instances: Some(std::collections::BTreeMap::from([(
+            "instance".to_owned(),
+            ProviderInstanceInput {
+                driver: "codex".to_owned(),
+                enabled: true,
+                display_name: None,
+                environment: vec![ProviderEnvironmentVariableInput {
+                    name: "TOKEN".to_owned(),
+                    value: value.to_owned(),
+                    sensitive: true,
+                    value_redacted,
+                }],
+                config: serde_json::Value::Null,
+            },
+        )])),
+        ..ServerSettingsPatch::default()
+    }
+}
+
+#[tokio::test]
+async fn public_store_maps_settings_and_secret_filesystem_failures() {
+    let temp = TempDir::new().expect("temp");
+
+    let unreadable_root = temp.path().join("unreadable-root");
+    tokio::fs::create_dir_all(unreadable_root.join("settings.json"))
+        .await
+        .expect("settings directory");
+    assert!(matches!(
+        ProviderSettingsStore::new(&unreadable_root).get().await,
+        Err(ServerSettingsReadError::Read { .. })
+    ));
+
+    let blocked_root = temp.path().join("blocked-root");
+    tokio::fs::write(&blocked_root, "not a directory")
+        .await
+        .expect("blocker");
+    assert!(matches!(
+        ProviderSettingsStore::new(&blocked_root)
+            .update(ServerSettingsPatch::default())
+            .await,
+        Err(ServerSettingsReadError::Persist { .. })
+    ));
+
+    let secret_root = temp.path().join("secret-root");
+    let secret_store = ProviderSettingsStore::new(&secret_root);
+    secret_store
+        .update(sensitive_instance_patch("secret", false))
+        .await
+        .expect("initial secret");
+    let mut secret_entries = tokio::fs::read_dir(secret_root.join("secrets"))
+        .await
+        .expect("secret directory");
+    let secret_path = secret_entries
+        .next_entry()
+        .await
+        .expect("read secret entry")
+        .expect("secret entry")
+        .path();
+    tokio::fs::remove_file(&secret_path)
+        .await
+        .expect("remove secret");
+    tokio::fs::create_dir(&secret_path)
+        .await
+        .expect("replace secret with directory");
+
+    assert!(matches!(
+        secret_store.get().await,
+        Err(ServerSettingsReadError::Read { .. })
+    ));
+    assert!(matches!(
+        secret_store
+            .update(sensitive_instance_patch("replacement", false))
+            .await,
+        Err(ServerSettingsReadError::Persist { .. })
+    ));
+
+    let blocked_settings_root = temp.path().join("blocked-settings");
+    tokio::fs::create_dir_all(blocked_settings_root.join("settings.json"))
+        .await
+        .expect("blocked settings path");
+    assert!(matches!(
+        ProviderSettingsStore::new(&blocked_settings_root)
+            .update(ServerSettingsPatch::default())
+            .await,
+        Err(ServerSettingsReadError::Persist { .. })
+    ));
+}

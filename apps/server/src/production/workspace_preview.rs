@@ -112,43 +112,50 @@ pub fn register_workspace_preview_rpc(
     });
 
     registry.register_stream("subscribePreviewEvents", move |_request, cancellation| {
-        let mut events = preview.subscribe_events();
-        let (sender, receiver) = mpsc::channel(STREAM_CAPACITY);
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    biased;
-                    () = cancellation.cancelled() => break,
-                    event = events.recv() => match event {
-                        Ok(event) => {
-                            let value = match serde_json::to_value(event) {
-                                Ok(value) => value,
-                                Err(error) => {
-                                    let _ = sender.send(Err(json!({
-                                        "_tag": "PreviewEventEncodeError",
-                                        "message": error.to_string(),
-                                    }))).await;
-                                    break;
-                                }
-                            };
-                            if sender.send(Ok(vec![value])).await.is_err() {
+        preview_event_stream(preview.clone(), cancellation)
+    });
+}
+
+fn preview_event_stream(
+    preview: PreviewManager,
+    cancellation: CancellationToken,
+) -> mpsc::Receiver<RpcStreamChunk> {
+    let mut events = preview.subscribe_events();
+    let (sender, receiver) = mpsc::channel(STREAM_CAPACITY);
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                biased;
+                () = cancellation.cancelled() => break,
+                event = events.recv() => match event {
+                    Ok(event) => {
+                        let value = match serde_json::to_value(event) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                let _ = sender.send(Err(json!({
+                                    "_tag": "PreviewEventEncodeError",
+                                    "message": error.to_string(),
+                                }))).await;
                                 break;
                             }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                            let _ = sender.send(Err(json!({
-                                "_tag": "PreviewEventLaggedError",
-                                "skipped": skipped,
-                            }))).await;
+                        };
+                        if sender.send(Ok(vec![value])).await.is_err() {
                             break;
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        let _ = sender.send(Err(json!({
+                            "_tag": "PreviewEventLaggedError",
+                            "skipped": skipped,
+                        }))).await;
+                        break;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
-        });
-        receiver
+        }
     });
+    receiver
 }
 
 impl WorkspacePreviewRpcServices {
@@ -735,4 +742,290 @@ struct PreviewAutomationResponseInput {
     ok: bool,
     result: Option<Value>,
     error: Option<Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        RequestId,
+        mcp::preview_automation::{PreviewAutomationInvokeInput, PreviewAutomationOperation},
+        workspace::WorkspaceService,
+    };
+
+    use super::*;
+
+    #[tokio::test]
+    async fn unit_build_covers_workspace_preview_and_automation_rpc_paths() {
+        let temp = tempfile::tempdir().expect("workspace");
+        let automation = PreviewAutomationBroker::new();
+        let services = WorkspacePreviewRpcServices::new(
+            WorkspaceRpc::new(WorkspaceService::default()),
+            PreviewManager::new(),
+            automation.clone(),
+        );
+        let request = |tag: &str, payload: Value| RpcRequest {
+            id: RequestId::try_from("1").expect("request id"),
+            tag: tag.to_owned(),
+            payload,
+            headers: Vec::new(),
+            trace_id: None,
+            span_id: None,
+            sampled: None,
+        };
+
+        let preview_event_cancellation = CancellationToken::new();
+        let mut preview_events =
+            preview_event_stream(services.preview.clone(), preview_event_cancellation.clone());
+
+        let cwd = temp.path().to_string_lossy().into_owned();
+        assert_eq!(
+            services
+                .handle_workspace(
+                    request(
+                        "projects.createEntry",
+                        json!({"cwd":cwd,"relativePath":"created.txt","kind":"file"}),
+                    ),
+                    CancellationToken::new(),
+                )
+                .await
+                .expect("workspace entry creates"),
+            json!({"relativePath":"created.txt"}),
+        );
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert_eq!(
+            services
+                .handle_workspace(
+                    request("projects.listEntries", json!({"cwd":cwd})),
+                    cancelled,
+                )
+                .await
+                .expect_err("cancelled workspace request"),
+            interrupted_error("projects.listEntries"),
+        );
+        let review = normalize_review_result(json!({
+            "generatedAt":0,
+            "sources":[{"path":"src/lib.rs","diff":"+line"},{"kind":"commit","id":"existing"}]
+        }))
+        .expect("review result normalizes");
+        assert_eq!(review["sources"][0]["kind"], "working-tree");
+        assert_eq!(review["sources"][1]["id"], "existing");
+        assert!(normalize_review_result(Value::Null).is_err());
+
+        let opened = services
+            .dispatch_preview(
+                "preview.open",
+                json!({"threadId":"thread-1","url":"localhost:4173"}),
+            )
+            .await
+            .expect("preview opens");
+        let opened_event = preview_events
+            .recv()
+            .await
+            .expect("preview event chunk")
+            .expect("preview event encodes");
+        assert_eq!(opened_event[0]["type"], "opened");
+        preview_event_cancellation.cancel();
+        while preview_events.recv().await.is_some() {}
+        let tab_id = opened["tabId"].as_str().expect("tab id").to_owned();
+        let navigated = services
+            .dispatch_preview(
+                "preview.navigate",
+                json!({
+                    "threadId":"thread-1",
+                    "tabId":tab_id,
+                    "url":"http://localhost:4174/path",
+                    "resolvedTitle":"Next"
+                }),
+            )
+            .await
+            .expect("preview navigates");
+        assert_eq!(navigated["navStatus"]["title"], "Next");
+        let resized = services
+            .dispatch_preview(
+                "preview.resize",
+                json!({
+                    "threadId":"thread-1",
+                    "tabId":tab_id,
+                    "viewport":{"_tag":"preset","presetId":"phone","width":375,"height":667}
+                }),
+            )
+            .await
+            .expect("preview resizes");
+        assert_eq!(resized["viewport"]["presetId"], "phone");
+        assert!(
+            services
+                .dispatch_preview(
+                    "preview.resize",
+                    json!({
+                        "threadId":"thread-1",
+                        "tabId":tab_id,
+                        "viewport":{"_tag":"freeform","width":10,"height":10}
+                    }),
+                )
+                .await
+                .is_err()
+        );
+        services
+            .dispatch_preview(
+                "preview.reportStatus",
+                json!({
+                    "threadId":"thread-1",
+                    "tabId":tab_id,
+                    "navStatus":{"_tag":"Success","url":"http://localhost:4174/path","title":"Ready"},
+                    "canGoBack":true,
+                    "canGoForward":false
+                }),
+            )
+            .await
+            .expect("preview status reports");
+        services
+            .dispatch_preview(
+                "preview.refresh",
+                json!({"threadId":"thread-1","tabId":tab_id}),
+            )
+            .await
+            .expect("preview refreshes");
+        assert_eq!(
+            services
+                .dispatch_preview("preview.list", json!({"threadId":"thread-1"}))
+                .await
+                .expect("previews list")["sessions"]
+                .as_array()
+                .expect("sessions")
+                .len(),
+            1,
+        );
+        assert!(
+            services
+                .dispatch_preview("preview.unknown", json!({}))
+                .await
+                .is_err()
+        );
+
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert_eq!(
+            services
+                .handle_preview(
+                    request("preview.list", json!({"threadId":"thread-1"})),
+                    cancelled,
+                )
+                .await
+                .expect_err("cancelled preview request"),
+            interrupted_error("preview.list"),
+        );
+
+        let stream_cancellation = CancellationToken::new();
+        let mut stream = services.automation_connect(
+            request(
+                "previewAutomation.connect",
+                json!({"clientId":"desktop-1","environmentId":"local"}),
+            ),
+            stream_cancellation.clone(),
+        );
+        let connected = stream
+            .recv()
+            .await
+            .expect("connected chunk")
+            .expect("connected event");
+        let connection_id = connected[0]["connectionId"]
+            .as_str()
+            .expect("connection id")
+            .to_owned();
+        services
+            .handle_preview(
+                request(
+                    "previewAutomation.focusHost",
+                    json!({
+                        "clientId":"desktop-1",
+                        "environmentId":"local",
+                        "connectionId":connection_id,
+                        "focused":true
+                    }),
+                ),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("host focuses");
+
+        let invoke_automation = automation.clone();
+        let invoke = tokio::spawn(async move {
+            invoke_automation
+                .invoke(PreviewAutomationInvokeInput {
+                    environment_id: "local".to_owned(),
+                    thread_id: "thread-1".to_owned(),
+                    provider_session_id: "provider-session".to_owned(),
+                    provider_instance_id: "codex".to_owned(),
+                    operation: PreviewAutomationOperation::Snapshot,
+                    input: json!({}),
+                    tab_id: Some("tab-explicit".to_owned()),
+                    timeout_ms: Some(2_000),
+                })
+                .await
+        });
+        let automation_request = stream
+            .recv()
+            .await
+            .expect("request chunk")
+            .expect("request event");
+        let request_id = automation_request[0]["request"]["requestId"]
+            .as_str()
+            .expect("automation request id")
+            .to_owned();
+        services
+            .handle_preview(
+                request(
+                    "previewAutomation.respond",
+                    json!({
+                        "clientId":"desktop-1",
+                        "connectionId":connection_id,
+                        "requestId":request_id,
+                        "ok":true,
+                        "result":{"tabId":"tab-result"},
+                        "error":null
+                    }),
+                ),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("automation responds");
+        assert_eq!(
+            invoke.await.expect("invoke task").expect("invoke result")["tabId"],
+            "tab-result"
+        );
+        stream_cancellation.cancel();
+        while stream.recv().await.is_some() {}
+
+        services
+            .dispatch_preview(
+                "preview.close",
+                json!({"threadId":"thread-1","tabId":tab_id}),
+            )
+            .await
+            .expect("preview closes");
+        assert_eq!(
+            preview_error(PreviewError::SessionLookup {
+                thread_id: "missing".to_owned(),
+                tab_id: "tab".to_owned(),
+            })["_tag"],
+            "PreviewSessionLookupError"
+        );
+        assert_eq!(
+            preview_error(PreviewError::InvalidUrl {
+                input_length: 4,
+                reason: "unsupported protocol",
+                protocol: Some("file:".to_owned()),
+            })["protocol"],
+            "file:"
+        );
+        let focus_error = automation
+            .focus_host("missing", "local")
+            .await
+            .expect_err("missing automation host");
+        assert_eq!(
+            automation_error(focus_error)["_tag"],
+            "PreviewAutomationNoAvailableHostError"
+        );
+    }
 }

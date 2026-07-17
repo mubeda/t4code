@@ -550,3 +550,15 @@ impl Drop for CancellationGuard {
         self.0.cancel();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn route_error_helpers_preserve_bad_request_and_internal_statuses() {
+        assert_eq!(bad_request("invalid").status(), StatusCode::BAD_REQUEST);
+        assert_eq!(internal_error().status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(payload_too_large().status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+}

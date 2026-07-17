@@ -84,6 +84,11 @@ describe("getOrphanedWorktreePathForThread", () => {
 });
 
 describe("formatWorktreePathForDisplay", () => {
+  it("preserves empty and root-only paths", () => {
+    expect(formatWorktreePathForDisplay("   ")).toBe("   ");
+    expect(formatWorktreePathForDisplay("/")).toBe("/");
+  });
+
   it("shows only the last path segment for unix-like paths", () => {
     const result = formatWorktreePathForDisplay(
       "/Users/julius/.t4code/worktrees/t4code-mvp/t4code-4e609bb8",

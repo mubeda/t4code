@@ -1,0 +1,121 @@
+import { renderToStaticMarkup } from "react-dom/server";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+
+const harness = vi.hoisted(() => ({
+  items: [] as Array<Record<string, unknown>>,
+  menuItems: [] as Array<Record<string, unknown>>,
+  tooltipReasons: [] as string[],
+}));
+
+vi.mock("~/providerInstances", () => ({
+  applyProviderInstanceSettings: (entries: unknown) => entries,
+  deriveProviderInstanceEntries: () => [],
+}));
+vi.mock("./ChatHeaderPanelMenu.logic", () => ({
+  buildPanelMenuModel: () => harness.items,
+}));
+vi.mock("./ProviderInstanceIcon", () => ({
+  ProviderInstanceIcon: () => <span data-provider-icon />,
+}));
+vi.mock("../ui/button", () => ({
+  Button: (props: Record<string, unknown>) => <button>{props.children as React.ReactNode}</button>,
+}));
+vi.mock("../ui/menu", () => ({
+  Menu: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+  MenuTrigger: ({ children, render }: { children?: React.ReactNode; render?: React.ReactNode }) => (
+    <>
+      {render}
+      {children}
+    </>
+  ),
+  MenuPopup: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+  MenuSeparator: () => <hr />,
+  MenuItem: (props: Record<string, unknown>) => {
+    harness.menuItems.push(props);
+    return (
+      <button disabled={props.disabled as boolean}>{props.children as React.ReactNode}</button>
+    );
+  },
+}));
+vi.mock("../ui/tooltip", () => ({
+  Tooltip: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+  TooltipTrigger: ({ render }: { render?: React.ReactNode }) => <>{render}</>,
+  TooltipPopup: ({ children }: { children?: React.ReactNode }) => {
+    harness.tooltipReasons.push(String(children));
+    return <span>{children}</span>;
+  },
+}));
+
+import { ChatHeaderPanelMenu } from "./ChatHeaderPanelMenu";
+
+beforeEach(() => {
+  harness.items = [];
+  harness.menuItems.length = 0;
+  harness.tooltipReasons.length = 0;
+});
+
+function panelItem(overrides: Record<string, unknown> = {}) {
+  return {
+    entry: {
+      instanceId: "codex",
+      driverKind: "codex",
+      displayName: "Codex",
+      accentColor: null,
+    },
+    disabled: false,
+    disabledReason: null,
+    ...overrides,
+  };
+}
+
+function render(canCreatePanel: boolean) {
+  const props = {
+    providerStatuses: [],
+    settings: { providerInstances: {}, providers: {} },
+    canCreatePanel,
+    onCreateChatPanel: vi.fn(),
+    onOpenTerminalPanel: vi.fn(),
+    onAddCustomAction: vi.fn(),
+  } as unknown as React.ComponentProps<typeof ChatHeaderPanelMenu>;
+  return { markup: renderToStaticMarkup(<ChatHeaderPanelMenu {...props} />), props };
+}
+
+describe("ChatHeaderPanelMenu", () => {
+  it("renders enabled providers and terminal/custom actions", () => {
+    harness.items = [panelItem()];
+    const { markup, props } = render(true);
+
+    expect(markup).toContain("Codex");
+    expect(markup).toContain("Open Terminal");
+    expect(markup).toContain("Add custom action");
+    expect(harness.tooltipReasons).toEqual([]);
+    (harness.menuItems[0]!.onClick as () => void)();
+    (harness.menuItems[1]!.onClick as () => void)();
+    (harness.menuItems[2]!.onClick as () => void)();
+    expect(props.onCreateChatPanel).toHaveBeenCalledOnce();
+    expect(props.onOpenTerminalPanel).toHaveBeenCalledOnce();
+    expect(props.onAddCustomAction).toHaveBeenCalledOnce();
+  });
+
+  it("explains provider-specific and thread-level disabled states", () => {
+    harness.items = [panelItem({ disabled: true, disabledReason: "Provider unavailable" })];
+    render(true);
+    expect(harness.tooltipReasons).toContain("Provider unavailable");
+    expect(harness.menuItems[0]).toMatchObject({ disabled: true });
+
+    harness.menuItems.length = 0;
+    harness.tooltipReasons.length = 0;
+    harness.items = [panelItem({ disabled: false, disabledReason: null })];
+    render(false);
+    expect(harness.tooltipReasons).toEqual([
+      "Available once this thread has started.",
+      "Available once this thread has started.",
+    ]);
+    expect(harness.menuItems[0]).toMatchObject({ disabled: true });
+  });
+
+  it("renders no provider divider when the provider list is empty", () => {
+    const { markup } = render(true);
+    expect(markup.match(/<hr/g)).toHaveLength(1);
+  });
+});

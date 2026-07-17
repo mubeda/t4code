@@ -2,6 +2,7 @@
 
 import { scopeThreadRef } from "@t4code/client-runtime/environment";
 import { EnvironmentId, ThreadId, type ResolvedKeybindingsConfig } from "@t4code/contracts";
+import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -13,22 +14,53 @@ interface FakeTerminalInstance {
   readonly focus: ReturnType<typeof vi.fn>;
   readonly refresh: ReturnType<typeof vi.fn>;
   readonly dispose: ReturnType<typeof vi.fn>;
+  readonly clearSelection: ReturnType<typeof vi.fn>;
   readonly inputDisposable: { readonly dispose: ReturnType<typeof vi.fn> };
   readonly selectionDisposable: { readonly dispose: ReturnType<typeof vi.fn> };
   readonly linkDisposable: { readonly dispose: ReturnType<typeof vi.fn> };
+  readonly bufferLines: Array<FakeTerminalBufferLine | undefined>;
   readonly writes: string[];
   dataHandler: ((data: string) => void) | null;
+  linkProvider: FakeTerminalLinkProvider | null;
+  selectionHandler: (() => void) | null;
+  keyHandler: ((event: KeyboardEvent) => boolean) | null;
+  hasActiveSelection: boolean;
+  selectionText: string;
+  selectionPosition: { start: { y: number } } | null;
+}
+
+interface FakeTerminalBufferLine {
+  readonly isWrapped?: boolean;
+  translateToString(trimRight?: boolean): string;
+}
+
+interface FakeTerminalLink {
+  readonly text: string;
+  readonly activate: (event: MouseEvent) => void;
+}
+
+interface FakeTerminalLinkProvider {
+  provideLinks(
+    bufferLineNumber: number,
+    callback: (links: ReadonlyArray<FakeTerminalLink> | undefined) => void,
+  ): void;
 }
 
 const xtermState = vi.hoisted(() => ({
   terminals: [] as FakeTerminalInstance[],
   fitAddons: [] as Array<{ fit: ReturnType<typeof vi.fn> }>,
+  fitShouldThrow: false,
 }));
 
 vi.mock("@xterm/addon-fit", () => ({
   FitAddon: class FitAddon {
     readonly fit = vi.fn();
     constructor() {
+      if (xtermState.fitShouldThrow) {
+        this.fit.mockImplementation(() => {
+          throw new Error("container not measurable");
+        });
+      }
       xtermState.fitAddons.push(this);
     }
   },
@@ -50,23 +82,33 @@ vi.mock("@xterm/xterm", () => ({
     readonly inputDisposable = { dispose: vi.fn() };
     readonly selectionDisposable = { dispose: vi.fn() };
     readonly linkDisposable = { dispose: vi.fn() };
+    readonly bufferLines: Array<FakeTerminalBufferLine | undefined> = [];
     readonly buffer = {
       active: {
         viewportY: 0,
         baseY: 0,
-        getLine: () => undefined,
+        getLine: (index: number) => this.bufferLines[index],
       },
     };
     dataHandler: ((data: string) => void) | null = null;
+    linkProvider: FakeTerminalLinkProvider | null = null;
+    selectionHandler: (() => void) | null = null;
+    keyHandler: ((event: KeyboardEvent) => boolean) | null = null;
+    hasActiveSelection = false;
+    selectionText = "";
+    selectionPosition: { start: { y: number } } | null = null;
 
     constructor(options: Record<string, unknown>) {
       this.options = options;
       xtermState.terminals.push(this);
     }
 
-    attachCustomKeyEventHandler() {}
+    attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) {
+      this.keyHandler = handler;
+    }
 
-    registerLinkProvider() {
+    registerLinkProvider(provider: FakeTerminalLinkProvider) {
+      this.linkProvider = provider;
       return this.linkDisposable;
     }
 
@@ -75,20 +117,21 @@ vi.mock("@xterm/xterm", () => ({
       return this.inputDisposable;
     }
 
-    onSelectionChange() {
+    onSelectionChange(handler: () => void) {
+      this.selectionHandler = handler;
       return this.selectionDisposable;
     }
 
     hasSelection() {
-      return false;
+      return this.hasActiveSelection;
     }
 
     getSelection() {
-      return "";
+      return this.selectionText;
     }
 
     getSelectionPosition() {
-      return null;
+      return this.selectionPosition;
     }
 
     write(value: string) {
@@ -103,6 +146,9 @@ const testState = vi.hoisted(() => ({
   resizeCommand: vi.fn(),
   previewCommand: vi.fn(),
   openPath: vi.fn(),
+  contextMenuShow: vi.fn(),
+  shellOpenExternal: vi.fn(),
+  localApiAvailable: false,
 }));
 
 vi.mock("@effect/atom-react", () => ({ useAtomValue: () => ({ availableEditors: ["vscode"] }) }));
@@ -126,7 +172,15 @@ vi.mock("../state/terminalSessions", () => ({
 vi.mock("../editorPreferences", () => ({
   useOpenInPreferredEditor: () => testState.openPath,
 }));
-vi.mock("~/localApi", () => ({ readLocalApi: () => undefined }));
+vi.mock("~/localApi", () => ({
+  readLocalApi: () =>
+    testState.localApiAvailable
+      ? {
+          contextMenu: { show: testState.contextMenuShow },
+          shell: { openExternal: testState.shellOpenExternal },
+        }
+      : undefined,
+}));
 vi.mock("./preview/openTerminalLinkInPreview", () => ({
   openTerminalLinkInPreview: vi.fn(),
 }));
@@ -143,6 +197,7 @@ vi.mock("~/components/ui/popover", () => ({
 }));
 
 import ThreadTerminalDrawer, { TerminalViewport } from "./ThreadTerminalDrawer";
+import { openTerminalLinkInPreview } from "./preview/openTerminalLinkInPreview";
 
 const ENVIRONMENT_ID = EnvironmentId.make("terminal-interactions");
 const THREAD_ID = ThreadId.make("thread-interactions");
@@ -161,6 +216,7 @@ const mountedTrees: MountedTree[] = [];
 const observerInstances: Array<{
   observe: ReturnType<typeof vi.fn>;
   disconnect: ReturnType<typeof vi.fn>;
+  callback: MutationCallback;
 }> = [];
 const componentTimers = new Set<number>();
 const animationFrames = new Map<number, FrameRequestCallback>();
@@ -240,16 +296,39 @@ function drawerProps(overrides: Partial<DrawerProps> = {}): DrawerProps {
   };
 }
 
+function terminalBufferLine(text: string, isWrapped = false): FakeTerminalBufferLine {
+  return {
+    isWrapped,
+    translateToString: (trimRight = false) => (trimRight ? text.trimEnd() : text),
+  };
+}
+
+function provideTerminalLinks(
+  terminal: FakeTerminalInstance,
+  bufferLineNumber = 1,
+): ReadonlyArray<FakeTerminalLink> | undefined {
+  let providedLinks: ReadonlyArray<FakeTerminalLink> | undefined;
+  terminal.linkProvider?.provideLinks(bufferLineNumber, (links) => {
+    providedLinks = links;
+  });
+  return providedLinks;
+}
+
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.useRealTimers();
   xtermState.terminals = [];
   xtermState.fitAddons = [];
+  xtermState.fitShouldThrow = false;
   testState.session = { buffer: "", error: null, status: "running", version: 0 };
   testState.writeCommand.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   testState.resizeCommand.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   testState.previewCommand.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   testState.openPath.mockReset().mockResolvedValue(AsyncResult.success(undefined));
+  testState.contextMenuShow.mockReset().mockResolvedValue(undefined);
+  testState.shellOpenExternal.mockReset().mockResolvedValue(undefined);
+  vi.mocked(openTerminalLinkInPreview).mockReset();
+  testState.localApiAvailable = false;
   observerInstances.length = 0;
   componentTimers.clear();
   animationFrames.clear();
@@ -289,7 +368,9 @@ beforeEach(() => {
     class MutationObserver {
       readonly observe = vi.fn();
       readonly disconnect = vi.fn();
-      constructor() {
+      readonly callback: MutationCallback;
+      constructor(callback: MutationCallback) {
+        this.callback = callback;
         observerInstances.push(this);
       }
     },
@@ -398,6 +479,315 @@ describe("TerminalViewport mounted lifecycle", () => {
     });
     expect(terminal.focus).toHaveBeenCalled();
   });
+
+  it("rewrites divergent buffers, reports errors, and closes exited sessions once", async () => {
+    const onSessionExited = vi.fn();
+    const props = viewportProps({ onSessionExited });
+    const mounted = await mount(<TerminalViewport {...props} />);
+    const terminal = xtermState.terminals[0]!;
+
+    testState.session = { buffer: "abcdef", error: null, status: "running", version: 1 };
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+    testState.session = { buffer: "xy", error: "stream failed", status: "closed", version: 2 };
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+    await act(async () => new Promise((resolve) => window.setTimeout(resolve, 0)));
+
+    expect(terminal.writes).toContain("\u001bc");
+    expect(terminal.writes).toContain("xy");
+    expect(terminal.writes).toContain("\r\n[terminal] stream failed\r\n");
+    expect(terminal.writes).toContain("\r\n[terminal] Terminal closed\r\n");
+    expect(onSessionExited).toHaveBeenCalledOnce();
+
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+    await act(async () => new Promise((resolve) => window.setTimeout(resolve, 0)));
+    expect(onSessionExited).toHaveBeenCalledOnce();
+  });
+
+  it("reports write and keyboard-command failures while allowing ordinary keys", async () => {
+    await mount(<TerminalViewport {...viewportProps()} />);
+    const terminal = xtermState.terminals[0]!;
+    testState.writeCommand.mockResolvedValueOnce(
+      AsyncResult.failure(Cause.fail(new Error("write denied"))),
+    );
+    await act(async () => terminal.dataHandler?.("blocked"));
+    await act(async () => Promise.resolve());
+    expect(terminal.writes).toContain("\r\n[terminal] write denied\r\n");
+
+    testState.writeCommand.mockResolvedValueOnce(AsyncResult.failure(Cause.fail("no details")));
+    const clearEvent = new KeyboardEvent("keydown", { key: "l", ctrlKey: true, cancelable: true });
+    expect(terminal.keyHandler?.(clearEvent)).toBe(false);
+    await act(async () => Promise.resolve());
+    expect(testState.writeCommand).toHaveBeenCalledWith({
+      environmentId: ENVIRONMENT_ID,
+      input: { threadId: THREAD_ID, terminalId: "term-1", data: "\u000c" },
+    });
+    expect(terminal.writes).toContain("\r\n[terminal] Failed to clear terminal\r\n");
+    expect(terminal.keyHandler?.(new KeyboardEvent("keydown", { key: "a" }))).toBe(true);
+  });
+
+  it("routes macOS navigation and delete shortcuts to terminal input", async () => {
+    vi.stubGlobal("navigator", { platform: "MacIntel" });
+    await mount(<TerminalViewport {...viewportProps()} />);
+    const terminal = xtermState.terminals[0]!;
+
+    const moveWord = new KeyboardEvent("keydown", {
+      key: "ArrowLeft",
+      altKey: true,
+      cancelable: true,
+    });
+    const deleteLine = new KeyboardEvent("keydown", {
+      key: "Backspace",
+      metaKey: true,
+      cancelable: true,
+    });
+    expect(terminal.keyHandler?.(moveWord)).toBe(false);
+    expect(terminal.keyHandler?.(deleteLine)).toBe(false);
+    await act(async () => Promise.resolve());
+
+    expect(moveWord.defaultPrevented).toBe(true);
+    expect(deleteLine.defaultPrevented).toBe(true);
+    expect(testState.writeCommand).toHaveBeenCalledWith({
+      environmentId: ENVIRONMENT_ID,
+      input: { threadId: THREAD_ID, terminalId: "term-1", data: "\u001bb" },
+    });
+    expect(testState.writeCommand).toHaveBeenCalledWith({
+      environmentId: ENVIRONMENT_ID,
+      input: { threadId: THREAD_ID, terminalId: "term-1", data: "\u0015" },
+    });
+  });
+
+  it("adds a normalized terminal selection through the native context menu", async () => {
+    testState.localApiAvailable = true;
+    testState.contextMenuShow.mockResolvedValue("add-to-chat");
+    const onAddTerminalContext = vi.fn();
+    const mounted = await mount(
+      <TerminalViewport {...viewportProps({ onAddTerminalContext, terminalLabel: "Build" })} />,
+    );
+    const terminal = xtermState.terminals[0]!;
+    terminal.hasActiveSelection = true;
+    terminal.selectionText = "\r\nfirst\r\nsecond\r\n";
+    terminal.selectionPosition = { start: { y: 4 } };
+    const mountElement = mounted.container.querySelector<HTMLElement>(".overflow-hidden")!;
+
+    await act(async () => {
+      mountElement.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerId: 1 }),
+      );
+      window.dispatchEvent(
+        new MouseEvent("mouseup", {
+          bubbles: true,
+          button: 0,
+          detail: 1,
+          clientX: 30,
+          clientY: 40,
+        }),
+      );
+      await new Promise((resolve) => window.setTimeout(resolve, 2));
+      for (const callback of animationFrames.values()) callback(0);
+      animationFrames.clear();
+      await Promise.resolve();
+    });
+
+    expect(testState.contextMenuShow).toHaveBeenCalledWith(
+      [{ id: "add-to-chat", label: "Add to chat" }],
+      expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }),
+    );
+    expect(onAddTerminalContext).toHaveBeenCalledWith({
+      terminalId: "term-1",
+      terminalLabel: "Build",
+      lineStart: 5,
+      lineEnd: 6,
+      text: "first\nsecond",
+    });
+    expect(terminal.clearSelection).toHaveBeenCalled();
+    expect(terminal.focus).toHaveBeenCalled();
+
+    terminal.hasActiveSelection = false;
+    terminal.selectionHandler?.();
+  });
+
+  it("refreshes theme and refits when the viewport changes", async () => {
+    const props = viewportProps();
+    const mounted = await mount(<TerminalViewport {...props} />);
+    const terminal = xtermState.terminals[0]!;
+    const observer = observerInstances[0]!;
+    observer.callback([], observer as never);
+    expect(terminal.refresh).toHaveBeenCalledWith(0, 23);
+
+    await act(async () => mounted.root.render(<TerminalViewport {...props} resizeEpoch={1} />));
+    await act(async () => {
+      for (const callback of animationFrames.values()) callback(0);
+      animationFrames.clear();
+    });
+    expect(xtermState.fitAddons[0]?.fit).toHaveBeenCalled();
+    expect(testState.resizeCommand).toHaveBeenCalledWith({
+      environmentId: ENVIRONMENT_ID,
+      input: { threadId: THREAD_ID, terminalId: "term-1", cols: 80, rows: 24 },
+    });
+  });
+
+  it("tolerates an unmeasurable terminal and applies the dark application theme", async () => {
+    xtermState.fitShouldThrow = true;
+    document.documentElement.classList.add("dark");
+    const mounted = await mount(
+      <TerminalViewport
+        {...viewportProps({ runtimeEnv: { Z_VAR: "last", "": "ignored", A_VAR: "first" } })}
+      />,
+    );
+    const terminal = xtermState.terminals[0]!;
+
+    expect(xtermState.fitAddons[0]?.fit).toHaveBeenCalled();
+    expect(terminal.options.theme).toEqual(
+      expect.objectContaining({
+        cursor: "rgb(180, 203, 255)",
+        brightWhite: "rgb(244, 247, 252)",
+      }),
+    );
+
+    await act(async () => {
+      await mounted.root.render(
+        <TerminalViewport {...viewportProps({ runtimeEnv: { A_VAR: "first", Z_VAR: "last" } })} />,
+      );
+    });
+    expect(xtermState.terminals).toHaveLength(1);
+    document.documentElement.classList.remove("dark");
+  });
+
+  it("renders the exited session message and resets exit handling after a restart", async () => {
+    const onSessionExited = vi.fn();
+    const props = viewportProps({ onSessionExited });
+    const mounted = await mount(<TerminalViewport {...props} />);
+    const terminal = xtermState.terminals[0]!;
+
+    testState.session = { buffer: "done", error: null, status: "exited", version: 1 };
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+    await act(async () => new Promise((resolve) => window.setTimeout(resolve, 0)));
+    expect(terminal.writes).toContain("\r\n[terminal] Process exited\r\n");
+    expect(onSessionExited).toHaveBeenCalledOnce();
+
+    testState.session = { buffer: "done", error: null, status: "running", version: 2 };
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+    testState.session = { buffer: "done", error: null, status: "exited", version: 3 };
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+    await act(async () => new Promise((resolve) => window.setTimeout(resolve, 0)));
+    expect(onSessionExited).toHaveBeenCalledTimes(2);
+  });
+
+  it("provides only terminal links that intersect the requested wrapped buffer row", async () => {
+    await mount(<TerminalViewport {...viewportProps()} />);
+    const terminal = xtermState.terminals[0]!;
+    terminal.bufferLines.push(
+      terminalBufferLine("see https://example.test/docs and "),
+      terminalBufferLine("src/main.ts:12", true),
+      terminalBufferLine("plain output"),
+    );
+
+    expect(provideTerminalLinks(terminal, 1)?.map((link) => link.text)).toEqual([
+      "https://example.test/docs",
+    ]);
+    expect(provideTerminalLinks(terminal, 2)?.map((link) => link.text)).toEqual(["src/main.ts:12"]);
+    expect(provideTerminalLinks(terminal, 3)).toBeUndefined();
+    expect(provideTerminalLinks(terminal, 99)).toBeUndefined();
+  });
+
+  it("requires the platform link modifier and reports unavailable browser links", async () => {
+    vi.stubGlobal("navigator", { platform: "MacIntel" });
+    await mount(<TerminalViewport {...viewportProps()} />);
+    const terminal = xtermState.terminals[0]!;
+    terminal.bufferLines.push(terminalBufferLine("https://example.test/docs"));
+    const [link] = provideTerminalLinks(terminal) ?? [];
+    expect(link).toBeDefined();
+
+    link!.activate(new MouseEvent("click"));
+    expect(terminal.writes).toEqual([]);
+
+    link!.activate(new MouseEvent("click", { metaKey: true }));
+    expect(terminal.writes).toContain(
+      "\r\n[terminal] Opening links is unavailable in this browser.\r\n",
+    );
+    expect(openTerminalLinkInPreview).not.toHaveBeenCalled();
+  });
+
+  it("opens native URL links through preview with the event position", async () => {
+    vi.stubGlobal("navigator", { platform: "MacIntel" });
+    testState.localApiAvailable = true;
+    await mount(<TerminalViewport {...viewportProps()} />);
+    const terminal = xtermState.terminals[0]!;
+    terminal.bufferLines.push(terminalBufferLine("https://example.test/docs"));
+    const [link] = provideTerminalLinks(terminal) ?? [];
+
+    link!.activate(new MouseEvent("click", { metaKey: true, clientX: 24, clientY: 36 }));
+
+    expect(openTerminalLinkInPreview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "https://example.test/docs",
+        position: { x: 24, y: 36 },
+        threadRef: THREAD_REF,
+      }),
+    );
+  });
+
+  it("falls back to the native browser and reports shell launch failures", async () => {
+    vi.stubGlobal("navigator", { platform: "MacIntel" });
+    testState.localApiAvailable = true;
+    vi.mocked(openTerminalLinkInPreview).mockImplementation(async ({ fallbackToBrowser }) => {
+      fallbackToBrowser();
+    });
+    await mount(<TerminalViewport {...viewportProps()} />);
+    const terminal = xtermState.terminals[0]!;
+    terminal.bufferLines.push(terminalBufferLine("https://example.test/docs"));
+    const [link] = provideTerminalLinks(terminal) ?? [];
+
+    testState.shellOpenExternal.mockRejectedValueOnce(new Error("browser blocked"));
+    link!.activate(new MouseEvent("click", { metaKey: true }));
+    await act(async () => Promise.resolve());
+    expect(testState.shellOpenExternal).toHaveBeenCalledWith("https://example.test/docs");
+    expect(terminal.writes).toContain("\r\n[terminal] browser blocked\r\n");
+
+    testState.shellOpenExternal.mockRejectedValueOnce("unknown");
+    link!.activate(new MouseEvent("click", { metaKey: true }));
+    await act(async () => Promise.resolve());
+    expect(terminal.writes).toContain("\r\n[terminal] Unable to open link\r\n");
+  });
+
+  it("opens path links and reports editor failures", async () => {
+    vi.stubGlobal("navigator", { platform: "MacIntel" });
+    await mount(<TerminalViewport {...viewportProps()} />);
+    const terminal = xtermState.terminals[0]!;
+    terminal.bufferLines.push(terminalBufferLine("src/main.ts:12"));
+    const [link] = provideTerminalLinks(terminal) ?? [];
+
+    link!.activate(new MouseEvent("click", { metaKey: true }));
+    await act(async () => Promise.resolve());
+    expect(testState.openPath).toHaveBeenCalledWith("/repo/src/main.ts:12");
+    expect(terminal.writes).toEqual([]);
+
+    testState.openPath.mockResolvedValueOnce(
+      AsyncResult.failure(Cause.fail(new Error("editor unavailable"))),
+    );
+    link!.activate(new MouseEvent("click", { metaKey: true }));
+    await act(async () => Promise.resolve());
+    expect(terminal.writes).toContain("\r\n[terminal] editor unavailable\r\n");
+
+    testState.openPath.mockResolvedValueOnce(AsyncResult.failure(Cause.fail("unknown")));
+    link!.activate(new MouseEvent("click", { metaKey: true }));
+    await act(async () => Promise.resolve());
+    expect(terminal.writes).toContain("\r\n[terminal] Unable to open path\r\n");
+  });
+
+  it("ignores link providers and activations after the terminal is disposed", async () => {
+    vi.stubGlobal("navigator", { platform: "MacIntel" });
+    const mounted = await mount(<TerminalViewport {...viewportProps()} />);
+    const terminal = xtermState.terminals[0]!;
+    terminal.bufferLines.push(terminalBufferLine("https://example.test/docs"));
+    const [link] = provideTerminalLinks(terminal) ?? [];
+
+    await unmount(mounted);
+
+    expect(provideTerminalLinks(terminal)).toBeUndefined();
+    link!.activate(new MouseEvent("click", { metaKey: true }));
+    expect(terminal.writes).toEqual([]);
+  });
 });
 
 describe("ThreadTerminalDrawer mounted controls", () => {
@@ -455,5 +845,45 @@ describe("ThreadTerminalDrawer mounted controls", () => {
     expect(terminalTwo).toBeDefined();
     await click(terminalTwo!);
     expect(onActiveTerminalChange).toHaveBeenCalledWith("term-2");
+  });
+
+  it("resizes the drawer by pointer and syncs the clamped height", async () => {
+    const onHeightChange = vi.fn();
+    const mounted = await mount(
+      <ThreadTerminalDrawer
+        {...drawerProps({ onHeightChange, terminalIds: [], terminalGroups: [] })}
+      />,
+    );
+    const handle = mounted.container.querySelector<HTMLElement>(".cursor-row-resize")!;
+    const captured = new Set<number>();
+    Object.defineProperties(handle, {
+      setPointerCapture: {
+        configurable: true,
+        value: (pointerId: number) => captured.add(pointerId),
+      },
+      hasPointerCapture: {
+        configurable: true,
+        value: (pointerId: number) => captured.has(pointerId),
+      },
+      releasePointerCapture: {
+        configurable: true,
+        value: (pointerId: number) => captured.delete(pointerId),
+      },
+    });
+
+    await act(async () => {
+      handle.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerId: 7, clientY: 300 }),
+      );
+      handle.dispatchEvent(
+        new PointerEvent("pointermove", { bubbles: true, pointerId: 7, clientY: 250 }),
+      );
+      handle.dispatchEvent(
+        new PointerEvent("pointerup", { bubbles: true, pointerId: 7, clientY: 250 }),
+      );
+    });
+
+    expect(mounted.container.querySelector("aside")?.getAttribute("style")).toContain("330px");
+    expect(onHeightChange).toHaveBeenCalledWith(330);
   });
 });

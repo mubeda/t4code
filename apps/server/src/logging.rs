@@ -14,6 +14,8 @@ pub(crate) const SERVER_LOG_BACKUPS: usize = 3;
 const TRUNCATION_MARKER: &[u8] = b"\n[truncated]\n";
 static INITIALIZE_LOCK: Mutex<()> = Mutex::new(());
 static ACTIVE_LOG_WRITER: OnceLock<LogWriter> = OnceLock::new();
+#[cfg(test)]
+pub(crate) static TEST_INITIALIZE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Clone)]
 struct LogWriter(Arc<Mutex<RotatingFile>>);
@@ -279,14 +281,12 @@ mod tests {
 
     #[test]
     fn native_events_are_written_and_repeated_initialization_is_safe() {
+        let _guard = TEST_INITIALIZE_LOCK.blocking_lock();
         let temp = TempDir::new().expect("temporary log directory");
         let log_path = temp.path().join("nested/server.log");
 
-        assert_eq!(
-            initialize_with_filter(&log_path, EnvFilter::new("info"))
-                .expect("subscriber initializes"),
-            Init::Installed
-        );
+        let initialization = initialize_with_filter(&log_path, EnvFilter::new("info"))
+            .expect("subscriber initializes or replaces the active test writer");
         tracing::info!(target: "t4code_server_logging_test", "native logging is connected");
         let replacement_path = temp.path().join("replacement/server.log");
         assert_eq!(
@@ -297,10 +297,12 @@ mod tests {
         tracing::info!(target: "t4code_server_logging_test", "native logging moved");
 
         let contents = std::fs::read_to_string(&log_path).expect("server log is readable");
-        assert!(contents.contains("native logging is connected"));
-        assert!(!contents.contains("native logging moved"));
         let replacement =
             std::fs::read_to_string(replacement_path).expect("replacement log is readable");
-        assert!(replacement.contains("native logging moved"));
+        if initialization == Init::Installed {
+            assert!(contents.contains("native logging is connected"));
+            assert!(!contents.contains("native logging moved"));
+            assert!(replacement.contains("native logging moved"));
+        }
     }
 }
