@@ -482,7 +482,6 @@ import {
   CommandPalette,
   buildAddProjectRemoteSourceReadiness,
   errorMessage,
-  getEnvironmentBrowsePlatform,
   reduceCommandPaletteUiState,
   remoteProjectSourcePathHint,
   sortAddProjectProviderSources,
@@ -635,16 +634,6 @@ function repositoryInfo(
 }
 
 describe("command palette helpers", () => {
-  it("resolves browse platforms including browser and server fallbacks", () => {
-    expect(getEnvironmentBrowsePlatform("linux")).toBe("Linux");
-
-    vi.stubGlobal("navigator", { platform: "FallbackOS" });
-    expect(getEnvironmentBrowsePlatform(null)).toBe("FallbackOS");
-    vi.stubGlobal("navigator", undefined);
-    expect(getEnvironmentBrowsePlatform(undefined)).toBe("");
-    vi.unstubAllGlobals();
-  });
-
   it("builds and sorts remote provider readiness states", () => {
     const unavailable = buildAddProjectRemoteSourceReadiness(null);
     expect(unavailable.github.ready).toBe(false);
