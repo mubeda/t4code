@@ -33,7 +33,7 @@ const decodeCapabilityConfiguration = Schema.decodeUnknownEffect(CapabilityConfi
 const decodeDesktopPackageConfiguration = Schema.decodeUnknownEffect(DesktopPackageConfiguration);
 
 it.layer(NodeServices.layer)("Tauri production hardening", (it) => {
-  it.effect("bundles the production black Windows icon", () =>
+  it.effect("bundles only canonical black desktop icons", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -41,9 +41,21 @@ it.layer(NodeServices.layer)("Tauri production hardening", (it) => {
       const tauri = yield* decodeTauriConfiguration(
         yield* fs.readFileString(path.join(repoRoot, "apps/desktop/src-tauri/tauri.conf.json")),
       );
+      const expectedIcons = [
+        "../../../assets/prod/black-universal-1024.png",
+        "../../../assets/prod/t4-black-windows.ico",
+        "../../../assets/prod/t4-black-macos.icns",
+      ];
 
-      assert.include(tauri.bundle.icon, "../../../assets/prod/t4-black-windows.ico");
-      assert.equal(yield* fs.exists(path.join(repoRoot, "assets/prod/t4-black-windows.ico")), true);
+      assert.deepEqual(tauri.bundle.icon, expectedIcons);
+      for (const iconPath of [
+        "assets/prod/black-universal-1024.png",
+        "assets/prod/t4-black-windows.ico",
+        "assets/prod/t4-black-macos.icns",
+      ]) {
+        assert.equal(yield* fs.exists(path.join(repoRoot, iconPath)), true, iconPath);
+      }
+      assert.equal(yield* fs.exists(path.join(repoRoot, "apps/desktop/resources")), false);
     }),
   );
 
@@ -64,6 +76,56 @@ it.layer(NodeServices.layer)("Tauri production hardening", (it) => {
         yield* fs.exists(path.join(repoRoot, "assets/prod/t4-black-web-apple-touch-180.png")),
         true,
       );
+    }),
+  );
+
+  it.effect("keeps only canonical black product-icon assets", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const repoRoot = yield* path.fromFileUrl(new URL("..", import.meta.url));
+
+      for (const legacyPath of ["assets/dev", "assets/nightly"]) {
+        assert.equal(
+          yield* fs.exists(path.join(repoRoot, legacyPath)),
+          false,
+          `${legacyPath} must be absent`,
+        );
+      }
+
+      const publicCopies = [
+        [
+          "assets/prod/t4-black-web-favicon.ico",
+          "apps/web/public/favicon.ico",
+          "apps/marketing/public/favicon.ico",
+        ],
+        [
+          "assets/prod/t4-black-web-favicon-16x16.png",
+          "apps/web/public/favicon-16x16.png",
+          "apps/marketing/public/favicon-16x16.png",
+        ],
+        [
+          "assets/prod/t4-black-web-favicon-32x32.png",
+          "apps/web/public/favicon-32x32.png",
+          "apps/marketing/public/favicon-32x32.png",
+        ],
+        [
+          "assets/prod/t4-black-web-apple-touch-180.png",
+          "apps/web/public/apple-touch-icon.png",
+          "apps/marketing/public/apple-touch-icon.png",
+        ],
+      ] as const;
+
+      for (const [sourcePath, ...copyPaths] of publicCopies) {
+        const source = yield* fs.readFile(path.join(repoRoot, sourcePath));
+        for (const copyPath of copyPaths) {
+          assert.deepEqual(
+            yield* fs.readFile(path.join(repoRoot, copyPath)),
+            source,
+            `${copyPath} must match ${sourcePath}`,
+          );
+        }
+      }
     }),
   );
 

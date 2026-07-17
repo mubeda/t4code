@@ -16,6 +16,7 @@ tauri-build.workspace = true
 
 [dependencies]
 base64.workspace = true
+libc.workspace = true
 portpicker.workspace = true
 reqwest.workspace = true
 serde.workspace = true

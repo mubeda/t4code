@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    ffi::OsStr,
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
@@ -1447,6 +1448,14 @@ fn spawn_child(
 }
 
 pub(crate) fn resolve_provider_executable(input: &str) -> Option<PathBuf> {
+    let search_path = std::env::var_os("PATH");
+    resolve_provider_executable_in_path(input, search_path.as_deref())
+}
+
+pub(crate) fn resolve_provider_executable_in_path(
+    input: &str,
+    search_path: Option<&OsStr>,
+) -> Option<PathBuf> {
     let path = PathBuf::from(input);
     if path.is_file() {
         return Some(path);
@@ -1455,9 +1464,9 @@ pub(crate) fn resolve_provider_executable(input: &str) -> Option<PathBuf> {
         return None;
     }
     let extensions = provider_executable_extensions();
-    std::env::var_os("PATH")
+    search_path
         .into_iter()
-        .flat_map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .flat_map(|value| std::env::split_paths(value).collect::<Vec<_>>())
         .find_map(|directory| {
             extensions.iter().find_map(|extension| {
                 let candidate = if extension.is_empty() {
@@ -3879,6 +3888,40 @@ done
         assert_eq!(
             super::provider_launch_program(&executable),
             (executable, Vec::new())
+        );
+    }
+
+    #[test]
+    fn executable_resolution_uses_supplied_search_path_without_global_environment() {
+        let system = tempfile::TempDir::new().unwrap();
+        let user = tempfile::TempDir::new().unwrap();
+        let executable = user.path().join("codex");
+        std::fs::write(&executable, b"fixture").unwrap();
+        let minimal = std::env::join_paths([system.path()]).unwrap();
+        let hydrated = std::env::join_paths([user.path(), system.path()]).unwrap();
+
+        assert_eq!(
+            super::resolve_provider_executable_in_path("codex", Some(&minimal)),
+            None
+        );
+        assert_eq!(
+            super::resolve_provider_executable_in_path("codex", Some(&hydrated)),
+            Some(executable)
+        );
+    }
+
+    #[test]
+    fn executable_resolution_keeps_explicit_paths_independent_of_search_path() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let executable = directory.path().join("provider-fixture");
+        std::fs::write(&executable, b"fixture").unwrap();
+
+        assert_eq!(
+            super::resolve_provider_executable_in_path(
+                &executable.to_string_lossy(),
+                Some(std::ffi::OsStr::new(""))
+            ),
+            Some(executable)
         );
     }
 

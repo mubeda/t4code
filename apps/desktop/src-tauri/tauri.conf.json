@@ -37,9 +37,9 @@
     "active": true,
     "targets": "all",
     "icon": [
-      "../resources/icon.png",
+      "../../../assets/prod/black-universal-1024.png",
       "../../../assets/prod/t4-black-windows.ico",
-      "../resources/icon.icns"
+      "../../../assets/prod/t4-black-macos.icns"
     ]
   }
 }
