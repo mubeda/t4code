@@ -5,6 +5,8 @@ import type {
   DesktopPreviewTabState,
   ScopedThreadRef,
 } from "@t4code/contracts";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 type EffectCallback = () => void | (() => void);
@@ -116,10 +118,15 @@ function state(navStatus: DesktopPreviewNavStatus): DesktopPreviewTabState {
 
 function renderHook(input: { threadRef?: ScopedThreadRef; tabId?: string } = {}): void {
   hooks.beginRender();
-  usePreviewBridge({
+  const props = {
     threadRef: input.threadRef ?? threadRef,
     tabId: input.tabId ?? "tab-1",
-  });
+  };
+  function Harness(): null {
+    usePreviewBridge(props);
+    return null;
+  }
+  renderToStaticMarkup(createElement(Harness));
 }
 
 function runEffect(): void | (() => void) {
