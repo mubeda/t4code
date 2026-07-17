@@ -112,43 +112,50 @@ pub fn register_workspace_preview_rpc(
     });
 
     registry.register_stream("subscribePreviewEvents", move |_request, cancellation| {
-        let mut events = preview.subscribe_events();
-        let (sender, receiver) = mpsc::channel(STREAM_CAPACITY);
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    biased;
-                    () = cancellation.cancelled() => break,
-                    event = events.recv() => match event {
-                        Ok(event) => {
-                            let value = match serde_json::to_value(event) {
-                                Ok(value) => value,
-                                Err(error) => {
-                                    let _ = sender.send(Err(json!({
-                                        "_tag": "PreviewEventEncodeError",
-                                        "message": error.to_string(),
-                                    }))).await;
-                                    break;
-                                }
-                            };
-                            if sender.send(Ok(vec![value])).await.is_err() {
+        preview_event_stream(preview.clone(), cancellation)
+    });
+}
+
+fn preview_event_stream(
+    preview: PreviewManager,
+    cancellation: CancellationToken,
+) -> mpsc::Receiver<RpcStreamChunk> {
+    let mut events = preview.subscribe_events();
+    let (sender, receiver) = mpsc::channel(STREAM_CAPACITY);
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                biased;
+                () = cancellation.cancelled() => break,
+                event = events.recv() => match event {
+                    Ok(event) => {
+                        let value = match serde_json::to_value(event) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                let _ = sender.send(Err(json!({
+                                    "_tag": "PreviewEventEncodeError",
+                                    "message": error.to_string(),
+                                }))).await;
                                 break;
                             }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                            let _ = sender.send(Err(json!({
-                                "_tag": "PreviewEventLaggedError",
-                                "skipped": skipped,
-                            }))).await;
+                        };
+                        if sender.send(Ok(vec![value])).await.is_err() {
                             break;
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        let _ = sender.send(Err(json!({
+                            "_tag": "PreviewEventLaggedError",
+                            "skipped": skipped,
+                        }))).await;
+                        break;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
-        });
-        receiver
+        }
     });
+    receiver
 }
 
 impl WorkspacePreviewRpcServices {
@@ -766,6 +773,10 @@ mod tests {
             sampled: None,
         };
 
+        let preview_event_cancellation = CancellationToken::new();
+        let mut preview_events =
+            preview_event_stream(services.preview.clone(), preview_event_cancellation.clone());
+
         let cwd = temp.path().to_string_lossy().into_owned();
         assert_eq!(
             services
@@ -808,6 +819,14 @@ mod tests {
             )
             .await
             .expect("preview opens");
+        let opened_event = preview_events
+            .recv()
+            .await
+            .expect("preview event chunk")
+            .expect("preview event encodes");
+        assert_eq!(opened_event[0]["type"], "opened");
+        preview_event_cancellation.cancel();
+        while preview_events.recv().await.is_some() {}
         let tab_id = opened["tabId"].as_str().expect("tab id").to_owned();
         let navigated = services
             .dispatch_preview(
