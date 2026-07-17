@@ -8,8 +8,15 @@ use std::{
 #[cfg(unix)]
 use std::{
     io::{self, Read as _},
-    os::unix::{ffi::OsStringExt as _, fs::PermissionsExt as _},
+    os::{
+        fd::AsRawFd as _,
+        unix::{ffi::OsStringExt as _, fs::PermissionsExt as _, process::CommandExt as _},
+    },
     process::{Child, ChildStdout, Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+    },
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -223,14 +230,13 @@ fn merge_path_values(
     let inherited = inherited_path
         .into_iter()
         .flat_map(std::env::split_paths)
-        .filter(|path| !path.as_os_str().is_empty())
         .collect::<Vec<_>>();
     let inherited_set = inherited.iter().cloned().collect::<HashSet<_>>();
     let mut seen = HashSet::new();
     let mut merged = Vec::new();
     let mut added_segments = 0;
 
-    for path in std::env::split_paths(shell_path).filter(|path| !path.as_os_str().is_empty()) {
+    for path in std::env::split_paths(shell_path) {
         if seen.insert(path.clone()) {
             added_segments += usize::from(!inherited_set.contains(&path));
             merged.push(path);
@@ -260,20 +266,50 @@ struct CapturedOutput {
 }
 
 #[cfg(unix)]
-fn drain_stdout(mut stdout: ChildStdout, limit: usize) -> io::Result<CapturedOutput> {
+fn set_nonblocking(stdout: &ChildStdout) -> io::Result<()> {
+    let descriptor = stdout.as_raw_fd();
+    // SAFETY: `descriptor` belongs to the live `ChildStdout`, and `F_GETFL`
+    // only reads its current file status flags.
+    let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFL) };
+    if flags == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `descriptor` remains valid for this call and `F_SETFL` updates
+    // only the nonblocking status flag while preserving all existing flags.
+    if unsafe { libc::fcntl(descriptor, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn drain_stdout(
+    mut stdout: ChildStdout,
+    limit: usize,
+    stop: Arc<AtomicBool>,
+) -> io::Result<CapturedOutput> {
+    set_nonblocking(&stdout)?;
     let mut bytes = Vec::with_capacity(limit.min(8192));
     let mut buffer = [0_u8; 8192];
     let mut exceeded_limit = false;
 
-    loop {
-        let read = stdout.read(&mut buffer)?;
-        if read == 0 {
-            break;
+    while !stop.load(Ordering::Acquire) {
+        let read = match stdout.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        if read > 0 {
+            let remaining = limit.saturating_sub(bytes.len());
+            let retained = remaining.min(read);
+            bytes.extend_from_slice(&buffer[..retained]);
+            exceeded_limit |= retained < read;
         }
-        let remaining = limit.saturating_sub(bytes.len());
-        let retained = remaining.min(read);
-        bytes.extend_from_slice(&buffer[..retained]);
-        exceeded_limit |= retained < read;
     }
 
     Ok(CapturedOutput {
@@ -283,9 +319,28 @@ fn drain_stdout(mut stdout: ChildStdout, limit: usize) -> io::Result<CapturedOut
 }
 
 #[cfg(unix)]
-fn stop_and_join(child: &mut Child, reader: JoinHandle<io::Result<CapturedOutput>>) {
+fn terminate_process_group(child: &mut Child, process_group_id: u32) {
+    if let Ok(process_group_id) = i32::try_from(process_group_id) {
+        // SAFETY: the probe child is spawned as the leader of a new process
+        // group. A negative PID targets that group; failures such as an already
+        // empty group are intentionally ignored during best-effort cleanup.
+        unsafe {
+            libc::kill(-process_group_id, libc::SIGKILL);
+        }
+    }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[cfg(unix)]
+fn stop_and_join(
+    child: &mut Child,
+    process_group_id: u32,
+    stop: &AtomicBool,
+    reader: JoinHandle<io::Result<CapturedOutput>>,
+) {
+    stop.store(true, Ordering::Release);
+    terminate_process_group(child, process_group_id);
     let _ = reader.join();
 }
 
@@ -295,26 +350,79 @@ fn probe_shell_path(
     timeout: Duration,
     output_limit: usize,
 ) -> Result<OsString, PathHydrationFailure> {
-    let mut child = Command::new(shell)
-        .args(["-ilc", PATH_PROBE_COMMAND])
+    run_shell_probe(
+        shell,
+        &["-ilc", PATH_PROBE_COMMAND],
+        timeout,
+        output_limit,
+        None,
+    )
+}
+
+#[cfg(all(unix, test))]
+fn probe_shell_path_with_command(
+    shell: &Path,
+    command: &str,
+    timeout: Duration,
+    output_limit: usize,
+) -> Result<OsString, PathHydrationFailure> {
+    run_shell_probe(shell, &["-c", command], timeout, output_limit, None)
+}
+
+#[cfg(all(unix, test))]
+fn probe_shell_path_with_command_and_pid(
+    shell: &Path,
+    command: &str,
+    timeout: Duration,
+    output_limit: usize,
+) -> (Result<OsString, PathHydrationFailure>, u32) {
+    let spawned_pid = AtomicU32::new(0);
+    let result = run_shell_probe(
+        shell,
+        &["-c", command],
+        timeout,
+        output_limit,
+        Some(&spawned_pid),
+    );
+    (result, spawned_pid.load(Ordering::Acquire))
+}
+
+#[cfg(unix)]
+fn run_shell_probe(
+    shell: &Path,
+    arguments: &[&str],
+    timeout: Duration,
+    output_limit: usize,
+    spawned_pid: Option<&AtomicU32>,
+) -> Result<OsString, PathHydrationFailure> {
+    let mut command = Command::new(shell);
+    command
+        .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    command.process_group(0);
+    let mut child = command
         .spawn()
         .map_err(|_| PathHydrationFailure::SpawnFailed)?;
+    let process_group_id = child.id();
+    if let Some(spawned_pid) = spawned_pid {
+        spawned_pid.store(process_group_id, Ordering::Release);
+    }
     let Some(stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
+        terminate_process_group(&mut child, process_group_id);
         return Err(PathHydrationFailure::OutputReadFailed);
     };
-    let reader = std::thread::spawn(move || drain_stdout(stdout, output_limit));
+    let stop = Arc::new(AtomicBool::new(false));
+    let reader_stop = Arc::clone(&stop);
+    let reader = std::thread::spawn(move || drain_stdout(stdout, output_limit, reader_stop));
     let deadline = Instant::now() + timeout;
 
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() >= deadline => {
-                stop_and_join(&mut child, reader);
+                stop_and_join(&mut child, process_group_id, &stop, reader);
                 return Err(PathHydrationFailure::TimedOut);
             }
             Ok(None) => {
@@ -324,12 +432,23 @@ fn probe_shell_path(
                 );
             }
             Err(_) => {
-                stop_and_join(&mut child, reader);
+                stop_and_join(&mut child, process_group_id, &stop, reader);
                 return Err(PathHydrationFailure::WaitFailed);
             }
         }
     };
 
+    terminate_process_group(&mut child, process_group_id);
+    while !reader.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(
+            Duration::from_millis(5).min(deadline.saturating_duration_since(Instant::now())),
+        );
+    }
+    if !reader.is_finished() {
+        stop.store(true, Ordering::Release);
+        let _ = reader.join();
+        return Err(PathHydrationFailure::TimedOut);
+    }
     let captured = reader
         .join()
         .map_err(|_| PathHydrationFailure::OutputReadFailed)?
@@ -383,26 +502,20 @@ mod tests {
     use std::ffi::{OsStr, OsString};
     use std::path::{Path, PathBuf};
     #[cfg(unix)]
-    use std::{process::Command, time::Duration};
+    use std::{
+        process::Command,
+        time::{Duration, Instant},
+    };
 
     use super::{
         DesktopPlatform, PathHydrationFailure, PlatformAction, PosixPlatform, merge_path_values,
         platform_action,
     };
     #[cfg(unix)]
-    use super::{parse_captured_path, probe_shell_path, select_shell};
-
-    #[cfg(unix)]
-    fn write_executable(directory: &tempfile::TempDir, name: &str, contents: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let path = directory.path().join(name);
-        std::fs::write(&path, contents).unwrap();
-        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&path, permissions).unwrap();
-        path
-    }
+    use super::{
+        parse_captured_path, probe_shell_path_with_command, probe_shell_path_with_command_and_pid,
+        select_shell,
+    };
 
     #[cfg(unix)]
     #[test]
@@ -445,7 +558,9 @@ __T4CODE_PATH_END__\nlogout";
             Path::new("/opt/homebrew/bin"),
         ])
         .unwrap();
-        let inherited = std::env::join_paths([Path::new("/usr/bin"), Path::new("/bin")]).unwrap();
+        let inherited =
+            std::env::join_paths([Path::new("/usr/bin"), Path::new(""), Path::new("/bin")])
+                .unwrap();
 
         let prepared = merge_path_values(&shell, Some(&inherited)).unwrap();
         assert_eq!(
@@ -454,6 +569,7 @@ __T4CODE_PATH_END__\nlogout";
                 PathBuf::from("/Users/test/My Tools"),
                 PathBuf::from("/opt/homebrew/bin"),
                 PathBuf::from("/usr/bin"),
+                PathBuf::new(),
                 PathBuf::from("/bin"),
             ]
         );
@@ -546,16 +662,15 @@ __T4CODE_PATH_END__\nlogout";
     #[cfg(unix)]
     #[test]
     fn probe_accepts_noisy_successful_shell_output() {
-        let directory = tempfile::TempDir::new().unwrap();
-        let fixture = write_executable(
-            &directory,
-            "success-shell",
-            "#!/bin/sh\nprintf 'banner\\n__T4CODE_PATH_START__/user/bin:/usr/bin\
-__T4CODE_PATH_END__\\nlogout\\n'\n",
-        );
-
         assert_eq!(
-            probe_shell_path(&fixture, Duration::from_secs(1), 4096).unwrap(),
+            probe_shell_path_with_command(
+                Path::new("/bin/sh"),
+                "printf 'banner\\n__T4CODE_PATH_START__/user/bin:/usr/bin\
+__T4CODE_PATH_END__\\nlogout\\n'",
+                Duration::from_secs(5),
+                4096,
+            )
+            .unwrap(),
             OsString::from("/user/bin:/usr/bin")
         );
     }
@@ -563,21 +678,25 @@ __T4CODE_PATH_END__\\nlogout\\n'\n",
     #[cfg(unix)]
     #[test]
     fn probe_rejects_non_zero_and_oversized_output() {
-        let directory = tempfile::TempDir::new().unwrap();
-        let failing = write_executable(&directory, "failing-shell", "#!/bin/sh\nexit 7\n");
         assert_eq!(
-            probe_shell_path(&failing, Duration::from_secs(1), 4096),
+            probe_shell_path_with_command(
+                Path::new("/bin/sh"),
+                "exit 7",
+                Duration::from_secs(5),
+                4096,
+            ),
             Err(PathHydrationFailure::NonZeroExit)
         );
 
-        let oversized = write_executable(
-            &directory,
-            "oversized-shell",
-            "#!/bin/sh\nprintf '__T4CODE_PATH_START__';\
-head -c 8192 /dev/zero;printf '__T4CODE_PATH_END__'\n",
-        );
         assert_eq!(
-            probe_shell_path(&oversized, Duration::from_secs(1), 128),
+            probe_shell_path_with_command(
+                Path::new("/bin/sh"),
+                "printf '__T4CODE_PATH_START__'; i=0; \
+while [ \"$i\" -lt 8192 ]; do printf x; i=$((i + 1)); done; \
+printf '__T4CODE_PATH_END__'",
+                Duration::from_secs(5),
+                128,
+            ),
             Err(PathHydrationFailure::OutputTooLarge)
         );
     }
@@ -585,12 +704,13 @@ head -c 8192 /dev/zero;printf '__T4CODE_PATH_END__'\n",
     #[cfg(unix)]
     #[test]
     fn probe_reports_spawn_failure_for_a_missing_shell() {
-        let directory = tempfile::TempDir::new().unwrap();
-        let fixture = write_executable(&directory, "removed-shell", "#!/bin/sh\nexit 0\n");
-        std::fs::remove_file(&fixture).unwrap();
-
         assert_eq!(
-            probe_shell_path(&fixture, Duration::from_secs(1), 4096),
+            probe_shell_path_with_command(
+                Path::new("/definitely/missing/t4code-shell"),
+                "exit 0",
+                Duration::from_secs(5),
+                4096,
+            ),
             Err(PathHydrationFailure::SpawnFailed)
         );
     }
@@ -598,20 +718,47 @@ head -c 8192 /dev/zero;printf '__T4CODE_PATH_END__'\n",
     #[cfg(unix)]
     #[test]
     fn timeout_kills_reaps_and_joins_shell_before_returning() {
-        let directory = tempfile::TempDir::new().unwrap();
-        let pid_path = directory.path().join("pid");
-        let fixture = write_executable(
-            &directory,
-            "sleeping-shell",
-            &format!(
-                "#!/bin/sh\nprintf '%s' \"$$\" > '{}'\nexec sleep 30\n",
-                pid_path.display()
-            ),
+        let (result, pid) = probe_shell_path_with_command_and_pid(
+            Path::new("/bin/sh"),
+            "exec /bin/sleep 30",
+            Duration::ZERO,
+            4096,
         );
 
+        assert_eq!(result, Err(PathHydrationFailure::TimedOut));
+        assert_ne!(pid, 0, "probe did not record the spawned shell PID");
+        let alive = Command::new("/bin/kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        assert!(!alive, "timed-out shell process was not reaped");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn background_descendant_cannot_hold_probe_stdout_past_the_deadline() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let pid_path = directory.path().join("descendant-pid");
+        let command = format!(
+            "/bin/sleep 30 & descendant=$!; printf '%s' \"$descendant\" > '{}'; \
+printf '__T4CODE_PATH_START__/user/bin:/usr/bin__T4CODE_PATH_END__'",
+            pid_path.display()
+        );
+        let started = Instant::now();
+
         assert_eq!(
-            probe_shell_path(&fixture, Duration::from_secs(1), 4096),
-            Err(PathHydrationFailure::TimedOut)
+            probe_shell_path_with_command(
+                Path::new("/bin/sh"),
+                &command,
+                Duration::from_secs(1),
+                4096,
+            ),
+            Ok(OsString::from("/user/bin:/usr/bin"))
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "probe exceeded its bounded cleanup window"
         );
         let pid = std::fs::read_to_string(pid_path).unwrap();
         let alive = Command::new("/bin/kill")
@@ -619,7 +766,7 @@ head -c 8192 /dev/zero;printf '__T4CODE_PATH_END__'\n",
             .stderr(std::process::Stdio::null())
             .status()
             .is_ok_and(|status| status.success());
-        assert!(!alive, "timed-out shell process was not reaped");
+        assert!(!alive, "background shell descendant remained alive");
     }
 
     #[test]
