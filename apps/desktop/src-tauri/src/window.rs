@@ -42,7 +42,7 @@ pub fn menu_action_for_id(id: &str) -> Option<&'static str> {
     }
 }
 
-pub fn configure_application_menu(app: &AppHandle) -> tauri::Result<()> {
+pub fn configure_application_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let menu = build_application_menu(app)?;
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| {
@@ -171,7 +171,7 @@ fn capture_main_window_state<R: Runtime>(
     }))
 }
 
-pub fn restore_main_window_state(app: &AppHandle) -> Result<(), String> {
+pub fn restore_main_window_state<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let path = window_state_path(app)?;
     let Some(value) = read_json_file(&path)? else {
         return Ok(());
@@ -193,7 +193,7 @@ pub fn restore_main_window_state(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-pub fn persist_main_window_state(app: &AppHandle) -> Result<(), String> {
+pub fn persist_main_window_state<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         return Ok(());
     };
@@ -248,6 +248,28 @@ mod tests {
         assert_eq!(
             normalize_main_window_state(MainWindowState {
                 width: 1280,
+                height: MAX_RESTORED_WINDOW_HEIGHT + 1,
+                x: Some(100),
+                y: Some(120),
+                maximized: false,
+                fullscreen: false,
+            }),
+            None
+        );
+        assert_eq!(
+            normalize_main_window_state(MainWindowState {
+                width: 1280,
+                height: 900,
+                x: None,
+                y: Some(120),
+                maximized: false,
+                fullscreen: false,
+            }),
+            None
+        );
+        assert_eq!(
+            normalize_main_window_state(MainWindowState {
+                width: 1280,
                 height: 900,
                 x: Some(100),
                 y: None,
@@ -284,6 +306,66 @@ mod tests {
                 "maximized": true,
                 "fullscreen": false,
             })
+        );
+        assert!(decode_main_window_state(json!({ "width": "wide" })).is_err());
+    }
+
+    #[test]
+    fn mock_window_exercises_menu_capture_and_restore_helpers() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder()
+            .build(mock_context(noop_assets()))
+            .expect("mock Tauri app");
+        let handle = app.handle();
+        let window = tauri::WebviewWindowBuilder::new(&app, MAIN_WINDOW_LABEL, Default::default())
+            .build()
+            .expect("mock webview");
+
+        assert!(
+            window_state_path(handle)
+                .expect("window state path should resolve")
+                .ends_with(WINDOW_STATE_FILE_NAME)
+        );
+
+        apply_main_window_state(
+            &window,
+            &MainWindowState {
+                width: 900,
+                height: 700,
+                x: Some(25),
+                y: Some(35),
+                maximized: false,
+                fullscreen: false,
+            },
+        );
+        assert_eq!(
+            capture_main_window_state(&window).expect("window state should read"),
+            None
+        );
+
+        apply_main_window_state(
+            &window,
+            &MainWindowState {
+                width: 1000,
+                height: 800,
+                x: None,
+                y: None,
+                maximized: true,
+                fullscreen: false,
+            },
+        );
+
+        apply_main_window_state(
+            &window,
+            &MainWindowState {
+                width: 1000,
+                height: 800,
+                x: None,
+                y: None,
+                maximized: false,
+                fullscreen: true,
+            },
         );
     }
 }

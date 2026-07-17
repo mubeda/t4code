@@ -1,4 +1,6 @@
-use t4code_server::{cloud, observability, text_generation};
+use t4code_server::{
+    cloud, observability, production::managed_endpoint::ManagedEndpointRuntime, text_generation,
+};
 
 use cloud::{RelayClientInstallEvent, RelayClientService, RelayClientStatus};
 use observability::BrowserTraceCollector;
@@ -57,6 +59,96 @@ async fn relay_client_service_reports_status_and_streams_install_progress() {
             }
         ]
     );
+}
+
+#[tokio::test]
+async fn managed_endpoint_runtime_handles_disabled_unsupported_and_missing_connectors() {
+    let runtime = ManagedEndpointRuntime::default();
+    let _endpoint = runtime.endpoint();
+
+    assert_eq!(
+        runtime.apply(serde_json::Value::Null).await.unwrap(),
+        json!({"status":"disabled"})
+    );
+    assert_eq!(
+        runtime
+            .apply(json!({
+                "providerKind":"future_provider",
+                "connectorToken":"ignored",
+            }))
+            .await
+            .unwrap(),
+        json!({"status":"unsupported","providerKind":"future_provider"})
+    );
+    assert_eq!(
+        runtime
+            .apply(json!({
+                "providerKind":"cloudflare_tunnel",
+                "connectorToken":"fixture-token",
+                "tunnelId":"tunnel-1",
+                "tunnelName":"Fixture tunnel",
+            }))
+            .await
+            .unwrap(),
+        json!({
+            "status":"failed",
+            "providerKind":"cloudflare_tunnel",
+            "reason":"The relay client is not installed.",
+            "tunnelId":"tunnel-1",
+            "tunnelName":"Fixture tunnel",
+        })
+    );
+
+    runtime.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn managed_endpoint_runtime_reuses_replaces_and_stops_connectors() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().expect("connector directory");
+    let executable = directory.path().join("t4code-connect");
+    std::fs::write(
+        &executable,
+        "#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile true; do sleep 1; done\n",
+    )
+    .expect("connector fixture should write");
+    let mut permissions = std::fs::metadata(&executable)
+        .expect("connector metadata")
+        .permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&executable, permissions).expect("connector should be executable");
+
+    let runtime = ManagedEndpointRuntime::with_executable_override(executable);
+    let first_config = json!({
+        "providerKind":"cloudflare_tunnel",
+        "connectorToken":"fixture-token-1",
+        "tunnelId":"tunnel-1",
+        "tunnelName":"Fixture tunnel",
+    });
+    let first = runtime.apply(first_config.clone()).await.unwrap();
+    assert_eq!(first["status"], "running");
+    assert!(first["pid"].as_u64().is_some());
+
+    let reused = runtime.apply(first_config).await.unwrap();
+    assert_eq!(reused["pid"], first["pid"]);
+
+    let replacement = runtime
+        .apply(json!({
+            "providerKind":"cloudflare_tunnel",
+            "connectorToken":"fixture-token-2",
+            "tunnelId":"tunnel-2",
+            "tunnelName":"Replacement tunnel",
+        }))
+        .await
+        .unwrap();
+    assert_eq!(replacement["status"], "running");
+    assert_eq!(replacement["tunnelId"], "tunnel-2");
+    assert_ne!(replacement["pid"], first["pid"]);
+
+    runtime.shutdown().await;
+    runtime.shutdown().await;
 }
 
 #[test]

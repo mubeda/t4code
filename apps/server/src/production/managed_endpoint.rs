@@ -11,6 +11,7 @@ use super::connect_mcp::EndpointRuntime;
 #[derive(Clone, Default)]
 pub struct ManagedEndpointRuntime {
     state: Arc<Mutex<Option<ActiveConnector>>>,
+    executable_override: Option<PathBuf>,
 }
 
 struct ActiveConnector {
@@ -30,6 +31,14 @@ struct ManagedEndpointConfig {
 
 impl ManagedEndpointRuntime {
     #[must_use]
+    pub fn with_executable_override(executable: PathBuf) -> Self {
+        Self {
+            state: Arc::default(),
+            executable_override: Some(executable),
+        }
+    }
+
+    #[must_use]
     pub fn endpoint(&self) -> EndpointRuntime {
         let runtime = self.clone();
         EndpointRuntime::new(move |config| {
@@ -46,7 +55,7 @@ impl ManagedEndpointRuntime {
         }
     }
 
-    async fn apply(&self, value: Value) -> Result<Value, String> {
+    pub async fn apply(&self, value: Value) -> Result<Value, String> {
         if value.is_null() {
             self.shutdown().await;
             return Ok(json!({ "status": "disabled" }));
@@ -84,11 +93,14 @@ impl ManagedEndpointRuntime {
             let _ = active.child.wait().await;
             *state = None;
         }
-        let Some(executable) = executable_on_path(if cfg!(windows) {
-            "t4code-connect.exe"
-        } else {
-            "t4code-connect"
-        }) else {
+        let executable = self.executable_override.clone().or_else(|| {
+            executable_on_path(if cfg!(windows) {
+                "t4code-connect.exe"
+            } else {
+                "t4code-connect"
+            })
+        });
+        let Some(executable) = executable else {
             return Ok(failed_status(&config, "The relay client is not installed."));
         };
         let mut command = tokio::process::Command::new(executable);
