@@ -226,6 +226,433 @@ async fn grok_runtime_matches_user_input_and_cancel_traces() {
     assert!(observed_failure);
 }
 
+#[tokio::test]
+async fn grok_runtime_covers_resume_modes_permissions_and_protocol_edges() {
+    let (connection, incoming, mut peer) = scripted_peer();
+    let runtime = GrokSessionRuntime::new_with_auth_and_resume(
+        GrokSessionOptions {
+            thread_id: "grok-thread-resumed".to_owned(),
+            cwd: "/tmp/resumed-project".to_owned(),
+            mcp_servers: Vec::new(),
+            runtime_mode: "approval-required".to_owned(),
+            interaction_mode: "default".to_owned(),
+        },
+        connection,
+        incoming,
+        "oauth".to_owned(),
+        Some("grok-session-resumed".to_owned()),
+    );
+
+    assert!(
+        runtime
+            .set_model("before-start")
+            .await
+            .expect_err("model changes require a provider session")
+            .to_string()
+            .contains("has not started")
+    );
+    assert!(
+        runtime
+            .interrupt_turn("before-start")
+            .await
+            .expect_err("interrupts require a provider session")
+            .to_string()
+            .contains("has not started")
+    );
+    assert!(
+        runtime
+            .respond_to_request("missing", "accept")
+            .await
+            .expect_err("unknown approvals must be rejected")
+            .to_string()
+            .contains("Unknown pending request id missing")
+    );
+    assert!(
+        runtime
+            .respond_to_user_input("missing-input", json!({}))
+            .await
+            .expect_err("unknown prompts must be rejected")
+            .to_string()
+            .contains("Unknown pending request id missing-input")
+    );
+
+    peer.expect_request("initialize")
+        .respond(json!({ "protocolVersion": 1 }));
+    peer.expect_request("authenticate")
+        .expect_params(json!({ "methodId": "oauth" }))
+        .respond(json!({ "status": "ok" }));
+    peer.expect_request("session/load")
+        .expect_params(json!({
+            "sessionId": "grok-session-resumed",
+            "cwd": "/tmp/resumed-project",
+        }))
+        .respond(json!({
+            "modes": {
+                "currentModeId": "code",
+                "availableModes": [
+                    { "id": "architect", "name": "Plan" },
+                    { "id": "ask", "name": "Ask" },
+                    { "id": "code", "name": "Agent" }
+                ]
+            }
+        }));
+    peer.expect_request("session/set_mode")
+        .expect_params(json!({ "sessionId": "grok-session-resumed", "modeId": "ask" }))
+        .respond(json!({}));
+    peer.expect_request("session/set_mode")
+        .expect_params(json!({ "sessionId": "grok-session-resumed", "modeId": "code" }))
+        .respond(json!({}));
+    peer.expect_request("session/set_mode")
+        .expect_params(json!({
+            "sessionId": "grok-session-resumed",
+            "modeId": "architect",
+        }))
+        .respond(json!({}));
+    peer.expect_request("session/set_mode")
+        .expect_params(json!({ "sessionId": "grok-session-resumed", "modeId": "code" }))
+        .respond(json!({}));
+
+    peer.expect_request("session/prompt")
+        .emit_stderr("provider warning")
+        .emit_notification(json!({
+            "jsonrpc": "2.0",
+            "method": "unrelated/notification",
+            "params": {},
+        }))
+        .emit_notification(json!({
+            "jsonrpc": "2.0",
+            "method": "_x.ai/session/prompt_complete",
+            "params": {},
+        }))
+        .emit_notification(json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "plan",
+                    "entries": [{ "content": "Run the tests", "status": "pending" }]
+                }
+            },
+        }))
+        .emit_request(permission_request(
+            2101,
+            "`cargo test`",
+            permission_options(),
+        ))
+        .expect_response(json!({
+            "jsonrpc": "2.0",
+            "id": 2101,
+            "result": {
+                "outcome": { "outcome": "selected", "optionId": "always" }
+            }
+        }))
+        .respond(json!({}));
+
+    peer.expect_request("session/set_mode")
+        .expect_params(json!({ "sessionId": "grok-session-resumed", "modeId": "ask" }))
+        .respond(json!({}));
+    for (wire_id, title, expected_option) in [
+        (2102, "`persist command`", Some("always")),
+        (2103, "`one command`", Some("once")),
+        (2104, "`reject command`", Some("reject")),
+        (2105, "`cancel command`", None),
+    ] {
+        let expected_outcome = expected_option.map_or_else(
+            || json!({ "outcome": "cancelled" }),
+            |option_id| json!({ "outcome": "selected", "optionId": option_id }),
+        );
+        peer.expect_request("session/prompt")
+            .emit_request(permission_request(wire_id, title, permission_options()))
+            .expect_response(json!({
+                "jsonrpc": "2.0",
+                "id": wire_id,
+                "result": { "outcome": expected_outcome }
+            }))
+            .respond(json!({ "stopReason": "end_turn" }));
+    }
+
+    peer.expect_request("session/prompt")
+        .emit_request(json!({
+            "jsonrpc": "2.0",
+            "id": 2201,
+            "method": "x.ai/ask_user_question",
+            "params": {
+                "params": {
+                    "questions": [
+                        { "id": "targets", "question": "Which targets?", "options": [] },
+                        {},
+                    ]
+                }
+            },
+        }))
+        .expect_response(json!({
+            "jsonrpc": "2.0",
+            "id": 2201,
+            "result": {
+                "outcome": "accepted",
+                "answers": {
+                    "targets": ["server", "desktop"],
+                    "notes": ["run all"],
+                    "ignored": []
+                }
+            }
+        }))
+        .respond(json!({ "stopReason": "end_turn" }));
+
+    peer.expect_request("session/prompt")
+        .emit_request(json!({
+            "jsonrpc": "2.0",
+            "id": 2301,
+            "method": "unsupported/request",
+            "params": {},
+        }))
+        .expect_response(json!({
+            "jsonrpc": "2.0",
+            "id": 2301,
+            "error": {
+                "code": -32601,
+                "message": "Method not found: unsupported/request",
+                "data": null,
+            }
+        }))
+        .respond(json!({ "stopReason": "end_turn" }));
+
+    let peer_task = tokio::spawn(peer.run());
+    assert_eq!(
+        runtime.start().await.expect("resumed runtime should start"),
+        "grok-session-resumed"
+    );
+    assert_eq!(
+        runtime.collect_events(2).await,
+        vec![
+            grok::GrokRuntimeEventStableView {
+                event_type: "session.started".to_owned(),
+                thread_id: "grok-thread-resumed".to_owned(),
+                turn_id: None,
+                request_id: None,
+                payload: json!({}),
+            },
+            grok::GrokRuntimeEventStableView {
+                event_type: "thread.started".to_owned(),
+                thread_id: "grok-thread-resumed".to_owned(),
+                turn_id: None,
+                request_id: None,
+                payload: json!({}),
+            },
+        ]
+    );
+
+    runtime
+        .set_runtime_mode("full-access")
+        .await
+        .expect("full access mode");
+    runtime
+        .set_interaction_mode("plan")
+        .await
+        .expect("plan interaction mode");
+    runtime
+        .set_interaction_mode("default")
+        .await
+        .expect("default interaction mode");
+
+    let automatic_turn = runtime
+        .send_turn(None, Vec::new())
+        .await
+        .expect("automatic approval turn");
+    let automatic_events = collect_until_turn_completed(&runtime, &automatic_turn).await;
+    assert!(
+        automatic_events
+            .iter()
+            .any(|event| event.event_type == "runtime.warning"
+                && event.payload["message"] == json!("provider warning"))
+    );
+    assert!(automatic_events.iter().any(|event| {
+        event.event_type == "turn.plan.updated"
+            && event.payload["entries"][0]["content"] == json!("Run the tests")
+    }));
+    assert!(
+        automatic_events
+            .iter()
+            .all(|event| event.event_type != "request.opened")
+    );
+
+    runtime
+        .set_runtime_mode("approval-required")
+        .await
+        .expect("approval mode");
+    for (wire_id, decision) in [
+        (2102, "acceptForSession"),
+        (2103, "accept"),
+        (2104, "decline"),
+        (2105, "cancel"),
+    ] {
+        let turn_id = runtime
+            .send_turn(Some("permission"), Vec::new())
+            .await
+            .expect("manual permission turn");
+        let request_id = format!("approval:{wire_id}");
+        let opened = next_event_matching(&runtime, |event| {
+            event.event_type == "request.opened"
+                && event.request_id.as_deref() == Some(request_id.as_str())
+        })
+        .await;
+        assert_eq!(
+            opened.payload["detail"],
+            json!(match wire_id {
+                2102 => "persist command",
+                2103 => "one command",
+                2104 => "reject command",
+                _ => "cancel command",
+            })
+        );
+        runtime
+            .respond_to_request(&request_id, decision)
+            .await
+            .expect("permission response");
+        let resolved = next_event_matching(&runtime, |event| {
+            event.event_type == "request.resolved"
+                && event.request_id.as_deref() == Some(request_id.as_str())
+        })
+        .await;
+        assert_eq!(resolved.payload["decision"], json!(decision));
+        next_event_matching(&runtime, |event| {
+            event.event_type == "turn.completed"
+                && event.turn_id.as_deref() == Some(turn_id.as_str())
+        })
+        .await;
+    }
+
+    let input_turn = runtime
+        .send_turn(Some("ask"), Vec::new())
+        .await
+        .expect("user input turn");
+    let input_request = next_event_matching(&runtime, |event| {
+        event.event_type == "user-input.requested"
+            && event.request_id.as_deref() == Some("user-input:2201")
+    })
+    .await;
+    assert_eq!(input_request.payload["questions"][0]["id"], "targets");
+    assert_eq!(input_request.payload["questions"][1]["id"], "");
+    runtime
+        .respond_to_user_input(
+            "user-input:2201",
+            json!({
+                "targets": ["server", "desktop"],
+                "notes": "run all",
+                "ignored": 42,
+            }),
+        )
+        .await
+        .expect("user input response");
+    next_event_matching(&runtime, |event| {
+        event.event_type == "user-input.resolved"
+            && event.request_id.as_deref() == Some("user-input:2201")
+    })
+    .await;
+    next_event_matching(&runtime, |event| {
+        event.event_type == "turn.completed"
+            && event.turn_id.as_deref() == Some(input_turn.as_str())
+    })
+    .await;
+
+    let unknown_turn = runtime
+        .send_turn(Some("unknown request"), Vec::new())
+        .await
+        .expect("unknown request turn");
+    next_event_matching(&runtime, |event| {
+        event.event_type == "turn.completed"
+            && event.turn_id.as_deref() == Some(unknown_turn.as_str())
+    })
+    .await;
+    peer_task.await.expect("peer");
+    let exited = next_event_matching(&runtime, |event| event.event_type == "session.exited").await;
+    assert!(exited.payload["reason"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn grok_runtime_rejects_new_sessions_without_a_session_identifier() {
+    let (connection, incoming, mut peer) = scripted_peer();
+    let runtime = GrokSessionRuntime::new(
+        GrokSessionOptions {
+            thread_id: "grok-thread-invalid".to_owned(),
+            cwd: "/tmp/invalid-project".to_owned(),
+            mcp_servers: Vec::new(),
+            runtime_mode: "approval-required".to_owned(),
+            interaction_mode: "default".to_owned(),
+        },
+        connection,
+        incoming,
+    );
+    peer.expect_request("initialize").respond(json!({}));
+    peer.expect_request("authenticate").respond(json!({}));
+    peer.expect_request("session/create").respond(json!({}));
+    let peer_task = tokio::spawn(peer.run());
+
+    assert!(
+        runtime
+            .start()
+            .await
+            .expect_err("missing session identifiers must fail")
+            .to_string()
+            .contains("has not started")
+    );
+    peer_task.await.expect("peer");
+}
+
+fn permission_options() -> Vec<Value> {
+    vec![
+        json!({ "kind": "allow_once", "optionId": "once" }),
+        json!({ "kind": "allow_always", "optionId": "always" }),
+        json!({ "kind": "reject_once", "optionId": "reject" }),
+    ]
+}
+
+fn permission_request(wire_id: u64, title: &str, options: Vec<Value>) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": wire_id,
+        "method": "session/request_permission",
+        "params": {
+            "options": options,
+            "toolCall": { "title": title },
+        },
+    })
+}
+
+async fn collect_until_turn_completed(
+    runtime: &GrokSessionRuntime,
+    turn_id: &str,
+) -> Vec<grok::GrokRuntimeEvent> {
+    let mut events = Vec::new();
+    loop {
+        let event = timeout(Duration::from_secs(5), runtime.next_event())
+            .await
+            .expect("event timeout")
+            .expect("runtime event");
+        let completed =
+            event.event_type == "turn.completed" && event.turn_id.as_deref() == Some(turn_id);
+        events.push(event);
+        if completed {
+            return events;
+        }
+    }
+}
+
+async fn next_event_matching(
+    runtime: &GrokSessionRuntime,
+    predicate: impl Fn(&grok::GrokRuntimeEvent) -> bool,
+) -> grok::GrokRuntimeEvent {
+    loop {
+        let event = timeout(Duration::from_secs(5), runtime.next_event())
+            .await
+            .expect("event timeout")
+            .expect("runtime event");
+        if predicate(&event) {
+            return event;
+        }
+    }
+}
+
 fn fixture(name: &str) -> Value {
     serde_json::from_str(
         &std::fs::read_to_string(fixture_directory().join(name)).expect("fixture file"),
@@ -305,6 +732,7 @@ impl ScriptedPeer {
             expected_follow_up: None,
             expected_follow_up_after_response: None,
             delay_before_emits_ms: None,
+            stderr_messages: Vec::new(),
             emits_after_notification: Vec::new(),
             expected_notification: None,
         });
@@ -314,7 +742,7 @@ impl ScriptedPeer {
     async fn run(self) {
         let mut reader = BufReader::new(self.stdin_reader);
         let mut writer = self.stdout_writer;
-        let _stderr = self.stderr;
+        let mut stderr = self.stderr;
         for step in self.steps {
             let PeerStep::ExpectRequest {
                 method,
@@ -324,6 +752,7 @@ impl ScriptedPeer {
                 expected_follow_up,
                 expected_follow_up_after_response,
                 delay_before_emits_ms,
+                stderr_messages,
                 emits_after_notification,
                 expected_notification,
             } = step;
@@ -334,6 +763,9 @@ impl ScriptedPeer {
             }
             if let Some(delay_before_emits_ms) = delay_before_emits_ms {
                 tokio::time::sleep(Duration::from_millis(delay_before_emits_ms)).await;
+            }
+            for message in stderr_messages {
+                write_line(&mut stderr, &message).await;
             }
             for emit in emits {
                 write_json(&mut writer, emit).await;
@@ -380,6 +812,7 @@ enum PeerStep {
         expected_follow_up: Option<Value>,
         expected_follow_up_after_response: Option<Value>,
         delay_before_emits_ms: Option<u64>,
+        stderr_messages: Vec<String>,
         emits_after_notification: Vec<Value>,
         expected_notification: Option<String>,
     },
@@ -421,6 +854,22 @@ impl PeerStep {
         self
     }
 
+    fn emit_stderr(&mut self, message: &str) -> &mut Self {
+        let PeerStep::ExpectRequest {
+            stderr_messages, ..
+        } = self;
+        stderr_messages.push(message.to_owned());
+        self
+    }
+
+    fn expect_response(&mut self, value: Value) -> &mut Self {
+        let PeerStep::ExpectRequest {
+            expected_follow_up, ..
+        } = self;
+        *expected_follow_up = Some(value);
+        self
+    }
+
     fn expect_response_after_result(&mut self, value: Value) -> &mut Self {
         let PeerStep::ExpectRequest {
             expected_follow_up_after_response,
@@ -455,5 +904,18 @@ where
         .write_all(format!("{value}\n").as_bytes())
         .await
         .expect("write json");
+    writer.flush().await.expect("flush");
+}
+
+async fn write_line<W>(writer: &mut W, value: &str)
+where
+    W: AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+
+    writer
+        .write_all(format!("{value}\n").as_bytes())
+        .await
+        .expect("write line");
     writer.flush().await.expect("flush");
 }
