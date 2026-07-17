@@ -3250,19 +3250,20 @@ mod tests {
             Err(super::ProviderRuntimeError::Shutdown)
         ));
 
-        let state = state.lock().unwrap();
-        assert_eq!(state.launches, 1);
-        assert_eq!(state.starts, 1);
-        assert_eq!(state.sends, ["hello"]);
-        assert_eq!(state.interrupts, 1);
-        assert_eq!(state.approvals, 1);
-        assert_eq!(state.answers, 1);
-        assert_eq!(state.modes, ["approval-required"]);
-        assert_eq!(state.interaction_modes, ["plan"]);
-        assert_eq!(state.models, ["gpt-5.1", "gpt-5.2"]);
-        assert_eq!(state.rollbacks, [2]);
-        assert_eq!(state.shutdowns, 1);
-        drop(state);
+        {
+            let state = state.lock().unwrap();
+            assert_eq!(state.launches, 1);
+            assert_eq!(state.starts, 1);
+            assert_eq!(state.sends, ["hello"]);
+            assert_eq!(state.interrupts, 1);
+            assert_eq!(state.approvals, 1);
+            assert_eq!(state.answers, 1);
+            assert_eq!(state.modes, ["approval-required"]);
+            assert_eq!(state.interaction_modes, ["plan"]);
+            assert_eq!(state.models, ["gpt-5.1", "gpt-5.2"]);
+            assert_eq!(state.rollbacks, [2]);
+            assert_eq!(state.shutdowns, 1);
+        }
         engine.shutdown().await;
     }
 

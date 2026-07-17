@@ -315,11 +315,8 @@ mod tests {
         use tauri::test::{mock_builder, mock_context, noop_assets};
 
         let mut context = mock_context(noop_assets());
-        context.config_mut().identifier =
-            format!("com.t4code.window-tests-{}", std::process::id());
-        let app = mock_builder()
-            .build(context)
-            .expect("mock Tauri app");
+        context.config_mut().identifier = format!("com.t4code.window-tests-{}", std::process::id());
+        let app = mock_builder().build(context).expect("mock Tauri app");
         let handle = app.handle();
         let window = tauri::WebviewWindowBuilder::new(&app, MAIN_WINDOW_LABEL, Default::default())
             .build()

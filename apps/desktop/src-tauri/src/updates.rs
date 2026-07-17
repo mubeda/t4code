@@ -496,9 +496,10 @@ mod tests {
         let thread = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("update request should arrive");
             let mut request = [0_u8; 2048];
-            stream
+            let request_len = stream
                 .read(&mut request)
                 .expect("update request should read");
+            assert!(request_len > 0, "update request should not be empty");
             stream
                 .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
                 .expect("update response should write");
