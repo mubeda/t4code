@@ -27,10 +27,16 @@ use crate::{
     },
     orchestration::engine::{
         ActivityInput, BootstrapSetupInput, BootstrapSetupResult, BootstrapWorktree,
-        BoxBootstrapFuture, OrchestrationCommand, OrchestrationEngine, ThreadTurnBootstrapEffects,
-        ThreadTurnStartBootstrapPrepareWorktree,
+        BoxBootstrapFuture, BoxProjectCommandFuture, OrchestrationCommand, OrchestrationEngine,
+        ProjectCommandEffects, ThreadTurnBootstrapEffects, ThreadTurnStartBootstrapPrepareWorktree,
     },
     persistence::{OrchestrationEvent, PersistenceError},
+};
+
+pub use super::host_paths::process_compatible_path;
+use super::host_paths::{
+    HostPathError, normalize_host_path_lexically, resolve_host_directory,
+    resolve_host_directory_identity,
 };
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -109,75 +115,90 @@ pub async fn normalize_project_workspace_root(
     workspace_root: &Path,
     create_if_missing: bool,
 ) -> Result<PathBuf, OrchestrationEffectsError> {
-    match tokio::fs::metadata(workspace_root).await {
-        Ok(metadata) if !metadata.is_dir() => {
-            return Err(OrchestrationEffectsError::WorkspaceNotDirectory(
-                workspace_root.to_path_buf(),
-            ));
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound && create_if_missing => {
-            tokio::fs::create_dir_all(workspace_root)
-                .await
-                .map_err(|source| OrchestrationEffectsError::WorkspaceIo {
-                    path: workspace_root.to_path_buf(),
-                    source,
-                })?;
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(OrchestrationEffectsError::WorkspaceMissing(
-                workspace_root.to_path_buf(),
-            ));
-        }
-        Err(source) => {
-            return Err(OrchestrationEffectsError::WorkspaceIo {
-                path: workspace_root.to_path_buf(),
-                source,
-            });
-        }
-    }
-
-    tokio::fs::canonicalize(workspace_root)
+    resolve_host_directory(workspace_root, create_if_missing)
         .await
-        .map_err(|source| OrchestrationEffectsError::WorkspaceIo {
-            path: workspace_root.to_path_buf(),
-            source,
+        .map_err(map_host_path_error)
+}
+
+async fn canonicalize_project_workspace_root(
+    workspace_root: &Path,
+    allow_missing: bool,
+) -> Result<PathBuf, OrchestrationEffectsError> {
+    resolve_host_directory_identity(workspace_root, allow_missing)
+        .await
+        .map_err(map_host_path_error)
+}
+
+fn map_host_path_error(error: HostPathError) -> OrchestrationEffectsError {
+    match error {
+        HostPathError::Missing(path) => OrchestrationEffectsError::WorkspaceMissing(path),
+        HostPathError::NotDirectory(path) => OrchestrationEffectsError::WorkspaceNotDirectory(path),
+        HostPathError::HomeDirectoryUnavailable(path) => OrchestrationEffectsError::WorkspaceIo {
+            path,
+            source: std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "home directory is unavailable",
+            ),
+        },
+        HostPathError::Io { path, source } => {
+            OrchestrationEffectsError::WorkspaceIo { path, source }
+        }
+    }
+}
+
+#[derive(Default)]
+struct ProductionProjectCommandEffects;
+
+impl ProjectCommandEffects for ProductionProjectCommandEffects {
+    fn normalize_workspace_root_lexically(&self, workspace_root: &str) -> String {
+        normalize_host_path_lexically(Path::new(workspace_root))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn canonicalize_workspace_root<'a>(
+        &'a self,
+        workspace_root: &'a str,
+        allow_missing: bool,
+    ) -> BoxProjectCommandFuture<'a, String> {
+        Box::pin(async move {
+            canonicalize_project_workspace_root(Path::new(workspace_root), allow_missing)
+                .await
+                .map(|path| path.to_string_lossy().into_owned())
+                .map_err(|error| error.to_string())
         })
-        .map(process_compatible_path)
+    }
+
+    fn prepare_project_create<'a>(
+        &'a self,
+        workspace_root: &'a str,
+        create_if_missing: bool,
+        initialize_git: bool,
+    ) -> BoxProjectCommandFuture<'a, ()> {
+        Box::pin(async move {
+            let normalized =
+                normalize_project_workspace_root(Path::new(workspace_root), create_if_missing)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            let normalized_display = normalized.to_string_lossy();
+            if normalized_display != workspace_root {
+                return Err(format!(
+                    "workspace root changed while preparing project creation: expected {workspace_root}, resolved {normalized_display}"
+                ));
+            }
+            if initialize_git {
+                GitRepository::default()
+                    .init(&normalized, &CancellationToken::new())
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        })
+    }
 }
 
-#[must_use]
-pub fn process_compatible_path(path: PathBuf) -> PathBuf {
-    #[cfg(windows)]
-    {
-        let raw = path.to_string_lossy();
-        if let Some(unc_path) = raw.strip_prefix(r"\\?\UNC\") {
-            return PathBuf::from(format!(r"\\{unc_path}"));
-        }
-        if let Some(regular_path) = raw.strip_prefix(r"\\?\") {
-            return PathBuf::from(regular_path);
-        }
-    }
-    path
-}
-
-pub async fn normalize_project_create_command(
-    command: &mut OrchestrationCommand,
-) -> Result<(), OrchestrationEffectsError> {
-    if let OrchestrationCommand::ProjectCreate {
-        workspace_root,
-        create_workspace_root_if_missing,
-        ..
-    } = command
-    {
-        let normalized = normalize_project_workspace_root(
-            Path::new(workspace_root),
-            create_workspace_root_if_missing.unwrap_or(false),
-        )
-        .await?;
-        *workspace_root = normalized.to_string_lossy().into_owned();
-    }
-    Ok(())
+pub fn install_project_command_effects(engine: &OrchestrationEngine) {
+    engine.set_project_command_effects(Arc::new(ProductionProjectCommandEffects));
 }
 
 #[derive(Deserialize)]
@@ -418,6 +439,7 @@ impl OrchestrationEffects {
         let cancellation = CancellationToken::new();
         let (sender, receiver) = mpsc::channel(options.queue_capacity.max(1));
 
+        install_project_command_effects(&engine);
         engine.set_bootstrap_effects(Arc::new(ProductionBootstrapEffects {
             repositories: engine.repositories(),
             callbacks: callbacks.clone(),
@@ -1167,7 +1189,6 @@ fn server_id(tag: &str) -> String {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use crate::orchestration::engine::OrchestrationCommand;
     use crate::persistence::{Database, ProjectionProject, Repositories, run_migrations};
 
     use super::*;
@@ -1213,32 +1234,18 @@ mod tests {
         }
 
         let command_root = parent.path().join("command-project");
-        let mut project_command: OrchestrationCommand = serde_json::from_value(json!({
-            "type":"project.create",
-            "commandId":"project",
-            "projectId":"p1",
-            "title":"Project",
-            "workspaceRoot":command_root,
-            "createWorkspaceRootIfMissing":true,
-            "createdAt":"2026-07-10T10:00:00.000Z"
-        }))
-        .expect("project command");
-        normalize_project_create_command(&mut project_command)
+        let project_effects = ProductionProjectCommandEffects;
+        let canonical_command_root = project_effects
+            .canonicalize_workspace_root(command_root.to_string_lossy().as_ref(), true)
             .await
-            .expect("project command normalizes");
-        let encoded = serde_json::to_value(project_command).expect("project command encodes");
-        assert!(
-            Path::new(encoded["workspaceRoot"].as_str().expect("workspace root")).is_absolute()
-        );
-        let mut unrelated: OrchestrationCommand = serde_json::from_value(json!({
-            "type":"thread.archive",
-            "commandId":"archive",
-            "threadId":"t1"
-        }))
-        .expect("thread command");
-        normalize_project_create_command(&mut unrelated)
+            .expect("project command canonicalizes without creating");
+        assert!(Path::new(&canonical_command_root).is_absolute());
+        assert!(!command_root.exists());
+        project_effects
+            .prepare_project_create(&canonical_command_root, true, false)
             .await
-            .expect("unrelated command unchanged");
+            .expect("project command prepares");
+        assert!(command_root.is_dir());
 
         let repository = tempfile::tempdir().expect("repository");
         let cancellation = CancellationToken::new();

@@ -376,6 +376,10 @@ function render(node: ReactElement): string {
   return renderToStaticMarkup(node);
 }
 
+function renderedText(): string {
+  return render(<GeneralSettingsPanel />).replaceAll("&quot;", '"');
+}
+
 function findControls(kind: string, label: string): CapturedControl[] {
   const exact = h.controls.filter((entry) => entry.kind === kind && entry.label === label);
   if (exact.length > 0) {
@@ -537,12 +541,15 @@ describe("GeneralSettingsPanel", () => {
       location: { assign: assignSpy },
     });
 
-    const markup = render(<GeneralSettingsPanel />);
+    const markup = renderedText();
 
     expect(markup).toContain("Theme");
     expect(markup).toContain("Time format");
     expect(markup).toContain("Terminal logs only.");
     expect(markup).toContain("9.9.9-test");
+    expect(renderedText()).toContain(
+      'Leave empty to use "~/" for Clone and Create in Add Project.',
+    );
     expect(findControls("button", "Reset ")).toHaveLength(0);
     expect(findControls("switch", "Start new worktrees from origin by default")).toHaveLength(0);
 

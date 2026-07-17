@@ -21,6 +21,7 @@ use super::{
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_OUTPUT_LIMIT: usize = 1_000_000;
 const COMMIT_FIELD_SEPARATOR: char = '\x1f';
+const CLONE_OPERATION: &str = "GitVcsDriver.clone";
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GitRepository {
@@ -886,14 +887,103 @@ impl GitRepository {
             },
             str::to_owned,
         );
+        let destination = parent_dir.join(&derived);
+        match tokio::fs::symlink_metadata(&destination).await {
+            Ok(metadata) => {
+                if !metadata.is_dir() {
+                    return Err(simple_error(
+                        CLONE_OPERATION,
+                        parent_dir,
+                        "Existing clone destination is not a Git repository.",
+                    ));
+                }
+                return self
+                    .reuse_existing_clone(url, &destination, cancellation)
+                    .await;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(simple_error(
+                    CLONE_OPERATION,
+                    parent_dir,
+                    &format!("Failed to inspect the existing clone destination: {error}"),
+                ));
+            }
+        }
         self.run(
-            "GitVcsDriver.clone",
+            CLONE_OPERATION,
             parent_dir,
             &["clone".into(), "--".into(), url.into(), derived.clone()],
             cancellation,
         )
         .await?;
-        Ok(parent_dir.join(derived))
+        Ok(destination)
+    }
+
+    async fn reuse_existing_clone(
+        &self,
+        url: &str,
+        destination: &Path,
+        cancellation: &CancellationToken,
+    ) -> Result<PathBuf, GitCommandError> {
+        let Some(repository_root) = self.repository_root(destination, cancellation).await? else {
+            return Err(simple_error(
+                CLONE_OPERATION,
+                destination,
+                "Existing clone destination is not a Git repository.",
+            ));
+        };
+        let canonical_destination =
+            tokio::fs::canonicalize(destination)
+                .await
+                .map_err(|error| {
+                    simple_error(
+                        CLONE_OPERATION,
+                        destination,
+                        &format!("Failed to inspect the existing clone destination: {error}"),
+                    )
+                })?;
+        let canonical_repository_root =
+            tokio::fs::canonicalize(&repository_root)
+                .await
+                .map_err(|error| {
+                    simple_error(
+                        CLONE_OPERATION,
+                        destination,
+                        &format!("Failed to inspect the existing Git repository root: {error}"),
+                    )
+                })?;
+        if canonical_destination != canonical_repository_root {
+            return Err(simple_error(
+                CLONE_OPERATION,
+                destination,
+                "Existing clone destination is not a Git repository root.",
+            ));
+        }
+        let origin = self
+            .execute(
+                "GitVcsDriver.clone.inspectOrigin",
+                destination,
+                &strings(&["config", "--get", "remote.origin.url"]),
+                true,
+                cancellation,
+            )
+            .await?;
+        if origin.exit_code != 0 {
+            return Err(simple_error(
+                CLONE_OPERATION,
+                destination,
+                "Existing Git repository does not have an origin remote.",
+            ));
+        }
+        if origin.stdout.trim() != url {
+            return Err(simple_error(
+                CLONE_OPERATION,
+                destination,
+                "Existing Git repository has a different origin.",
+            ));
+        }
+        Ok(destination.to_path_buf())
     }
 
     pub async fn pull_current_branch(

@@ -167,6 +167,7 @@ fn public_repository_api_inventory_is_explicit() {
         "list_provider_session_runtimes",
         "list_threads_by_project",
         "list_turns_by_thread",
+        "max_event_sequence",
         "min_last_applied_sequence",
         "new",
         "read_events_from_sequence",

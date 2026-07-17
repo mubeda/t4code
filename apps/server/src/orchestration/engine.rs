@@ -3,6 +3,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{Arc, Mutex as StdMutex},
+    time::Duration,
 };
 
 use rusqlite::{OptionalExtension, Row, Transaction, params};
@@ -37,6 +38,7 @@ const PROJECTOR_NAMES: [&str; 9] = [
     "projection.pending-approvals",
     "projection.threads",
 ];
+const HISTORICAL_PROJECT_ROOT_INSPECTION_TIMEOUT: Duration = Duration::from_millis(250);
 
 fn server_command_id(scope: &str) -> String {
     format!("server:{scope}:{}", Uuid::new_v4())
@@ -230,6 +232,26 @@ pub trait ThreadTurnBootstrapEffects: Send + Sync {
     fn remove_worktree<'a>(&'a self, worktree: BootstrapWorktree) -> BoxBootstrapFuture<'a, ()>;
 }
 
+pub type BoxProjectCommandFuture<'a, T> =
+    Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
+
+pub trait ProjectCommandEffects: Send + Sync {
+    fn normalize_workspace_root_lexically(&self, workspace_root: &str) -> String;
+
+    fn canonicalize_workspace_root<'a>(
+        &'a self,
+        workspace_root: &'a str,
+        allow_missing: bool,
+    ) -> BoxProjectCommandFuture<'a, String>;
+
+    fn prepare_project_create<'a>(
+        &'a self,
+        workspace_root: &'a str,
+        create_if_missing: bool,
+        initialize_git: bool,
+    ) -> BoxProjectCommandFuture<'a, ()>;
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum OrchestrationCommand {
@@ -248,6 +270,12 @@ pub enum OrchestrationCommand {
             skip_serializing_if = "Option::is_none"
         )]
         create_workspace_root_if_missing: Option<bool>,
+        #[serde(
+            rename = "initializeGit",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        initialize_git: Option<bool>,
         #[serde(
             rename = "defaultModelSelection",
             default,
@@ -563,8 +591,11 @@ fn default_interaction_mode() -> String {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct DispatchResult {
     pub sequence: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -639,16 +670,20 @@ pub enum OrchestrationError {
     },
     #[error("thread turn bootstrap failed during {stage}: {detail}")]
     Bootstrap { stage: &'static str, detail: String },
+    #[error("project command preparation failed: {detail}")]
+    ProjectPreparation { detail: String },
 }
 
 #[derive(Clone, Debug)]
 struct CommandModel {
     projects: BTreeMap<String, ProjectState>,
     threads: BTreeMap<String, ThreadState>,
+    project_roots_canonicalized: bool,
 }
 
 #[derive(Clone, Debug)]
 struct ProjectState {
+    workspace_root: String,
     deleted_at: Option<String>,
 }
 
@@ -676,6 +711,7 @@ pub struct OrchestrationEngine {
     shutdown: CancellationToken,
     worker: Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>>,
     bootstrap_effects: Arc<StdMutex<Option<Arc<dyn ThreadTurnBootstrapEffects>>>>,
+    project_command_effects: Arc<StdMutex<Option<Arc<dyn ProjectCommandEffects>>>>,
 }
 
 impl OrchestrationEngine {
@@ -690,6 +726,7 @@ impl OrchestrationEngine {
         let (sender, receiver) = mpsc::channel(options.queue_capacity.max(1));
         let (events, _) = broadcast::channel(128);
         let shutdown = CancellationToken::new();
+        let project_command_effects = Arc::new(StdMutex::new(None));
         let worker = spawn_worker(
             repositories.clone(),
             initial_model,
@@ -697,6 +734,7 @@ impl OrchestrationEngine {
             events.clone(),
             shutdown.clone(),
             options.test_hooks.clone(),
+            project_command_effects.clone(),
         );
         Ok(Self {
             repositories,
@@ -705,6 +743,7 @@ impl OrchestrationEngine {
             shutdown,
             worker: Arc::new(tokio::sync::Mutex::new(Some(worker))),
             bootstrap_effects: Arc::new(StdMutex::new(None)),
+            project_command_effects,
         })
     }
 
@@ -901,6 +940,13 @@ impl OrchestrationEngine {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(effects);
     }
 
+    pub fn set_project_command_effects(&self, effects: Arc<dyn ProjectCommandEffects>) {
+        *self
+            .project_command_effects
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(effects);
+    }
+
     async fn run_bootstrap_setup(
         &self,
         thread_id: &str,
@@ -1028,6 +1074,7 @@ fn spawn_worker(
     events: broadcast::Sender<OrchestrationEvent>,
     shutdown: CancellationToken,
     hooks: TestHooks,
+    project_command_effects: Arc<StdMutex<Option<Arc<dyn ProjectCommandEffects>>>>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
@@ -1037,7 +1084,19 @@ fn spawn_worker(
                     let Some(envelope) = envelope else {
                         break;
                     };
-                    let result = process_envelope(&repositories, &mut model, &events, &hooks, envelope.command).await;
+                    let effects = project_command_effects
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .clone();
+                    let result = process_envelope(
+                        &repositories,
+                        &mut model,
+                        &events,
+                        &hooks,
+                        effects.as_deref(),
+                        envelope.command,
+                    )
+                    .await;
                     let _ = envelope.response.send(result);
                 }
             }
@@ -1050,12 +1109,13 @@ async fn process_envelope(
     model: &mut CommandModel,
     events: &broadcast::Sender<OrchestrationEvent>,
     hooks: &TestHooks,
-    command: OrchestrationCommand,
+    project_command_effects: Option<&dyn ProjectCommandEffects>,
+    mut command: OrchestrationCommand,
 ) -> Result<DispatchResult, OrchestrationError> {
     let command_id = command.command_id().to_owned();
-    let occurred_at = match command.occurred_at() {
-        Some(value) => value.to_owned(),
-        None => current_timestamp(repositories.database()).await?,
+    let requested_project_id = match &command {
+        OrchestrationCommand::ProjectCreate { project_id, .. } => Some(project_id.clone()),
+        _ => None,
     };
     if let Some(receipt) = repositories
         .get_command_receipt(command_id.clone())
@@ -1065,6 +1125,13 @@ async fn process_envelope(
         if receipt.status == "accepted" {
             return Ok(DispatchResult {
                 sequence: receipt.result_sequence,
+                project_id: requested_project_id.as_ref().map(|requested_id| {
+                    if receipt.aggregate_kind == "project" {
+                        receipt.aggregate_id.clone()
+                    } else {
+                        requested_id.clone()
+                    }
+                }),
             });
         }
         return Err(OrchestrationError::PreviouslyRejected {
@@ -1073,6 +1140,47 @@ async fn process_envelope(
                 .error
                 .unwrap_or_else(|| "Previously rejected.".to_owned()),
         });
+    }
+    let occurred_at = match command.occurred_at() {
+        Some(value) => value.to_owned(),
+        None => current_timestamp(repositories.database()).await?,
+    };
+
+    canonicalize_project_command(model, &mut command, project_command_effects).await?;
+    let project_create_identity = match &command {
+        OrchestrationCommand::ProjectCreate {
+            project_id,
+            workspace_root,
+            ..
+        } => Some((project_id.clone(), workspace_root.clone())),
+        _ => None,
+    };
+    if let Some((requested_id, workspace_root)) = &project_create_identity {
+        let existing_project_id = model.projects.iter().find_map(|(project_id, project)| {
+            (project_id != requested_id
+                && project.deleted_at.is_none()
+                && project.workspace_root == *workspace_root)
+                .then(|| project_id.clone())
+        });
+        if let Some(existing_project_id) = existing_project_id {
+            let sequence = current_max_sequence(repositories).await?;
+            repositories
+                .upsert_command_receipt(CommandReceipt {
+                    command_id,
+                    aggregate_kind: "project".to_owned(),
+                    aggregate_id: existing_project_id.clone(),
+                    accepted_at: occurred_at,
+                    result_sequence: sequence,
+                    status: "accepted".to_owned(),
+                    error: None,
+                })
+                .await
+                .map_err(wrap_persistence)?;
+            return Ok(DispatchResult {
+                sequence,
+                project_id: Some(existing_project_id),
+            });
+        }
     }
 
     let planned = match plan_command(repositories, model, &command, &occurred_at).await {
@@ -1095,7 +1203,17 @@ async fn process_envelope(
         }
     };
 
-    let committed = persist_command(repositories, hooks, &planned, &command_id).await?;
+    prepare_project_create(&command, project_command_effects).await?;
+    let aggregate = command.aggregate_ref();
+    let committed = persist_command(
+        repositories,
+        hooks,
+        &planned,
+        &command_id,
+        aggregate.0,
+        aggregate.1,
+    )
+    .await?;
     apply_to_model(model, &committed);
     for event in &committed {
         let _ = events.send(event.clone());
@@ -1109,7 +1227,131 @@ async fn process_envelope(
         })?;
     Ok(DispatchResult {
         sequence: last_sequence,
+        project_id: project_create_identity.map(|(project_id, _)| project_id),
     })
+}
+
+async fn canonicalize_project_command(
+    model: &mut CommandModel,
+    command: &mut OrchestrationCommand,
+    effects: Option<&dyn ProjectCommandEffects>,
+) -> Result<(), OrchestrationError> {
+    canonicalize_project_command_with_historical_timeout(
+        model,
+        command,
+        effects,
+        HISTORICAL_PROJECT_ROOT_INSPECTION_TIMEOUT,
+    )
+    .await
+}
+
+async fn canonicalize_project_command_with_historical_timeout(
+    model: &mut CommandModel,
+    command: &mut OrchestrationCommand,
+    effects: Option<&dyn ProjectCommandEffects>,
+    historical_root_inspection_timeout: Duration,
+) -> Result<(), OrchestrationError> {
+    let Some(effects) = effects else {
+        return Ok(());
+    };
+    if !matches!(
+        command,
+        OrchestrationCommand::ProjectCreate { .. }
+            | OrchestrationCommand::ProjectMetaUpdate {
+                workspace_root: Some(_),
+                ..
+            }
+    ) {
+        return Ok(());
+    }
+    if !model.project_roots_canonicalized {
+        let historical_root_inspection_deadline =
+            tokio::time::Instant::now() + historical_root_inspection_timeout;
+        let cached_roots = model
+            .projects
+            .iter()
+            .filter(|(_, project)| project.deleted_at.is_none())
+            .map(|(project_id, project)| (project_id.clone(), project.workspace_root.clone()))
+            .collect::<Vec<_>>();
+        for (project_id, workspace_root) in cached_roots {
+            let lexical_identity = effects.normalize_workspace_root_lexically(&workspace_root);
+            let identity = match tokio::time::timeout_at(
+                historical_root_inspection_deadline,
+                effects.canonicalize_workspace_root(&workspace_root, true),
+            )
+            .await
+            {
+                Ok(Ok(canonical)) => canonical,
+                Ok(Err(error)) => {
+                    tracing::warn!(
+                        project_id,
+                        workspace_root,
+                        fallback_identity = lexical_identity,
+                        %error,
+                        "historical project workspace root inspection failed; using lexical identity"
+                    );
+                    lexical_identity
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        project_id,
+                        workspace_root,
+                        fallback_identity = lexical_identity,
+                        inspection_timeout_ms =
+                            u64::try_from(historical_root_inspection_timeout.as_millis())
+                                .unwrap_or(u64::MAX),
+                        "historical project workspace root inspection timed out; using lexical identity"
+                    );
+                    lexical_identity
+                }
+            };
+            if let Some(project) = model.projects.get_mut(&project_id) {
+                project.workspace_root = identity;
+            }
+        }
+        model.project_roots_canonicalized = true;
+    }
+    let workspace_root = match command {
+        OrchestrationCommand::ProjectCreate { workspace_root, .. } => Some((workspace_root, true)),
+        OrchestrationCommand::ProjectMetaUpdate {
+            workspace_root: Some(workspace_root),
+            ..
+        } => Some((workspace_root, false)),
+        _ => None,
+    };
+    if let Some((workspace_root, allow_missing)) = workspace_root {
+        *workspace_root = effects
+            .canonicalize_workspace_root(workspace_root, allow_missing)
+            .await
+            .map_err(|detail| OrchestrationError::ProjectPreparation { detail })?;
+    }
+    Ok(())
+}
+
+async fn prepare_project_create(
+    command: &OrchestrationCommand,
+    effects: Option<&dyn ProjectCommandEffects>,
+) -> Result<(), OrchestrationError> {
+    let (
+        Some(effects),
+        OrchestrationCommand::ProjectCreate {
+            workspace_root,
+            create_workspace_root_if_missing,
+            initialize_git,
+            ..
+        },
+    ) = (effects, command)
+    else {
+        return Ok(());
+    };
+    effects
+        .prepare_project_create(
+            workspace_root,
+            create_workspace_root_if_missing.unwrap_or(false),
+            initialize_git.unwrap_or(false),
+        )
+        .await
+        .map_err(|detail| OrchestrationError::ProjectPreparation { detail })
 }
 
 async fn plan_command(
@@ -1174,6 +1416,22 @@ async fn plan_command(
             scripts,
         } => {
             require_project(model, command, project_id)?;
+            if let Some(workspace_root) = workspace_root
+                && let Some(conflicting_project_id) =
+                    model.projects.iter().find_map(|(candidate_id, project)| {
+                        (candidate_id != project_id
+                            && project.deleted_at.is_none()
+                            && project.workspace_root == *workspace_root)
+                            .then(|| candidate_id.clone())
+                    })
+            {
+                return invariant(
+                    command,
+                    format!(
+                        "Workspace root '{workspace_root}' is already registered by project '{conflicting_project_id}'."
+                    ),
+                );
+            }
             let mut payload = json!({"projectId":project_id,"updatedAt":occurred_at});
             insert_optional(&mut payload, "title", title.as_ref().map(|v| json!(v)));
             insert_optional(
@@ -1827,11 +2085,15 @@ async fn persist_command(
     hooks: &TestHooks,
     events: &[NewOrchestrationEvent],
     command_id: &str,
+    aggregate_kind: &str,
+    aggregate_id: &str,
 ) -> Result<VecDeque<OrchestrationEvent>, OrchestrationError> {
     let repositories = repositories.clone();
     let hooks = hooks.clone();
     let event_list = events.to_vec();
     let command_id = command_id.to_owned();
+    let aggregate_kind = aggregate_kind.to_owned();
+    let aggregate_id = aggregate_id.to_owned();
     let committed = repositories
         .database()
         .call(move |connection| {
@@ -1863,8 +2125,8 @@ async fn persist_command(
                 &transaction,
                 CommandReceipt {
                     command_id,
-                    aggregate_kind: last_saved.event.aggregate_kind.clone(),
-                    aggregate_id: last_saved.event.aggregate_id.clone(),
+                    aggregate_kind,
+                    aggregate_id,
                     accepted_at: last_saved.event.occurred_at.clone(),
                     result_sequence: last_saved.sequence,
                     status: "accepted".to_owned(),
@@ -1886,9 +2148,30 @@ fn apply_to_model(model: &mut CommandModel, events: &VecDeque<OrchestrationEvent
                 if let Some(project_id) =
                     event.event.payload.get("projectId").and_then(Value::as_str)
                 {
-                    model
-                        .projects
-                        .insert(project_id.to_owned(), ProjectState { deleted_at: None });
+                    model.projects.insert(
+                        project_id.to_owned(),
+                        ProjectState {
+                            workspace_root: event
+                                .event
+                                .payload
+                                .get("workspaceRoot")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned(),
+                            deleted_at: None,
+                        },
+                    );
+                }
+            }
+            "project.meta-updated" => {
+                if let Some(project) = model.projects.get_mut(&event.event.aggregate_id)
+                    && let Some(workspace_root) = event
+                        .event
+                        .payload
+                        .get("workspaceRoot")
+                        .and_then(Value::as_str)
+                {
+                    project.workspace_root = workspace_root.to_owned();
                 }
             }
             "thread.created" => {
@@ -2048,6 +2331,7 @@ async fn load_command_model(
         projects.insert(
             project.project_id.clone(),
             ProjectState {
+                workspace_root: project.workspace_root.clone(),
                 deleted_at: project.deleted_at.clone(),
             },
         );
@@ -2069,15 +2353,18 @@ async fn load_command_model(
             );
         }
     }
-    Ok(CommandModel { projects, threads })
+    Ok(CommandModel {
+        projects,
+        threads,
+        project_roots_canonicalized: false,
+    })
 }
 
 async fn current_max_sequence(repositories: &Repositories) -> Result<i64, OrchestrationError> {
-    let events = repositories
-        .read_events_from_sequence(0, 1_000)
+    repositories
+        .max_event_sequence()
         .await
-        .map_err(wrap_persistence)?;
-    Ok(events.last().map(|event| event.sequence).unwrap_or(0))
+        .map_err(wrap_persistence)
 }
 
 async fn current_timestamp(database: &Database) -> Result<String, OrchestrationError> {
@@ -3358,6 +3645,35 @@ mod tests {
         }
     }
 
+    struct NeverCompletingHistoricalRootEffects;
+
+    impl ProjectCommandEffects for NeverCompletingHistoricalRootEffects {
+        fn normalize_workspace_root_lexically(&self, workspace_root: &str) -> String {
+            workspace_root.replace("/./", "/")
+        }
+
+        fn canonicalize_workspace_root<'a>(
+            &'a self,
+            workspace_root: &'a str,
+            _allow_missing: bool,
+        ) -> BoxProjectCommandFuture<'a, String> {
+            if workspace_root == "historical/./workspace" {
+                Box::pin(std::future::pending())
+            } else {
+                Box::pin(async { Ok("/canonical/requested-workspace".to_owned()) })
+            }
+        }
+
+        fn prepare_project_create<'a>(
+            &'a self,
+            _workspace_root: &'a str,
+            _create_if_missing: bool,
+            _initialize_git: bool,
+        ) -> BoxProjectCommandFuture<'a, ()> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
     fn projector_event(event_type: &str, payload: Value, metadata: Value) -> OrchestrationEvent {
         OrchestrationEvent {
             sequence: 99,
@@ -3374,6 +3690,55 @@ mod tests {
                 metadata,
             },
         }
+    }
+
+    #[tokio::test]
+    async fn historical_cached_workspace_root_inspection_timeout_uses_lexical_identity() {
+        let mut model = CommandModel {
+            projects: BTreeMap::from([(
+                "historical-project".to_owned(),
+                ProjectState {
+                    workspace_root: "historical/./workspace".to_owned(),
+                    deleted_at: None,
+                },
+            )]),
+            threads: BTreeMap::new(),
+            project_roots_canonicalized: false,
+        };
+        let mut command = serde_json::from_value::<OrchestrationCommand>(json!({
+            "type": "project.create",
+            "commandId": "create-requested-workspace",
+            "projectId": "requested-project",
+            "title": "Requested Project",
+            "workspaceRoot": "requested-workspace",
+            "createWorkspaceRootIfMissing": true,
+            "initializeGit": false,
+            "createdAt": "2026-07-17T00:00:00.000Z"
+        }))
+        .expect("project create command");
+
+        canonicalize_project_command_with_historical_timeout(
+            &mut model,
+            &mut command,
+            Some(&NeverCompletingHistoricalRootEffects),
+            std::time::Duration::ZERO,
+        )
+        .await
+        .expect("requested workspace root remains strict and resolves");
+
+        assert_eq!(
+            model
+                .projects
+                .get("historical-project")
+                .expect("historical project")
+                .workspace_root,
+            "historical/workspace"
+        );
+        assert!(model.project_roots_canonicalized);
+        let OrchestrationCommand::ProjectCreate { workspace_root, .. } = command else {
+            panic!("expected project create command");
+        };
+        assert_eq!(workspace_root, "/canonical/requested-workspace");
     }
 
     #[tokio::test]

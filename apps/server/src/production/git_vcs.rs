@@ -23,6 +23,8 @@ use crate::{
     },
 };
 
+use super::host_paths::resolve_host_directory;
+
 const STREAM_CAPACITY: usize = 8;
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -189,11 +191,16 @@ impl GitVcsRpcServices {
             }
             "vcs.clone" => {
                 let input: CloneInput = decode(request.payload, "vcs.clone")?;
+                let parent_dir = resolve_host_directory(&input.parent_dir, false)
+                    .await
+                    .map_err(|error| {
+                        vcs_error("vcs.clone", &input.parent_dir, &error.to_string())
+                    })?;
                 let result = self
                     .repository
                     .clone_repository(
                         &input.url,
-                        &input.parent_dir,
+                        &parent_dir,
                         input.directory_name.as_deref(),
                         &cancellation,
                     )

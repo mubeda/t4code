@@ -1,13 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   buildSmartRows,
-  detectFolderOfRepos,
   detectSmartMode,
   filterRefsByQuery,
   findExactRefMatch,
   getCreateWorktreeDisabled,
   githubWorkItemBranchName,
-  hasGitEntry,
   parseGitHubWorkItem,
   resolveWorktreeCreateInput,
   sanitizeBranchName,
@@ -276,48 +274,5 @@ describe("getCreateWorktreeDisabled", () => {
     expect(getCreateWorktreeDisabled({ hasProject: true, resolution, isSubmitting: false })).toBe(
       false,
     );
-  });
-});
-
-describe("hasGitEntry / detectFolderOfRepos", () => {
-  it("hasGitEntry finds a .git entry among siblings", () => {
-    expect(
-      hasGitEntry([
-        { name: "src", fullPath: "/repo/src" },
-        { name: ".git", fullPath: "/repo/.git" },
-      ]),
-    ).toBe(true);
-    expect(hasGitEntry([{ name: "src", fullPath: "/repo/src" }])).toBe(false);
-  });
-
-  it("reports selectedIsRepo when the selected dir itself has .git", () => {
-    const result = detectFolderOfRepos([{ name: ".git", fullPath: "/repo/.git" }], []);
-    expect(result).toEqual({ selectedIsRepo: true, repoCandidates: [], isFolderOfRepos: false });
-  });
-
-  it("collects child repo candidates and flags folder-of-repos when selected dir is not a repo", () => {
-    const childScans = [
-      { name: "repo-a", fullPath: "/parent/repo-a", hasGit: true },
-      { name: "repo-b", fullPath: "/parent/repo-b", hasGit: true },
-      { name: "notes", fullPath: "/parent/notes", hasGit: false },
-    ];
-    const result = detectFolderOfRepos(
-      [{ name: "repo-a", fullPath: "/parent/repo-a" }],
-      childScans,
-    );
-    expect(result.selectedIsRepo).toBe(false);
-    expect(result.repoCandidates).toEqual([
-      { name: "repo-a", fullPath: "/parent/repo-a", hasGit: true },
-      { name: "repo-b", fullPath: "/parent/repo-b", hasGit: true },
-    ]);
-    expect(result.isFolderOfRepos).toBe(true);
-  });
-
-  it("is not a folder-of-repos when no children have .git", () => {
-    const result = detectFolderOfRepos(
-      [{ name: "notes", fullPath: "/parent/notes" }],
-      [{ name: "notes", fullPath: "/parent/notes", hasGit: false }],
-    );
-    expect(result.isFolderOfRepos).toBe(false);
   });
 });
