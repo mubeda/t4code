@@ -21,9 +21,11 @@ Use the project `+` action to create a worktree. The Create Worktree dialog has 
 project selector, Smart/GitHub/Branch/Name modes, an agent picker, advanced
 options, a Create more toggle, and Ctrl+Enter submit.
 
-Use Add Project for local project management. It supports Local host, folder
-browsing, folder-of-repos multi-import, clone from URL, and creating a new
-project.
+Use Add Project to select a connected host, open one existing project folder,
+clone a Git URL, or create a new Git repository. Local and mapped WSL hosts use
+the native folder picker; remote and browser-only hosts accept an explicit host
+path. Selecting a folder adds that folder as one project and does not scan for
+nested repositories.
 
 Workspace row context menus include update/open/copy/pin/unread actions, plus
 delete worktree for worktree rows and remove project for primary rows.
