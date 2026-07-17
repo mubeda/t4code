@@ -18,6 +18,10 @@ export interface AddProjectRecord {
   readonly workspaceRoot: string;
 }
 
+export interface AddProjectOperationControl {
+  readonly shouldContinue: () => boolean;
+}
+
 export interface AddProjectOperationsDependencies {
   readonly getProjects: () => ReadonlyArray<AddProjectRecord>;
   readonly createProject: (input: {
@@ -40,7 +44,7 @@ export interface AddProjectOperationsDependencies {
   readonly reportFailure: (title: string, error: unknown) => void;
 }
 
-interface ProjectPathInput {
+interface ProjectPathInput extends AddProjectOperationControl {
   readonly environmentId: EnvironmentId;
   readonly workspaceRoot: string;
 }
@@ -48,19 +52,31 @@ interface ProjectPathInput {
 export function createAddProjectOperations(dependencies: AddProjectOperationsDependencies) {
   async function executeCommand<T>(
     failureTitle: string,
+    shouldContinue: () => boolean,
     command: () => Promise<AddProjectCommandResult<T>>,
   ): Promise<AddProjectCommandSuccess<T> | null> {
+    if (!shouldContinue()) {
+      return null;
+    }
     try {
       const result = await command();
+      if (!shouldContinue()) {
+        return null;
+      }
       if (result._tag === "Failure") {
-        if (result.error !== null) {
+        if (result.error !== null && shouldContinue()) {
           dependencies.reportFailure(failureTitle, result.error);
         }
         return null;
       }
       return result;
     } catch (error) {
-      dependencies.reportFailure(failureTitle, error ?? new Error("Command failed unexpectedly."));
+      if (shouldContinue()) {
+        dependencies.reportFailure(
+          failureTitle,
+          error ?? new Error("Command failed unexpectedly."),
+        );
+      }
       return null;
     }
   }
@@ -72,13 +88,16 @@ export function createAddProjectOperations(dependencies: AddProjectOperationsDep
       readonly failureTitle: string;
     },
   ): Promise<boolean> {
+    if (!input.shouldContinue()) {
+      return false;
+    }
     const existing = findProjectByPath(
       dependencies.getProjects().filter((project) => project.environmentId === input.environmentId),
       input.workspaceRoot,
     );
     const projectId = existing?.id ?? newProjectId();
     if (!existing) {
-      const created = await executeCommand(input.failureTitle, () =>
+      const created = await executeCommand(input.failureTitle, input.shouldContinue, () =>
         dependencies.createProject({
           environmentId: input.environmentId,
           projectId,
@@ -88,17 +107,20 @@ export function createAddProjectOperations(dependencies: AddProjectOperationsDep
           initializeGit: input.initializeGit,
         }),
       );
-      if (created === null) {
+      if (created === null || !input.shouldContinue()) {
         return false;
       }
     }
-    const opened = await executeCommand("Failed to open project", () =>
+    if (!input.shouldContinue()) {
+      return false;
+    }
+    const opened = await executeCommand("Failed to open project", input.shouldContinue, () =>
       dependencies.openProject({
         environmentId: input.environmentId,
         projectId,
       }),
     );
-    if (opened === null) {
+    if (opened === null || !input.shouldContinue()) {
       return false;
     }
     return true;
@@ -119,20 +141,30 @@ export function createAddProjectOperations(dependencies: AddProjectOperationsDep
         initializeGit: true,
         failureTitle: "Failed to create project",
       }),
-    clone: async (input: {
-      readonly environmentId: EnvironmentId;
-      readonly url: string;
-      readonly parentDir: string;
-    }): Promise<boolean> => {
-      const cloned = await executeCommand("Clone failed", () =>
-        dependencies.cloneRepository(input),
+    clone: async (
+      input: {
+        readonly environmentId: EnvironmentId;
+        readonly url: string;
+        readonly parentDir: string;
+      } & AddProjectOperationControl,
+    ): Promise<boolean> => {
+      if (!input.shouldContinue()) {
+        return false;
+      }
+      const cloned = await executeCommand("Clone failed", input.shouldContinue, () =>
+        dependencies.cloneRepository({
+          environmentId: input.environmentId,
+          url: input.url,
+          parentDir: input.parentDir,
+        }),
       );
-      if (cloned === null) {
+      if (cloned === null || !input.shouldContinue()) {
         return false;
       }
       return registerOrOpen({
         environmentId: input.environmentId,
         workspaceRoot: cloned.value.path,
+        shouldContinue: input.shouldContinue,
         createWorkspaceRootIfMissing: false,
         initializeGit: false,
         failureTitle: "Failed to add cloned project",
