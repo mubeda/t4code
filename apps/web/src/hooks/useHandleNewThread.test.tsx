@@ -273,6 +273,32 @@ describe("useNewThreadHandler", () => {
     });
   });
 
+  it.each([
+    ["branch only", { branch: "feature/partial" } satisfies NewThreadOptions],
+    ["nullable worktree only", { worktreePath: null } satisfies NewThreadOptions],
+  ])("reuses a stored draft with %s", async (_label, options) => {
+    const draftId = "draft-stored-partial" as never;
+    useComposerDraftStore
+      .getState()
+      .setLogicalProjectDraftThreadId(scopedProjectKey(projectRef), projectRef, draftId, {
+        threadId: ThreadId.make("thread-stored-partial"),
+        branch: "main",
+        worktreePath: "X:\\worktrees\\previous",
+        envMode: "local",
+        startFromOrigin: true,
+      });
+    setRoute({ draftId });
+    await mount(<NewThreadHarness options={options} />);
+    await clickNewThread();
+
+    expect(testState.router.navigate).not.toHaveBeenCalled();
+    expect(
+      useComposerDraftStore
+        .getState()
+        .getDraftSessionByLogicalProjectKey(scopedProjectKey(projectRef))?.draftId,
+    ).toBe(draftId);
+  });
+
   it("navigates back to a reusable stored draft from another route", async () => {
     const storedDraftId = "draft-stored" as never;
     useComposerDraftStore
@@ -321,6 +347,36 @@ describe("useNewThreadHandler", () => {
       envMode: "worktree",
       startFromOrigin: false,
     });
+    expect(
+      useComposerDraftStore
+        .getState()
+        .getDraftSessionByLogicalProjectKey(scopedProjectKey(projectRef))?.draftId,
+    ).toBe(draftId);
+  });
+
+  it.each([
+    ["without overrides", undefined],
+    ["with only a branch", { branch: "feature/partial" } satisfies NewThreadOptions],
+    ["with only a nullable worktree", { worktreePath: null } satisfies NewThreadOptions],
+  ])("reuses a detached active draft %s", async (_label, options) => {
+    const draftId = "draft-active-partial" as never;
+    useComposerDraftStore
+      .getState()
+      .setLogicalProjectDraftThreadId(scopedProjectKey(projectRef), projectRef, draftId, {
+        threadId: ThreadId.make("thread-active-partial"),
+        branch: "main",
+        worktreePath: "X:\\worktrees\\previous",
+        envMode: "local",
+        startFromOrigin: true,
+      });
+    useComposerDraftStore.setState({
+      logicalProjectDraftThreadKeyByLogicalProjectKey: {},
+    });
+    setRoute({ draftId });
+    await mount(<NewThreadHarness options={options} />);
+    await clickNewThread();
+
+    expect(testState.router.navigate).not.toHaveBeenCalled();
     expect(
       useComposerDraftStore
         .getState()

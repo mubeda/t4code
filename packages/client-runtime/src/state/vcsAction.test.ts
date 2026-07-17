@@ -495,6 +495,33 @@ describe("vcsActionState", () => {
     registry.dispose();
   });
 
+  it("builds the complete stacked-action input before surfacing a missing runtime service", async () => {
+    const runtime = Atom.runtime(Layer.empty) as unknown as Atom.AtomRuntime<
+      EnvironmentRegistry,
+      never
+    >;
+    const manager = createVcsActionManager(runtime);
+    const registry = AtomRegistry.make();
+    const command = manager.runStackedAction({ environmentId, cwd });
+
+    const commandResult = await command.run(registry, {
+      actionId,
+      action,
+      commitMessage: "test commit",
+      featureBranch: true,
+      filePaths: ["src/a.ts"],
+      commitStagedIndexAsIs: true,
+    });
+
+    expect(AsyncResult.isFailure(commandResult)).toBe(true);
+    expect(registry.get(manager.stateAtom({ environmentId, cwd }))).toMatchObject({
+      actionId,
+      isRunning: true,
+      operation: "run_change_request",
+    });
+    registry.dispose();
+  });
+
   it("clears successful and interrupted tracked actions and resets matching errors", async () => {
     const runtime = Atom.runtime(Layer.empty) as unknown as Atom.AtomRuntime<
       EnvironmentRegistry,
