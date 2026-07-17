@@ -119,6 +119,7 @@ describe("Add Project rules", () => {
 
   it("joins target paths with the selected host separator", () => {
     expect(joinProjectPath("~/code/", "demo", "Linux")).toBe("~/code/demo");
+    expect(joinProjectPath("~/", "demo", "Win32")).toBe("~\\demo");
     expect(joinProjectPath("C:\\code\\", "demo", "Win32")).toBe("C:\\code\\demo");
   });
 

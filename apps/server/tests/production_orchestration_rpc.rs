@@ -9,8 +9,8 @@ use futures_util::{FutureExt, SinkExt, StreamExt};
 use serde_json::{Value, json};
 use t4code_server::{
     RpcExit, RpcRegistry, ServerConfig, ServerHandle, ServerMessage, ServerRuntime,
-    orchestration::{EngineOptions, OrchestrationEngine, load_snapshot},
-    persistence::{CheckpointDiffBlob, Database, run_migrations},
+    orchestration::{EngineOptions, OrchestrationCommand, OrchestrationEngine, load_snapshot},
+    persistence::{CheckpointDiffBlob, Database, NewOrchestrationEvent, run_migrations},
     production::orchestration_rpc::register_orchestration_rpc,
 };
 use tempfile::TempDir;
@@ -105,6 +105,53 @@ async fn harness() -> Harness {
         registry,
         handle,
     }
+}
+
+async fn harness_with_historical_workspace() -> (Harness, PathBuf) {
+    let temp = TempDir::new().expect("temporary base directory");
+    let historical_workspace = temp.path().join("historical-workspace");
+    std::fs::create_dir(&historical_workspace).expect("historical workspace");
+    let database = Database::open_in_memory().await.expect("database");
+    database
+        .call(|connection| {
+            run_migrations(connection, None)?;
+            Ok(())
+        })
+        .await
+        .expect("migrations");
+    let engine = OrchestrationEngine::start(database, EngineOptions::default())
+        .await
+        .expect("engine starts");
+    engine
+        .dispatch(
+            serde_json::from_value::<OrchestrationCommand>(json!({
+                "type": "project.create",
+                "commandId": "create-historical-workspace",
+                "projectId": "historical-workspace",
+                "title": "Historical Workspace",
+                "workspaceRoot": format!("{}/.", historical_workspace.display()),
+                "createWorkspaceRootIfMissing": false,
+                "initializeGit": false,
+                "createdAt": CREATED_AT,
+            }))
+            .expect("historical command"),
+        )
+        .await
+        .expect("historical project");
+    let mut registry = RpcRegistry::empty();
+    register_orchestration_rpc(&mut registry, engine.clone());
+    let handle = ServerRuntime::start_with_registry(test_config(&temp), registry.clone())
+        .await
+        .expect("server starts");
+    (
+        Harness {
+            _temp: temp,
+            engine,
+            registry,
+            handle,
+        },
+        historical_workspace,
+    )
 }
 
 fn create_project(project_id: &str, workspace_root: &str) -> Value {
@@ -205,9 +252,98 @@ async fn project_create_can_initialize_git_before_registration() {
 }
 
 #[tokio::test]
+async fn project_create_replay_skips_filesystem_effects() {
+    let harness = harness().await;
+    let outcome = AssertUnwindSafe(async {
+        let mut socket = harness.connect().await;
+        let replayed_workspace = harness._temp.path().join("replayed-project");
+        let replayed_command = json!({
+            "type": "project.create",
+            "commandId": "create-replayed-project",
+            "projectId": "replayed-project",
+            "title": "Replayed Project",
+            "workspaceRoot": replayed_workspace,
+            "createWorkspaceRootIfMissing": true,
+            "initializeGit": false,
+            "createdAt": CREATED_AT,
+        });
+
+        let first_result = dispatch_command(&mut socket, "21", replayed_command.clone()).await;
+        assert!(replayed_workspace.is_dir());
+        std::fs::remove_dir(&replayed_workspace).expect("remove replayed workspace");
+
+        let replay_result = dispatch_command(&mut socket, "22", replayed_command).await;
+        assert_eq!(replay_result, first_result);
+        assert!(
+            !replayed_workspace.exists(),
+            "accepted-command replay must not recreate the workspace"
+        );
+
+        socket.close(None).await.expect("close WebSocket");
+    })
+    .catch_unwind()
+    .await;
+    finish_test(harness, outcome).await;
+}
+
+#[tokio::test]
+async fn canonical_duplicate_project_create_skips_git_initialization() {
+    let harness = harness().await;
+    let outcome = AssertUnwindSafe(async {
+        let mut socket = harness.connect().await;
+        let registered_workspace = harness._temp.path().join("registered-non-git");
+        std::fs::create_dir(&registered_workspace).expect("registered workspace");
+        let registered_result = dispatch_command(
+            &mut socket,
+            "23",
+            json!({
+                "type": "project.create",
+                "commandId": "create-registered-non-git",
+                "projectId": "registered-non-git",
+                "title": "Registered Non Git",
+                "workspaceRoot": registered_workspace,
+                "createWorkspaceRootIfMissing": false,
+                "initializeGit": false,
+                "createdAt": CREATED_AT,
+            }),
+        )
+        .await;
+        let duplicate_result = dispatch_command(
+            &mut socket,
+            "24",
+            json!({
+                "type": "project.create",
+                "commandId": "create-registered-non-git-duplicate",
+                "projectId": "registered-non-git-duplicate",
+                "title": "Registered Non Git Duplicate",
+                "workspaceRoot": registered_workspace.join("."),
+                "createWorkspaceRootIfMissing": false,
+                "initializeGit": true,
+                "createdAt": CREATED_AT,
+            }),
+        )
+        .await;
+        assert_eq!(
+            duplicate_result["projectId"],
+            registered_result["projectId"]
+        );
+        assert!(
+            !registered_workspace.join(".git").exists(),
+            "canonical duplicate preflight must run before git init"
+        );
+
+        socket.close(None).await.expect("close WebSocket");
+    })
+    .catch_unwind()
+    .await;
+    finish_test(harness, outcome).await;
+}
+
+#[tokio::test]
 async fn project_create_resolves_home_relative_paths_and_reuses_canonical_duplicates() {
     let harness = harness().await;
     let (home_temp, home_relative_root) = tempdir_in_home();
+    let backslash_home_relative_root = home_relative_root.replace('/', "\\");
     let outcome = AssertUnwindSafe(async {
         let mut socket = harness.connect().await;
         let existing = home_temp.path().join("existing");
@@ -247,6 +383,28 @@ async fn project_create_resolves_home_relative_paths_and_reuses_canonical_duplic
         .await;
         assert_eq!(duplicate_result["projectId"], json!("home-existing"));
 
+        let backslash_existing = home_temp.path().join("backslash-existing");
+        std::fs::create_dir(&backslash_existing).expect("backslash existing workspace");
+        let backslash_existing_result = dispatch_command(
+            &mut socket,
+            "15",
+            json!({
+                "type": "project.create",
+                "commandId": "create-home-backslash-existing",
+                "projectId": "home-backslash-existing",
+                "title": "Home Backslash Existing",
+                "workspaceRoot": format!("{backslash_home_relative_root}\\backslash-existing"),
+                "createWorkspaceRootIfMissing": false,
+                "initializeGit": false,
+                "createdAt": CREATED_AT,
+            }),
+        )
+        .await;
+        assert_eq!(
+            backslash_existing_result["projectId"],
+            json!("home-backslash-existing")
+        );
+
         let created = home_temp.path().join("created");
         let created_result = dispatch_command(
             &mut socket,
@@ -265,6 +423,28 @@ async fn project_create_resolves_home_relative_paths_and_reuses_canonical_duplic
         .await;
         assert_eq!(created_result["projectId"], json!("home-created"));
         assert!(created.join(".git").is_dir());
+
+        let backslash_created = home_temp.path().join("backslash-created");
+        let backslash_created_result = dispatch_command(
+            &mut socket,
+            "16",
+            json!({
+                "type": "project.create",
+                "commandId": "create-home-backslash-created",
+                "projectId": "home-backslash-created",
+                "title": "Home Backslash Created",
+                "workspaceRoot": format!("{backslash_home_relative_root}\\backslash-created"),
+                "createWorkspaceRootIfMissing": true,
+                "initializeGit": true,
+                "createdAt": CREATED_AT,
+            }),
+        )
+        .await;
+        assert_eq!(
+            backslash_created_result["projectId"],
+            json!("home-backslash-created")
+        );
+        assert!(backslash_created.join(".git").is_dir());
 
         let snapshot = load_snapshot(&harness.engine.repositories())
             .await
@@ -291,6 +471,18 @@ async fn project_create_resolves_home_relative_paths_and_reuses_canonical_duplic
                 .iter()
                 .any(|project| project.workspace_root == canonical_created)
         );
+        for expected in [&backslash_existing, &backslash_created] {
+            let canonical = std::fs::canonicalize(expected)
+                .expect("canonical backslash workspace")
+                .to_string_lossy()
+                .into_owned();
+            assert!(
+                snapshot
+                    .projects
+                    .iter()
+                    .any(|project| project.workspace_root == canonical)
+            );
+        }
 
         let named_user_path = "~t4code-final-review-user/project";
         rpc_request(
@@ -360,6 +552,256 @@ async fn failed_git_initialization_does_not_register_project() {
                 .iter()
                 .any(|project| project.project_id == "blocked-git-project")
         );
+        socket.close(None).await.expect("close WebSocket");
+    })
+    .catch_unwind()
+    .await;
+    finish_test(harness, outcome).await;
+}
+
+#[tokio::test]
+async fn historical_cached_workspace_roots_participate_in_create_duplicate_preflight() {
+    let (harness, historical_workspace) = harness_with_historical_workspace().await;
+    let outcome = AssertUnwindSafe(async {
+        let mut socket = harness.connect().await;
+        let historical_duplicate = dispatch_command(
+            &mut socket,
+            "31",
+            json!({
+                "type": "project.create",
+                "commandId": "create-historical-workspace-duplicate",
+                "projectId": "historical-workspace-duplicate",
+                "title": "Historical Workspace Duplicate",
+                "workspaceRoot": std::fs::canonicalize(&historical_workspace)
+                    .expect("canonical historical workspace"),
+                "createWorkspaceRootIfMissing": false,
+                "initializeGit": true,
+                "createdAt": CREATED_AT,
+            }),
+        )
+        .await;
+        assert_eq!(
+            historical_duplicate["projectId"],
+            json!("historical-workspace")
+        );
+        assert!(
+            !historical_workspace.join(".git").exists(),
+            "historical cached aliases must participate in duplicate preflight"
+        );
+
+        socket.close(None).await.expect("close WebSocket");
+    })
+    .catch_unwind()
+    .await;
+    finish_test(harness, outcome).await;
+}
+
+#[tokio::test]
+async fn project_metadata_workspace_roots_are_canonical() {
+    let harness = harness().await;
+    let outcome = AssertUnwindSafe(async {
+        let mut socket = harness.connect().await;
+        let first_workspace = harness._temp.path().join("first-workspace");
+        let moved_workspace = harness._temp.path().join("moved-workspace");
+        for workspace in [&first_workspace, &moved_workspace] {
+            std::fs::create_dir(workspace).expect("workspace");
+        }
+        dispatch_command(
+            &mut socket,
+            "32",
+            create_project(
+                "first-workspace",
+                first_workspace.to_string_lossy().as_ref(),
+            ),
+        )
+        .await;
+
+        dispatch_command(
+            &mut socket,
+            "34",
+            json!({
+                "type": "project.meta.update",
+                "commandId": "move-first-workspace-through-alias",
+                "projectId": "first-workspace",
+                "workspaceRoot": format!("{}/.", moved_workspace.display()),
+            }),
+        )
+        .await;
+        let canonical_moved = std::fs::canonicalize(&moved_workspace)
+            .expect("canonical moved workspace")
+            .to_string_lossy()
+            .into_owned();
+        let snapshot = load_snapshot(&harness.engine.repositories())
+            .await
+            .expect("snapshot after normalized update");
+        assert_eq!(
+            snapshot
+                .projects
+                .iter()
+                .find(|project| project.project_id == "first-workspace")
+                .expect("first project")
+                .workspace_root,
+            canonical_moved
+        );
+
+        socket.close(None).await.expect("close WebSocket");
+    })
+    .catch_unwind()
+    .await;
+    finish_test(harness, outcome).await;
+}
+
+#[tokio::test]
+async fn project_metadata_workspace_root_aliases_and_symlinks_cannot_collide() {
+    let harness = harness().await;
+    let outcome = AssertUnwindSafe(async {
+        let mut socket = harness.connect().await;
+        let first_workspace = harness._temp.path().join("first-workspace");
+        let second_workspace = harness._temp.path().join("second-workspace");
+        for workspace in [&first_workspace, &second_workspace] {
+            std::fs::create_dir(workspace).expect("workspace");
+        }
+        dispatch_command(
+            &mut socket,
+            "32",
+            create_project(
+                "first-workspace",
+                first_workspace.to_string_lossy().as_ref(),
+            ),
+        )
+        .await;
+        dispatch_command(
+            &mut socket,
+            "33",
+            create_project(
+                "second-workspace",
+                second_workspace.to_string_lossy().as_ref(),
+            ),
+        )
+        .await;
+
+        rpc_request(
+            &mut socket,
+            "35",
+            "orchestration.dispatchCommand",
+            json!({
+                "type": "project.meta.update",
+                "commandId": "collide-second-workspace-through-alias",
+                "projectId": "second-workspace",
+                "workspaceRoot": format!("{}/.", first_workspace.display()),
+            }),
+        )
+        .await;
+        let alias_error = expect_failure(&mut socket, "35").await;
+        assert!(
+            alias_error["message"]
+                .as_str()
+                .is_some_and(|message| message.to_ascii_lowercase().contains("workspace root")),
+            "unexpected collision error: {alias_error}"
+        );
+
+        #[cfg(unix)]
+        {
+            let first_symlink = harness._temp.path().join("first-workspace-link");
+            std::os::unix::fs::symlink(&first_workspace, &first_symlink)
+                .expect("workspace symlink");
+            rpc_request(
+                &mut socket,
+                "36",
+                "orchestration.dispatchCommand",
+                json!({
+                    "type": "project.meta.update",
+                    "commandId": "collide-second-workspace-through-symlink",
+                    "projectId": "second-workspace",
+                    "workspaceRoot": first_symlink,
+                }),
+            )
+            .await;
+            let symlink_error = expect_failure(&mut socket, "36").await;
+            assert!(
+                symlink_error["message"]
+                    .as_str()
+                    .is_some_and(|message| message.to_ascii_lowercase().contains("workspace root")),
+                "unexpected symlink collision error: {symlink_error}"
+            );
+        }
+
+        let final_snapshot = load_snapshot(&harness.engine.repositories())
+            .await
+            .expect("final snapshot");
+        assert_eq!(
+            final_snapshot
+                .projects
+                .iter()
+                .find(|project| project.project_id == "second-workspace")
+                .expect("second project")
+                .workspace_root,
+            std::fs::canonicalize(&second_workspace)
+                .expect("canonical second workspace")
+                .to_string_lossy()
+        );
+
+        socket.close(None).await.expect("close WebSocket");
+    })
+    .catch_unwind()
+    .await;
+    finish_test(harness, outcome).await;
+}
+
+#[tokio::test]
+async fn canonical_duplicate_receipt_uses_the_unbounded_event_maximum() {
+    let harness = harness().await;
+    let outcome = AssertUnwindSafe(async {
+        let mut socket = harness.connect().await;
+        let workspace = harness.workspace_root("sequence-workspace");
+        dispatch_command(
+            &mut socket,
+            "41",
+            create_project("sequence-workspace", &workspace),
+        )
+        .await;
+
+        let mut expected_max = 0;
+        for index in 0..1_005 {
+            expected_max = harness
+                .engine
+                .repositories()
+                .append_event(NewOrchestrationEvent {
+                    event_id: format!("sequence-fixture-{index}"),
+                    event_type: "test.sequence-fixture".to_owned(),
+                    aggregate_kind: "test".to_owned(),
+                    aggregate_id: "sequence-fixture".to_owned(),
+                    occurred_at: CREATED_AT.to_owned(),
+                    command_id: None,
+                    causation_event_id: None,
+                    correlation_id: None,
+                    payload: json!({"index":index}),
+                    metadata: json!({}),
+                })
+                .await
+                .expect("sequence fixture event")
+                .sequence;
+        }
+        assert!(expected_max > 1_000);
+
+        let duplicate = dispatch_command(
+            &mut socket,
+            "42",
+            json!({
+                "type": "project.create",
+                "commandId": "create-sequence-workspace-duplicate",
+                "projectId": "sequence-workspace-duplicate",
+                "title": "Sequence Workspace Duplicate",
+                "workspaceRoot": workspace,
+                "createWorkspaceRootIfMissing": false,
+                "initializeGit": false,
+                "createdAt": CREATED_AT,
+            }),
+        )
+        .await;
+        assert_eq!(duplicate["sequence"], json!(expected_max));
+        assert_eq!(duplicate["projectId"], json!("sequence-workspace"));
+
         socket.close(None).await.expect("close WebSocket");
     })
     .catch_unwind()

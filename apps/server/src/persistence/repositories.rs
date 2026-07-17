@@ -88,6 +88,20 @@ impl Repositories {
             .await
     }
 
+    pub async fn max_event_sequence(&self) -> Result<i64> {
+        self.database
+            .call(|connection| {
+                connection
+                    .query_row(
+                        "SELECT COALESCE(MAX(sequence), 0) FROM orchestration_events",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(Into::into)
+            })
+            .await
+    }
+
     pub async fn upsert_command_receipt(&self, row: CommandReceipt) -> Result<()> {
         self.database.call(move |connection| {
             connection.execute(

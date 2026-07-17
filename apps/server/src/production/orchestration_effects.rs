@@ -27,14 +27,14 @@ use crate::{
     },
     orchestration::engine::{
         ActivityInput, BootstrapSetupInput, BootstrapSetupResult, BootstrapWorktree,
-        BoxBootstrapFuture, OrchestrationCommand, OrchestrationEngine, ThreadTurnBootstrapEffects,
-        ThreadTurnStartBootstrapPrepareWorktree,
+        BoxBootstrapFuture, BoxProjectCommandFuture, OrchestrationCommand, OrchestrationEngine,
+        ProjectCommandEffects, ThreadTurnBootstrapEffects, ThreadTurnStartBootstrapPrepareWorktree,
     },
     persistence::{OrchestrationEvent, PersistenceError},
 };
 
 pub use super::host_paths::process_compatible_path;
-use super::host_paths::{HostPathError, resolve_host_directory};
+use super::host_paths::{HostPathError, resolve_host_directory, resolve_host_directory_identity};
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const GIT_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
@@ -114,50 +114,82 @@ pub async fn normalize_project_workspace_root(
 ) -> Result<PathBuf, OrchestrationEffectsError> {
     resolve_host_directory(workspace_root, create_if_missing)
         .await
-        .map_err(|error| match error {
-            HostPathError::Missing(path) => OrchestrationEffectsError::WorkspaceMissing(path),
-            HostPathError::NotDirectory(path) => {
-                OrchestrationEffectsError::WorkspaceNotDirectory(path)
-            }
-            HostPathError::HomeDirectoryUnavailable(path) => {
-                OrchestrationEffectsError::WorkspaceIo {
-                    path,
-                    source: std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "home directory is unavailable",
-                    ),
-                }
-            }
-            HostPathError::Io { path, source } => {
-                OrchestrationEffectsError::WorkspaceIo { path, source }
-            }
-        })
+        .map_err(map_host_path_error)
 }
 
-pub async fn normalize_project_create_command(
-    command: &mut OrchestrationCommand,
-) -> Result<(), OrchestrationEffectsError> {
-    if let OrchestrationCommand::ProjectCreate {
-        workspace_root,
-        create_workspace_root_if_missing,
-        initialize_git,
-        ..
-    } = command
-    {
-        let normalized = normalize_project_workspace_root(
-            Path::new(workspace_root),
-            create_workspace_root_if_missing.unwrap_or(false),
-        )
-        .await?;
-        if initialize_git.unwrap_or(false) {
-            GitRepository::default()
-                .init(&normalized, &CancellationToken::new())
-                .await
-                .map_err(|error| OrchestrationEffectsError::Effect(error.to_string()))?;
+async fn canonicalize_project_workspace_root(
+    workspace_root: &Path,
+    allow_missing: bool,
+) -> Result<PathBuf, OrchestrationEffectsError> {
+    resolve_host_directory_identity(workspace_root, allow_missing)
+        .await
+        .map_err(map_host_path_error)
+}
+
+fn map_host_path_error(error: HostPathError) -> OrchestrationEffectsError {
+    match error {
+        HostPathError::Missing(path) => OrchestrationEffectsError::WorkspaceMissing(path),
+        HostPathError::NotDirectory(path) => OrchestrationEffectsError::WorkspaceNotDirectory(path),
+        HostPathError::HomeDirectoryUnavailable(path) => OrchestrationEffectsError::WorkspaceIo {
+            path,
+            source: std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "home directory is unavailable",
+            ),
+        },
+        HostPathError::Io { path, source } => {
+            OrchestrationEffectsError::WorkspaceIo { path, source }
         }
-        *workspace_root = normalized.to_string_lossy().into_owned();
     }
-    Ok(())
+}
+
+#[derive(Default)]
+struct ProductionProjectCommandEffects;
+
+impl ProjectCommandEffects for ProductionProjectCommandEffects {
+    fn canonicalize_workspace_root<'a>(
+        &'a self,
+        workspace_root: &'a str,
+        allow_missing: bool,
+    ) -> BoxProjectCommandFuture<'a, String> {
+        Box::pin(async move {
+            canonicalize_project_workspace_root(Path::new(workspace_root), allow_missing)
+                .await
+                .map(|path| path.to_string_lossy().into_owned())
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn prepare_project_create<'a>(
+        &'a self,
+        workspace_root: &'a str,
+        create_if_missing: bool,
+        initialize_git: bool,
+    ) -> BoxProjectCommandFuture<'a, ()> {
+        Box::pin(async move {
+            let normalized =
+                normalize_project_workspace_root(Path::new(workspace_root), create_if_missing)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            let normalized_display = normalized.to_string_lossy();
+            if normalized_display != workspace_root {
+                return Err(format!(
+                    "workspace root changed while preparing project creation: expected {workspace_root}, resolved {normalized_display}"
+                ));
+            }
+            if initialize_git {
+                GitRepository::default()
+                    .init(&normalized, &CancellationToken::new())
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        })
+    }
+}
+
+pub fn install_project_command_effects(engine: &OrchestrationEngine) {
+    engine.set_project_command_effects(Arc::new(ProductionProjectCommandEffects));
 }
 
 #[derive(Deserialize)]
@@ -398,6 +430,7 @@ impl OrchestrationEffects {
         let cancellation = CancellationToken::new();
         let (sender, receiver) = mpsc::channel(options.queue_capacity.max(1));
 
+        install_project_command_effects(&engine);
         engine.set_bootstrap_effects(Arc::new(ProductionBootstrapEffects {
             repositories: engine.repositories(),
             callbacks: callbacks.clone(),
@@ -1147,7 +1180,6 @@ fn server_id(tag: &str) -> String {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use crate::orchestration::engine::OrchestrationCommand;
     use crate::persistence::{Database, ProjectionProject, Repositories, run_migrations};
 
     use super::*;
@@ -1193,32 +1225,18 @@ mod tests {
         }
 
         let command_root = parent.path().join("command-project");
-        let mut project_command: OrchestrationCommand = serde_json::from_value(json!({
-            "type":"project.create",
-            "commandId":"project",
-            "projectId":"p1",
-            "title":"Project",
-            "workspaceRoot":command_root,
-            "createWorkspaceRootIfMissing":true,
-            "createdAt":"2026-07-10T10:00:00.000Z"
-        }))
-        .expect("project command");
-        normalize_project_create_command(&mut project_command)
+        let project_effects = ProductionProjectCommandEffects;
+        let canonical_command_root = project_effects
+            .canonicalize_workspace_root(command_root.to_string_lossy().as_ref(), true)
             .await
-            .expect("project command normalizes");
-        let encoded = serde_json::to_value(project_command).expect("project command encodes");
-        assert!(
-            Path::new(encoded["workspaceRoot"].as_str().expect("workspace root")).is_absolute()
-        );
-        let mut unrelated: OrchestrationCommand = serde_json::from_value(json!({
-            "type":"thread.archive",
-            "commandId":"archive",
-            "threadId":"t1"
-        }))
-        .expect("thread command");
-        normalize_project_create_command(&mut unrelated)
+            .expect("project command canonicalizes without creating");
+        assert!(Path::new(&canonical_command_root).is_absolute());
+        assert!(!command_root.exists());
+        project_effects
+            .prepare_project_create(&canonical_command_root, true, false)
             .await
-            .expect("unrelated command unchanged");
+            .expect("project command prepares");
+        assert!(command_root.is_dir());
 
         let repository = tempfile::tempdir().expect("repository");
         let cancellation = CancellationToken::new();

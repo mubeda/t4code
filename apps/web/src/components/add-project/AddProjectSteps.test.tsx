@@ -463,6 +463,31 @@ describe("Add Project presentational steps", () => {
       />,
     );
 
+    expect(document.body.textContent).toContain("Host platform information is still loading.");
+    expect(buttonWithText("Create project").disabled).toBe(true);
+  });
+
+  it("shows an invalid create parent reason while the parent editor is collapsed", async () => {
+    await mount(
+      <AddProjectCreateStep
+        name="demo"
+        parentDir="relative/projects"
+        platform="Linux"
+        error={null}
+        busy={false}
+        canPickParent={false}
+        onNameChange={vi.fn()}
+        onParentDirChange={vi.fn()}
+        onPickParent={vi.fn()}
+        onCreate={vi.fn()}
+      />,
+    );
+
+    expect(
+      buttonWithText("Git repository in relative/projects").getAttribute("aria-expanded"),
+    ).toBe("false");
+    expect(document.body.textContent).not.toContain("Parent folder");
+    expect(document.body.textContent).toContain("Enter an absolute or home-relative path.");
     expect(buttonWithText("Create project").disabled).toBe(true);
   });
 });

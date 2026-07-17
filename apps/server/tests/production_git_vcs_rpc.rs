@@ -1368,6 +1368,29 @@ async fn clone_resolves_a_home_relative_parent_before_running_git() {
     );
     assert!(cloned.join(".git").is_dir());
 
+    request(
+        server.socket(),
+        "412",
+        "vcs.clone",
+        json!({
+            "url": local_file_url(remote.path()),
+            "parentDir": format!("~\\{}\\clones", relative.replace('/', "\\")),
+            "directoryName": "consumer-backslash"
+        }),
+    )
+    .await;
+    let backslash_clone_result = success_value(server.socket(), "412").await;
+    let backslash_cloned = PathBuf::from(
+        backslash_clone_result["path"]
+            .as_str()
+            .expect("backslash clone destination path"),
+    );
+    assert_eq!(
+        canonical_path(&backslash_cloned),
+        canonical_path(clone_parent.join("consumer-backslash"))
+    );
+    assert!(backslash_cloned.join(".git").is_dir());
+
     server.shutdown().await;
 }
 

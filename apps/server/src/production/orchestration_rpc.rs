@@ -7,12 +7,12 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    orchestration::{OrchestrationCommand, OrchestrationEngine, load_snapshot},
+    orchestration::{OrchestrationCommand, OrchestrationEngine, OrchestrationError, load_snapshot},
     persistence::{OrchestrationEvent, ProjectionThread},
     rpc::{RpcRegistry, RpcRequest, RpcResult, RpcStreamChunk},
 };
 
-use super::orchestration_effects::normalize_project_create_command;
+use super::orchestration_effects::install_project_command_effects;
 use super::provider_runtime::{ProviderRuntimeSupervisor, route_orchestration_command};
 
 const STREAM_CAPACITY: usize = 16;
@@ -35,20 +35,23 @@ fn register_orchestration_rpc_inner(
     engine: OrchestrationEngine,
     provider: Option<(Arc<ProviderRuntimeSupervisor>, PathBuf)>,
 ) {
+    install_project_command_effects(&engine);
     let dispatch = engine.clone();
     registry.register_unary("orchestration.dispatchCommand", move |request, _| {
         let dispatch = dispatch.clone();
         let provider = provider.clone();
         async move {
-            let mut command = serde_json::from_value::<OrchestrationCommand>(request.payload)
-                .map_err(|error| invalid_request(&request.tag, error.to_string()))?;
-            normalize_project_create_command(&mut command)
-                .await
+            let command = serde_json::from_value::<OrchestrationCommand>(request.payload)
                 .map_err(|error| invalid_request(&request.tag, error.to_string()))?;
             let result = dispatch
                 .dispatch(command.clone())
                 .await
-                .map_err(|error| orchestration_error("OrchestrationDispatchCommandError", error))?;
+                .map_err(|error| match error {
+                    OrchestrationError::ProjectPreparation { detail } => {
+                        invalid_request(&request.tag, detail)
+                    }
+                    error => orchestration_error("OrchestrationDispatchCommandError", error),
+                })?;
             let should_route = match (&command, &result.project_id) {
                 (
                     OrchestrationCommand::ProjectCreate { project_id, .. },

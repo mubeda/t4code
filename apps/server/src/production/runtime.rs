@@ -214,20 +214,20 @@ impl ProductionRuntime {
                 ))
             }
             JsonOperation::OrchestrationDispatch => {
-                let mut command: OrchestrationCommand = serde_json::from_value(
+                let command: OrchestrationCommand = serde_json::from_value(
                     payload.ok_or_else(|| bad_request("Request body is required."))?,
                 )
                 .map_err(bad_request)?;
-                crate::production::orchestration_effects::normalize_project_create_command(
-                    &mut command,
-                )
-                .await
-                .map_err(bad_request)?;
-                let result = self
-                    .orchestration
-                    .dispatch(command)
-                    .await
-                    .map_err(internal_error)?;
+                let result =
+                    self.orchestration
+                        .dispatch(command)
+                        .await
+                        .map_err(|error| match error {
+                            crate::orchestration::OrchestrationError::ProjectPreparation {
+                                detail,
+                            } => bad_request(detail),
+                            error => internal_error(error),
+                        })?;
                 Ok(JsonRouteResponse::ok(
                     serde_json::to_value(result).map_err(internal_error)?,
                 ))

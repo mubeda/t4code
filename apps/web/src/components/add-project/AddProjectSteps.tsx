@@ -595,12 +595,11 @@ export function AddProjectCreateStep({
               onPick={onPickParent}
               value={parentDir}
             />
-            {parentDir.trim().length > 0 && parentError ? (
-              <ErrorMessage>{parentError}</ErrorMessage>
-            ) : null}
+            {parentError ? <ErrorMessage>{parentError}</ErrorMessage> : null}
           </div>
         ) : null}
       </div>
+      {!parentEditorOpen && parentError ? <ErrorMessage>{parentError}</ErrorMessage> : null}
 
       {error ? <ErrorMessage>{error}</ErrorMessage> : null}
       <Button className="w-full" disabled={!canSubmit} size="lg" type="submit">
