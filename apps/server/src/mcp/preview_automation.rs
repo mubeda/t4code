@@ -410,3 +410,174 @@ fn fail_pending_locked(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn input(operation: PreviewAutomationOperation) -> PreviewAutomationInvokeInput {
+        PreviewAutomationInvokeInput {
+            environment_id: "environment".into(),
+            thread_id: "thread".into(),
+            provider_session_id: "session".into(),
+            provider_instance_id: "provider".into(),
+            operation,
+            input: json!({"value":1}),
+            tab_id: None,
+            timeout_ms: Some(100),
+        }
+    }
+
+    #[test]
+    fn operation_wire_names_round_trip() {
+        for operation in [
+            PreviewAutomationOperation::Status,
+            PreviewAutomationOperation::Open,
+            PreviewAutomationOperation::Navigate,
+            PreviewAutomationOperation::Snapshot,
+            PreviewAutomationOperation::Click,
+            PreviewAutomationOperation::Type,
+            PreviewAutomationOperation::Press,
+            PreviewAutomationOperation::Scroll,
+            PreviewAutomationOperation::Evaluate,
+            PreviewAutomationOperation::WaitFor,
+            PreviewAutomationOperation::RecordingStart,
+            PreviewAutomationOperation::RecordingStop,
+            PreviewAutomationOperation::Resize,
+        ] {
+            assert_eq!(
+                PreviewAutomationOperation::from_wire(operation.as_str()),
+                Some(operation)
+            );
+        }
+        assert_eq!(PreviewAutomationOperation::from_wire("unknown"), None);
+    }
+
+    #[tokio::test]
+    async fn broker_covers_focus_response_disconnect_timeout_and_closed_queue() {
+        let broker = PreviewAutomationBroker::new();
+        let unavailable = broker
+            .invoke(input(PreviewAutomationOperation::Status))
+            .await
+            .unwrap_err();
+        assert_eq!(unavailable.tag(), "PreviewAutomationNoAvailableHostError");
+        assert!(!unavailable.message().is_empty());
+        assert!(broker.focus_host("missing", "environment").await.is_err());
+
+        let mut events = broker.connect(PreviewAutomationHost {
+            client_id: "client".into(),
+            environment_id: "environment".into(),
+            supported_operations: vec![PreviewAutomationOperation::Status],
+        });
+        let PreviewAutomationStreamEvent::Connected { connection_id } =
+            events.recv().await.unwrap()
+        else {
+            panic!("expected connected event")
+        };
+        assert!(broker.focus_host("client", "other").await.is_err());
+        broker.focus_host("client", "environment").await.unwrap();
+        assert!(!broker.disconnect("client", "stale"));
+
+        let invoke_broker = broker.clone();
+        let invoke = tokio::spawn(async move {
+            invoke_broker
+                .invoke(input(PreviewAutomationOperation::Status))
+                .await
+        });
+        let PreviewAutomationStreamEvent::Request { request, .. } = events.recv().await.unwrap()
+        else {
+            panic!("expected request event")
+        };
+        assert_eq!(request.tab_id, None);
+        broker
+            .respond(PreviewAutomationResponse {
+                client_id: "client".into(),
+                connection_id: connection_id.clone(),
+                request_id: request.request_id,
+                ok: true,
+                result: Some(json!({"tabId":"tab-1","ok":true})),
+                error: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(invoke.await.unwrap().unwrap()["ok"], true);
+
+        let invoke_broker = broker.clone();
+        let invoke = tokio::spawn(async move {
+            invoke_broker
+                .invoke(input(PreviewAutomationOperation::Status))
+                .await
+        });
+        let PreviewAutomationStreamEvent::Request { request, .. } = events.recv().await.unwrap()
+        else {
+            panic!("expected request event")
+        };
+        assert_eq!(request.tab_id.as_deref(), Some("tab-1"));
+        broker
+            .respond(PreviewAutomationResponse {
+                client_id: "client".into(),
+                connection_id: connection_id.clone(),
+                request_id: request.request_id,
+                ok: false,
+                result: None,
+                error: Some(json!({"_tag":"InjectedError","message":"injected"})),
+            })
+            .await
+            .unwrap();
+        assert_eq!(invoke.await.unwrap().unwrap_err().tag(), "InjectedError");
+        broker
+            .respond(PreviewAutomationResponse {
+                client_id: "client".into(),
+                connection_id: connection_id.clone(),
+                request_id: "missing".into(),
+                ok: true,
+                result: None,
+                error: None,
+            })
+            .await
+            .unwrap();
+
+        let invoke_broker = broker.clone();
+        let pending = tokio::spawn(async move {
+            invoke_broker
+                .invoke(input(PreviewAutomationOperation::Status))
+                .await
+        });
+        let PreviewAutomationStreamEvent::Request { .. } = events.recv().await.unwrap() else {
+            panic!("expected request event")
+        };
+        assert!(broker.disconnect("client", &connection_id));
+        assert_eq!(
+            pending.await.unwrap().unwrap_err().tag(),
+            "PreviewAutomationClientDisconnectedError"
+        );
+
+        let mut timeout_events = broker.connect(PreviewAutomationHost {
+            client_id: "timeout".into(),
+            environment_id: "environment".into(),
+            supported_operations: vec![PreviewAutomationOperation::Status],
+        });
+        timeout_events.recv().await.unwrap();
+        let mut timeout_input = input(PreviewAutomationOperation::Status);
+        timeout_input.timeout_ms = Some(1);
+        assert_eq!(
+            broker.invoke(timeout_input).await.unwrap_err().tag(),
+            "PreviewAutomationTimeoutError"
+        );
+
+        let mut closed = broker.connect(PreviewAutomationHost {
+            client_id: "closed".into(),
+            environment_id: "closed-environment".into(),
+            supported_operations: vec![PreviewAutomationOperation::Status],
+        });
+        closed.recv().await.unwrap();
+        drop(closed);
+        let mut closed_input = input(PreviewAutomationOperation::Status);
+        closed_input.environment_id = "closed-environment".into();
+        assert_eq!(
+            broker.invoke(closed_input).await.unwrap_err().tag(),
+            "PreviewAutomationRequestQueueClosedError"
+        );
+    }
+}
