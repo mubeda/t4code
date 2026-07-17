@@ -116,6 +116,7 @@ impl AssetAccess {
                 } else if PREVIEW_ENTRY_EXTENSIONS.contains(&extension.as_str()) {
                     let base = Path::new(&relative)
                         .parent()
+                        .filter(|parent| !parent.as_os_str().is_empty())
                         .map_or_else(|| ".".to_owned(), paths::to_posix);
                     Claims::WorkspaceSiblings {
                         root,
@@ -347,4 +348,131 @@ fn now_millis() -> u64 {
 
 fn duration_millis(duration: Duration) -> u64 {
     duration.as_millis().try_into().unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn token_from(url: &IssuedAssetUrl) -> &str {
+        url.relative_url.split('/').nth(3).unwrap()
+    }
+
+    #[tokio::test]
+    async fn asset_capabilities_cover_file_type_path_and_token_edges() {
+        let root = tempfile::tempdir().unwrap();
+        let attachments = tempfile::tempdir().unwrap();
+        let access = AssetAccess::new(vec![5; 32], attachments.path().to_path_buf());
+
+        tokio::fs::create_dir(root.path().join("directory.png"))
+            .await
+            .unwrap();
+        assert!(matches!(
+            access
+                .issue(AssetIssueRequest {
+                    resource: AssetResource::WorkspaceFile {
+                        thread_id: "thread-1".to_owned(),
+                        path: "directory.png".to_owned(),
+                    },
+                    workspace_root: Some(root.path().to_path_buf()),
+                })
+                .await,
+            Err(AssetError::NotFound(_))
+        ));
+
+        tokio::fs::write(root.path().join("notes.txt"), b"notes")
+            .await
+            .unwrap();
+        assert!(matches!(
+            access
+                .issue(AssetIssueRequest {
+                    resource: AssetResource::WorkspaceFile {
+                        thread_id: "thread-1".to_owned(),
+                        path: "notes.txt".to_owned(),
+                    },
+                    workspace_root: Some(root.path().to_path_buf()),
+                })
+                .await,
+            Err(AssetError::UnsupportedPreviewType(_))
+        ));
+        assert!(matches!(
+            access
+                .issue(AssetIssueRequest {
+                    resource: AssetResource::Attachment {
+                        attachment_id: "missing.png".to_owned(),
+                    },
+                    workspace_root: None,
+                })
+                .await,
+            Err(AssetError::NotFound(_))
+        ));
+
+        tokio::fs::write(root.path().join("index.html"), b"<html></html>")
+            .await
+            .unwrap();
+        tokio::fs::write(root.path().join("style.css"), b"body{}")
+            .await
+            .unwrap();
+        let html = access
+            .issue(AssetIssueRequest {
+                resource: AssetResource::WorkspaceFile {
+                    thread_id: "thread-1".to_owned(),
+                    path: "index.html".to_owned(),
+                },
+                workspace_root: Some(root.path().to_path_buf()),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            access.resolve(token_from(&html), "style.css").await,
+            Some(ResolvedAsset::File(_))
+        ));
+
+        let absolute_path = root.path().join("absolute.png");
+        tokio::fs::write(&absolute_path, b"png").await.unwrap();
+        let absolute = access
+            .issue(AssetIssueRequest {
+                resource: AssetResource::WorkspaceFile {
+                    thread_id: "thread-1".to_owned(),
+                    path: absolute_path.to_string_lossy().into_owned(),
+                },
+                workspace_root: Some(root.path().to_path_buf()),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            access.resolve(token_from(&absolute), "absolute.png").await,
+            Some(ResolvedAsset::File(_))
+        ));
+
+        tokio::fs::write(root.path().join("favicon.svg"), b"<svg/>")
+            .await
+            .unwrap();
+        let favicon = access
+            .issue(AssetIssueRequest {
+                resource: AssetResource::ProjectFavicon {
+                    cwd: root.path().to_string_lossy().into_owned(),
+                },
+                workspace_root: None,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            access.resolve(token_from(&favicon), "favicon.svg").await,
+            Some(ResolvedAsset::File(_))
+        ));
+
+        for requested in [
+            "",
+            "bad\0name.css",
+            "/absolute.css",
+            "../escape.css",
+            ".env",
+        ] {
+            assert_eq!(access.resolve(token_from(&html), requested).await, None);
+        }
+        for token in ["", "missing-dot", "bad.%%%", "%%%.bad"] {
+            assert_eq!(access.resolve(token, "style.css").await, None);
+        }
+    }
 }
