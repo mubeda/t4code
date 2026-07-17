@@ -90,9 +90,7 @@ describe("primary environment authentication helpers", () => {
 
     vi.stubGlobal("window", {
       desktopBridge: {
-        getLocalEnvironmentBootstraps: () => [
-          { id: "primary", bootstrapToken: "primary-token" },
-        ],
+        getLocalEnvironmentBootstraps: () => [{ id: "primary", bootstrapToken: "primary-token" }],
       },
     });
     expect(primaryEnvironmentAuthInternals.getDesktopBootstrapCredential()).toBe("primary-token");
@@ -107,10 +105,12 @@ describe("primary environment authentication helpers", () => {
       });
 
     expect(primaryEnvironmentAuthInternals.isTransientBootstrapError(requestError(503))).toBe(true);
-    expect(primaryEnvironmentAuthInternals.isTransientBootstrapError(requestError(400))).toBe(false);
-    expect(primaryEnvironmentAuthInternals.isTransientBootstrapError(new TypeError("network"))).toBe(
-      true,
+    expect(primaryEnvironmentAuthInternals.isTransientBootstrapError(requestError(400))).toBe(
+      false,
     );
+    expect(
+      primaryEnvironmentAuthInternals.isTransientBootstrapError(new TypeError("network")),
+    ).toBe(true);
     expect(
       primaryEnvironmentAuthInternals.isTransientBootstrapError(
         new DOMException("aborted", "AbortError"),

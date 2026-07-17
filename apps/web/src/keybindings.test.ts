@@ -664,7 +664,9 @@ describe("resolveShortcutCommand", () => {
   });
 
   it("skips sparse bindings and can use the runtime platform default", () => {
-    const sparse = new Array(2) as ResolvedKeybindingsConfig;
+    const sparseBindings: unknown[] = [];
+    sparseBindings.length = 2;
+    const sparse = sparseBindings as ResolvedKeybindingsConfig;
     assert.isNull(resolveShortcutCommand(event({ key: "x" }), sparse, { platform: "Linux" }));
 
     const originalNavigator = globalThis.navigator;

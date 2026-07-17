@@ -42,7 +42,8 @@ export async function acquireBuildLock(options = {}) {
   const mkdir = options.mkdir ?? NodeFSP.mkdir;
   const writeFile = options.writeFile ?? NodeFSP.writeFile;
   const sleep = options.sleep ?? NodeTimersPromises.setTimeout;
-  const removeStale = options.removeStaleLock ?? (() => removeStaleLock({ lockDirectory: directory }));
+  const removeStale =
+    options.removeStaleLock ?? (() => removeStaleLock({ lockDirectory: directory }));
   for (;;) {
     try {
       await mkdir(directory);

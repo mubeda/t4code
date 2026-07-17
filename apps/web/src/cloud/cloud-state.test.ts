@@ -112,14 +112,8 @@ vi.mock("./linkEnvironment", () => ({
   }),
 }));
 
-import {
-  refreshManagedRelayEnvironments,
-  useManagedRelayEnvironments,
-} from "./managedRelayState";
-import {
-  refreshPrimaryCloudLinkState,
-  usePrimaryCloudLinkState,
-} from "./primaryCloudLinkState";
+import { refreshManagedRelayEnvironments, useManagedRelayEnvironments } from "./managedRelayState";
+import { refreshPrimaryCloudLinkState, usePrimaryCloudLinkState } from "./primaryCloudLinkState";
 
 beforeEach(() => {
   h.session = null;
@@ -156,10 +150,10 @@ describe("managed relay cloud state", () => {
     const state = useManagedRelayEnvironments();
     expect(h.environmentsAtom).toHaveBeenCalledWith("account-1");
     expect(state.accountId).toBe("account-1");
-    expect(errorLog).toHaveBeenCalledWith(
-      "[t4code-cloud] Relay environment listing failed",
-      { message: "relay unavailable", traceId: "trace-1" },
-    );
+    expect(errorLog).toHaveBeenCalledWith("[t4code-cloud] Relay environment listing failed", {
+      message: "relay unavailable",
+      traceId: "trace-1",
+    });
     state.refresh();
     refreshManagedRelayEnvironments();
     expect(h.refreshEnvironments).toHaveBeenCalledTimes(2);
@@ -224,7 +218,11 @@ describe("primary cloud link state", () => {
         },
       },
     };
-    h.primaryResult = { _tag: "Failure", cause: Cause.fail(new Error("link failed")), waiting: false };
+    h.primaryResult = {
+      _tag: "Failure",
+      cause: Cause.fail(new Error("link failed")),
+      waiting: false,
+    };
     expect(usePrimaryCloudLinkState().error).toBe("link failed");
     h.primaryResult = { _tag: "Failure", cause: Cause.fail("unknown"), waiting: false };
     expect(usePrimaryCloudLinkState().error).toBe("Could not read T4 Connect link state.");

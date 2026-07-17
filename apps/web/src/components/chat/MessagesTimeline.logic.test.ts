@@ -1269,15 +1269,9 @@ describe("computeStableMessagesTimelineRows", () => {
       result: [],
     });
 
-    expect(
-      computeStableMessagesTimelineRows(
-        [
-          { ...working },
-          { ...proposed },
-        ],
-        initial,
-      ),
-    ).toBe(initial);
+    expect(computeStableMessagesTimelineRows([{ ...working }, { ...proposed }], initial)).toBe(
+      initial,
+    );
     expect(
       computeStableMessagesTimelineRows(
         [
@@ -1308,10 +1302,7 @@ describe("computeStableMessagesTimelineRows", () => {
       computeStableMessagesTimelineRows([{ ...toggle, onlyToolEntries: false }], initial),
     ).not.toBe(initial);
     expect(
-      computeStableMessagesTimelineRows(
-        [{ kind: "working", id: "shared", createdAt }],
-        initial,
-      ),
+      computeStableMessagesTimelineRows([{ kind: "working", id: "shared", createdAt }], initial),
     ).not.toBe(initial);
   });
 
@@ -1330,17 +1321,14 @@ describe("computeStableMessagesTimelineRows", () => {
     });
     expect(computeStableMessagesTimelineRows([{ ...fold }], initial)).toBe(initial);
     expect(
-      computeStableMessagesTimelineRows(
-        [{ ...fold, createdAt: "2026-01-01T00:00:01Z" }],
-        initial,
-      ),
+      computeStableMessagesTimelineRows([{ ...fold, createdAt: "2026-01-01T00:00:01Z" }], initial),
     ).not.toBe(initial);
-    expect(
-      computeStableMessagesTimelineRows([{ ...fold, label: "Worked" }], initial),
-    ).not.toBe(initial);
-    expect(
-      computeStableMessagesTimelineRows([{ ...fold, expanded: true }], initial),
-    ).not.toBe(initial);
+    expect(computeStableMessagesTimelineRows([{ ...fold, label: "Worked" }], initial)).not.toBe(
+      initial,
+    );
+    expect(computeStableMessagesTimelineRows([{ ...fold, expanded: true }], initial)).not.toBe(
+      initial,
+    );
   });
 
   it("returns the previous result when row order and content are unchanged", () => {

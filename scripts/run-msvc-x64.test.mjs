@@ -46,9 +46,7 @@ describe("run-msvc-x64", () => {
         existsSync: (path) => path === fallback,
       }),
     ).toBe(fallback);
-    expect(
-      discoverVcVarsAll({ programFilesX86: root, existsSync: () => false }),
-    ).toBeNull();
+    expect(discoverVcVarsAll({ programFilesX86: root, existsSync: () => false })).toBeNull();
     expect(
       discoverVcVarsAll({
         programFilesX86: root,

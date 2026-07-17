@@ -158,8 +158,7 @@ describe("environment shell synchronization", () => {
       });
       yield* SubscriptionRef.changes(shellState).pipe(
         Stream.filter(
-          (next) =>
-            Option.isSome(next.snapshot) && next.snapshot.value.snapshotSequence === 2,
+          (next) => Option.isSome(next.snapshot) && next.snapshot.value.snapshotSequence === 2,
         ),
         Stream.runHead,
       );

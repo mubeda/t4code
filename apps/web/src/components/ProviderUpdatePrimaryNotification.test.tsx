@@ -368,7 +368,8 @@ describe("one-click update prompt", () => {
 
   it("does not overwrite a successor toast when an older update resolves", async () => {
     const latestVersion = uniqueLatestVersion();
-    const request = deferred<ReturnType<typeof AsyncResult.success<{ providers: ServerProvider[] }>>>();
+    const request =
+      deferred<ReturnType<typeof AsyncResult.success<{ providers: ServerProvider[] }>>>();
     testState.updateProvider.mockReturnValue(request.promise);
     renderPrompt(latestVersion);
 

@@ -184,7 +184,9 @@ describe("local draft and attachment helpers", () => {
 
     expect(cloneComposerImageForRetry(image)).toEqual({ ...image, previewUrl: "blob:retry" });
     expect(createObjectURL).toHaveBeenCalledWith(file);
-    expect(cloneComposerImageForRetry({ ...image, previewUrl: "data:image/png;base64,eA==" })).toEqual({
+    expect(
+      cloneComposerImageForRetry({ ...image, previewUrl: "data:image/png;base64,eA==" }),
+    ).toEqual({
       ...image,
       previewUrl: "data:image/png;base64,eA==",
     });
@@ -298,9 +300,7 @@ describe("thread lifecycle helpers", () => {
     });
 
     atomRegistry.get.mockReturnValueOnce(started);
-    await expect(
-      waitForStartedServerThread({ environmentId, threadId }, 50),
-    ).resolves.toBe(true);
+    await expect(waitForStartedServerThread({ environmentId, threadId }, 50)).resolves.toBe(true);
     expect(atomRegistry.subscribe).not.toHaveBeenCalled();
 
     atomRegistry.get.mockReset();
@@ -312,9 +312,7 @@ describe("thread lifecycle helpers", () => {
 
     atomRegistry.get.mockReset();
     atomRegistry.get.mockReturnValueOnce(undefined).mockReturnValueOnce(started);
-    await expect(
-      waitForStartedServerThread({ environmentId, threadId }, 50),
-    ).resolves.toBe(true);
+    await expect(waitForStartedServerThread({ environmentId, threadId }, 50)).resolves.toBe(true);
 
     vi.useFakeTimers();
     atomRegistry.get.mockReset();

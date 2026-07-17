@@ -18,7 +18,14 @@ import {
   CardPanel,
   CardTitle,
 } from "./card";
-import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./empty";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "./empty";
 import {
   Field,
   FieldControl,
@@ -81,7 +88,7 @@ describe("UI primitive composition", () => {
     );
 
     expect(markup.match(/role="alert"/gu)).toHaveLength(variants.length);
-    expect(markup).toContain("data-slot=\"alert-action\"");
+    expect(markup).toContain('data-slot="alert-action"');
     expect(markup).toContain("alert-warning");
     expect(markup).toContain("warning icon");
   });
@@ -126,10 +133,10 @@ describe("UI primitive composition", () => {
       </>,
     );
 
-    expect(markup).toContain("data-slot=\"card-frame\"");
+    expect(markup).toContain('data-slot="card-frame"');
     expect(markup).toContain("frame-custom");
-    expect(markup).toContain("data-slot=\"card-panel\"");
-    expect(markup).toContain("data-slot=\"table-container\"");
+    expect(markup).toContain('data-slot="card-panel"');
+    expect(markup).toContain('data-slot="table-container"');
     expect(markup).toContain("table-custom");
   });
 
@@ -185,11 +192,11 @@ describe("UI primitive composition", () => {
     );
 
     expect(markup).toContain("empty-custom");
-    expect(markup).toContain("data-align=\"block-end\"");
-    expect(markup).toContain("id=\"copies\"");
+    expect(markup).toContain('data-align="block-end"');
+    expect(markup).toContain('id="copies"');
     expect(markup).toContain("cursor-custom");
-    expect(markup).toContain("data-slot=\"toggle-group\"");
-    expect(markup).toContain("data-orientation=\"vertical\"");
+    expect(markup).toContain('data-slot="toggle-group"');
+    expect(markup).toContain('data-orientation="vertical"');
   });
 
   it("rejects an accessible scrub label outside its number field", () => {
@@ -232,11 +239,11 @@ describe("UI primitive composition", () => {
       </Form>,
     );
 
-    expect(markup).toContain("data-slot=\"form\"");
-    expect(markup).toContain("data-slot=\"fieldset-legend\"");
-    expect(markup).toContain("name=\"nickname\"");
-    expect(markup).toContain("data-orientation=\"vertical\"");
-    expect(markup).toContain("data-slot=\"kbd\"");
-    expect(markup).toContain("id=\"choice-a\"");
+    expect(markup).toContain('data-slot="form"');
+    expect(markup).toContain('data-slot="fieldset-legend"');
+    expect(markup).toContain('name="nickname"');
+    expect(markup).toContain('data-orientation="vertical"');
+    expect(markup).toContain('data-slot="kbd"');
+    expect(markup).toContain('id="choice-a"');
   });
 });

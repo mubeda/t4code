@@ -297,9 +297,9 @@ describe("element context defensive branch coverage", () => {
   it("normalizes absent optional payload fields and an empty stack", () => {
     const result = normalizeElementContextSelection(
       makePayload({
-        pageTitle: undefined,
-        selector: undefined,
-        componentName: undefined,
+        pageTitle: undefined as never,
+        selector: undefined as never,
+        componentName: undefined as never,
         source: null,
         stack: [],
       }),
@@ -316,10 +316,10 @@ describe("element context defensive branch coverage", () => {
     const result = normalizeElementContextSelection(
       makePayload({
         source: {
-          functionName: undefined,
-          fileName: undefined,
-          lineNumber: undefined,
-          columnNumber: undefined,
+          functionName: undefined as never,
+          fileName: undefined as never,
+          lineNumber: undefined as never,
+          columnNumber: undefined as never,
         },
       }),
     );
@@ -332,9 +332,9 @@ describe("element context defensive branch coverage", () => {
   });
 
   it("deduplicates contexts without selector or component names", () => {
-    expect(
-      elementContextDedupKey(makeSelection({ selector: null, componentName: null })),
-    ).toBe("https://example.com/dashboard||button|");
+    expect(elementContextDedupKey(makeSelection({ selector: null, componentName: null }))).toBe(
+      "https://example.com/dashboard||button|",
+    );
   });
 
   it("serializes a minimal source and omits every empty optional section", () => {

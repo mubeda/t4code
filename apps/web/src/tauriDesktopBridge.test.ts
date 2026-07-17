@@ -597,9 +597,9 @@ describe("tauriDesktopBridge", () => {
     await expect(bridge.setServerExposureMode("network-accessible")).resolves.toMatchObject({
       mode: "local-only",
     });
-    await expect(bridge.setTailscaleServeEnabled({ enabled: true, port: 8443 })).resolves.toMatchObject(
-      { tailscaleServeEnabled: false },
-    );
+    await expect(
+      bridge.setTailscaleServeEnabled({ enabled: true, port: 8443 }),
+    ).resolves.toMatchObject({ tailscaleServeEnabled: false });
     await expect(bridge.getWslState()).resolves.toMatchObject({ enabled: false, distros: [] });
     await expect(bridge.setWslBackendEnabled(true)).resolves.toMatchObject({ enabled: false });
     await expect(bridge.setWslDistro("Ubuntu")).resolves.toMatchObject({ distro: null });

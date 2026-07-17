@@ -1325,7 +1325,10 @@ describe("provider update launch notification logic", () => {
       ];
 
       const first = getProviderUpdateSidebarPillView(providers);
-      expect(first).toMatchObject({ tone: "warning", title: "custom-unchanged still needs an update" });
+      expect(first).toMatchObject({
+        tone: "warning",
+        title: "custom-unchanged still needs an update",
+      });
       const second = getProviderUpdateSidebarPillView(providers, {
         dismissedKeys: new Set([first!.key]),
       });

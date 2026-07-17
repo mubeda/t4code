@@ -39,6 +39,7 @@ const emptyCatalog = {
 } as const;
 const decodeCatalog = Schema.decodeUnknownSync(Schema.fromJsonString(ConnectionCatalogDocument));
 const encodeCatalog = Schema.encodeSync(Schema.fromJsonString(ConnectionCatalogDocument));
+const encodeUnknownJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 
 // ── In-memory IndexedDB fake ─────────────────────────────────────────
 // The production storage code attaches listeners *then* triggers the op, so
@@ -634,24 +635,29 @@ describe("connectionStorageLayer", () => {
     }).pipe(Effect.provide(connectionStorageLayer));
   });
 
-  it.effect("maps catalog and cache write failures to operation-specific persistence errors", () => {
-    installFakeIndexedDb({ fault: "put" });
-    return Effect.gen(function* () {
-      const registrationStore = yield* ConnectionRegistrationStore;
-      const cacheStore = yield* EnvironmentCacheStore;
+  it.effect(
+    "maps catalog and cache write failures to operation-specific persistence errors",
+    () => {
+      installFakeIndexedDb({ fault: "put" });
+      return Effect.gen(function* () {
+        const registrationStore = yield* ConnectionRegistrationStore;
+        const cacheStore = yield* EnvironmentCacheStore;
 
-      const registerError = yield* Effect.flip(registrationStore.register(bearerRegistration()));
-      expect(registerError.operation).toBe("register-connection");
-      const removeError = yield* Effect.flip(registrationStore.remove(bearerRegistration().target));
-      expect(removeError.operation).toBe("remove-connection");
-      const shellError = yield* Effect.flip(cacheStore.saveShell(environmentId, shellSnapshot()));
-      expect(shellError.operation).toBe("save-shell");
-      const threadError = yield* Effect.flip(
-        cacheStore.saveThread(environmentId, orchestrationThread()),
-      );
-      expect(threadError.operation).toBe("save-thread");
-    }).pipe(Effect.provide(connectionStorageLayer));
-  });
+        const registerError = yield* Effect.flip(registrationStore.register(bearerRegistration()));
+        expect(registerError.operation).toBe("register-connection");
+        const removeError = yield* Effect.flip(
+          registrationStore.remove(bearerRegistration().target),
+        );
+        expect(removeError.operation).toBe("remove-connection");
+        const shellError = yield* Effect.flip(cacheStore.saveShell(environmentId, shellSnapshot()));
+        expect(shellError.operation).toBe("save-shell");
+        const threadError = yield* Effect.flip(
+          cacheStore.saveThread(environmentId, orchestrationThread()),
+        );
+        expect(threadError.operation).toBe("save-thread");
+      }).pipe(Effect.provide(connectionStorageLayer));
+    },
+  );
 
   it.effect("rejects malformed cached snapshots and ignores snapshots scoped elsewhere", () => {
     const handle = installFakeIndexedDb();
@@ -673,7 +679,7 @@ describe("connectionStorageLayer", () => {
 
       shellStore.set(
         environmentId,
-        JSON.stringify({
+        encodeUnknownJson({
           schemaVersion: 1,
           environmentId: otherEnvironmentId,
           snapshot: shellSnapshot(),
@@ -681,7 +687,7 @@ describe("connectionStorageLayer", () => {
       );
       threadStore.set(
         `${environmentId}:${threadId}`,
-        JSON.stringify({
+        encodeUnknownJson({
           schemaVersion: 1,
           environmentId: otherEnvironmentId,
           threadId,
@@ -698,9 +704,9 @@ describe("connectionStorageLayer", () => {
     return Effect.gen(function* () {
       const cacheStore = yield* EnvironmentCacheStore;
 
-      expect((yield* Effect.flip(cacheStore.saveShell(environmentId, null as never))).operation).toBe(
-        "save-shell",
-      );
+      expect(
+        (yield* Effect.flip(cacheStore.saveShell(environmentId, null as never))).operation,
+      ).toBe("save-shell");
       expect(
         (yield* Effect.flip(cacheStore.saveThread(environmentId, { id: threadId } as never)))
           .operation,

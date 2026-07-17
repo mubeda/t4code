@@ -154,9 +154,8 @@ describe("ChatMarkdown", () => {
     });
 
     it("estimates highlight memory and disambiguates duplicate file basenames", async () => {
-      const { buildFileLinkParentSuffixByPath, estimateHighlightedSize } = await import(
-        "./ChatMarkdown"
-      );
+      const { buildFileLinkParentSuffixByPath, estimateHighlightedSize } =
+        await import("./ChatMarkdown");
 
       expect(estimateHighlightedSize("12345", "x")).toBe(10);
       expect(estimateHighlightedSize("x", "12345")).toBe(15);
@@ -176,9 +175,9 @@ describe("ChatMarkdown", () => {
     it("extracts markdown hrefs and rejects unsupported external hosts", async () => {
       const { extractMarkdownLinkHrefs, resolveExternalLinkHost } = await import("./ChatMarkdown");
 
-      expect(extractMarkdownLinkHrefs('[one](https://one.test) [two](file:///tmp/two "x")')).toEqual(
-        ["https://one.test", "file:///tmp/two"],
-      );
+      expect(
+        extractMarkdownLinkHrefs('[one](https://one.test) [two](file:///tmp/two "x")'),
+      ).toEqual(["https://one.test", "file:///tmp/two"]);
       expect(resolveExternalLinkHost(undefined)).toBeNull();
       expect(resolveExternalLinkHost("mailto:test@example.com")).toBeNull();
       expect(resolveExternalLinkHost("not a url")).toBeNull();
@@ -734,9 +733,7 @@ describe("ChatMarkdown", () => {
     it("copies tables as Markdown and CSV and replaces the copied-state timer", async () => {
       const writeText = vi.fn(async () => {});
       installClipboard(writeText);
-      const container = await mountMarkdown(
-        ["| A | B |", "| - | - |", "| one | two |"].join("\n"),
-      );
+      const container = await mountMarkdown(["| A | B |", "| - | - |", "| one | two |"].join("\n"));
 
       const chooseCopyFormat = async (label: string) => {
         const item = Array.from(
@@ -759,9 +756,7 @@ describe("ChatMarkdown", () => {
     it("ignores unavailable table clipboards and reports copy failures", async () => {
       const failure = new Error("table copy failed");
       const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-      const container = await mountMarkdown(
-        ["| A | B |", "| - | - |", "| one | two |"].join("\n"),
-      );
+      await mountMarkdown(["| A | B |", "| - | - |", "| one | two |"].join("\n"));
       const chooseMarkdown = async () => {
         const item = Array.from(
           document.querySelectorAll<HTMLElement>("[role=menuitem], [data-slot=menu-item]"),
@@ -841,12 +836,7 @@ describe("ChatMarkdown", () => {
       );
       expect(scrollIntoView).toHaveBeenCalledOnce();
 
-      for (const init of [
-        { button: 1 },
-        { metaKey: true },
-        { shiftKey: true },
-        { altKey: true },
-      ]) {
+      for (const init of [{ button: 1 }, { metaKey: true }, { shiftKey: true }, { altKey: true }]) {
         await act(async () =>
           anchor.dispatchEvent(
             new MouseEvent("click", { bubbles: true, cancelable: true, ...init }),

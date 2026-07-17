@@ -2037,7 +2037,7 @@ describe("malformed orchestration payload handling", () => {
         threads: [],
         latestTurn: {
           turnId: TurnId.make("turn-without-source"),
-          sourceProposedPlan: null,
+          sourceProposedPlan: undefined,
         },
         latestTurnSettled: false,
         threadId: ThreadId.make("thread-active"),
@@ -2273,10 +2273,7 @@ describe("work-log fallback payloads", () => {
         tone: "info",
       }),
     ]);
-    expect(separated.map((entry) => entry.id)).toEqual([
-      "tool-before-status",
-      "status-after-tool",
-    ]);
+    expect(separated.map((entry) => entry.id)).toEqual(["tool-before-status", "status-after-tool"]);
   });
 
   it("normalizes malformed and minimal command payloads defensively", () => {

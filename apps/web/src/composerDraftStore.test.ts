@@ -2222,26 +2222,28 @@ describe("composerDraftStore legacy storage migration", () => {
       draftThreadsByThreadKey: Record<string, { logicalProjectKey?: string }>;
     };
 
-    expect(migrated.draftsByThreadKey.edge.modelSelectionByProvider.codex.options).toEqual([
+    expect(migrated.draftsByThreadKey.edge!.modelSelectionByProvider.codex!.options).toEqual([
       { id: "reasoningEffort", value: "medium" },
       { id: "fastMode", value: false },
     ]);
-    expect(migrated.draftsByThreadKey.edge.terminalContexts).toEqual([
+    expect(migrated.draftsByThreadKey.edge!.terminalContexts).toEqual([
       expect.objectContaining({ terminalId: "terminal", lineStart: 1, lineEnd: 1 }),
     ]);
-    expect(migrated.draftsByThreadKey.edge.elementContexts[0].source).toEqual({
+    expect(migrated.draftsByThreadKey.edge!.elementContexts[0]!.source).toEqual({
       functionName: null,
       fileName: null,
       lineNumber: null,
       columnNumber: null,
     });
-    expect(migrated.draftsByThreadKey.legacyExtras.modelSelectionByProvider.codex.options).toEqual([
+    expect(
+      migrated.draftsByThreadKey.legacyExtras!.modelSelectionByProvider.codex!.options,
+    ).toEqual([
       { id: "reasoningEffort", value: "medium" },
       { id: "fastMode", value: true },
     ]);
-    expect(migrated.draftsByThreadKey.custom.activeProvider).toBe("custom_instance");
-    expect(migrated.draftsByThreadKey.invalidModel.activeProvider).toBeUndefined();
-    expect(migrated.draftThreadsByThreadKey.edge.logicalProjectKey).toBe("logical-edge");
+    expect(migrated.draftsByThreadKey.custom!.activeProvider).toBe("custom_instance");
+    expect(migrated.draftsByThreadKey.invalidModel!.activeProvider).toBeUndefined();
+    expect(migrated.draftThreadsByThreadKey.edge!.logicalProjectKey).toBe("logical-edge");
   });
 
   it("reconciles project mappings against missing and conflicting draft threads", () => {

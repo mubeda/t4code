@@ -476,8 +476,7 @@ vi.mock("../keybindings", () => ({
     return command in labels ? labels[command] : "Mod+K";
   },
   shouldShowThreadJumpHintsForModifiers: () => h.state.showJumpHintModifiers,
-  threadJumpCommandForIndex: (index: number) =>
-    index < 9 ? `thread.jump.${index + 1}` : null,
+  threadJumpCommandForIndex: (index: number) => (index < 9 ? `thread.jump.${index + 1}` : null),
   threadJumpIndexFromCommand: (command: string) => {
     const match = /^thread\.jump\.([1-9])$/u.exec(command);
     return match ? Number(match[1]) - 1 : null;

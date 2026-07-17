@@ -1594,6 +1594,35 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn environment_manager_reports_unreachable_ssh_targets() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder()
+            .build(mock_context(noop_assets()))
+            .expect("mock Tauri app");
+        let manager = SshEnvironmentManager::new();
+        let prompts = SshPasswordPromptManager::with_timeout(Duration::ZERO);
+        let target = SshEnvironmentTarget {
+            alias: "unreachable-localhost".to_string(),
+            hostname: "127.0.0.1".to_string(),
+            username: None,
+            port: Some(1),
+        };
+
+        let ensure_error = manager
+            .ensure_environment(app.handle(), &prompts, target.clone(), None)
+            .await
+            .expect_err("an unreachable SSH target should not launch");
+        assert!(ensure_error.contains("SSH launch command failed"));
+
+        let disconnect_error = manager
+            .disconnect_environment(app.handle(), &prompts, target)
+            .await
+            .expect_err("an unreachable SSH target should not disconnect remotely");
+        assert!(disconnect_error.contains("SSH stop command failed"));
+    }
+
     #[test]
     fn discovers_ssh_config_hosts_across_included_files() {
         let home_dir = unique_temp_home();
@@ -2028,7 +2057,7 @@ mod tests {
 
     #[tokio::test]
     async fn password_prompt_resolution_rejects_blank_or_expired_ids() {
-        let manager = SshPasswordPromptManager::new();
+        let manager = SshPasswordPromptManager::default();
 
         assert_eq!(
             manager.resolve(SshPasswordPromptResolution {
@@ -2657,6 +2686,9 @@ mod tests {
 
     #[test]
     fn discovery_handles_empty_inputs_precedence_values_and_io_errors() {
+        if let Some(home) = default_home_dir() {
+            assert!(!home.as_os_str().is_empty());
+        }
         assert_eq!(discover_ssh_hosts(None), Ok(Vec::new()));
         assert_eq!(discover_ssh_hosts(Some(PathBuf::new())), Ok(Vec::new()));
 

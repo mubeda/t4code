@@ -165,22 +165,10 @@ describe("resolveBrowserViewportLayout", () => {
 
   it("chooses the dominant diagonal axis for locked aspect ratios", () => {
     expect(
-      resizeFreeformViewport(
-        { width: 800, height: 600 },
-        { x: 300, y: 25 },
-        1,
-        "southeast",
-        4 / 3,
-      ),
+      resizeFreeformViewport({ width: 800, height: 600 }, { x: 300, y: 25 }, 1, "southeast", 4 / 3),
     ).toEqual({ width: 1100, height: 825 });
     expect(
-      resizeFreeformViewport(
-        { width: 800, height: 600 },
-        { x: 25, y: 300 },
-        1,
-        "southeast",
-        4 / 3,
-      ),
+      resizeFreeformViewport({ width: 800, height: 600 }, { x: 25, y: 300 }, 1, "southeast", 4 / 3),
     ).toEqual({ width: 1200, height: 900 });
     expect(
       resizeFreeformViewport(
@@ -194,14 +182,8 @@ describe("resolveBrowserViewportLayout", () => {
   });
 
   it("reduces the non-dominant dimension when freeform area exceeds the cap", () => {
-    const horizontal = resizeFreeformViewport(
-      { width: 3_800, height: 2_100 },
-      { x: 500, y: 10 },
-    );
-    const vertical = resizeFreeformViewport(
-      { width: 3_800, height: 2_100 },
-      { x: 10, y: 500 },
-    );
+    const horizontal = resizeFreeformViewport({ width: 3_800, height: 2_100 }, { x: 500, y: 10 });
+    const vertical = resizeFreeformViewport({ width: 3_800, height: 2_100 }, { x: 10, y: 500 });
     expect(horizontal.width * horizontal.height).toBeLessThanOrEqual(3840 * 2160);
     expect(vertical.width * vertical.height).toBeLessThanOrEqual(3840 * 2160);
     expect(horizontal.width).not.toBe(vertical.width);

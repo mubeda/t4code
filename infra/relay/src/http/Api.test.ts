@@ -63,9 +63,9 @@ describe("relay client authentication", () => {
   });
 
   it("classifies Clerk verification failures without leaking unsafe details", () => {
-    expect(
-      clerkVerificationFailureReason(new Error("Invalid JWT audience claim relay")),
-    ).toBe("audience_mismatch");
+    expect(clerkVerificationFailureReason(new Error("Invalid JWT audience claim relay"))).toBe(
+      "audience_mismatch",
+    );
     expect(
       clerkVerificationFailureReason(new Error("Invalid JWT audience claim array relay")),
     ).toBe("audience_mismatch");

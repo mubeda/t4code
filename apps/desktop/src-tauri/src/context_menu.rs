@@ -144,8 +144,8 @@ pub(crate) fn context_menu_request_from_values(items: Vec<Value>) -> NativeConte
     }
 }
 
-pub(crate) fn show_native_context_menu(
-    window: &WebviewWindow,
+pub(crate) fn show_native_context_menu<R: Runtime>(
+    window: &WebviewWindow<R>,
     request: &NativeContextMenuRequest,
     position: Option<ContextMenuPosition>,
 ) -> Result<(), String> {

@@ -288,7 +288,7 @@ describe("useNewThreadHandler", () => {
         startFromOrigin: true,
       });
     setRoute({ draftId });
-    await mount(<NewThreadHarness options={options} />);
+    await mount(<NewThreadHarness {...(options === undefined ? {} : { options })} />);
     await clickNewThread();
 
     expect(testState.router.navigate).not.toHaveBeenCalled();
@@ -373,7 +373,7 @@ describe("useNewThreadHandler", () => {
       logicalProjectDraftThreadKeyByLogicalProjectKey: {},
     });
     setRoute({ draftId });
-    await mount(<NewThreadHarness options={options} />);
+    await mount(<NewThreadHarness {...(options === undefined ? {} : { options })} />);
     await clickNewThread();
 
     expect(testState.router.navigate).not.toHaveBeenCalled();

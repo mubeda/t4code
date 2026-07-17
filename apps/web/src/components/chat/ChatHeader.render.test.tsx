@@ -1,4 +1,4 @@
-import { EnvironmentId, ThreadId } from "@t4code/contracts";
+import { DEFAULT_SERVER_SETTINGS, EnvironmentId, ThreadId } from "@t4code/contracts";
 import type { ComponentProps, ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -61,7 +61,10 @@ function props(
     rightPanelOpen: false,
     gitCwd: null,
     providerStatuses: [],
-    settings: { providerInstances: [], providers: [] },
+    settings: {
+      providerInstances: DEFAULT_SERVER_SETTINGS.providerInstances,
+      providers: DEFAULT_SERVER_SETTINGS.providers,
+    },
     canCreatePanel: false,
     onCreateChatPanel: vi.fn(),
     onOpenTerminalPanel: vi.fn(),
@@ -108,7 +111,7 @@ describe("ChatHeader rendering", () => {
     expect(markup).toContain("git-actions");
     expect(harness.gitProps).toMatchObject({ draftId: "draft-1", hideTrigger: true });
 
-    (harness.panelProps?.["onAddCustomAction"] as () => void)();
+    (harness.panelProps!["onAddCustomAction"] as () => void)();
   });
 
   it("omits the local editor picker for a remote environment", () => {

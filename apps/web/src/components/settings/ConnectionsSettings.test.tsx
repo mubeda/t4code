@@ -943,14 +943,14 @@ afterEach(async () => {
 
 describe("ConnectionsSettings deterministic helpers", () => {
   it("parses manual SSH targets and rejects every invalid boundary", () => {
-    const { formatDesktopSshTarget, parseManualDesktopSshTarget } =
-      connectionsSettingsInternals;
+    const { formatDesktopSshTarget, parseManualDesktopSshTarget } = connectionsSettingsInternals;
 
     expect(() => parseManualDesktopSshTarget({ host: " ", username: "", port: "" })).toThrow(
       "SSH host or alias is required.",
     );
-    expect(parseManualDesktopSshTarget({ host: "alice@example.test:2222", username: "", port: "" }))
-      .toEqual({ alias: "example.test", hostname: "example.test", username: "alice", port: 2222 });
+    expect(
+      parseManualDesktopSshTarget({ host: "alice@example.test:2222", username: "", port: "" }),
+    ).toEqual({ alias: "example.test", hostname: "example.test", username: "alice", port: 2222 });
     expect(
       parseManualDesktopSshTarget({
         host: "inline@example.test",
@@ -969,17 +969,20 @@ describe("ConnectionsSettings deterministic helpers", () => {
       username: null,
       port: null,
     });
-    expect(parseManualDesktopSshTarget({ host: "host:not-a-port", username: "", port: "" }))
-      .toMatchObject({ hostname: "host:not-a-port", port: null });
-    expect(() =>
-      parseManualDesktopSshTarget({ host: "user@", username: "", port: "" }),
-    ).toThrow("SSH host or alias is required.");
+    expect(
+      parseManualDesktopSshTarget({ host: "host:not-a-port", username: "", port: "" }),
+    ).toMatchObject({ hostname: "host:not-a-port", port: null });
+    expect(() => parseManualDesktopSshTarget({ host: "user@", username: "", port: "" })).toThrow(
+      "SSH host or alias is required.",
+    );
     for (const port of ["nope", "0", "65536"]) {
-      expect(() => parseManualDesktopSshTarget({ host: "example.test", username: "", port }))
-        .toThrow("SSH port must be between 1 and 65535.");
+      expect(() =>
+        parseManualDesktopSshTarget({ host: "example.test", username: "", port }),
+      ).toThrow("SSH port must be between 1 and 65535.");
     }
-    expect(formatDesktopSshTarget({ alias: "host", hostname: "host", username: null, port: null }))
-      .toBe("host");
+    expect(
+      formatDesktopSshTarget({ alias: "host", hostname: "host", username: null, port: null }),
+    ).toBe("host");
     expect(
       formatDesktopSshTarget({ alias: "host", hostname: "host", username: "alice", port: 22 }),
     ).toBe("alice@host:22");
@@ -1030,7 +1033,9 @@ describe("ConnectionsSettings deterministic helpers", () => {
     expect(formatDesktopSshConnectionError("opaque")).toBe("Failed to connect SSH host.");
     expect(
       formatDesktopSshConnectionError(
-        new Error("Error invoking remote method 'desktop:ensure-ssh-environment': SshAuthError: denied"),
+        new Error(
+          "Error invoking remote method 'desktop:ensure-ssh-environment': SshAuthError: denied",
+        ),
       ),
     ).toBe("denied");
     expect(formatDesktopSshConnectionError(new Error(" "))).toBe("Failed to connect SSH host.");
@@ -1040,27 +1045,55 @@ describe("ConnectionsSettings deterministic helpers", () => {
     expect(endpointRowClassName("current", true)).not.toContain("bg-muted/24");
 
     const cases = [
-      [endpoint({ id: "desktop-loopback:1", label: "Loopback", httpBaseUrl: "http://localhost" }), "desktop-core:loopback:http"],
-      [endpoint({ id: "desktop-lan:1", label: "LAN", httpBaseUrl: "http://lan.test" }), "desktop-core:lan:http"],
-      [endpoint({ id: "tailscale-ip:1", label: "Tailnet", httpBaseUrl: "http://100.64.0.1" }), "tailscale:ip:http"],
-      [endpoint({ id: "tailscale-magicdns:1", label: "MagicDNS", httpBaseUrl: "https://host.ts.net" }), "tailscale:magicdns:https"],
+      [
+        endpoint({ id: "desktop-loopback:1", label: "Loopback", httpBaseUrl: "http://localhost" }),
+        "desktop-core:loopback:http",
+      ],
+      [
+        endpoint({ id: "desktop-lan:1", label: "LAN", httpBaseUrl: "http://lan.test" }),
+        "desktop-core:lan:http",
+      ],
+      [
+        endpoint({ id: "tailscale-ip:1", label: "Tailnet", httpBaseUrl: "http://100.64.0.1" }),
+        "tailscale:ip:http",
+      ],
+      [
+        endpoint({
+          id: "tailscale-magicdns:1",
+          label: "MagicDNS",
+          httpBaseUrl: "https://host.ts.net",
+        }),
+        "tailscale:magicdns:https",
+      ],
     ] as const;
     for (const [candidate, key] of cases) {
       expect(endpointDefaultPreferenceKey(candidate)).toBe(key);
     }
     expect(
       endpointDefaultPreferenceKey(
-        endpoint({ id: "custom:1", label: "Custom", httpBaseUrl: "https://custom.test", providerId: "custom" }),
+        endpoint({
+          id: "custom:1",
+          label: "Custom",
+          httpBaseUrl: "https://custom.test",
+          providerId: "custom",
+        }),
       ),
     ).toBe("custom:lan:https:Custom");
     expect(
       endpointDefaultPreferenceKey(
-        endpoint({ id: "custom:bad", label: "Broken", httpBaseUrl: "://bad", providerId: "custom" }),
+        endpoint({
+          id: "custom:bad",
+          label: "Broken",
+          httpBaseUrl: "://bad",
+          providerId: "custom",
+        }),
       ),
     ).toBe("custom:lan:unknown:Broken");
     expect(isTailscaleHttpsEndpoint(cases[3][0])).toBe(true);
     expect(isTailscaleHttpsEndpoint(cases[0][0])).toBe(false);
-    expect(isHostedAppPairingUrl("https://app.test/pair?host=https%3A%2F%2Fbackend.test")).toBe(true);
+    expect(isHostedAppPairingUrl("https://app.test/pair?host=https%3A%2F%2Fbackend.test")).toBe(
+      true,
+    );
     expect(isHostedAppPairingUrl("https://app.test/pair")).toBe(false);
     expect(isHostedAppPairingUrl("not a url")).toBe(false);
   });
@@ -1096,9 +1129,11 @@ describe("ConnectionsSettings deterministic helpers", () => {
       isDefault: true,
     });
     expect(selectPairingEndpoint([loopback, lan], "desktop-core:lan:http")).toBe(lan);
-    expect(selectPairingEndpoint([{ ...loopback, isDefault: true }, lan], "missing")).toMatchObject({
-      id: loopback.id,
-    });
+    expect(selectPairingEndpoint([{ ...loopback, isDefault: true }, lan], "missing")).toMatchObject(
+      {
+        id: loopback.id,
+      },
+    );
     expect(selectPairingEndpoint([loopback, lan])).toBe(lan);
     expect(selectPairingEndpoint([loopback, hosted])).toBe(hosted);
     expect(selectPairingEndpoint([unavailable])).toBeNull();
@@ -1119,8 +1154,11 @@ describe("ConnectionsSettings deterministic helpers", () => {
       clientSession({ sessionId: "current", current: true }),
       clientSession({ sessionId: "new" }),
     ];
-    expect(sortDesktopClientSessions(sessions.map(toDesktopClientSessionRecord)).map((entry) => entry.sessionId))
-      .toEqual(["current", "connected", "new", "old"]);
+    expect(
+      sortDesktopClientSessions(sessions.map(toDesktopClientSessionRecord)).map(
+        (entry) => entry.sessionId,
+      ),
+    ).toEqual(["current", "connected", "new", "old"]);
     expect(toDesktopPairingLinkRecord(links[0]!).createdAt).toBe(DateTime.formatIso(RECENT));
     expect(
       toDesktopClientSessionRecord(clientSession({ sessionId: "never", lastConnectedAt: null }))

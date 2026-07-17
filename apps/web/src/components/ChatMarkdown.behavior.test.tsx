@@ -196,7 +196,7 @@ describe("ChatMarkdown file-link behavior", () => {
 
     await act(async () => root?.unmount());
     root = null;
-    container?.remove();
+    (container as HTMLDivElement | null)?.remove();
     container = null;
     const editorLink = await mountFileLink(false);
     await act(async () => editorLink.click());
@@ -420,7 +420,7 @@ describe("ChatMarkdown external-link behavior", () => {
 
     await act(async () => root?.unmount());
     root = null;
-    container?.remove();
+    (container as HTMLDivElement | null)?.remove();
     container = null;
     mocks.localApiAvailable = true;
     mocks.previewSupported = false;
@@ -430,7 +430,7 @@ describe("ChatMarkdown external-link behavior", () => {
 
     await act(async () => root?.unmount());
     root = null;
-    container?.remove();
+    (container as HTMLDivElement | null)?.remove();
     container = null;
     mocks.previewSupported = true;
     const withoutThread = await mountExternalLink(false);

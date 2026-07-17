@@ -282,16 +282,19 @@ describe("theme failure handling", () => {
       matchMedia: { configurable: true, value: () => media },
     });
     const addEventListener = browserWindow.addEventListener.bind(browserWindow);
-    vi.spyOn(browserWindow, "addEventListener").mockImplementation((type, listener, options) => {
-      if (type === "storage") storageListeners.add(listener as (event: StorageEvent) => void);
-      addEventListener(type, listener, options);
-    });
-    vi.spyOn(browserWindow, "removeEventListener").mockImplementation((type, listener, options) => {
+    const removeEventListener = browserWindow.removeEventListener.bind(browserWindow);
+    vi.spyOn(browserWindow, "addEventListener").mockImplementation((type, listener) => {
       if (type === "storage") {
-        storageListeners.delete(listener as (event: StorageEvent) => void);
+        storageListeners.add(listener as unknown as (event: StorageEvent) => void);
+      }
+      addEventListener(type, listener);
+    });
+    vi.spyOn(browserWindow, "removeEventListener").mockImplementation((type, listener) => {
+      if (type === "storage") {
+        storageListeners.delete(listener as unknown as (event: StorageEvent) => void);
         removeStorageListener();
       }
-      Window.prototype.removeEventListener.call(browserWindow, type, listener, options);
+      removeEventListener(type, listener);
     });
     vi.stubGlobal("window", browserWindow);
     vi.stubGlobal("document", browserWindow.document);
@@ -330,10 +333,7 @@ describe("theme failure handling", () => {
     vi.doMock("react", () => ({
       useCallback: <A>(callback: A) => callback,
       useEffect: () => undefined,
-      useSyncExternalStore: (
-        _subscribe: unknown,
-        getSnapshot: () => unknown,
-      ) => getSnapshot(),
+      useSyncExternalStore: (_subscribe: unknown, getSnapshot: () => unknown) => getSnapshot(),
     }));
     vi.stubGlobal("window", {
       localStorage: createStorage({
