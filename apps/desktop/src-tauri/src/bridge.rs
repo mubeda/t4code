@@ -2271,12 +2271,17 @@ mod tests {
         use tauri::test::{INVOKE_KEY, get_ipc_response, mock_builder, mock_context, noop_assets};
 
         let app = mock_builder()
+            .manage(BackendSupervisor::new())
+            .manage(SshPasswordPromptManager::new())
             .invoke_handler(tauri::generate_handler![
                 desktop_bridge_get_bridge_metadata,
+                desktop_bridge_get_local_environment_bootstraps,
                 desktop_bridge_fetch_environment_descriptor,
                 desktop_bridge_bootstrap_ssh_bearer_session,
                 desktop_bridge_fetch_ssh_session_state,
                 desktop_bridge_issue_ssh_web_socket_ticket,
+                desktop_bridge_resolve_ssh_password_prompt,
+                desktop_bridge_get_advertised_endpoints,
             ])
             .build(mock_context(noop_assets()))
             .expect("mock Tauri app");
@@ -2301,6 +2306,10 @@ mod tests {
 
         let metadata = invoke("desktop_bridge_get_bridge_metadata", json!({})).unwrap();
         assert_eq!(metadata["host"], "tauri");
+        assert_eq!(
+            invoke("desktop_bridge_get_local_environment_bootstraps", json!({})).unwrap(),
+            json!([])
+        );
         let handle = app.handle();
         assert!(app_branding(handle)["displayName"].is_string());
         assert!(
@@ -2354,5 +2363,17 @@ mod tests {
                 "unexpected validation result for {command}: {error}",
             );
         }
+
+        assert!(
+            invoke(
+                "desktop_bridge_resolve_ssh_password_prompt",
+                json!({"requestId":"missing","password":null}),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            invoke("desktop_bridge_get_advertised_endpoints", json!({})).unwrap(),
+            json!([])
+        );
     }
 }

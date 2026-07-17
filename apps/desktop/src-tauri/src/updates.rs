@@ -439,6 +439,72 @@ pub fn disabled_update_action_result(state: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+    };
+
+    const TEST_PUBLIC_KEY: &str = "untrusted comment: minisign public key E7620F1842B4E81F\nRWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
+    const TEST_SIGNATURE: &str = "untrusted comment: signature from minisign secret key\nRWQf6LRCGA9i59SLOFxz6NxvASXDJeRtuZykwQepbDEGt87ig1BNpWaVWuNrm73YiIiJbq71Wi+dP9eKL8OC351vwIasSSbXxwA=\ntrusted comment: timestamp:1555779966\tfile:test\nQtKMXWyYcwdpZAlPF7tE2ENJkRd1ujvKjlj1m9RtHTBnZPa5WKU5uWRs5GoP5M/VqE81QFuMKI5k/SfNQUaOAA==";
+
+    fn spawn_update_server(payload: &'static str) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("update server should bind");
+        let base_url = format!(
+            "http://{}",
+            listener.local_addr().expect("update server address")
+        );
+        let manifest = serde_json::json!({
+            "version": "99.0.0",
+            "notes": "Coverage update",
+            "pub_date": "2026-07-16T00:00:00Z",
+            "url": format!("{base_url}/artifact"),
+            "signature": STANDARD.encode(TEST_SIGNATURE),
+        })
+        .to_string();
+        let thread = thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("update request should arrive");
+                let mut request = [0_u8; 2048];
+                let read = stream
+                    .read(&mut request)
+                    .expect("update request should read");
+                let request = String::from_utf8_lossy(&request[..read]);
+                let (content_type, body) = if request.starts_with("GET /artifact ") {
+                    ("application/octet-stream", payload.to_owned())
+                } else {
+                    ("application/json", manifest.clone())
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .expect("update response should write");
+            }
+        });
+        (base_url, thread)
+    }
+
+    fn spawn_no_update_server() -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("update server should bind");
+        let base_url = format!(
+            "http://{}",
+            listener.local_addr().expect("update server address")
+        );
+        let thread = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("update request should arrive");
+            let mut request = [0_u8; 2048];
+            stream
+                .read(&mut request)
+                .expect("update request should read");
+            stream
+                .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                .expect("update response should write");
+        });
+        (base_url, thread)
+    }
 
     #[test]
     fn disabled_update_results_preserve_bridge_shapes() {
@@ -527,5 +593,122 @@ mod tests {
             );
         });
         assert_eq!(manager.install_update(handle, "latest")["accepted"], false);
+    }
+
+    #[tokio::test]
+    async fn manager_checks_downloads_and_rejects_an_invalid_installer() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let (base_url, server) = spawn_update_server("test");
+        let mut context = mock_context(noop_assets());
+        context.config_mut().plugins.0.insert(
+            "updater".to_owned(),
+            serde_json::json!({
+                "pubkey": STANDARD.encode(TEST_PUBLIC_KEY),
+                "endpoints": [format!("{base_url}/latest.json")],
+                "dangerousInsecureTransportProtocol": true,
+                "windows": null,
+            }),
+        );
+        let app = mock_builder()
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .build(context)
+            .expect("mock Tauri app");
+        let handle = app.handle();
+        let manager = DesktopUpdateManager::new();
+
+        let check = manager.check_for_update(handle.clone(), "nightly").await;
+        assert_eq!(check["checked"], true);
+        assert_eq!(check["state"]["status"], STATUS_AVAILABLE);
+        assert_eq!(check["state"]["availableVersion"], "99.0.0");
+
+        let download = manager.download_update(handle.clone(), "nightly").await;
+        assert_eq!(download["accepted"], true);
+        assert_eq!(download["completed"], true);
+        assert_eq!(download["state"]["status"], STATUS_DOWNLOADED);
+        assert_eq!(download["state"]["downloadPercent"], 100.0);
+
+        #[cfg(target_os = "macos")]
+        {
+            let install = manager.install_update(handle, "nightly");
+            assert_eq!(install["accepted"], true);
+            assert_eq!(install["completed"], false);
+            assert_eq!(install["state"]["status"], STATUS_ERROR);
+            assert_eq!(install["state"]["errorContext"], "install");
+        }
+
+        server.join().expect("update server should stop");
+    }
+
+    #[tokio::test]
+    async fn manager_handles_up_to_date_and_missing_update_actions() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let (base_url, server) = spawn_no_update_server();
+        let mut context = mock_context(noop_assets());
+        context.config_mut().plugins.0.insert(
+            "updater".to_owned(),
+            serde_json::json!({
+                "pubkey": STANDARD.encode(TEST_PUBLIC_KEY),
+                "endpoints": [format!("{base_url}/latest.json")],
+                "dangerousInsecureTransportProtocol": true,
+                "windows": null,
+            }),
+        );
+        let app = mock_builder()
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .build(context)
+            .expect("mock Tauri app");
+        let handle = app.handle();
+        let manager = DesktopUpdateManager::new();
+
+        let check = manager.check_for_update(handle.clone(), "latest").await;
+        assert_eq!(check["checked"], true);
+        assert_eq!(check["state"]["status"], STATUS_UP_TO_DATE);
+
+        let download = manager.download_update(handle.clone(), "latest").await;
+        assert_eq!(download["accepted"], false);
+        assert_eq!(download["state"]["errorContext"], "download");
+
+        let install = manager.install_update(handle, "latest");
+        assert_eq!(install["accepted"], false);
+        assert_eq!(install["state"]["errorContext"], "install");
+
+        server.join().expect("update server should stop");
+    }
+
+    #[tokio::test]
+    async fn manager_reports_download_signature_failures() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let (base_url, server) = spawn_update_server("tampered");
+        let mut context = mock_context(noop_assets());
+        context.config_mut().plugins.0.insert(
+            "updater".to_owned(),
+            serde_json::json!({
+                "pubkey": STANDARD.encode(TEST_PUBLIC_KEY),
+                "endpoints": [format!("{base_url}/latest.json")],
+                "dangerousInsecureTransportProtocol": true,
+                "windows": null,
+            }),
+        );
+        let app = mock_builder()
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .build(context)
+            .expect("mock Tauri app");
+        let handle = app.handle();
+        let manager = DesktopUpdateManager::new();
+
+        assert_eq!(
+            manager.check_for_update(handle.clone(), "latest").await["checked"],
+            true
+        );
+        let download = manager.download_update(handle.clone(), "latest").await;
+        assert_eq!(download["accepted"], true);
+        assert_eq!(download["completed"], false);
+        assert_eq!(download["state"]["status"], STATUS_ERROR);
+        assert_eq!(download["state"]["errorContext"], "download");
+
+        server.join().expect("update server should stop");
     }
 }
