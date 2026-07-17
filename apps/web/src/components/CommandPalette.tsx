@@ -114,6 +114,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   });
   const setOpen = useCallback((open: boolean) => dispatch({ _tag: "SetOpen", open }), []);
   const toggleOpen = useCallback(() => dispatch({ _tag: "Toggle" }), []);
+  const openAddProject = useCallback(() => dispatch({ _tag: "OpenAddProject" }), []);
   const clearOpenIntent = useCallback(() => dispatch({ _tag: "ClearOpenIntent" }), []);
   // Orca port (00-port-plan.md item 7 / W2): AddProjectDialog must be mounted
   // here, at the always-rendered top level, NOT inside `CommandPaletteDialog`
@@ -126,7 +127,6 @@ export function CommandPalette({ children }: { children: ReactNode }) {
     setOpen(false);
     setAddProjectDialogOpen(true);
   }, [setOpen]);
-  const openAddProject = openAddProjectDialog;
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const composerHandleRef = useRef<ChatComposerHandle | null>(null);
   const routeTarget = useParams({

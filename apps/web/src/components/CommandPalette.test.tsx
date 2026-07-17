@@ -671,9 +671,15 @@ describe("palette shell", () => {
     render();
     const provider = captured.providers.at(-1) as { openAddProject: () => void };
     provider.openAddProject();
-    rerender();
+    const queuedMarkup = rerender();
 
+    expect(captured.addProjectDialogs.at(-1)).toEqual(expect.objectContaining({ open: false }));
+    expect(queuedMarkup).toContain('data-testid="command-popup"');
+
+    hooks.runEffects();
+    const openedMarkup = rerender();
     expect(captured.addProjectDialogs.at(-1)).toEqual(expect.objectContaining({ open: true }));
+    expect(openedMarkup).not.toContain('data-testid="command-popup"');
   });
 
   it("closes the add-project dialog through its onOpenChange", () => {
