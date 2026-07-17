@@ -58,6 +58,24 @@ function makeInput(
 }
 
 describe("pickAddProjectFolder", () => {
+  it("returns host-path guidance without opening a picker for an unroutable host", async () => {
+    const input = makeInput({
+      host: {
+        ...primaryHost,
+        environmentId: EnvironmentId.make("remote"),
+        label: "Remote",
+        isPrimary: false,
+        nativePickerAvailable: false,
+      },
+    });
+
+    await expect(pickAddProjectFolder(input)).resolves.toEqual({
+      _tag: "Failure",
+      message: "This host does not support folder picking. Enter its project path manually.",
+    });
+    expect(input.dialogs.pickFolder).not.toHaveBeenCalled();
+  });
+
   it("returns cancellation without an error", async () => {
     const result = await pickAddProjectFolder(makeInput({ pickedPath: null }));
     expect(result).toEqual({ _tag: "Cancelled" });
