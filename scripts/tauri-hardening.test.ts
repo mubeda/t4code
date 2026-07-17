@@ -33,7 +33,7 @@ const decodeCapabilityConfiguration = Schema.decodeUnknownEffect(CapabilityConfi
 const decodeDesktopPackageConfiguration = Schema.decodeUnknownEffect(DesktopPackageConfiguration);
 
 it.layer(NodeServices.layer)("Tauri production hardening", (it) => {
-  it.effect("bundles the production black Windows icon", () =>
+  it.effect("bundles only canonical black desktop icons", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -41,9 +41,21 @@ it.layer(NodeServices.layer)("Tauri production hardening", (it) => {
       const tauri = yield* decodeTauriConfiguration(
         yield* fs.readFileString(path.join(repoRoot, "apps/desktop/src-tauri/tauri.conf.json")),
       );
+      const expectedIcons = [
+        "../../../assets/prod/black-universal-1024.png",
+        "../../../assets/prod/t4-black-windows.ico",
+        "../../../assets/prod/t4-black-macos.icns",
+      ];
 
-      assert.include(tauri.bundle.icon, "../../../assets/prod/t4-black-windows.ico");
-      assert.equal(yield* fs.exists(path.join(repoRoot, "assets/prod/t4-black-windows.ico")), true);
+      assert.deepEqual(tauri.bundle.icon, expectedIcons);
+      for (const iconPath of [
+        "assets/prod/black-universal-1024.png",
+        "assets/prod/t4-black-windows.ico",
+        "assets/prod/t4-black-macos.icns",
+      ]) {
+        assert.equal(yield* fs.exists(path.join(repoRoot, iconPath)), true, iconPath);
+      }
+      assert.equal(yield* fs.exists(path.join(repoRoot, "apps/desktop/resources")), false);
     }),
   );
 
