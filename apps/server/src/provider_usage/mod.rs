@@ -238,12 +238,21 @@ async fn fetch_claude_usage() -> Result<ProviderUsageSnapshot, ProviderUsageFetc
             "Claude OAuth credentials were not found.",
         ));
     };
+    request_claude_usage(CLAUDE_USAGE_URL, &token, now, USAGE_TIMEOUT).await
+}
+
+async fn request_claude_usage(
+    url: &str,
+    token: &str,
+    now: OffsetDateTime,
+    timeout: Duration,
+) -> Result<ProviderUsageSnapshot, ProviderUsageFetchError> {
     let client = reqwest::Client::builder()
-        .timeout(USAGE_TIMEOUT)
+        .timeout(timeout)
         .build()
         .map_err(|error| ProviderUsageFetchError::new(error.to_string()))?;
     let response = client
-        .get(CLAUDE_USAGE_URL)
+        .get(url)
         .bearer_auth(token)
         .header("anthropic-beta", "oauth-2025-04-20")
         .header("User-Agent", "claude-code/2.1.0")
@@ -284,11 +293,15 @@ fn select_claude_oauth_token(
 
 #[cfg(target_os = "macos")]
 async fn read_claude_keychain_credentials() -> Option<String> {
-    read_claude_keychain_credentials_with(std::path::Path::new("/usr/bin/security")).await
+    read_claude_keychain_credentials_with(std::path::Path::new("/usr/bin/security"), USAGE_TIMEOUT)
+        .await
 }
 
 #[cfg(target_os = "macos")]
-async fn read_claude_keychain_credentials_with(program: &std::path::Path) -> Option<String> {
+async fn read_claude_keychain_credentials_with(
+    program: &std::path::Path,
+    timeout: Duration,
+) -> Option<String> {
     let mut command = Command::new(program);
     command
         .args(["find-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE, "-w"])
@@ -296,7 +309,7 @@ async fn read_claude_keychain_credentials_with(program: &std::path::Path) -> Opt
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    let output = tokio::time::timeout(USAGE_TIMEOUT, command.output())
+    let output = tokio::time::timeout(timeout, command.output())
         .await
         .ok()?
         .ok()?;
@@ -601,6 +614,40 @@ fn unix_timestamp_ms(value: OffsetDateTime) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn claude_usage_fixture(
+        status: &str,
+        body: &str,
+    ) -> Result<ProviderUsageSnapshot, ProviderUsageFetchError> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let status = status.to_owned();
+        let body = body.to_owned();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 2048];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+            assert!(request.starts_with("get /usage "));
+            assert!(request.contains("authorization: bearer oauth-token"));
+            assert!(request.contains("anthropic-beta: oauth-2025-04-20"));
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let result = request_claude_usage(
+            &format!("http://{address}/usage"),
+            "oauth-token",
+            OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap(),
+            Duration::from_secs(1),
+        )
+        .await;
+        server.await.unwrap();
+        result
+    }
 
     #[test]
     fn claude_oauth_token_falls_back_to_macos_keychain_payload() {
@@ -612,6 +659,42 @@ mod tests {
         );
 
         assert_eq!(token.as_deref(), Some("keychain-oauth-token"));
+    }
+
+    #[tokio::test]
+    async fn claude_usage_request_covers_success_http_json_and_transport_failures() {
+        let success = claude_usage_fixture(
+            "200 OK",
+            r#"{"five_hour":{"utilization":25},"seven_day":{"utilization":50}}"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(success.status, ProviderUsageStatus::Ok);
+
+        assert_eq!(
+            claude_usage_fixture("429 Too Many Requests", "{}")
+                .await
+                .unwrap_err()
+                .message,
+            "Claude usage request failed with HTTP 429."
+        );
+        assert!(
+            claude_usage_fixture("200 OK", "not-json")
+                .await
+                .unwrap_err()
+                .message
+                .contains("decod")
+        );
+        assert!(
+            request_claude_usage(
+                "http://127.0.0.1:9/usage",
+                "oauth-token",
+                OffsetDateTime::UNIX_EPOCH,
+                Duration::from_millis(100),
+            )
+            .await
+            .is_err()
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -635,12 +718,45 @@ printf '%s' '{"claudeAiOauth":{"accessToken":"keychain-oauth-token","refreshToke
         std::fs::set_permissions(&security, std::fs::Permissions::from_mode(0o700))
             .expect("security fixture permissions");
 
-        let credentials = read_claude_keychain_credentials_with(&security)
+        let credentials = read_claude_keychain_credentials_with(&security, Duration::from_secs(1))
             .await
             .expect("keychain credentials");
         let token = select_claude_oauth_token(None, Some(&credentials));
 
         assert_eq!(token.as_deref(), Some("keychain-oauth-token"));
+
+        let fixture = |name: &str, body: &str| {
+            let path = temporary.path().join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            path
+        };
+        let failed = fixture("security-failed", "exit 1");
+        assert!(
+            read_claude_keychain_credentials_with(&failed, Duration::from_secs(1))
+                .await
+                .is_none()
+        );
+        let invalid_utf8 = fixture("security-invalid", "printf '\\377'");
+        assert!(
+            read_claude_keychain_credentials_with(&invalid_utf8, Duration::from_secs(1))
+                .await
+                .is_none()
+        );
+        let slow = fixture("security-slow", "sleep 1");
+        assert!(
+            read_claude_keychain_credentials_with(&slow, Duration::from_millis(10))
+                .await
+                .is_none()
+        );
+        assert!(
+            read_claude_keychain_credentials_with(
+                &temporary.path().join("missing"),
+                Duration::from_secs(1),
+            )
+            .await
+            .is_none()
+        );
     }
 
     #[test]
