@@ -401,6 +401,99 @@ describe("useAddProjectWorkflowState", () => {
     },
   );
 
+  it.each([{ failure: "registration" }, { failure: "navigation" }] as const)(
+    "retries a clone after $failure failure",
+    async ({ failure }) => {
+      const harness = makeIntegratedOperations();
+      const error = new Error(`${failure} unavailable`);
+      if (failure === "registration") {
+        harness.createProject.mockResolvedValueOnce({
+          _tag: "Failure",
+          error,
+        });
+      } else {
+        harness.openProject.mockResolvedValueOnce({
+          _tag: "Failure",
+          error,
+        });
+      }
+      testState.operationOverride = harness.operations;
+      const view = await mountWorkflow({ open: true });
+      act(() => view.current.openClone());
+      act(() => view.current.setCloneUrl("https://example.test/demo.git"));
+
+      await act(async () => view.current.submitClone());
+      expect(view.current.step).toBe("clone");
+      expect(testState.onOpenChange).not.toHaveBeenCalledWith(false);
+
+      await act(async () => view.current.submitClone());
+
+      expect(harness.cloneRepository).toHaveBeenCalledTimes(2);
+      expect(harness.openProject).toHaveBeenCalledTimes(failure === "registration" ? 1 : 2);
+      expect(testState.onOpenChange).toHaveBeenCalledWith(false);
+    },
+  );
+
+  it.each(["close", "host disconnect", "Back"] as const)(
+    "retries a clone after successful disk work is invalidated by %s",
+    async (invalidation) => {
+      const harness = makeIntegratedOperations();
+      const cloneResult = deferredResult<AddProjectCommandResult<{ readonly path: string }>>();
+      harness.cloneRepository.mockReturnValueOnce(cloneResult.promise);
+      testState.operationOverride = harness.operations;
+      const view = await mountWorkflow({ open: true });
+      if (invalidation === "host disconnect") {
+        act(() => view.current.selectHost(ENV_REMOTE));
+      }
+      const originalEnvironmentId = view.current.selectedHost.environmentId;
+      const originalParent = view.current.cloneParent;
+      const url = "https://example.test/demo.git";
+      act(() => view.current.openClone());
+      act(() => view.current.setCloneUrl(url));
+      let staleSubmission!: Promise<void>;
+      act(() => {
+        staleSubmission = view.current.submitClone();
+      });
+
+      if (invalidation === "close") {
+        await view.rerender(false);
+      } else if (invalidation === "host disconnect") {
+        await view.rerender(true, [primaryHost, wslHost]);
+      } else {
+        act(() => view.current.back());
+      }
+      await act(async () => {
+        cloneResult.resolve({
+          _tag: "Success",
+          value: { path: "/code/cloned" },
+        });
+        await staleSubmission;
+      });
+      expect(harness.createProject).not.toHaveBeenCalled();
+
+      if (invalidation === "close") {
+        await view.rerender(true);
+      } else if (invalidation === "host disconnect") {
+        await view.rerender(true, [primaryHost, remoteHost, wslHost]);
+        act(() => view.current.selectHost(originalEnvironmentId));
+      }
+      act(() => view.current.openClone());
+      act(() => view.current.setCloneUrl(url));
+      act(() => view.current.setCloneParent(originalParent));
+      await act(async () => view.current.submitClone());
+
+      expect(harness.cloneRepository).toHaveBeenCalledTimes(2);
+      expect(harness.cloneRepository.mock.calls[1]?.[0]).toMatchObject({
+        environmentId: originalEnvironmentId,
+        url,
+        parentDir: originalParent,
+      });
+      expect(harness.createProject).toHaveBeenCalledTimes(1);
+      expect(harness.openProject).toHaveBeenCalledTimes(1);
+      expect(testState.onOpenChange).toHaveBeenCalledWith(false);
+    },
+  );
+
   it("does not report or navigate when create fails after close", async () => {
     const harness = makeIntegratedOperations();
     const createResult =

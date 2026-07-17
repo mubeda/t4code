@@ -1320,6 +1320,173 @@ async fn clone_pull_and_worktree_lifecycle_round_trip_over_rpc() {
 }
 
 #[tokio::test]
+async fn clone_retry_reuses_an_existing_repository_with_the_same_origin() {
+    if relaunch_with_isolated_git_config(
+        "clone_retry_reuses_an_existing_repository_with_the_same_origin",
+    ) {
+        return;
+    }
+
+    let temp = TempDir::new().expect("temporary server directory");
+    let root = TempDir::new().expect("temporary fixture root");
+    let remote = TempDir::new().expect("clone remote");
+    initialize_repository(&remote);
+    commit_file(remote.path(), "tracked.txt", "base\n", "initial");
+    let remote_url = local_file_url(remote.path());
+    let clone_parent = root.path().join("clones");
+    fs::create_dir(&clone_parent).expect("clone parent");
+
+    let mut server = GitServerHarness::start(&temp).await;
+    request(
+        server.socket(),
+        "406",
+        "vcs.clone",
+        json!({
+            "url": remote_url,
+            "parentDir": clone_parent,
+            "directoryName": "consumer"
+        }),
+    )
+    .await;
+    let first = success_value(server.socket(), "406").await;
+    let destination = PathBuf::from(first["path"].as_str().expect("first clone path"));
+    fs::write(destination.join("local-only.txt"), "preserve me\n").expect("write retry sentinel");
+
+    request(
+        server.socket(),
+        "407",
+        "vcs.clone",
+        json!({
+            "url": remote_url,
+            "parentDir": clone_parent,
+            "directoryName": "consumer"
+        }),
+    )
+    .await;
+    let retried = success_value(server.socket(), "407").await;
+
+    assert_eq!(
+        canonical_path(retried["path"].as_str().expect("retried clone path")),
+        canonical_path(&destination)
+    );
+    assert_eq!(
+        fs::read_to_string(destination.join("local-only.txt")).expect("retry sentinel"),
+        "preserve me\n"
+    );
+    assert_eq!(
+        git_stdout_in(&destination, &["remote", "get-url", "origin"]).trim(),
+        remote_url
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn clone_rejects_an_existing_non_repository_destination() {
+    if relaunch_with_isolated_git_config("clone_rejects_an_existing_non_repository_destination") {
+        return;
+    }
+
+    let temp = TempDir::new().expect("temporary server directory");
+    let root = TempDir::new().expect("temporary fixture root");
+    let remote = TempDir::new().expect("clone remote");
+    initialize_repository(&remote);
+    commit_file(remote.path(), "tracked.txt", "base\n", "initial");
+    let clone_parent = root.path().join("clones");
+    let destination = clone_parent.join("consumer");
+    fs::create_dir_all(&destination).expect("existing empty destination");
+
+    let mut server = GitServerHarness::start(&temp).await;
+    request(
+        server.socket(),
+        "408",
+        "vcs.clone",
+        json!({
+            "url": local_file_url(remote.path()),
+            "parentDir": clone_parent,
+            "directoryName": "consumer"
+        }),
+    )
+    .await;
+    let error = failure_value(server.socket(), "408").await;
+
+    assert_eq!(error["_tag"], "GitCommandError");
+    assert!(
+        error["detail"]
+            .as_str()
+            .expect("clone rejection detail")
+            .contains("not a Git repository")
+    );
+    assert!(!destination.join(".git").exists());
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn clone_rejects_an_existing_repository_with_a_different_origin() {
+    if relaunch_with_isolated_git_config(
+        "clone_rejects_an_existing_repository_with_a_different_origin",
+    ) {
+        return;
+    }
+
+    let temp = TempDir::new().expect("temporary server directory");
+    let root = TempDir::new().expect("temporary fixture root");
+    let first_remote = TempDir::new().expect("first clone remote");
+    initialize_repository(&first_remote);
+    commit_file(first_remote.path(), "tracked.txt", "first\n", "first");
+    let second_remote = TempDir::new().expect("second clone remote");
+    initialize_repository(&second_remote);
+    commit_file(second_remote.path(), "tracked.txt", "second\n", "second");
+    let first_url = local_file_url(first_remote.path());
+    let second_url = local_file_url(second_remote.path());
+    let clone_parent = root.path().join("clones");
+    fs::create_dir(&clone_parent).expect("clone parent");
+
+    let mut server = GitServerHarness::start(&temp).await;
+    request(
+        server.socket(),
+        "409",
+        "vcs.clone",
+        json!({
+            "url": first_url,
+            "parentDir": clone_parent,
+            "directoryName": "consumer"
+        }),
+    )
+    .await;
+    let cloned = success_value(server.socket(), "409").await;
+    let destination = PathBuf::from(cloned["path"].as_str().expect("clone path"));
+
+    request(
+        server.socket(),
+        "410",
+        "vcs.clone",
+        json!({
+            "url": second_url,
+            "parentDir": clone_parent,
+            "directoryName": "consumer"
+        }),
+    )
+    .await;
+    let error = failure_value(server.socket(), "410").await;
+
+    assert_eq!(error["_tag"], "GitCommandError");
+    assert!(
+        error["detail"]
+            .as_str()
+            .expect("clone rejection detail")
+            .contains("different origin")
+    );
+    assert_eq!(
+        git_stdout_in(&destination, &["remote", "get-url", "origin"]).trim(),
+        first_url
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
 async fn clone_resolves_a_home_relative_parent_before_running_git() {
     if relaunch_with_isolated_git_config("clone_resolves_a_home_relative_parent_before_running_git")
     {

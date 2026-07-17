@@ -161,6 +161,67 @@ describe("add project operations", () => {
     expect(harness.openProject).toHaveBeenCalledTimes(1);
   });
 
+  it("retries clone and registration after registration fails", async () => {
+    const harness = makeHarness({ clonePath: "/code/demo" });
+    const registrationError = new Error("registration unavailable");
+    harness.createProject
+      .mockResolvedValueOnce({ _tag: "Failure", error: registrationError })
+      .mockImplementation(async (input) => ({
+        _tag: "Success",
+        value: { projectId: input.projectId },
+      }));
+    const operations = createAddProjectOperations(harness.dependencies);
+    const input = {
+      ...CURRENT_OPERATION,
+      environmentId: EnvironmentId.make("local"),
+      url: "https://example.test/demo.git",
+      parentDir: "/code",
+    };
+
+    await expect(operations.clone(input)).resolves.toBe(false);
+    await expect(operations.clone(input)).resolves.toBe(true);
+
+    expect(harness.cloneRepository).toHaveBeenCalledTimes(2);
+    expect(harness.createProject).toHaveBeenCalledTimes(2);
+    expect(harness.openProject).toHaveBeenCalledTimes(1);
+    expect(harness.reportFailure).toHaveBeenCalledWith(
+      "Failed to add cloned project",
+      registrationError,
+    );
+  });
+
+  it("retries clone and opens the authoritative project after navigation fails", async () => {
+    const harness = makeHarness({ clonePath: "/code/demo" });
+    const authoritativeProjectId = ProjectId.make("registered-clone");
+    const navigationError = new Error("navigation unavailable");
+    harness.createProject.mockResolvedValue({
+      _tag: "Success",
+      value: { projectId: authoritativeProjectId },
+    });
+    harness.openProject
+      .mockResolvedValueOnce({ _tag: "Failure", error: navigationError })
+      .mockResolvedValue({ _tag: "Success", value: undefined });
+    const operations = createAddProjectOperations(harness.dependencies);
+    const input = {
+      ...CURRENT_OPERATION,
+      environmentId: EnvironmentId.make("local"),
+      url: "https://example.test/demo.git",
+      parentDir: "/code",
+    };
+
+    await expect(operations.clone(input)).resolves.toBe(false);
+    await expect(operations.clone(input)).resolves.toBe(true);
+
+    expect(harness.cloneRepository).toHaveBeenCalledTimes(2);
+    expect(harness.createProject).toHaveBeenCalledTimes(2);
+    expect(harness.openProject).toHaveBeenCalledTimes(2);
+    expect(harness.openProject).toHaveBeenLastCalledWith({
+      environmentId: EnvironmentId.make("local"),
+      projectId: authoritativeProjectId,
+    });
+    expect(harness.reportFailure).toHaveBeenCalledWith("Failed to open project", navigationError);
+  });
+
   it("reports a failed clone and does not register or navigate", async () => {
     const error = new Error("clone denied");
     const harness = makeHarness({ cloneError: error });

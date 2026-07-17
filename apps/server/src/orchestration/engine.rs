@@ -3,6 +3,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{Arc, Mutex as StdMutex},
+    time::Duration,
 };
 
 use rusqlite::{OptionalExtension, Row, Transaction, params};
@@ -37,6 +38,7 @@ const PROJECTOR_NAMES: [&str; 9] = [
     "projection.pending-approvals",
     "projection.threads",
 ];
+const HISTORICAL_PROJECT_ROOT_INSPECTION_TIMEOUT: Duration = Duration::from_millis(250);
 
 fn server_command_id(scope: &str) -> String {
     format!("server:{scope}:{}", Uuid::new_v4())
@@ -234,6 +236,8 @@ pub type BoxProjectCommandFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
 
 pub trait ProjectCommandEffects: Send + Sync {
+    fn normalize_workspace_root_lexically(&self, workspace_root: &str) -> String;
+
     fn canonicalize_workspace_root<'a>(
         &'a self,
         workspace_root: &'a str,
@@ -1232,6 +1236,21 @@ async fn canonicalize_project_command(
     command: &mut OrchestrationCommand,
     effects: Option<&dyn ProjectCommandEffects>,
 ) -> Result<(), OrchestrationError> {
+    canonicalize_project_command_with_historical_timeout(
+        model,
+        command,
+        effects,
+        HISTORICAL_PROJECT_ROOT_INSPECTION_TIMEOUT,
+    )
+    .await
+}
+
+async fn canonicalize_project_command_with_historical_timeout(
+    model: &mut CommandModel,
+    command: &mut OrchestrationCommand,
+    effects: Option<&dyn ProjectCommandEffects>,
+    historical_root_inspection_timeout: Duration,
+) -> Result<(), OrchestrationError> {
     let Some(effects) = effects else {
         return Ok(());
     };
@@ -1246,6 +1265,8 @@ async fn canonicalize_project_command(
         return Ok(());
     }
     if !model.project_roots_canonicalized {
+        let historical_root_inspection_deadline =
+            tokio::time::Instant::now() + historical_root_inspection_timeout;
         let cached_roots = model
             .projects
             .iter()
@@ -1253,12 +1274,39 @@ async fn canonicalize_project_command(
             .map(|(project_id, project)| (project_id.clone(), project.workspace_root.clone()))
             .collect::<Vec<_>>();
         for (project_id, workspace_root) in cached_roots {
-            let canonical = effects
-                .canonicalize_workspace_root(&workspace_root, true)
-                .await
-                .map_err(|detail| OrchestrationError::ProjectPreparation { detail })?;
+            let lexical_identity = effects.normalize_workspace_root_lexically(&workspace_root);
+            let identity = match tokio::time::timeout_at(
+                historical_root_inspection_deadline,
+                effects.canonicalize_workspace_root(&workspace_root, true),
+            )
+            .await
+            {
+                Ok(Ok(canonical)) => canonical,
+                Ok(Err(error)) => {
+                    tracing::warn!(
+                        project_id,
+                        workspace_root,
+                        fallback_identity = lexical_identity,
+                        %error,
+                        "historical project workspace root inspection failed; using lexical identity"
+                    );
+                    lexical_identity
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        project_id,
+                        workspace_root,
+                        fallback_identity = lexical_identity,
+                        inspection_timeout_ms =
+                            u64::try_from(historical_root_inspection_timeout.as_millis())
+                                .unwrap_or(u64::MAX),
+                        "historical project workspace root inspection timed out; using lexical identity"
+                    );
+                    lexical_identity
+                }
+            };
             if let Some(project) = model.projects.get_mut(&project_id) {
-                project.workspace_root = canonical;
+                project.workspace_root = identity;
             }
         }
         model.project_roots_canonicalized = true;
@@ -3597,6 +3645,35 @@ mod tests {
         }
     }
 
+    struct NeverCompletingHistoricalRootEffects;
+
+    impl ProjectCommandEffects for NeverCompletingHistoricalRootEffects {
+        fn normalize_workspace_root_lexically(&self, workspace_root: &str) -> String {
+            workspace_root.replace("/./", "/")
+        }
+
+        fn canonicalize_workspace_root<'a>(
+            &'a self,
+            workspace_root: &'a str,
+            _allow_missing: bool,
+        ) -> BoxProjectCommandFuture<'a, String> {
+            if workspace_root == "historical/./workspace" {
+                Box::pin(std::future::pending())
+            } else {
+                Box::pin(async { Ok("/canonical/requested-workspace".to_owned()) })
+            }
+        }
+
+        fn prepare_project_create<'a>(
+            &'a self,
+            _workspace_root: &'a str,
+            _create_if_missing: bool,
+            _initialize_git: bool,
+        ) -> BoxProjectCommandFuture<'a, ()> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
     fn projector_event(event_type: &str, payload: Value, metadata: Value) -> OrchestrationEvent {
         OrchestrationEvent {
             sequence: 99,
@@ -3613,6 +3690,55 @@ mod tests {
                 metadata,
             },
         }
+    }
+
+    #[tokio::test]
+    async fn historical_cached_workspace_root_inspection_timeout_uses_lexical_identity() {
+        let mut model = CommandModel {
+            projects: BTreeMap::from([(
+                "historical-project".to_owned(),
+                ProjectState {
+                    workspace_root: "historical/./workspace".to_owned(),
+                    deleted_at: None,
+                },
+            )]),
+            threads: BTreeMap::new(),
+            project_roots_canonicalized: false,
+        };
+        let mut command = serde_json::from_value::<OrchestrationCommand>(json!({
+            "type": "project.create",
+            "commandId": "create-requested-workspace",
+            "projectId": "requested-project",
+            "title": "Requested Project",
+            "workspaceRoot": "requested-workspace",
+            "createWorkspaceRootIfMissing": true,
+            "initializeGit": false,
+            "createdAt": "2026-07-17T00:00:00.000Z"
+        }))
+        .expect("project create command");
+
+        canonicalize_project_command_with_historical_timeout(
+            &mut model,
+            &mut command,
+            Some(&NeverCompletingHistoricalRootEffects),
+            std::time::Duration::ZERO,
+        )
+        .await
+        .expect("requested workspace root remains strict and resolves");
+
+        assert_eq!(
+            model
+                .projects
+                .get("historical-project")
+                .expect("historical project")
+                .workspace_root,
+            "historical/workspace"
+        );
+        assert!(model.project_roots_canonicalized);
+        let OrchestrationCommand::ProjectCreate { workspace_root, .. } = command else {
+            panic!("expected project create command");
+        };
+        assert_eq!(workspace_root, "/canonical/requested-workspace");
     }
 
     #[tokio::test]

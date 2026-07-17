@@ -597,6 +597,52 @@ async fn historical_cached_workspace_roots_participate_in_create_duplicate_prefl
 }
 
 #[tokio::test]
+async fn historical_cached_workspace_root_replaced_by_file_does_not_block_unrelated_create() {
+    let (harness, historical_workspace) = harness_with_historical_workspace().await;
+    std::fs::remove_dir(&historical_workspace).expect("remove historical workspace");
+    std::fs::write(&historical_workspace, "stale historical workspace")
+        .expect("replace historical workspace with a file");
+    let outcome = AssertUnwindSafe(async {
+        let mut socket = harness.connect().await;
+        let unrelated_workspace = harness._temp.path().join("unrelated-workspace");
+        std::fs::create_dir(&unrelated_workspace).expect("unrelated workspace");
+
+        let created = dispatch_command(
+            &mut socket,
+            "37",
+            json!({
+                "type": "project.create",
+                "commandId": "create-unrelated-workspace",
+                "projectId": "unrelated-workspace",
+                "title": "Unrelated Workspace",
+                "workspaceRoot": unrelated_workspace,
+                "createWorkspaceRootIfMissing": false,
+                "initializeGit": false,
+                "createdAt": CREATED_AT,
+            }),
+        )
+        .await;
+        assert_eq!(created["projectId"], json!("unrelated-workspace"));
+
+        let snapshot = load_snapshot(&harness.engine.repositories())
+            .await
+            .expect("snapshot after unrelated create");
+        assert!(
+            snapshot
+                .projects
+                .iter()
+                .any(|project| project.project_id == "unrelated-workspace"),
+            "a stale historical root must not reject an unrelated project command"
+        );
+
+        socket.close(None).await.expect("close WebSocket");
+    })
+    .catch_unwind()
+    .await;
+    finish_test(harness, outcome).await;
+}
+
+#[tokio::test]
 async fn project_metadata_workspace_roots_are_canonical() {
     let harness = harness().await;
     let outcome = AssertUnwindSafe(async {
