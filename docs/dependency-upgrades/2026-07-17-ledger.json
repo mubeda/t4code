@@ -871,24 +871,24 @@
     {
       "key": "js:catalog:@noble/curves",
       "name": "@noble/curves",
-      "current": "1.9.1",
+      "current": "2.2.0",
       "target": "2.2.0",
       "channel": "stable",
       "source": "https://www.npmjs.com/package/@noble/curves",
       "cohort": "noble-cryptography",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:catalog:@noble/hashes",
       "name": "@noble/hashes",
-      "current": "1.8.0",
+      "current": "2.2.0",
       "target": "2.2.0",
       "channel": "stable",
       "source": "https://www.npmjs.com/package/@noble/hashes",
       "cohort": "noble-cryptography",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:catalog:@pierre/diffs",
