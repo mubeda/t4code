@@ -5,6 +5,7 @@ mod auth;
 pub mod checkpointing;
 pub mod cloud;
 mod config;
+mod crypto;
 pub mod diagnostic_bundle;
 pub mod diagnostics;
 pub mod git;

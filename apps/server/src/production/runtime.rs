@@ -8,7 +8,6 @@ use std::{
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
@@ -17,6 +16,7 @@ use crate::{
     ServerConfig,
     assets::{AssetAccess, ResolvedAsset},
     auth::AuthService,
+    crypto::sha256_hex,
     diagnostic_bundle::DiagnosticBundleService,
     diagnostics::{DiagnosticsMonitor, NativeProcessSampler, TraceDiagnosticsStore},
     git::GitRepository,
@@ -576,7 +576,7 @@ fn review_source(
     diff: String,
     truncated: bool,
 ) -> ReviewSource {
-    let diff_hash = format!("{:x}", Sha256::digest(diff.as_bytes()));
+    let diff_hash = sha256_hex(diff.as_bytes());
     ReviewSource {
         id: id.to_owned(),
         kind: kind.to_owned(),

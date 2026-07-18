@@ -1163,13 +1163,13 @@
     {
       "key": "rust:workspace:ed25519-dalek",
       "name": "ed25519-dalek",
-      "current": "2.2.0",
+      "current": "3.0.0",
       "target": "3.0.0",
       "channel": "stable",
       "source": "https://crates.io/crates/ed25519-dalek",
       "cohort": "rust-cryptography",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "rust:workspace:futures-util",
@@ -1185,24 +1185,24 @@
     {
       "key": "rust:workspace:getrandom",
       "name": "getrandom",
-      "current": "0.3.4",
+      "current": "0.4.3",
       "target": "0.4.3",
       "channel": "stable",
       "source": "https://crates.io/crates/getrandom",
       "cohort": "rust-cryptography",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "rust:workspace:hmac",
       "name": "hmac",
-      "current": "0.12.1",
+      "current": "0.13.0",
       "target": "0.13.0",
       "channel": "stable",
       "source": "https://crates.io/crates/hmac",
       "cohort": "rust-cryptography",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "rust:workspace:httpdate",
@@ -1262,13 +1262,13 @@
     {
       "key": "rust:workspace:p256",
       "name": "p256",
-      "current": "0.13.2",
+      "current": "0.14.0",
       "target": "0.14.0",
       "channel": "stable",
       "source": "https://crates.io/crates/p256",
       "cohort": "rust-cryptography",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "rust:workspace:percent-encoding",
@@ -1361,13 +1361,13 @@
     {
       "key": "rust:workspace:sha2",
       "name": "sha2",
-      "current": "0.10",
+      "current": "0.11.0",
       "target": "0.11.0",
       "channel": "stable",
       "source": "https://crates.io/crates/sha2",
       "cohort": "rust-cryptography",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "rust:workspace:subtle",

@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use crate::{
     cloud::{RelayClientInstallEvent, RelayClientService, RelayClientStatus},
+    crypto::lowercase_hex,
     process::configure_background_command,
 };
 
@@ -567,7 +568,7 @@ async fn verify_checksum(path: &Path, expected: &str) -> Result<(), RelayInstall
         }
         digest.update(&buffer[..count]);
     }
-    let actual = format!("{:x}", digest.finalize());
+    let actual = lowercase_hex(&digest.finalize());
     if actual.eq_ignore_ascii_case(expected) {
         Ok(())
     } else {
@@ -720,7 +721,6 @@ fn release_asset(platform: &str, arch: &str) -> Option<RelayReleaseAsset> {
 mod tests {
     use std::{ffi::OsString, sync::Mutex};
 
-    use sha2::{Digest, Sha256};
     use tempfile::TempDir;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -817,7 +817,7 @@ mod tests {
         fs::write(&payload_path, payload)
             .await
             .expect("write payload");
-        let checksum = format!("{:x}", Sha256::digest(payload));
+        let checksum = crate::crypto::sha256_hex(payload);
         verify_checksum(&payload_path, &checksum)
             .await
             .expect("valid checksum");
@@ -973,7 +973,7 @@ mod tests {
         );
 
         let fixture_bytes = fs::read(&fixture).await.expect("read fixture");
-        let fixture_checksum = format!("{:x}", Sha256::digest(&fixture_bytes));
+        let fixture_checksum = crate::crypto::sha256_hex(&fixture_bytes);
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
         let address = listener.local_addr().expect("server address");
         let server = tokio::spawn(async move {
@@ -1078,7 +1078,7 @@ mod tests {
         let fixture = fs::read(native_success_executable())
             .await
             .expect("success fixture");
-        let checksum = format!("{:x}", Sha256::digest(&fixture));
+        let checksum = crate::crypto::sha256_hex(&fixture);
         let placeholder_asset = RelayReleaseAsset::new(
             "http://127.0.0.1:1/unreachable",
             checksum.clone(),
@@ -1194,7 +1194,7 @@ mod tests {
         let fixture = fs::read(native_success_executable())
             .await
             .expect("success fixture");
-        let checksum = format!("{:x}", Sha256::digest(&fixture));
+        let checksum = crate::crypto::sha256_hex(&fixture);
         let (url, server) = spawn_body_response(&fixture).await;
         let options = RelayClientOptions::new(temp.path(), "win32", "x64")
             .with_search_path(OsString::new())
