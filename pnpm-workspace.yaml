@@ -47,6 +47,11 @@ allowBuilds:
   "workerd@1.20260526.1": false
 
 overrides:
+  # Effect beta.78 accepts fast-check ^4.8.0. Keep its transitive copy aligned
+  # with the workspace generator dependency because Arbitrary carries private
+  # nominal state and cannot safely cross between duplicate package instances.
+  fast-check: 4.9.0
+
   # Keep every Clerk consumer on the same snapshot train. Clerk publishes wallet
   # auth integrations as required dependencies, but T4Code does not support
   # wallet auth, so keep that unused dependency tree out of installs.

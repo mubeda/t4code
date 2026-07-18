@@ -55,6 +55,7 @@ function readActionReferences(): ReadonlyArray<ActionReference> {
       const match = /^\s*uses:\s*([^\s#]+)(?:\s+#\s*(\S+))?\s*$/.exec(line);
       if (!match) continue;
       const reference = match[1];
+      if (reference === undefined) continue;
       if (reference.startsWith("./")) continue;
       const separator = reference.lastIndexOf("@");
       if (separator < 1) {
@@ -62,7 +63,7 @@ function readActionReferences(): ReadonlyArray<ActionReference> {
       }
       references.push({
         action: reference.slice(0, separator),
-        comment: match[2],
+        ...(match[2] === undefined ? {} : { comment: match[2] }),
         file,
         line: index + 1,
         revision: reference.slice(separator + 1),
