@@ -33,6 +33,11 @@ vi.mock("../editorPreferences", () => ({
   useOpenInPreferredEditor: () => async () => ({ _tag: "Success" }),
 }));
 
+vi.mock("../hooks/useSettings", () => ({
+  usePrimarySettings: (selector: (settings: { terminal: { webglEnabled: boolean } }) => unknown) =>
+    selector({ terminal: { webglEnabled: false } }),
+}));
+
 vi.mock("../state/server", () => ({
   serverEnvironment: {
     configValueAtom: (_environmentId: unknown) => ({ atom: "server-config" }),

@@ -164,3 +164,36 @@ fn last_os_error() -> io::Error {
     // SAFETY: GetLastError has no preconditions and reads thread-local state.
     io::Error::from_raw_os_error(unsafe { GetLastError() } as i32)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows_sys::Win32::Foundation::CloseHandle;
+
+    #[tokio::test]
+    async fn job_handle_debug_raw_conversion_and_termination_are_operational() {
+        let mut child = Command::new("cmd.exe")
+            .args(["/D", "/C", "ping 127.0.0.1 -n 30 >nul"])
+            .spawn()
+            .expect("fixture child should start");
+        let process = child.raw_handle().expect("fixture child handle");
+        let job = WindowsJob::attach(process.cast()).expect("job should attach");
+        assert!(format!("{job:?}").starts_with("WindowsJob("));
+        job.terminate().expect("job should terminate");
+        child.wait().await.expect("terminated child should wait");
+
+        let mut child = Command::new("cmd.exe")
+            .args(["/D", "/C", "ping 127.0.0.1 -n 30 >nul"])
+            .spawn()
+            .expect("raw fixture child should start");
+        let process = child.raw_handle().expect("raw fixture child handle");
+        let raw = WindowsJob::attach(process.cast())
+            .expect("raw job should attach")
+            .into_raw();
+        // SAFETY: `into_raw` transfers the live job handle to this test.
+        unsafe { CloseHandle(raw) };
+        child.wait().await.expect("closed job child should wait");
+
+        let _ = last_os_error();
+    }
+}

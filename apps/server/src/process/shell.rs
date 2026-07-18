@@ -31,6 +31,32 @@ impl ShellCandidate {
     }
 }
 
+/// Post-profile bootstrap that disables PowerShell predictive history (ghost text)
+/// without disabling Up/Down history navigation or Tab completion. It is passed via
+/// `-EncodedCommand` (not typed as terminal input). Setup runs in a child scope and a one-shot
+/// prompt closure removes only the
+/// startup invocation after PowerShell registers it, then restores the profile's original prompt.
+/// Cleanup is installed in `finally`, so a terminating option error is still reported while the
+/// next interactive prompt remains clean. The `Get-Command` probe makes this a no-op on
+/// PSReadLine versions that predate the `PredictionSource` parameter.
+pub const POWERSHELL_PREDICTION_BOOTSTRAP: &str = "& { $originalPrompt = $function:prompt; $cleanupPrompt = { $startupEntry = Get-History | Select-Object -Last 1; Set-Item function:global:prompt -Value $originalPrompt; if ($startupEntry) { Clear-History -Id $startupEntry.Id }; & $originalPrompt }.GetNewClosure(); try { $c = Get-Command Set-PSReadLineOption -ErrorAction SilentlyContinue; if ($c -and $c.Parameters.ContainsKey('PredictionSource')) { Set-PSReadLineOption -PredictionSource None -ErrorAction Stop } } finally { Set-Item function:global:prompt -Value $cleanupPrompt } }";
+
+/// Encodes a PowerShell script for `-EncodedCommand`: base64 of the script's UTF-16LE bytes.
+/// Using `-EncodedCommand` instead of `-Command` sidesteps ALL shell-quoting hazards for a
+/// script containing single quotes, `$`, `;`, `{}`, and `()` when the script is passed as a
+/// single argv token through portable-pty's Windows command-line builder into PowerShell's
+/// parser. The user profile still loads before the encoded command runs (no `-NoProfile`),
+/// preserving the "a profile cannot re-enable prediction before the managed setting applies"
+/// ordering the design requires.
+fn encode_powershell_command(script: &str) -> String {
+    use base64::Engine as _;
+    let utf16: Vec<u8> = script
+        .encode_utf16()
+        .flat_map(|unit| unit.to_le_bytes())
+        .collect();
+    base64::engine::general_purpose::STANDARD.encode(utf16)
+}
+
 pub fn resolve_shell_candidates(
     platform: Platform,
     preferred: Option<&str>,
@@ -98,7 +124,15 @@ fn shell_candidate_from_command(command: &str, platform: Platform) -> Option<She
     let shell_name = basename_for_platform(command, platform).to_ascii_lowercase();
     if platform == Platform::Windows && (shell_name == "pwsh.exe" || shell_name == "powershell.exe")
     {
-        return Some(ShellCandidate::new(command, ["-NoLogo"]));
+        return Some(ShellCandidate::new(
+            command,
+            [
+                "-NoLogo".to_owned(),
+                "-NoExit".to_owned(),
+                "-EncodedCommand".to_owned(),
+                encode_powershell_command(POWERSHELL_PREDICTION_BOOTSTRAP),
+            ],
+        ));
     }
     if platform == Platform::Unix && shell_name == "zsh" {
         return Some(ShellCandidate::new(command, ["-o", "nopromptsp"]));
@@ -166,6 +200,45 @@ fn join_windows_path(root: &str, segments: &[&str]) -> String {
 mod tests {
     use super::*;
 
+    fn decode_powershell_encoded_command(encoded: &str) -> String {
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("valid base64");
+        let units: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        String::from_utf16(&units).expect("valid UTF-16LE")
+    }
+
+    #[test]
+    fn windows_powershell_receives_the_prediction_bootstrap() {
+        let candidate =
+            shell_candidate_from_command("pwsh.exe", Platform::Windows).expect("pwsh candidate");
+        assert_eq!(candidate.args.len(), 4);
+        assert_eq!(candidate.args[0], "-NoLogo");
+        assert_eq!(candidate.args[1], "-NoExit");
+        assert_eq!(candidate.args[2], "-EncodedCommand");
+        // -EncodedCommand carries base64(UTF-16LE(script)); it must round-trip to the bootstrap.
+        let decoded = decode_powershell_encoded_command(&candidate.args[3]);
+        assert_eq!(decoded, POWERSHELL_PREDICTION_BOOTSTRAP);
+        // The bootstrap probes for the parameter before calling, so an old PSReadLine
+        // with no PredictionSource is a no-op rather than an error.
+        assert!(decoded.contains("PredictionSource"));
+        assert!(decoded.contains("SilentlyContinue"));
+        assert!(decoded.contains("finally"));
+        assert!(decoded.contains("Clear-History -Id $startupEntry.Id"));
+        assert!(!decoded.contains("Remove-History"));
+        assert!(decoded.contains("GetNewClosure"));
+        assert!(!decoded.contains("$global:"));
+
+        let ps = shell_candidate_from_command("powershell.exe", Platform::Windows)
+            .expect("powershell candidate");
+        assert_eq!(ps.args.first().map(String::as_str), Some("-NoLogo"));
+        assert!(ps.args.iter().any(|arg| arg == "-EncodedCommand"));
+    }
+
     #[test]
     fn candidate_constructor_and_platform_paths_cover_runtime_inputs() {
         assert_eq!(
@@ -203,21 +276,25 @@ mod tests {
             &env,
         );
 
+        let expected_args = vec![
+            "-NoLogo".to_owned(),
+            "-NoExit".to_owned(),
+            "-EncodedCommand".to_owned(),
+            encode_powershell_command(POWERSHELL_PREDICTION_BOOTSTRAP),
+        ];
         assert_eq!(
             candidates.first(),
             Some(&ShellCandidate {
                 command: "C:/Program Files/PowerShell/pwsh.exe".to_owned(),
-                args: vec!["-NoLogo".to_owned()],
-            })
-        );
-        assert!(
-            candidates.iter().any(|candidate| {
-                candidate.command == "pwsh.exe" && candidate.args == ["-NoLogo"]
+                args: expected_args.clone(),
             })
         );
         assert!(candidates.iter().any(|candidate| {
+            candidate.command == "pwsh.exe" && candidate.args == expected_args
+        }));
+        assert!(candidates.iter().any(|candidate| {
             candidate.command == "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
-                && candidate.args == ["-NoLogo"]
+                && candidate.args == expected_args
         }));
         assert_eq!(
             candidates
@@ -228,7 +305,10 @@ mod tests {
         );
         assert_eq!(
             format_candidate(candidates.first().expect("preferred candidate")),
-            "C:/Program Files/PowerShell/pwsh.exe -NoLogo"
+            format!(
+                "C:/Program Files/PowerShell/pwsh.exe {}",
+                expected_args.join(" ")
+            )
         );
     }
 
@@ -256,6 +336,9 @@ mod tests {
             format_candidate(&ShellCandidate::new("sh", std::iter::empty::<&str>())),
             "sh"
         );
+        #[cfg(windows)]
+        assert_eq!(Platform::current(), Platform::Windows);
+        #[cfg(not(windows))]
         assert_eq!(Platform::current(), Platform::Unix);
     }
 }

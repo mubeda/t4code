@@ -1,9 +1,10 @@
 import {
-  type TerminalAttachStreamEvent,
+  type EnvironmentId,
   type TerminalMetadataStreamEvent,
   type TerminalSummary,
   WS_METHODS,
 } from "@t4code/contracts";
+import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import { Atom } from "effect/unstable/reactivity";
 
@@ -12,23 +13,33 @@ import {
   createEnvironmentRpcCommand,
   createEnvironmentRpcSubscriptionAtomFamily,
   createEnvironmentSubscriptionAtomFamily,
+  environmentRpcKey,
+  followStreamInEnvironment,
+  parseEnvironmentRpcKey,
 } from "./runtime.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import { subscribe, type EnvironmentRpcInput } from "../rpc/client.ts";
 import {
-  applyTerminalAttachStreamEvent,
-  applyTerminalMetadataStreamEvent,
-  EMPTY_TERMINAL_BUFFER_STATE,
-} from "./terminalSession.ts";
+  acquireTerminalMetadataStream,
+  createTerminalTranscriptRuntimeRegistry,
+  terminalTranscriptRuntimeKey,
+} from "./terminalAttachAdapter.ts";
+import { applyTerminalMetadataStreamEvent } from "./terminalSession.ts";
+import {
+  EMPTY_TERMINAL_METADATA_SNAPSHOT,
+  type TerminalMetadataSnapshot,
+  type TerminalTranscriptRuntime,
+} from "./terminalTranscriptRuntime.ts";
 
-export function accumulateTerminalAttachEvents<E, R>(
-  events: Stream.Stream<TerminalAttachStreamEvent, E, R>,
-) {
-  return events.pipe(
-    Stream.scan(EMPTY_TERMINAL_BUFFER_STATE, applyTerminalAttachStreamEvent),
-    Stream.drop(1),
-  );
+export interface TerminalAttachSnapshot {
+  readonly metadata: TerminalMetadataSnapshot;
+  readonly transcriptRuntime: TerminalTranscriptRuntime | null;
 }
+
+export const EMPTY_TERMINAL_ATTACH_SNAPSHOT = Object.freeze<TerminalAttachSnapshot>({
+  metadata: EMPTY_TERMINAL_METADATA_SNAPSHOT,
+  transcriptRuntime: null,
+});
 
 export function accumulateTerminalMetadataEvents<E, R>(
   events: Stream.Stream<TerminalMetadataStreamEvent, E, R>,
@@ -44,6 +55,7 @@ export function createTerminalEnvironmentAtoms<R, E>(
 ) {
   const lifecycleScheduler = createAtomCommandScheduler();
   const resizeScheduler = createAtomCommandScheduler();
+  const transcriptRuntimes = createTerminalTranscriptRuntimeRegistry();
   const terminalThreadKey = ({
     environmentId,
     input,
@@ -59,12 +71,58 @@ export function createTerminalEnvironmentAtoms<R, E>(
     readonly input: { readonly threadId: string; readonly terminalId?: string | undefined };
   }) => JSON.stringify([environmentId, input.threadId, input.terminalId ?? null]);
   const lifecycleConcurrency = { mode: "serial" as const, key: terminalThreadKey };
+  const attachSnapshots = Atom.family((key: string) =>
+    Atom.make<TerminalAttachSnapshot>(EMPTY_TERMINAL_ATTACH_SNAPSHOT).pipe(
+      Atom.withLabel(`environment-data:terminal:attach-snapshot:${key}`),
+    ),
+  );
+  const attachSnapshot = (target: {
+    readonly environmentId: EnvironmentId;
+    readonly input: EnvironmentRpcInput<typeof WS_METHODS.terminalAttach>;
+  }) => attachSnapshots(environmentRpcKey(target));
+  const attachProducer = (() => {
+    const family = Atom.family((key: string) => {
+      const target =
+        parseEnvironmentRpcKey<EnvironmentRpcInput<typeof WS_METHODS.terminalAttach>>(key);
+      const runtimeKey = terminalTranscriptRuntimeKey(target.environmentId, target.input);
+      return runtime
+        .atom((get) => {
+          const atomRegistry = get.registry;
+          const snapshotAtom = attachSnapshots(key);
+          return acquireTerminalMetadataStream(
+            followStreamInEnvironment(
+              target.environmentId,
+              subscribe(WS_METHODS.terminalAttach, target.input),
+            ),
+            transcriptRuntimes,
+            runtimeKey,
+          ).pipe(
+            Stream.tap((metadata) =>
+              Effect.sync(() => {
+                const transcriptRuntime = transcriptRuntimes.get(runtimeKey);
+                if (transcriptRuntime !== undefined) {
+                  atomRegistry.set(snapshotAtom, { metadata, transcriptRuntime });
+                }
+              }),
+            ),
+            Stream.ensuring(
+              Effect.sync(() => {
+                atomRegistry.set(snapshotAtom, EMPTY_TERMINAL_ATTACH_SNAPSHOT);
+              }),
+            ),
+          );
+        })
+        .pipe(Atom.setIdleTTL(0), Atom.withLabel(`environment-data:terminal:attach:${key}`));
+    });
+    return (target: {
+      readonly environmentId: EnvironmentId;
+      readonly input: EnvironmentRpcInput<typeof WS_METHODS.terminalAttach>;
+    }) => family(environmentRpcKey(target));
+  })();
   return {
-    attach: createEnvironmentSubscriptionAtomFamily(runtime, {
-      label: "environment-data:terminal:attach",
-      subscribe: (input: EnvironmentRpcInput<typeof WS_METHODS.terminalAttach>) =>
-        accumulateTerminalAttachEvents(subscribe(WS_METHODS.terminalAttach, input)),
-    }),
+    attachProducer,
+    attachSnapshot,
+    transcriptRuntimes,
     events: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:terminal:events",
       tag: WS_METHODS.subscribeTerminalEvents,
@@ -112,3 +170,7 @@ export function createTerminalEnvironmentAtoms<R, E>(
 }
 
 export * from "./terminalSession.ts";
+export * from "./terminalInput.ts";
+export * from "./terminalAttachAdapter.ts";
+export * from "./terminalTranscriptRuntime.ts";
+export { createTerminalTranscript, type TerminalTranscript } from "./terminalTranscript.ts";

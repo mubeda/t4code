@@ -21,6 +21,7 @@ import {
   executeAtomQuery,
   isAtomCommandInterrupted,
   mapAtomCommandResult,
+  parseEnvironmentRpcKey,
   runAtomCommand,
   settleAsyncResult,
   settlePromise,
@@ -228,6 +229,15 @@ describe("environmentRpcKey", () => {
         input: originalTarget.input,
       }),
     ).not.toBe(environmentRpcKey(originalTarget));
+  });
+
+  it("round-trips the collision-safe atom-family target key", () => {
+    const target = {
+      environmentId: EnvironmentId.make("environment:1"),
+      input: { threadId: "thread:1", terminalId: "terminal:1" },
+    };
+
+    expect(parseEnvironmentRpcKey<typeof target.input>(environmentRpcKey(target))).toEqual(target);
   });
 });
 

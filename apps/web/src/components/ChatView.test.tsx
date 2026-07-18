@@ -49,6 +49,11 @@ const h = vi.hoisted(() => {
     previewState: {} as Record<string, unknown>,
     settings: {} as Record<string, unknown>,
     navigateCalls: [] as unknown[],
+    releasedTerminalInputs: [] as Array<{
+      environmentId: string;
+      threadId: string;
+      terminalId: string;
+    }>,
   };
 });
 
@@ -307,6 +312,9 @@ vi.mock("./ThreadTerminalDrawer", () => ({
     h.captured["threadTerminalDrawer"] = props;
     return <div data-mock="thread-terminal-drawer" data-mode={String(props["mode"] ?? "drawer")} />;
   },
+  releaseTerminalInputScheduler: (environmentId: string, threadId: string, terminalId: string) => {
+    h.releasedTerminalInputs.push({ environmentId, threadId, terminalId });
+  },
 }));
 
 vi.mock("./CenterPanelTabs", () => ({
@@ -560,6 +568,7 @@ beforeEach(() => {
   };
   h.settings = { ...DEFAULT_SERVER_SETTINGS, ...DEFAULT_CLIENT_SETTINGS };
   h.navigateCalls = [];
+  h.releasedTerminalInputs = [];
 
   for (const { store, pristine } of resettableStores) {
     store.setState({ ...pristine }, true);
@@ -849,6 +858,57 @@ describe("ChatView", () => {
       expect(drawer["cwd"]).toBe("X:/demo");
       const labels = drawer["terminalLabelsById"] as ReadonlyMap<string, string>;
       expect(labels.get("term-1")).toBe("Build shell");
+    });
+
+    it("releases terminal input state only after a successful close", async () => {
+      seedEnvironment(makeEnvironmentPresentation());
+      seedProject(makeProject());
+      seedServerThread(makeThread());
+      seedGitStatus(true);
+      h.knownSessions = [
+        {
+          target: { environmentId, threadId, terminalId: "term-1" },
+          state: { summary: { label: "Build shell", cwd: "X:/demo", worktreePath: null } },
+        },
+      ];
+      useRightPanelStore.getState().openTerminal(threadRef, "term-1");
+      publishSeededStoreState(useRightPanelStore);
+      h.commandResults["terminal.close"] = () => AsyncResult.success(undefined);
+
+      renderServerRoute();
+      const drawer = capturedProps<Record<string, unknown>>("threadTerminalDrawer");
+      const onCloseTerminal = drawer["onCloseTerminal"] as (terminalId: string) => void;
+      onCloseTerminal("term-1");
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(h.releasedTerminalInputs).toEqual([{ environmentId, threadId, terminalId: "term-1" }]);
+    });
+
+    it("retains terminal input state when close fails", async () => {
+      seedEnvironment(makeEnvironmentPresentation());
+      seedProject(makeProject());
+      seedServerThread(makeThread());
+      seedGitStatus(true);
+      h.knownSessions = [
+        {
+          target: { environmentId, threadId, terminalId: "term-1" },
+          state: { summary: { label: "Build shell", cwd: "X:/demo", worktreePath: null } },
+        },
+      ];
+      useRightPanelStore.getState().openTerminal(threadRef, "term-1");
+      publishSeededStoreState(useRightPanelStore);
+      h.commandResults["terminal.close"] = () =>
+        AsyncResult.failure(Cause.fail(new Error("close rejected")));
+
+      renderServerRoute();
+      const drawer = capturedProps<Record<string, unknown>>("threadTerminalDrawer");
+      const onCloseTerminal = drawer["onCloseTerminal"] as (terminalId: string) => void;
+      onCloseTerminal("term-1");
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(h.releasedTerminalInputs).toEqual([]);
     });
   });
 

@@ -54,6 +54,11 @@ const h = vi.hoisted(() => {
     commandCalls: [] as Array<{ key: string; input: unknown }>,
     commandResults: {} as Record<string, (input: unknown) => unknown>,
     defaultCommandResult: (() => undefined) as (input?: unknown) => unknown,
+    terminalInputEnqueues: [] as Array<{
+      data: string;
+      write: (data: string) => Promise<{ _tag: string; cause?: unknown }>;
+      onWriteError?: (error: unknown) => void;
+    }>,
     environments: [] as unknown[],
     primaryEnvironment: null as unknown,
     threadsByKey: new Map<string, unknown>(),
@@ -458,6 +463,19 @@ vi.mock("./ThreadTerminalDrawer", () => ({
     h.capture("threadTerminalDrawer", props);
     return <div data-mock="thread-terminal-drawer" data-mode={String(props["mode"] ?? "drawer")} />;
   },
+  enqueueTerminalInput: (input: {
+    data: string;
+    write: (data: string) => Promise<{ _tag: string; cause?: unknown }>;
+    onWriteError?: (error: unknown) => void;
+  }) => {
+    h.terminalInputEnqueues.push(input);
+    void input.write(input.data).then((result) => {
+      if (result._tag === "Failure") {
+        input.onWriteError?.(result.cause);
+      }
+    });
+  },
+  releaseTerminalInputScheduler: vi.fn(),
 }));
 
 vi.mock("./CenterPanelTabs", () => ({
@@ -1012,6 +1030,7 @@ beforeEach(() => {
   h.commandCalls.length = 0;
   h.commandResults = {};
   h.defaultCommandResult = () => AsyncResult.success(undefined);
+  h.terminalInputEnqueues.length = 0;
   h.environments = [];
   h.primaryEnvironment = null;
   h.threadsByKey.clear();
@@ -1845,6 +1864,7 @@ describe("ChatView persistent terminal drawer", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(commandCallsFor("terminal.write")).toHaveLength(1);
+    expect(h.terminalInputEnqueues.at(-1)?.data).toBe("exit\n");
 
     // Terminal context selections forward to the composer only while visible.
     const selections: TerminalContextSelection[] = [];
@@ -1958,6 +1978,7 @@ describe("ChatView project script handlers", () => {
     const writes = commandCallsFor("terminal.write");
     expect(writes).toHaveLength(1);
     expect((writes[0]!.input as { input: { data: string } }).input.data).toBe("pnpm dev\r");
+    expect(h.terminalInputEnqueues.at(-1)?.data).toBe("pnpm dev\r");
   });
 
   it("prefers a fresh terminal when the base terminal is busy", async () => {

@@ -102,23 +102,44 @@ async fn managed_endpoint_runtime_handles_disabled_unsupported_and_missing_conne
     runtime.shutdown().await;
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
+fn long_running_connector_fixture(directory: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let executable = directory.join("t4code-connect");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile true; do sleep 1; done\n",
+        )
+        .expect("connector fixture should write");
+        let mut permissions = std::fs::metadata(&executable)
+            .expect("connector metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&executable, permissions).expect("connector should be executable");
+        executable
+    }
+    #[cfg(windows)]
+    {
+        let executable = directory.join("t4code-connect.cmd");
+        std::fs::write(
+            &executable,
+            "@echo off\r\n\
+             :loop\r\n\
+             %SystemRoot%\\System32\\ping.exe -n 2 127.0.0.1 >nul\r\n\
+             goto loop\r\n",
+        )
+        .expect("connector fixture should write");
+        executable
+    }
+}
+
 #[tokio::test]
 async fn managed_endpoint_runtime_reuses_replaces_and_stops_connectors() {
-    use std::os::unix::fs::PermissionsExt;
-
     let directory = tempfile::tempdir().expect("connector directory");
-    let executable = directory.path().join("t4code-connect");
-    std::fs::write(
-        &executable,
-        "#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile true; do sleep 1; done\n",
-    )
-    .expect("connector fixture should write");
-    let mut permissions = std::fs::metadata(&executable)
-        .expect("connector metadata")
-        .permissions();
-    permissions.set_mode(0o700);
-    std::fs::set_permissions(&executable, permissions).expect("connector should be executable");
+    let executable = long_running_connector_fixture(directory.path());
 
     let runtime = ManagedEndpointRuntime::with_executable_override(executable);
     let first_config = json!({

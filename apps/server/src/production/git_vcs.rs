@@ -687,8 +687,16 @@ impl GitVcsRpcServices {
     }
 
     async fn open_in_editor(&self, payload: Value) -> RpcResult {
-        let input: LaunchEditorInput = decode(payload, "shell.openInEditor")?;
-        let (command, args): (&str, Vec<String>) = match input.editor.as_str() {
+        open_in_editor_with(payload, launch_editor)
+    }
+}
+
+fn open_in_editor_with(
+    payload: Value,
+    launch: impl FnOnce(&EditorLaunchStrategy) -> std::io::Result<()>,
+) -> RpcResult {
+    let input: LaunchEditorInput = decode(payload, "shell.openInEditor")?;
+    let (command, args): (&str, Vec<String>) = match input.editor.as_str() {
             "file-manager" => return open::that_detached(&input.cwd).map(|()| Value::Null).map_err(|error| json!({
                 "_tag": "ExternalLauncherEditorSpawnError", "editor": input.editor,
                 "target": display_path(&input.cwd), "command": "open", "args": [], "cause": error.to_string(),
@@ -704,30 +712,32 @@ impl GitVcsRpcServices {
             editor if JETBRAINS_EDITORS.contains(&editor) => (editor, vec![display_path(&input.cwd)]),
             editor => return Err(json!({ "_tag": "ExternalLauncherUnknownEditorError", "editor": editor })),
         };
-        let target = display_path(&input.cwd);
-        let strategy = editor_launch_strategy(command, args.clone(), target.clone());
-        let result = match strategy {
-            #[cfg(windows)]
-            EditorLaunchStrategy::ShellAssociation {
-                application,
-                target,
-            } => open::with_detached(target, application),
-            #[cfg(not(windows))]
-            EditorLaunchStrategy::Process { command, args } => Command::new(command)
-                .args(args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .kill_on_drop(false)
-                .spawn()
-                .map(|_| ()),
-        };
-        result.map(|()| Value::Null).map_err(|error| {
-            json!({
-                "_tag": "ExternalLauncherEditorSpawnError", "editor": input.editor,
-                "target": target, "command": command, "args": args, "cause": error.to_string()
-            })
+    let target = display_path(&input.cwd);
+    let strategy = editor_launch_strategy(command, args.clone(), target.clone());
+    launch(&strategy).map(|()| Value::Null).map_err(|error| {
+        json!({
+            "_tag": "ExternalLauncherEditorSpawnError", "editor": input.editor,
+            "target": target, "command": command, "args": args, "cause": error.to_string()
         })
+    })
+}
+
+fn launch_editor(strategy: &EditorLaunchStrategy) -> std::io::Result<()> {
+    match strategy {
+        #[cfg(windows)]
+        EditorLaunchStrategy::ShellAssociation {
+            application,
+            target,
+        } => open::with_detached(target, application.clone()),
+        #[cfg(not(windows))]
+        EditorLaunchStrategy::Process { command, args } => Command::new(command)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(false)
+            .spawn()
+            .map(|_| ()),
     }
 }
 
@@ -1379,7 +1389,8 @@ fn summarize_commit_context(context: &str, paths: Option<&[String]>) -> String {
 
 #[cfg(all(test, windows))]
 mod tests {
-    use super::{EditorLaunchStrategy, editor_launch_strategy};
+    use super::{EditorLaunchStrategy, editor_launch_strategy, open_in_editor_with};
+    use serde_json::json;
 
     #[test]
     fn windows_editor_launch_uses_the_shell_resolved_application() {
@@ -1396,6 +1407,30 @@ mod tests {
                 target: "C:\\repo\\keybindings.json".to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn editor_spawn_errors_are_typed_without_launching_an_external_application() {
+        let error = open_in_editor_with(
+            json!({
+                "cwd": "C:\\repo",
+                "editor": "rustrover",
+            }),
+            |_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "missing fixture editor",
+                ))
+            },
+        )
+        .expect_err("injected launcher failure");
+
+        assert_eq!(error["_tag"], "ExternalLauncherEditorSpawnError");
+        assert_eq!(error["editor"], "rustrover");
+        assert_eq!(error["target"], "C:\\repo");
+        assert_eq!(error["command"], "rustrover");
+        assert_eq!(error["args"], json!(["C:\\repo"]));
+        assert_eq!(error["cause"], "missing fixture editor");
     }
 }
 

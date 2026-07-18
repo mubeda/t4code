@@ -149,41 +149,59 @@ impl ProcessRunner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let mut child = command.spawn().map_err(|source| ProcessError::Spawn {
-            operation: request.operation.clone(),
-            command: command_label,
-            source,
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| ProcessError::Pipe {
-            operation: request.operation.clone(),
-            stream: "stdout",
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| ProcessError::Pipe {
-            operation: request.operation.clone(),
-            stream: "stderr",
-        })?;
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(source) => {
+                return Err(ProcessError::Spawn {
+                    operation: request.operation.clone(),
+                    command: command_label,
+                    source,
+                });
+            }
+        };
+        let stdout = match child.stdout.take() {
+            Some(stdout) => stdout,
+            None => {
+                return Err(ProcessError::Pipe {
+                    operation: request.operation.clone(),
+                    stream: "stdout",
+                });
+            }
+        };
+        let stderr = match child.stderr.take() {
+            Some(stderr) => stderr,
+            None => {
+                return Err(ProcessError::Pipe {
+                    operation: request.operation.clone(),
+                    stream: "stderr",
+                });
+            }
+        };
         let stdout_task = tokio::spawn(read_bounded(stdout, request.max_output_bytes));
         let stderr_task = tokio::spawn(read_bounded(stderr, request.max_output_bytes));
 
         if let Some(input) = request.stdin.as_deref() {
-            let mut stdin = child.stdin.take().ok_or_else(|| ProcessError::Pipe {
-                operation: request.operation.clone(),
-                stream: "stdin",
-            })?;
-            stdin
-                .write_all(input)
-                .await
-                .map_err(|source| ProcessError::Stdin {
+            let mut stdin = match child.stdin.take() {
+                Some(stdin) => stdin,
+                None => {
+                    return Err(ProcessError::Pipe {
+                        operation: request.operation.clone(),
+                        stream: "stdin",
+                    });
+                }
+            };
+            if let Err(source) = stdin.write_all(input).await {
+                return Err(ProcessError::Stdin {
                     operation: request.operation.clone(),
                     source,
-                })?;
-            stdin
-                .shutdown()
-                .await
-                .map_err(|source| ProcessError::Stdin {
+                });
+            }
+            if let Err(source) = stdin.shutdown().await {
+                return Err(ProcessError::Stdin {
                     operation: request.operation.clone(),
                     source,
-                })?;
+                });
+            }
         } else {
             drop(child.stdin.take());
         }
@@ -203,34 +221,49 @@ impl ProcessRunner {
                     timeout_ms: request.timeout.as_millis(),
                 });
             }
-            status = child.wait() => status.map_err(|source| ProcessError::Wait {
-                operation: request.operation.clone(),
-                source,
-            })?,
+            status = child.wait() => match status {
+                Ok(status) => status,
+                Err(source) => {
+                    return Err(ProcessError::Wait {
+                        operation: request.operation.clone(),
+                        source,
+                    });
+                }
+            },
         };
 
-        let stdout = stdout_task
-            .await
-            .map_err(|_| ProcessError::Pipe {
-                operation: request.operation.clone(),
-                stream: "stdout",
-            })?
-            .map_err(|source| ProcessError::Read {
-                operation: request.operation.clone(),
-                stream: "stdout",
-                source,
-            })?;
-        let stderr = stderr_task
-            .await
-            .map_err(|_| ProcessError::Pipe {
-                operation: request.operation.clone(),
-                stream: "stderr",
-            })?
-            .map_err(|source| ProcessError::Read {
-                operation: request.operation.clone(),
-                stream: "stderr",
-                source,
-            })?;
+        let stdout = match stdout_task.await {
+            Ok(Ok(stdout)) => stdout,
+            Ok(Err(source)) => {
+                return Err(ProcessError::Read {
+                    operation: request.operation.clone(),
+                    stream: "stdout",
+                    source,
+                });
+            }
+            Err(_) => {
+                return Err(ProcessError::Pipe {
+                    operation: request.operation.clone(),
+                    stream: "stdout",
+                });
+            }
+        };
+        let stderr = match stderr_task.await {
+            Ok(Ok(stderr)) => stderr,
+            Ok(Err(source)) => {
+                return Err(ProcessError::Read {
+                    operation: request.operation.clone(),
+                    stream: "stderr",
+                    source,
+                });
+            }
+            Err(_) => {
+                return Err(ProcessError::Pipe {
+                    operation: request.operation.clone(),
+                    stream: "stderr",
+                });
+            }
+        };
         for (stream, output) in [("stdout", &stdout), ("stderr", &stderr)] {
             if output.observed > request.max_output_bytes
                 && request.output_policy == OutputPolicy::Error
@@ -243,9 +276,14 @@ impl ProcessRunner {
                 });
             }
         }
-        let exit_code = status.code().ok_or_else(|| ProcessError::MissingExitCode {
-            operation: request.operation.clone(),
-        })?;
+        let exit_code = match status.code() {
+            Some(exit_code) => exit_code,
+            None => {
+                return Err(ProcessError::MissingExitCode {
+                    operation: request.operation.clone(),
+                });
+            }
+        };
         let stdout_length = stdout.observed;
         let stderr_length = stderr.observed;
         let stdout_truncated = stdout.observed > request.max_output_bytes;

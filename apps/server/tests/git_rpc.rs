@@ -74,16 +74,14 @@ async fn observe_initial_remote(
     }
 }
 
-#[cfg(unix)]
-#[tokio::test]
-async fn provider_cli_service_covers_success_exit_and_payload_failures_in_public_build() {
-    use source_control::{
-        CreatePullRequestInput, ProviderKind, PullRequestService, ResolvePullRequestInput,
-    };
-    use std::os::unix::fs::PermissionsExt;
+#[cfg(any(unix, windows))]
+fn provider_cli_fixture(directory: &Path, command: &str) -> std::path::PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
 
-    let temporary = tempfile::tempdir().expect("provider CLI directory");
-    let script = r#"#!/bin/sh
+        let path = directory.join(command);
+        let script = r#"#!/bin/sh
 case "$*" in
   *fail*) exit 7 ;;
   *invalid*) printf '%s\n' 'not-json'; exit 0 ;;
@@ -96,17 +94,63 @@ case "$(basename "$0"):$*" in
   az:*) printf '%s\n' '{"pullRequestId":44,"title":"Azure PR","url":"https://azure.test/44","targetRefName":"refs/heads/main","sourceRefName":"refs/heads/feature","status":"active"}' ;;
 esac
 "#;
-    for command in ["gh", "glab", "az"] {
-        let path = temporary.path().join(command);
         fs::write(&path, script).expect("provider fixture should write");
         let mut permissions = fs::metadata(&path).unwrap().permissions();
         permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions).unwrap();
+        fs::set_permissions(&path, permissions).unwrap();
+        path
     }
+    #[cfg(windows)]
+    {
+        let path = directory.join(format!("{command}.cmd"));
+        let success = match command {
+            "gh" => {
+                r#"echo %* | %SystemRoot%\System32\findstr.exe /C:"create" >nul && (
+  echo https://github.com/example/repo/pull/42
+  exit /b 0
+)
+echo {"number":42,"title":"GitHub PR","url":"https://github.test/42","baseRefName":"main","headRefName":"feature","state":"OPEN"}"#
+            }
+            "glab" => {
+                r#"echo {"iid":43,"title":"GitLab MR","web_url":"https://gitlab.test/43","target_branch":"main","source_branch":"feature","state":"opened"}"#
+            }
+            "az" => {
+                r#"echo %* | %SystemRoot%\System32\findstr.exe /C:"list" >nul && (
+  echo [{"pullRequestId":44,"title":"Azure PR","url":"https://azure.test/44","targetRefName":"refs/heads/main","sourceRefName":"refs/heads/feature","status":"active"}]
+  exit /b 0
+)
+echo {"pullRequestId":44,"title":"Azure PR","url":"https://azure.test/44","targetRefName":"refs/heads/main","sourceRefName":"refs/heads/feature","status":"active"}"#
+            }
+            _ => unreachable!("unsupported provider fixture"),
+        };
+        let script = format!(
+            "@echo off\r\n\
+             echo %* | %SystemRoot%\\System32\\findstr.exe /C:\"fail\" >nul && exit /b 7\r\n\
+             echo %* | %SystemRoot%\\System32\\findstr.exe /C:\"invalid\" >nul && (\r\n\
+             echo not-json\r\n\
+             exit /b 0\r\n\
+             )\r\n\
+             {success}\r\n"
+        );
+        fs::write(&path, script).expect("provider fixture should write");
+        path
+    }
+}
+
+#[tokio::test]
+async fn provider_cli_service_covers_success_exit_and_payload_failures_in_public_build() {
+    use source_control::{
+        CreatePullRequestInput, ProviderKind, PullRequestService, ResolvePullRequestInput,
+    };
+
+    let temporary = tempfile::tempdir().expect("provider CLI directory");
+    let github = provider_cli_fixture(temporary.path(), "gh");
+    let gitlab = provider_cli_fixture(temporary.path(), "glab");
+    let azure = provider_cli_fixture(temporary.path(), "az");
     let service = PullRequestService::with_provider_commands(
-        temporary.path().join("gh").to_string_lossy(),
-        temporary.path().join("glab").to_string_lossy(),
-        temporary.path().join("az").to_string_lossy(),
+        github.to_string_lossy(),
+        gitlab.to_string_lossy(),
+        azure.to_string_lossy(),
     );
     let cancellation = CancellationToken::new();
     let azure_current = service

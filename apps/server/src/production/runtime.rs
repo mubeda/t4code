@@ -1223,9 +1223,9 @@ mod tests {
         assert!(diff.truncated);
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn git_review_maps_process_detached_head_and_unreadable_file_edges() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
 
         let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
@@ -1273,13 +1273,16 @@ mod tests {
             .expect("detached preview");
         assert_eq!(detached.sources[1].head_ref.as_deref(), Some("HEAD"));
 
-        let unreadable = repository.path().join("unreadable.txt");
-        std::fs::write(&unreadable, "secret\n").expect("unreadable fixture");
-        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000))
-            .expect("remove read permission");
-        let result = untracked_review_diff(&repository.path().to_string_lossy()).await;
-        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o600))
-            .expect("restore read permission");
-        assert!(result.is_err());
+        #[cfg(unix)]
+        {
+            let unreadable = repository.path().join("unreadable.txt");
+            std::fs::write(&unreadable, "secret\n").expect("unreadable fixture");
+            std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000))
+                .expect("remove read permission");
+            let result = untracked_review_diff(&repository.path().to_string_lossy()).await;
+            std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o600))
+                .expect("restore read permission");
+            assert!(result.is_err());
+        }
     }
 }

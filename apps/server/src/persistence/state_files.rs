@@ -367,10 +367,11 @@ mod tests {
             write_bytes_atomically(&directory_target, b"value").await,
             Err(StateFileError::Persist { .. })
         ));
-        assert!(!should_replace_with_backup(&std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "fixture",
-        )));
+        let replace_error = std::io::Error::new(std::io::ErrorKind::AlreadyExists, "fixture");
+        #[cfg(windows)]
+        assert!(should_replace_with_backup(&replace_error));
+        #[cfg(not(windows))]
+        assert!(!should_replace_with_backup(&replace_error));
         #[cfg(not(windows))]
         assert!(
             replace_existing_atomically(

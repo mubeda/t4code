@@ -126,7 +126,6 @@ fn looks_like_windows_absolute(input: &str) -> bool {
 mod tests {
     use super::*;
 
-    #[cfg(not(windows))]
     #[tokio::test]
     async fn browse_covers_relative_hidden_sorted_and_missing_directories() {
         let root = tempfile::tempdir().unwrap();
@@ -162,11 +161,14 @@ mod tests {
         ));
 
         assert_eq!(expand_home("literal/path"), PathBuf::from("literal/path"));
-        assert!(!looks_like_windows_absolute("relative/path"));
-        assert!(looks_like_windows_absolute("C:\\Users"));
-        assert!(matches!(
-            browse("C:\\Users", Some(root.path())).await,
-            Err(WorkspaceError::WindowsPathUnsupported { .. })
-        ));
+        #[cfg(not(windows))]
+        {
+            assert!(!looks_like_windows_absolute("relative/path"));
+            assert!(looks_like_windows_absolute("C:\\Users"));
+            assert!(matches!(
+                browse("C:\\Users", Some(root.path())).await,
+                Err(WorkspaceError::WindowsPathUnsupported { .. })
+            ));
+        }
     }
 }

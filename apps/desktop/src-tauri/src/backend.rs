@@ -338,10 +338,14 @@ impl ManagedBackendRuntime {
 
     async fn wait_for_completion(&self) -> Result<(), String> {
         loop {
+            let notified = self.completion.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
             if let Some(result) = self.join_result.lock().await.clone() {
                 return result;
             }
-            self.completion.notified().await;
+            notified.await;
         }
     }
 }
@@ -1134,6 +1138,91 @@ struct WslDistroEntry {
     is_default: bool,
 }
 
+#[cfg(test)]
+static WSL_COMMAND_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
+#[cfg(test)]
+static WSL_SERVER_BINARY_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+#[cfg(test)]
+struct WslCommandOverrideGuard {
+    previous_command: Option<PathBuf>,
+    previous_server_binary: Option<PathBuf>,
+}
+
+#[cfg(test)]
+impl WslCommandOverrideGuard {
+    fn set(&self, program: PathBuf) {
+        *WSL_COMMAND_OVERRIDE
+            .lock()
+            .expect("WSL command override mutex poisoned") = Some(program);
+    }
+
+    fn set_server_binary(&self, binary: PathBuf) {
+        *WSL_SERVER_BINARY_OVERRIDE
+            .lock()
+            .expect("WSL server binary override mutex poisoned") = Some(binary);
+    }
+}
+
+#[cfg(test)]
+impl Drop for WslCommandOverrideGuard {
+    fn drop(&mut self) {
+        *WSL_COMMAND_OVERRIDE
+            .lock()
+            .expect("WSL command override mutex poisoned") = self.previous_command.take();
+        *WSL_SERVER_BINARY_OVERRIDE
+            .lock()
+            .expect("WSL server binary override mutex poisoned") =
+            self.previous_server_binary.take();
+    }
+}
+
+#[cfg(test)]
+fn set_wsl_command_override(program: Option<PathBuf>) -> WslCommandOverrideGuard {
+    let previous_command = std::mem::replace(
+        &mut *WSL_COMMAND_OVERRIDE
+            .lock()
+            .expect("WSL command override mutex poisoned"),
+        program,
+    );
+    let previous_server_binary = WSL_SERVER_BINARY_OVERRIDE
+        .lock()
+        .expect("WSL server binary override mutex poisoned")
+        .clone();
+    WslCommandOverrideGuard {
+        previous_command,
+        previous_server_binary,
+    }
+}
+
+fn new_wsl_command() -> std::process::Command {
+    #[cfg(test)]
+    if let Some(program) = WSL_COMMAND_OVERRIDE
+        .lock()
+        .expect("WSL command override mutex poisoned")
+        .clone()
+    {
+        #[cfg(windows)]
+        {
+            if program
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("cmd"))
+            {
+                let mut command = std::process::Command::new("cmd.exe");
+                command.args(["/d", "/s", "/c"]).arg(program);
+                return command;
+            }
+            return std::process::Command::new(program);
+        }
+        #[cfg(not(windows))]
+        {
+            return std::process::Command::new(program);
+        }
+    }
+
+    std::process::Command::new("wsl.exe")
+}
+
 fn decode_wsl_command_output(bytes: &[u8]) -> String {
     if bytes.starts_with(&[0xff, 0xfe]) {
         let values = bytes[2..]
@@ -1168,7 +1257,7 @@ fn parse_wsl_distro_entries(raw: &str) -> Vec<WslDistroEntry> {
 }
 
 fn run_wsl_command(distro: &str, args: &[&str]) -> Result<String, String> {
-    let mut command = std::process::Command::new("wsl.exe");
+    let mut command = new_wsl_command();
     configure_background_std_command(&mut command);
     let output = command
         .args(["-d", distro, "--"])
@@ -1187,7 +1276,7 @@ fn run_wsl_command(distro: &str, args: &[&str]) -> Result<String, String> {
 }
 
 fn list_wsl_distros() -> Result<Vec<WslDistroEntry>, String> {
-    let mut command = std::process::Command::new("wsl.exe");
+    let mut command = new_wsl_command();
     configure_background_std_command(&mut command);
     let output = command
         .args(["-l", "-v"])
@@ -1377,6 +1466,14 @@ fn default_launch_plans<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<BackendLau
 
 fn wsl_server_binary_candidates() -> Result<Vec<PathBuf>, String> {
     let mut candidates = Vec::new();
+    #[cfg(test)]
+    if let Some(path) = WSL_SERVER_BINARY_OVERRIDE
+        .lock()
+        .expect("WSL server binary override mutex poisoned")
+        .clone()
+    {
+        candidates.push(path);
+    }
     if let Some(path) = std::env::var_os(WSL_SERVER_BINARY_ENV)
         && !path.is_empty()
     {
@@ -1585,6 +1682,7 @@ fn desktop_base_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::{SinkExt, StreamExt};
     use std::{
         cell::Cell,
         collections::VecDeque,
@@ -1596,7 +1694,9 @@ mod tests {
         thread,
         time::Duration,
     };
+    use t4code_server::{RpcExit, ServerMessage};
     use tokio::io::{AsyncRead, ReadBuf};
+    use tokio_tungstenite::{connect_async, tungstenite::Message};
 
     struct ScriptedReader {
         steps: VecDeque<io::Result<Vec<u8>>>,
@@ -1716,6 +1816,66 @@ mod tests {
                 .expect("test server should start");
         config.port = handle.local_addr().port();
         (handle, config)
+    }
+
+    async fn start_rpc_test_server(
+        base_dir: &Path,
+    ) -> (t4code_server::ServerHandle, BackendRunConfig) {
+        let mut config = local_test_config(0);
+        let server_config =
+            server_config_for_launch(base_dir.to_path_buf(), &config).with_unsafe_no_auth();
+        let handle = ServerRuntime::start(server_config)
+            .await
+            .expect("RPC test server should start");
+        config.port = handle.local_addr().port();
+        (handle, config)
+    }
+
+    async fn request_rpc<S>(
+        socket: &mut tokio_tungstenite::WebSocketStream<S>,
+        id: usize,
+        method: &str,
+        payload: Value,
+    ) -> ServerMessage
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        socket
+            .send(Message::Text(
+                json!({
+                    "_tag": "Request",
+                    "id": id.to_string(),
+                    "tag": method,
+                    "payload": payload,
+                    "headers": []
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .expect("RPC request should send");
+        let frame = tokio::time::timeout(Duration::from_secs(10), socket.next())
+            .await
+            .expect("RPC response should arrive before the timeout")
+            .expect("RPC socket should remain open")
+            .expect("RPC response frame should be valid");
+        let Message::Text(text) = frame else {
+            panic!("expected an RPC text frame, got {frame:?}");
+        };
+        serde_json::from_str(&text).expect("RPC response should decode")
+    }
+
+    fn assert_rpc_completed(method: &str, message: &ServerMessage) {
+        assert!(
+            matches!(
+                message,
+                ServerMessage::Exit {
+                    exit: RpcExit::Success { .. } | RpcExit::Failure { .. },
+                    ..
+                }
+            ),
+            "{method} should complete with a typed Effect exit, got {message:?}"
+        );
     }
 
     fn local_test_config(port: u16) -> BackendRunConfig {
@@ -2244,6 +2404,123 @@ mod tests {
         };
 
         assert_eq!(resolve_wsl_distro(&settings), Ok("Debian".to_string()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_wsl_resolution_covers_discovery_paths_and_command_failures() {
+        let temp = tempfile::tempdir().expect("WSL fixture directory should open");
+        let fixture = temp.path().join("wsl-fixture.cmd");
+        fs::write(
+            &fixture,
+            r#"@echo off
+if "%1"=="-l" (
+  echo   NAME STATE VERSION
+  echo * Ubuntu Running 2
+  echo   Debian Stopped 2
+  exit /b 0
+)
+if "%2"=="Fail" (
+  echo forced failure 1>&2
+  exit /b 7
+)
+if "%4"=="wslpath" (
+  if "%2"=="Empty" exit /b 0
+  echo /opt/t4code
+  exit /b 0
+)
+if "%4"=="hostname" (
+  if "%2"=="Invalid" echo not-an-address
+  if not "%2"=="Invalid" echo not-an-address 172.20.0.2
+  exit /b 0
+)
+exit /b 9
+"#,
+        )
+        .expect("WSL fixture should write");
+        let command_override = set_wsl_command_override(Some(fixture));
+
+        let distros = list_wsl_distros().expect("fixture distros should list");
+        assert_eq!(
+            distros,
+            vec![
+                WslDistroEntry {
+                    name: "Ubuntu".to_string(),
+                    is_default: true,
+                },
+                WslDistroEntry {
+                    name: "Debian".to_string(),
+                    is_default: false,
+                },
+            ]
+        );
+        let settings = BackendDesktopSettings {
+            server_exposure_mode: "local-only".to_string(),
+            tailscale_serve_enabled: false,
+            tailscale_serve_port: 443,
+            wsl_backend_enabled: true,
+            wsl_only: true,
+            wsl_distro: None,
+        };
+        assert_eq!(resolve_wsl_distro(&settings), Ok("Ubuntu".to_string()));
+        assert_eq!(
+            resolve_wsl_path("Ubuntu", Path::new(r"C:\t4code")),
+            Ok("/opt/t4code".to_string())
+        );
+        assert_eq!(
+            resolve_wsl_renderer_host("Ubuntu"),
+            Some("172.20.0.2".to_string())
+        );
+        let server_binary = temp.path().join("t4code");
+        fs::write(&server_binary, b"fixture").expect("server binary fixture should write");
+        command_override.set_server_binary(server_binary);
+        assert_eq!(
+            resolve_wsl_server_binary("Ubuntu"),
+            Ok("/opt/t4code".to_string())
+        );
+        let plan = resolve_wsl_launch_plan_for_distro(
+            "Ubuntu".to_string(),
+            3773,
+            "token".to_string(),
+            PathBuf::from("backend.log"),
+            "wsl:Ubuntu".to_string(),
+            "WSL Ubuntu".to_string(),
+        )
+        .expect("WSL launch plan should resolve");
+        assert_eq!(plan.config.local_host, "172.20.0.2");
+        assert_eq!(plan.log_path, Some(PathBuf::from("backend.log")));
+        let primary = resolve_wsl_primary_launch_plan(
+            &settings,
+            3774,
+            "primary-token".to_string(),
+            PathBuf::from("primary.log"),
+        )
+        .expect("primary WSL launch plan should resolve");
+        assert_eq!(primary.config.environment_id, PRIMARY_LOCAL_ENVIRONMENT_ID);
+        assert_eq!(resolve_wsl_renderer_host("Invalid"), None);
+        assert!(
+            resolve_wsl_path("Empty", Path::new(r"C:\t4code"))
+                .unwrap_err()
+                .contains("returned no Linux path")
+        );
+        assert!(
+            run_wsl_command("Fail", &["hostname", "-I"])
+                .unwrap_err()
+                .contains("exited with status")
+        );
+
+        let missing = temp.path().join("missing-wsl.exe");
+        command_override.set(missing);
+        assert!(
+            list_wsl_distros()
+                .unwrap_err()
+                .contains("Could not list WSL")
+        );
+        assert!(
+            run_wsl_command("Ubuntu", &["hostname", "-I"])
+                .unwrap_err()
+                .contains("Could not run wsl.exe")
+        );
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -2810,6 +3087,165 @@ mod tests {
             .wait_for_completion()
             .await
             .expect("completed runtime result should remain available");
+    }
+
+    #[tokio::test]
+    async fn in_process_desktop_runtime_serves_production_rpc_domains() {
+        let state = tempfile::tempdir().expect("state tempdir should open");
+        let workspace = tempfile::tempdir().expect("workspace tempdir should open");
+        let (handle, config) = start_rpc_test_server(state.path()).await;
+        let (mut socket, _) = connect_async(format!("{}/ws", config.ws_base_url()))
+            .await
+            .expect("desktop runtime WebSocket should connect");
+
+        for (id, method) in [
+            "cloud.getRelayClientStatus",
+            "filesystem.browse",
+            "git.preparePullRequestThread",
+            "git.resolvePullRequest",
+            "orchestration.dispatchCommand",
+            "orchestration.getArchivedShellSnapshot",
+            "orchestration.getFullThreadDiff",
+            "orchestration.getTurnDiff",
+            "orchestration.replayEvents",
+            "preview.close",
+            "preview.list",
+            "preview.navigate",
+            "preview.open",
+            "preview.refresh",
+            "preview.reportStatus",
+            "preview.resize",
+            "previewAutomation.focusHost",
+            "previewAutomation.respond",
+            "projects.createEntry",
+            "projects.deleteEntry",
+            "projects.duplicateEntry",
+            "projects.listEntries",
+            "projects.readFile",
+            "projects.renameEntry",
+            "projects.searchEntries",
+            "projects.writeFile",
+            "review.getDiffPreview",
+            "server.discoverSourceControl",
+            "server.getConfig",
+            "server.getProcessDiagnostics",
+            "server.getProcessResourceHistory",
+            "server.getProviderUsage",
+            "server.getSettings",
+            "server.getTraceDiagnostics",
+            "server.removeKeybinding",
+            "server.signalProcess",
+            "server.updateProvider",
+            "server.updateSettings",
+            "server.upsertKeybinding",
+            "shell.openInEditor",
+            "sourceControl.cloneRepository",
+            "sourceControl.lookupRepository",
+            "sourceControl.publishRepository",
+            "vcs.createRef",
+            "vcs.createWorktree",
+            "vcs.discardFiles",
+            "vcs.generateCommitMessage",
+            "vcs.listCommits",
+            "vcs.pull",
+            "vcs.refreshStatus",
+            "vcs.removeWorktree",
+            "vcs.stageFiles",
+            "vcs.switchRef",
+            "vcs.unstageFiles",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let message = request_rpc(&mut socket, id + 1, method, json!({})).await;
+            assert_rpc_completed(method, &message);
+        }
+
+        let cwd = workspace.path().to_string_lossy();
+        let initialized = request_rpc(&mut socket, 100, "vcs.init", json!({ "cwd": cwd })).await;
+        assert!(matches!(
+            initialized,
+            ServerMessage::Exit {
+                exit: RpcExit::Success { .. },
+                ..
+            }
+        ));
+        let refs = request_rpc(
+            &mut socket,
+            101,
+            "vcs.listRefs",
+            json!({ "cwd": cwd, "limit": 25 }),
+        )
+        .await;
+        assert!(matches!(
+            refs,
+            ServerMessage::Exit {
+                exit: RpcExit::Success { .. },
+                ..
+            }
+        ));
+
+        let opened = request_rpc(
+            &mut socket,
+            102,
+            "terminal.open",
+            json!({
+                "threadId": "desktop-runtime-smoke",
+                "terminalId": "desktop-runtime-terminal",
+                "cwd": cwd,
+                "cols": 80,
+                "rows": 24,
+                "env": {}
+            }),
+        )
+        .await;
+        assert!(matches!(
+            opened,
+            ServerMessage::Exit {
+                exit: RpcExit::Success { .. },
+                ..
+            }
+        ));
+        let resized = request_rpc(
+            &mut socket,
+            103,
+            "terminal.resize",
+            json!({
+                "threadId": "desktop-runtime-smoke",
+                "terminalId": "desktop-runtime-terminal",
+                "cols": 100,
+                "rows": 30
+            }),
+        )
+        .await;
+        assert!(matches!(
+            resized,
+            ServerMessage::Exit {
+                exit: RpcExit::Success { .. },
+                ..
+            }
+        ));
+        let closed = request_rpc(
+            &mut socket,
+            104,
+            "terminal.close",
+            json!({
+                "threadId": "desktop-runtime-smoke",
+                "terminalId": "desktop-runtime-terminal"
+            }),
+        )
+        .await;
+        assert!(matches!(
+            closed,
+            ServerMessage::Exit {
+                exit: RpcExit::Success { .. },
+                ..
+            }
+        ));
+
+        socket.close(None).await.expect("RPC socket should close");
+        handle.shutdown();
+        handle.join().await.expect("desktop runtime should join");
     }
 
     #[tokio::test]

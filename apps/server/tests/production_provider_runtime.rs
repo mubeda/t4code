@@ -48,6 +48,89 @@ use tokio_tungstenite::{WebSocketStream, connect_async, tungstenite::Message};
 
 const NOW: &str = "2026-07-10T10:00:00.000Z";
 
+const WINDOWS_CLAUDE_FIXTURE: &str = r#"
+[Console]::Out.WriteLine("ignored non-json output")
+[Console]::Error.WriteLine("fixture warning")
+while ($null -ne [Console]::In.ReadLine()) {}
+"#;
+
+const WINDOWS_CODEX_FIXTURE: &str = r#"
+while ($null -ne ($line = [Console]::In.ReadLine())) {
+  try { $request = $line | ConvertFrom-Json } catch { continue }
+  $id = [string]$request.id
+  $response = $null
+  switch ([string]$request.method) {
+    "initialize" { $response = '{"id":' + $id + ',"result":{"userAgent":"fixture"}}' }
+    "thread/start" { $response = '{"id":' + $id + ',"result":{"cwd":"C:\\tmp","model":"gpt-5","thread":{"id":"native-codex-thread"}}}' }
+    "thread/goal/set" { $response = '{"id":' + $id + ',"result":{"goal":{"status":"active"}}}' }
+    "turn/start" { $response = '{"id":' + $id + ',"result":{"turn":{"id":"native-codex-turn"}}}' }
+    "turn/interrupt" { $response = '{"id":' + $id + ',"result":{}}' }
+    "thread/rollback" { $response = '{"id":' + $id + ',"result":{"thread":{"id":"native-codex-thread","turns":[]}}}' }
+    "shutdown" { $response = '{"id":' + $id + ',"result":null}' }
+  }
+  if ($null -ne $response) {
+    [Console]::Out.WriteLine($response)
+    [Console]::Out.Flush()
+  }
+}
+"#;
+
+const WINDOWS_ACP_FIXTURE: &str = r#"
+while ($null -ne ($line = [Console]::In.ReadLine())) {
+  try { $request = $line | ConvertFrom-Json } catch { continue }
+  $id = [string]$request.id
+  $response = $null
+  switch ([string]$request.method) {
+    "initialize" { $response = '{"jsonrpc":"2.0","id":' + $id + ',"result":{}}' }
+    "authenticate" { $response = '{"jsonrpc":"2.0","id":' + $id + ',"result":{}}' }
+    "session/new" { $response = '{"jsonrpc":"2.0","id":' + $id + ',"result":{"sessionId":"cursor-session","configOptions":[{"id":"model","category":"model"}],"modes":{"currentModeId":"ask","availableModes":[{"id":"ask","name":"Ask"},{"id":"code","name":"Agent"},{"id":"architect","name":"Plan"}]}}}' }
+    "session/create" { $response = '{"jsonrpc":"2.0","id":' + $id + ',"result":{"sessionId":"grok-session","modes":{"currentModeId":"code","availableModes":[{"id":"code","name":"Agent"},{"id":"ask","name":"Ask"}]}}}' }
+    "session/set_config_option" { $response = '{"jsonrpc":"2.0","id":' + $id + ',"result":{"configOptions":[]}}' }
+    "session/set_mode" { $response = '{"jsonrpc":"2.0","id":' + $id + ',"result":{}}' }
+    "session/set_model" { $response = '{"jsonrpc":"2.0","id":' + $id + ',"result":{}}' }
+    "session/prompt" {
+      Start-Sleep -Milliseconds 100
+      $response = '{"jsonrpc":"2.0","id":' + $id + ',"result":{"stopReason":"end_turn"}}'
+    }
+  }
+  if ($null -ne $response) {
+    [Console]::Out.WriteLine($response)
+    [Console]::Out.Flush()
+  }
+}
+"#;
+
+#[cfg(any(unix, windows))]
+fn executable_fixture(
+    temp: &TempDir,
+    name: &str,
+    unix_contents: &str,
+    windows_contents: &str,
+) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _ = windows_contents;
+        let executable = temp.path().join(format!("{name}.sh"));
+        std::fs::write(&executable, unix_contents).expect("provider fixture should write");
+        let mut permissions = std::fs::metadata(&executable)
+            .expect("provider fixture metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&executable, permissions)
+            .expect("provider fixture should be executable");
+        executable
+    }
+    #[cfg(windows)]
+    {
+        let _ = unix_contents;
+        let executable = temp.path().join(format!("{name}.ps1"));
+        std::fs::write(&executable, windows_contents).expect("provider fixture should write");
+        executable
+    }
+}
+
 #[derive(Clone, Default)]
 struct TraceCapture(Arc<StdMutex<Vec<u8>>>);
 
@@ -2196,21 +2279,15 @@ async fn native_factory_routes_every_supported_provider_to_its_native_adapter() 
     }
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn native_claude_driver_supports_the_complete_live_command_surface() {
-    use std::os::unix::fs::PermissionsExt;
-
     let temp = TempDir::new().unwrap();
-    let executable = temp.path().join("claude-fixture.sh");
-    std::fs::write(
-        &executable,
+    let executable = executable_fixture(
+        &temp,
+        "claude-fixture",
         "#!/bin/sh\nprintf '%s\\n' 'ignored non-json output'\nprintf '%s\\n' 'fixture warning' >&2\ncat >/dev/null\n",
-    )
-    .unwrap();
-    let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
-    permissions.set_mode(0o700);
-    std::fs::set_permissions(&executable, permissions).unwrap();
+        WINDOWS_CLAUDE_FIXTURE,
+    );
 
     let factory = NativeProviderDriverFactory::new(temp.path().join("attachments"));
     let mut request = launch();
@@ -2385,15 +2462,12 @@ async fn native_opencode_driver_supports_session_turn_and_control_commands() {
     server.abort();
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn native_codex_driver_supports_session_turn_and_control_commands() {
-    use std::os::unix::fs::PermissionsExt;
-
     let temp = TempDir::new().unwrap();
-    let executable = temp.path().join("codex-fixture.sh");
-    std::fs::write(
-        &executable,
+    let executable = executable_fixture(
+        &temp,
+        "codex-fixture",
         r#"#!/bin/sh
 while IFS= read -r line; do
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
@@ -2408,11 +2482,8 @@ while IFS= read -r line; do
   esac
 done
 "#,
-    )
-    .unwrap();
-    let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
-    permissions.set_mode(0o700);
-    std::fs::set_permissions(&executable, permissions).unwrap();
+        WINDOWS_CODEX_FIXTURE,
+    );
 
     let factory = NativeProviderDriverFactory::new(temp.path().join("attachments"));
     let mut request = launch();
@@ -2478,15 +2549,12 @@ done
     driver.shutdown().await.unwrap();
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn native_acp_drivers_support_session_turn_and_control_commands() {
-    use std::os::unix::fs::PermissionsExt;
-
     let temp = TempDir::new().unwrap();
-    let executable = temp.path().join("acp-fixture.sh");
-    std::fs::write(
-        &executable,
+    let executable = executable_fixture(
+        &temp,
+        "acp-fixture",
         r#"#!/bin/sh
 while IFS= read -r line; do
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
@@ -2500,11 +2568,8 @@ while IFS= read -r line; do
   esac
 done
 "#,
-    )
-    .unwrap();
-    let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
-    permissions.set_mode(0o700);
-    std::fs::set_permissions(&executable, permissions).unwrap();
+        WINDOWS_ACP_FIXTURE,
+    );
     let factory = NativeProviderDriverFactory::new(temp.path().join("attachments"));
 
     let mut cursor_request = launch();

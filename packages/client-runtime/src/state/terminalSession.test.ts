@@ -1,17 +1,25 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import { EnvironmentId, TerminalSessionSnapshot, ThreadId } from "@t4code/contracts";
-import { Effect, Stream } from "effect";
+import { Effect, Latch, Layer, Stream } from "effect";
+import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
 
-import { accumulateTerminalAttachEvents, accumulateTerminalMetadataEvents } from "./terminal.ts";
-
+import { EnvironmentRegistry } from "../connection/registry.ts";
 import {
-  applyTerminalAttachStreamEvent,
+  accumulateTerminalMetadataEvents,
+  createTerminalEnvironmentAtoms,
+  terminalTranscriptRuntimeKey,
+} from "./terminal.ts";
+import {
   applyTerminalMetadataStreamEvent,
   combineTerminalSessionState,
-  EMPTY_TERMINAL_BUFFER_STATE,
+  EMPTY_TERMINAL_SESSION_STATE,
   selectRunningSubprocessTerminalIds,
 } from "./terminalSession.ts";
+import {
+  EMPTY_TERMINAL_METADATA_SNAPSHOT,
+  type TerminalMetadataSnapshot,
+} from "./terminalTranscriptRuntime.ts";
 
 const TARGET = {
   environmentId: EnvironmentId.make("env-local"),
@@ -33,95 +41,94 @@ const BASE_SNAPSHOT: TerminalSessionSnapshot = {
   updatedAt: "2026-04-01T00:00:00.000Z",
 };
 
-describe("terminal session reducers", () => {
-  it.effect("does not emit empty seeds before the first server stream event", () =>
+const summary = () =>
+  applyTerminalMetadataStreamEvent([], {
+    type: "snapshot",
+    terminals: [
+      {
+        threadId: BASE_SNAPSHOT.threadId,
+        terminalId: BASE_SNAPSHOT.terminalId,
+        cwd: BASE_SNAPSHOT.cwd,
+        worktreePath: BASE_SNAPSHOT.worktreePath,
+        status: "running",
+        pid: BASE_SNAPSHOT.pid,
+        exitCode: BASE_SNAPSHOT.exitCode,
+        exitSignal: BASE_SNAPSHOT.exitSignal,
+        updatedAt: BASE_SNAPSHOT.updatedAt,
+        hasRunningSubprocess: false,
+        label: BASE_SNAPSHOT.label,
+      },
+    ],
+  })[0]!;
+
+describe("terminal session metadata", () => {
+  it.effect("does not emit an empty metadata seed before the first server event", () =>
     Effect.gen(function* () {
-      const attach = yield* accumulateTerminalAttachEvents(
-        Stream.make({ type: "snapshot" as const, snapshot: BASE_SNAPSHOT }),
-      ).pipe(Stream.runCollect);
       const metadata = yield* accumulateTerminalMetadataEvents(
         Stream.make({
           type: "snapshot" as const,
-          terminals: [
-            {
-              ...BASE_SNAPSHOT,
-              hasRunningSubprocess: false,
-              childCommandLabel: null,
-            },
-          ],
+          terminals: [{ ...summary(), hasRunningSubprocess: false }],
         }),
       ).pipe(Stream.runCollect);
 
-      expect(attach).toHaveLength(1);
-      expect(attach[0]?.buffer).toBe("hello");
       expect(metadata).toHaveLength(1);
       expect(metadata[0]).toHaveLength(1);
     }),
   );
 
-  it("prefers live attach status over stale metadata after the attach stream starts", () => {
-    const summary = applyTerminalMetadataStreamEvent([], {
-      type: "snapshot",
-      terminals: [
-        {
-          threadId: BASE_SNAPSHOT.threadId,
-          terminalId: BASE_SNAPSHOT.terminalId,
-          cwd: BASE_SNAPSHOT.cwd,
-          worktreePath: BASE_SNAPSHOT.worktreePath,
-          status: "running",
-          pid: BASE_SNAPSHOT.pid,
-          exitCode: BASE_SNAPSHOT.exitCode,
-          exitSignal: BASE_SNAPSHOT.exitSignal,
-          updatedAt: BASE_SNAPSHOT.updatedAt,
-          hasRunningSubprocess: false,
-          label: BASE_SNAPSHOT.label,
-        },
-      ],
-    })[0]!;
-    const attached = applyTerminalAttachStreamEvent(EMPTY_TERMINAL_BUFFER_STATE, {
-      type: "error",
-      threadId: TARGET.threadId,
-      terminalId: TARGET.terminalId,
-      message: "Terminal disconnected.",
-    });
-
-    expect(combineTerminalSessionState(summary, attached)).toMatchObject({
+  it("prefers attach metadata over a stale summary after attach has emitted", () => {
+    const attached: TerminalMetadataSnapshot = {
       status: "error",
       error: "Terminal disconnected.",
-      version: 1,
+      generation: 1,
+      revision: 2,
+    };
+
+    expect(combineTerminalSessionState(summary(), attached)).toEqual({
+      summary: summary(),
+      status: "error",
+      error: "Terminal disconnected.",
+      hasRunningSubprocess: false,
+      updatedAt: BASE_SNAPSHOT.updatedAt,
+      generation: 1,
     });
   });
 
-  it("uses metadata status before an attach stream has emitted", () => {
-    const summary = applyTerminalMetadataStreamEvent([], {
-      type: "snapshot",
-      terminals: [
-        {
-          threadId: BASE_SNAPSHOT.threadId,
-          terminalId: BASE_SNAPSHOT.terminalId,
-          cwd: BASE_SNAPSHOT.cwd,
-          worktreePath: BASE_SNAPSHOT.worktreePath,
-          status: "running",
-          pid: BASE_SNAPSHOT.pid,
-          exitCode: BASE_SNAPSHOT.exitCode,
-          exitSignal: BASE_SNAPSHOT.exitSignal,
-          updatedAt: BASE_SNAPSHOT.updatedAt,
-          hasRunningSubprocess: false,
-          label: BASE_SNAPSHOT.label,
-        },
-      ],
-    })[0]!;
+  it("uses summary status before the attach stream has emitted", () => {
+    expect(combineTerminalSessionState(summary(), EMPTY_TERMINAL_METADATA_SNAPSHOT)).toMatchObject({
+      status: "running",
+      error: null,
+      generation: 0,
+    });
+  });
 
-    expect(combineTerminalSessionState(summary, EMPTY_TERMINAL_BUFFER_STATE).status).toBe(
-      "running",
-    );
+  it("returns metadata-only session state with no reactive transcript or version", () => {
+    const state = combineTerminalSessionState(null, {
+      status: "running",
+      error: null,
+      generation: 3,
+      revision: 9,
+    });
+
+    expect(state).toEqual({
+      summary: null,
+      status: "running",
+      error: null,
+      hasRunningSubprocess: false,
+      updatedAt: null,
+      generation: 3,
+    });
+    expect("buffer" in state).toBe(false);
+    expect("version" in state).toBe(false);
+    expect("revision" in state).toBe(false);
+    expect("buffer" in EMPTY_TERMINAL_SESSION_STATE).toBe(false);
   });
 
   it("does not treat an idle running shell as a running subprocess", () => {
     const idleSession = {
       target: TARGET,
       state: {
-        ...combineTerminalSessionState(null, EMPTY_TERMINAL_BUFFER_STATE),
+        ...combineTerminalSessionState(null, EMPTY_TERMINAL_METADATA_SNAPSHOT),
         status: "running" as const,
         hasRunningSubprocess: false,
       },
@@ -137,48 +144,10 @@ describe("terminal session reducers", () => {
     expect(selectRunningSubprocessTerminalIds([idleSession, activeSession])).toEqual(["term-2"]);
   });
 
-  it("reduces attach snapshots and output without an imperative session manager", () => {
-    const snapshot = applyTerminalAttachStreamEvent(EMPTY_TERMINAL_BUFFER_STATE, {
-      type: "snapshot",
-      snapshot: BASE_SNAPSHOT,
-    });
-    const output = applyTerminalAttachStreamEvent(
-      snapshot,
-      {
-        type: "output",
-        threadId: TARGET.threadId,
-        terminalId: TARGET.terminalId,
-        data: " world",
-      },
-      8,
-    );
-
-    expect(output).toMatchObject({
-      buffer: "lo world",
-      status: "running",
-      error: null,
-      version: 2,
-    });
-  });
-
   it("reduces terminal metadata snapshots, upserts, and removals", () => {
     const initial = applyTerminalMetadataStreamEvent([], {
       type: "snapshot",
-      terminals: [
-        {
-          threadId: BASE_SNAPSHOT.threadId,
-          terminalId: BASE_SNAPSHOT.terminalId,
-          cwd: BASE_SNAPSHOT.cwd,
-          worktreePath: BASE_SNAPSHOT.worktreePath,
-          status: BASE_SNAPSHOT.status,
-          pid: BASE_SNAPSHOT.pid,
-          exitCode: BASE_SNAPSHOT.exitCode,
-          exitSignal: BASE_SNAPSHOT.exitSignal,
-          updatedAt: BASE_SNAPSHOT.updatedAt,
-          hasRunningSubprocess: false,
-          label: BASE_SNAPSHOT.label,
-        },
-      ],
+      terminals: [summary()],
     });
     const updated = applyTerminalMetadataStreamEvent(initial, {
       type: "upsert",
@@ -198,18 +167,195 @@ describe("terminal session reducers", () => {
     expect(removed).toEqual([]);
   });
 
-  it("caps retained output by UTF-8 byte length", () => {
-    const state = applyTerminalAttachStreamEvent(
-      EMPTY_TERMINAL_BUFFER_STATE,
-      {
-        type: "output",
+  it.effect("keeps speculative attach snapshot reads side-effect free", () =>
+    Effect.gen(function* () {
+      let sourceStarts = 0;
+      const target = {
+        environmentId: TARGET.environmentId,
+        input: {
+          threadId: TARGET.threadId,
+          terminalId: TARGET.terminalId,
+          cwd: "/repo",
+        },
+      };
+      const environmentRegistry = EnvironmentRegistry.of({
+        followStream: () =>
+          Stream.unwrap(
+            Effect.sync(() => {
+              sourceStarts += 1;
+              return Stream.never;
+            }),
+          ),
+      } as never);
+      const atoms = createTerminalEnvironmentAtoms(
+        Atom.runtime(Layer.succeed(EnvironmentRegistry, environmentRegistry)),
+      );
+      const atomRegistry = AtomRegistry.make();
+
+      expect(atomRegistry.get(atoms.attachSnapshot(target))).toEqual({
+        metadata: EMPTY_TERMINAL_METADATA_SNAPSHOT,
+        transcriptRuntime: null,
+      });
+      yield* Effect.yieldNow;
+
+      expect(sourceStarts).toBe(0);
+      expect(atoms.transcriptRuntimes.size()).toBe(0);
+      expect(
+        atoms.transcriptRuntimes.referenceCount(
+          terminalTranscriptRuntimeKey(TARGET.environmentId, target.input),
+        ),
+      ).toBe(0);
+      atomRegistry.dispose();
+    }),
+  );
+
+  it("keeps one lazy transcript registry per terminal atom environment", () => {
+    const first = createTerminalEnvironmentAtoms(Atom.runtime(Layer.empty) as never);
+    const second = createTerminalEnvironmentAtoms(Atom.runtime(Layer.empty) as never);
+
+    expect(first.transcriptRuntimes).not.toBe(second.transcriptRuntimes);
+    expect(first.transcriptRuntimes.size()).toBe(0);
+    first.attachSnapshot({
+      environmentId: TARGET.environmentId,
+      input: {
         threadId: TARGET.threadId,
         terminalId: TARGET.terminalId,
-        data: "🙂🙂",
+        cwd: "/repo",
       },
-      4,
-    );
-
-    expect(state.buffer).toBe("🙂");
+    });
+    expect(first.transcriptRuntimes.size()).toBe(0);
   });
+
+  it.effect(
+    "starts one attach lease after commit and publishes the runtime with its snapshot",
+    () =>
+      Effect.gen(function* () {
+        const sourceStarted = Latch.makeUnsafe();
+        let sourceStarts = 0;
+        const environmentRegistry = EnvironmentRegistry.of({
+          followStream: () =>
+            Stream.fromEffect(
+              Effect.sync(() => {
+                sourceStarts += 1;
+                sourceStarted.openUnsafe();
+                return {
+                  type: "snapshot" as const,
+                  snapshot: BASE_SNAPSHOT,
+                };
+              }),
+            ).pipe(Stream.concat(Stream.never)),
+        } as never);
+        const atoms = createTerminalEnvironmentAtoms(
+          Atom.runtime(Layer.succeed(EnvironmentRegistry, environmentRegistry)),
+        );
+        const target = {
+          environmentId: TARGET.environmentId,
+          input: {
+            threadId: TARGET.threadId,
+            terminalId: TARGET.terminalId,
+            cwd: "/repo",
+          },
+        };
+        const attachProducer = atoms.attachProducer(target);
+        const attachSnapshot = atoms.attachSnapshot(target);
+        const atomRegistry = AtomRegistry.make();
+        const snapshotPublished = Latch.makeUnsafe();
+        const snapshotCleared = Latch.makeUnsafe();
+        let didPublishSnapshot = false;
+        const unsubscribeSnapshot = atomRegistry.subscribe(
+          attachSnapshot,
+          (snapshot) => {
+            if (snapshot.metadata.generation === 1) {
+              didPublishSnapshot = true;
+              snapshotPublished.openUnsafe();
+            } else if (didPublishSnapshot && snapshot.transcriptRuntime === null) {
+              snapshotCleared.openUnsafe();
+            }
+          },
+          { immediate: true },
+        );
+        const unmountFirst = atomRegistry.mount(attachProducer);
+        const unmountSecond = atomRegistry.mount(attachProducer);
+
+        yield* sourceStarted.await;
+        yield* snapshotPublished.await;
+        const snapshot = atomRegistry.get(attachSnapshot);
+        expect(snapshot.metadata).toMatchObject({
+          generation: 1,
+          revision: 1,
+          status: "running",
+        });
+        expect(snapshot.transcriptRuntime).toBe(
+          atoms.transcriptRuntimes.get(
+            terminalTranscriptRuntimeKey(TARGET.environmentId, target.input),
+          ),
+        );
+        expect(sourceStarts).toBe(1);
+        expect(atoms.transcriptRuntimes.size()).toBe(1);
+        expect(
+          atoms.transcriptRuntimes.referenceCount(
+            terminalTranscriptRuntimeKey(TARGET.environmentId, target.input),
+          ),
+        ).toBe(1);
+
+        unmountFirst();
+        yield* Effect.yieldNow;
+        expect(atoms.transcriptRuntimes.size()).toBe(1);
+
+        unmountSecond();
+        yield* snapshotCleared.await;
+        yield* Effect.yieldNow;
+        expect(atoms.transcriptRuntimes.size()).toBe(0);
+        expect(atomRegistry.get(attachSnapshot)).toEqual({
+          metadata: EMPTY_TERMINAL_METADATA_SNAPSHOT,
+          transcriptRuntime: null,
+        });
+        unsubscribeSnapshot();
+        atomRegistry.dispose();
+      }),
+  );
+
+  it.effect("releases the attach lease and clears its snapshot after source failure", () =>
+    Effect.gen(function* () {
+      let sourceStarts = 0;
+      const target = {
+        environmentId: TARGET.environmentId,
+        input: {
+          threadId: TARGET.threadId,
+          terminalId: TARGET.terminalId,
+          cwd: "/repo",
+        },
+      };
+      const environmentRegistry = EnvironmentRegistry.of({
+        followStream: () =>
+          Stream.unwrap(
+            Effect.sync(() => {
+              sourceStarts += 1;
+              return Stream.fail("attach failed");
+            }),
+          ),
+      } as never);
+      const atoms = createTerminalEnvironmentAtoms(
+        Atom.runtime(Layer.succeed(EnvironmentRegistry, environmentRegistry)),
+      );
+      const attachProducer = atoms.attachProducer(target);
+      const attachSnapshot = atoms.attachSnapshot(target);
+      const atomRegistry = AtomRegistry.make();
+      const unmount = atomRegistry.mount(attachProducer);
+
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      expect(sourceStarts).toBe(1);
+      expect(AsyncResult.isFailure(atomRegistry.get(attachProducer))).toBe(true);
+      expect(atoms.transcriptRuntimes.size()).toBe(0);
+      expect(atomRegistry.get(attachSnapshot)).toEqual({
+        metadata: EMPTY_TERMINAL_METADATA_SNAPSHOT,
+        transcriptRuntime: null,
+      });
+
+      unmount();
+      atomRegistry.dispose();
+    }),
+  );
 });

@@ -1,12 +1,27 @@
 import * as NodePath from "node:path";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { discoverVcVarsAll, quoteCmdArg, run, runMsvcX64 } from "./run-msvc-x64.mjs";
+import {
+  defaultWindowsCargoRunner,
+  discoverVcVarsAll,
+  quoteCmdArg,
+  run,
+  runMsvcX64,
+} from "./run-msvc-x64.mjs";
 
 describe("run-msvc-x64", () => {
   it("quotes only command arguments that require cmd escaping", () => {
     expect(quoteCmdArg("safe/path:value-1")).toBe("safe/path:value-1");
     expect(quoteCmdArg('two words "quoted"')).toBe('"two words \\"quoted\\""');
+  });
+
+  it("builds a quoted Cargo target runner command", () => {
+    expect(
+      defaultWindowsCargoRunner({
+        command: "custom-node",
+        repoRoot: "C:/repo root",
+      }),
+    ).toBe('custom-node "C:\\repo root\\scripts\\run-windows-cargo-target.mjs"');
   });
 
   it("normalizes missing child statuses", () => {
@@ -15,7 +30,6 @@ describe("run-msvc-x64", () => {
   });
 
   it("discovers vcvarsall through vswhere or the Build Tools fallback", () => {
-    expect(discoverVcVarsAll()).toBeNull();
     expect(discoverVcVarsAll({ programFilesX86: "" })).toBeNull();
 
     const root = "C:/Program Files (x86)";
@@ -109,6 +123,17 @@ describe("run-msvc-x64", () => {
     expect(writeFileSync).toHaveBeenCalledWith(
       NodePath.join("C:/tmp", "t4code-msvc-x64-12-34.cmd"),
       expect.stringContaining('cargo "test name"'),
+    );
+    expect(spawnSync).toHaveBeenLastCalledWith(
+      "custom-cmd.exe",
+      ["/d", "/c", NodePath.join("C:/tmp", "t4code-msvc-x64-12-34.cmd")],
+      expect.objectContaining({
+        env: expect.objectContaining({
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER: expect.stringContaining(
+            "run-windows-cargo-target.mjs",
+          ),
+        }),
+      }),
     );
     expect(rmSync).toHaveBeenCalledOnce();
   });

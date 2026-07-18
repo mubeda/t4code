@@ -1259,6 +1259,15 @@ mod tests {
             .expect("git init");
         run_git(
             repository.path(),
+            &["config", "core.autocrlf", "false"],
+            &[],
+            false,
+            &cancellation,
+        )
+        .await
+        .expect("disable fixture line-ending conversion");
+        run_git(
+            repository.path(),
             &["config", "user.name", "T4Code Test"],
             &[],
             false,

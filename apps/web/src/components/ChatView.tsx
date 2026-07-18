@@ -144,7 +144,10 @@ import { RightPanelTabs } from "./RightPanelTabs";
 import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import PlanSidebar from "./PlanSidebar";
-import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
+import ThreadTerminalDrawer, {
+  enqueueTerminalInput,
+  releaseTerminalInputScheduler,
+} from "./ThreadTerminalDrawer";
 import { ChevronDownIcon, TriangleAlertIcon, WifiOffIcon } from "lucide-react";
 import { cn, randomHex } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
@@ -751,12 +754,20 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
   const closeTerminal = useCallback(
     (terminalId: string) => {
       const fallbackExitWrite = () =>
-        writeTerminal({
+        enqueueTerminalInput({
           environmentId: threadRef.environmentId,
-          input: { threadId, terminalId, data: "exit\n" },
+          threadId,
+          terminalId,
+          data: "exit\n",
+          fallbackError: "Terminal exit fallback failed",
+          write: (data) =>
+            writeTerminal({
+              environmentId: threadRef.environmentId,
+              input: { threadId, terminalId, data },
+            }),
         });
 
-      void (async () => {
+      const closePromise = (async () => {
         const closeResult = await closeTerminalMutation({
           environmentId: threadRef.environmentId,
           input: {
@@ -765,6 +776,10 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
             deleteHistory: true,
           },
         });
+        if (closeResult._tag === "Success") {
+          releaseTerminalInputScheduler(threadRef.environmentId, threadId, terminalId);
+          return;
+        }
         if (closeResult._tag === "Failure" && !isAtomCommandInterrupted(closeResult)) {
           await fallbackExitWrite();
         }
@@ -772,6 +787,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
 
       storeCloseTerminal(threadRef, terminalId);
       bumpFocusRequestId();
+      return closePromise;
     },
     [
       bumpFocusRequestId,
@@ -2407,11 +2423,19 @@ function ChatViewContent(props: ChatViewProps) {
     (terminalId: string) => {
       if (!activeThreadId || !activeThreadRef) return;
       const fallbackExitWrite = () =>
-        writeTerminal({
+        enqueueTerminalInput({
           environmentId,
-          input: { threadId: activeThreadId, terminalId, data: "exit\n" },
+          threadId: activeThreadId,
+          terminalId,
+          data: "exit\n",
+          fallbackError: "Terminal exit fallback failed",
+          write: (data) =>
+            writeTerminal({
+              environmentId,
+              input: { threadId: activeThreadId, terminalId, data },
+            }),
         });
-      void (async () => {
+      const closePromise = (async () => {
         const closeResult = await closeTerminalMutation({
           environmentId,
           input: {
@@ -2420,12 +2444,17 @@ function ChatViewContent(props: ChatViewProps) {
             deleteHistory: true,
           },
         });
+        if (closeResult._tag === "Success") {
+          releaseTerminalInputScheduler(environmentId, activeThreadId, terminalId);
+          return;
+        }
         if (closeResult._tag === "Failure" && !isAtomCommandInterrupted(closeResult)) {
           await fallbackExitWrite();
         }
       })();
       storeCloseTerminal(activeThreadRef, terminalId);
       setTerminalFocusRequestId((value) => value + 1);
+      return closePromise;
     },
     [
       activeThreadId,
@@ -2519,21 +2548,28 @@ function ChatViewContent(props: ChatViewProps) {
         return;
       }
 
-      const writeResult = await writeTerminal({
+      enqueueTerminalInput({
         environmentId,
-        input: {
-          threadId: activeThreadId,
-          terminalId: targetTerminalId,
-          data: `${script.command}\r`,
+        threadId: activeThreadId,
+        terminalId: targetTerminalId,
+        data: `${script.command}\r`,
+        fallbackError: `Failed to run script "${script.name}".`,
+        write: (data) =>
+          writeTerminal({
+            environmentId,
+            input: {
+              threadId: activeThreadId,
+              terminalId: targetTerminalId,
+              data,
+            },
+          }),
+        onWriteError: (error) => {
+          setThreadError(
+            activeThreadId,
+            error instanceof Error ? error.message : `Failed to run script "${script.name}".`,
+          );
         },
       });
-      if (writeResult._tag === "Failure" && !isAtomCommandInterrupted(writeResult)) {
-        const error = squashAtomCommandFailure(writeResult);
-        setThreadError(
-          activeThreadId,
-          error instanceof Error ? error.message : `Failed to run script "${script.name}".`,
-        );
-      }
     },
     [
       activeProject,
@@ -2898,15 +2934,25 @@ function ChatViewContent(props: ChatViewProps) {
   const closePanelTerminal = useCallback(
     (terminalId: string) => {
       if (!activeThreadRef || activeRightPanelSurface?.kind !== "terminal") return;
-      void closeTerminalMutation({
-        environmentId: activeThreadRef.environmentId,
-        input: { threadId: activeThreadRef.threadId, terminalId, deleteHistory: true },
-      });
+      const closePromise = (async () => {
+        const closeResult = await closeTerminalMutation({
+          environmentId: activeThreadRef.environmentId,
+          input: { threadId: activeThreadRef.threadId, terminalId, deleteHistory: true },
+        });
+        if (closeResult._tag === "Success") {
+          releaseTerminalInputScheduler(
+            activeThreadRef.environmentId,
+            activeThreadRef.threadId,
+            terminalId,
+          );
+        }
+      })();
       storeCloseTerminal(activeThreadRef, terminalId);
       useRightPanelStore
         .getState()
         .closeTerminal(activeThreadRef, activeRightPanelSurface.id, terminalId);
       setTerminalFocusRequestId((value) => value + 1);
+      return closePromise;
     },
     [activeRightPanelSurface, activeThreadRef, closeTerminalMutation, storeCloseTerminal],
   );
@@ -2968,10 +3014,19 @@ function ChatViewContent(props: ChatViewProps) {
         if (surface.kind === "terminal") {
           for (const terminalId of surface.terminalIds) {
             storeCloseTerminal(activeThreadRef, terminalId);
-            void closeTerminalMutation({
-              environmentId: activeThreadRef.environmentId,
-              input: { threadId: activeThreadRef.threadId, terminalId, deleteHistory: true },
-            });
+            void (async () => {
+              const closeResult = await closeTerminalMutation({
+                environmentId: activeThreadRef.environmentId,
+                input: { threadId: activeThreadRef.threadId, terminalId, deleteHistory: true },
+              });
+              if (closeResult._tag === "Success") {
+                releaseTerminalInputScheduler(
+                  activeThreadRef.environmentId,
+                  activeThreadRef.threadId,
+                  terminalId,
+                );
+              }
+            })();
           }
         }
       }

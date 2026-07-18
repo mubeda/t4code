@@ -158,14 +158,9 @@ pub async fn probe_tailscale_https_endpoint(base_url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    #[cfg(unix)]
     use std::fs;
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-    #[cfg(unix)]
     use std::path::{Path, PathBuf};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     const TAILSCALE_STATUS_JSON: &str = r#"{"Self":{"DNSName":"desktop.tail.ts.net.","TailscaleIPs":["100.100.100.100","fd7a:115c:a1e0::1","192.168.1.20"]}}"#;
 
@@ -274,15 +269,31 @@ mod tests {
         assert!(!probe_local_endpoint("503 Service Unavailable").await);
     }
 
-    #[cfg(unix)]
-    fn executable_script(directory: &Path, name: &str, body: &str) -> PathBuf {
-        let path = directory.join(name);
-        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-        path
+    fn executable_script(
+        directory: &Path,
+        name: &str,
+        unix_body: &str,
+        windows_body: &str,
+    ) -> PathBuf {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let _ = windows_body;
+            let path = directory.join(name);
+            fs::write(&path, format!("#!/bin/sh\n{unix_body}\n")).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        }
+        #[cfg(windows)]
+        {
+            let _ = unix_body;
+            let path = directory.join(format!("{name}.cmd"));
+            fs::write(&path, format!("@echo off\r\n{windows_body}\r\n")).unwrap();
+            path
+        }
     }
 
-    #[cfg(unix)]
     async fn read_status_fixture(
         path: &Path,
         timeout: Duration,
@@ -303,7 +314,6 @@ mod tests {
         )
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn status_command_reports_success_and_process_failures() {
         let directory = tempfile::tempdir().unwrap();
@@ -311,6 +321,7 @@ mod tests {
             directory.path(),
             "success",
             &format!("printf '%s' '{TAILSCALE_STATUS_JSON}'"),
+            &format!("echo {TAILSCALE_STATUS_JSON}"),
         );
         assert_eq!(
             read_status_fixture(&success, Duration::from_secs(2))
@@ -321,7 +332,7 @@ mod tests {
             Some("desktop.tail.ts.net")
         );
 
-        let failed = executable_script(directory.path(), "failed", "exit 7");
+        let failed = executable_script(directory.path(), "failed", "exit 7", "exit /b 7");
         assert_eq!(
             read_status_fixture(&failed, Duration::from_secs(1))
                 .await
@@ -329,7 +340,12 @@ mod tests {
             "tailscale status exited with code 7."
         );
 
-        let invalid_utf8 = executable_script(directory.path(), "invalid-utf8", "printf '\\377'");
+        let invalid_utf8 = executable_script(
+            directory.path(),
+            "invalid-utf8",
+            "printf '\\377'",
+            "powershell.exe -NoLogo -NoProfile -Command \"[Console]::OpenStandardOutput().WriteByte(255)\"",
+        );
         assert!(
             read_status_fixture(&invalid_utf8, Duration::from_secs(1))
                 .await
@@ -337,7 +353,8 @@ mod tests {
                 .contains("non-UTF-8")
         );
 
-        let invalid_json = executable_script(directory.path(), "invalid-json", "printf nope");
+        let invalid_json =
+            executable_script(directory.path(), "invalid-json", "printf nope", "echo nope");
         assert!(
             read_status_fixture(&invalid_json, Duration::from_secs(1))
                 .await
@@ -345,7 +362,12 @@ mod tests {
                 .contains("decode")
         );
 
-        let slow = executable_script(directory.path(), "slow", "sleep 1");
+        let slow = executable_script(
+            directory.path(),
+            "slow",
+            "sleep 1",
+            "%SystemRoot%\\System32\\ping.exe -n 2 127.0.0.1 >nul",
+        );
         assert_eq!(
             read_status_fixture(&slow, Duration::from_millis(10))
                 .await
