@@ -30,7 +30,10 @@ describe("repository toolchain contract", () => {
     expect(workspace).toMatch(/^  "@types\/node": 26\.1\.1$/m);
     expect(workspace).toMatch(/^  vite: npm:@voidzero-dev\/vite-plus-core@0\.2\.5$/m);
     expect(workspace).toMatch(/^  vite-plus: 0\.2\.5$/m);
-    expect(workspace).toMatch(/^minimumReleaseAgeExclude:\n  - geckodriver@6\.1\.1$/m);
+    expect(workspaceConfiguration.minimumReleaseAgeExclude).toEqual([
+      "geckodriver@6.1.1",
+      "@cloudflare/workers-types@5.20260718.1",
+    ]);
     expect(workspace).not.toMatch(/^trustLockfile:\s+true$/m);
     expect(workspaceConfiguration).not.toHaveProperty("ignoredBuiltDependencies");
     expect(workspaceConfiguration).not.toHaveProperty("onlyBuiltDependencies");
@@ -40,7 +43,7 @@ describe("repository toolchain contract", () => {
       "esbuild@0.25.12 || 0.28.1": true,
       "geckodriver@6.1.1": false,
       "msgpackr-extract@3.0.4": true,
-      "msw@2.12.11": false,
+      "msw@2.15.0": false,
       "sharp@0.34.5": true,
       "utf-8-validate@6.0.6": false,
       "workerd@1.20260526.1": false,
@@ -66,7 +69,7 @@ describe("repository toolchain contract", () => {
     ]) {
       const workflow = readText(workflowPath);
       expect(workflow).not.toMatch(/dtolnay\/rust-toolchain@(stable|1\.88(?:\.0)?)/);
-      expect(workflow).toMatch(/dtolnay\/rust-toolchain@1\.97\.1/);
+      expect(workflow).toMatch(/dtolnay\/rust-toolchain@[0-9a-f]{40} # 1\.97\.1/);
     }
   });
 

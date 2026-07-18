@@ -90,7 +90,7 @@ it.layer(NodeServices.layer)("canonical Rust workspace", (it) => {
         path.join(repoRoot, ".github", "workflows", "ci.yml"),
       );
       assert.equal(
-        ciWorkflow.match(/uses: dtolnay\/rust-toolchain@1\.97\.1/g)?.length ?? 0,
+        ciWorkflow.match(/uses: dtolnay\/rust-toolchain@[0-9a-f]{40} # 1\.97\.1/g)?.length ?? 0,
         3,
         "Every Rust CI job must exercise the declared Rust 1.97.1 toolchain",
       );
