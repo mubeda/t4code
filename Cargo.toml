@@ -16,7 +16,7 @@ futures-util = { version = "0.3.32", features = ["sink"] }
 getrandom = "0.4.3"
 hmac = "0.13.0"
 httpdate = "1.0.3"
-junction = "1.4.2"
+junction = "2.0.0"
 libc = "0.2"
 mime_guess = "2.0.5"
 open = "5.4.0"
@@ -30,7 +30,7 @@ rusqlite = { version = "0.40.1", features = ["backup", "bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11.0"
-sysinfo = "0.37"
+sysinfo = "0.39.6"
 subtle = "2.6.1"
 t4code-server = { path = "apps/server" }
 tauri = { version = "2.11.5", features = [] }
