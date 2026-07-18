@@ -24,7 +24,7 @@
     "@legendapp/list": "3.3.3",
     "@lexical/react": "^0.48.0",
     "@pierre/diffs": "catalog:",
-    "@pierre/trees": "1.0.0-beta.4",
+    "@pierre/trees": "1.0.0-beta.5",
     "@t4code/client-runtime": "workspace:*",
     "@t4code/contracts": "workspace:*",
     "@t4code/shared": "workspace:*",
