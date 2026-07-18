@@ -222,7 +222,10 @@ async fn copy_native_fixture(destination: impl AsRef<Path>) -> PathBuf {
 }
 
 fn hex_sha256(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 async fn serve_once(body: Vec<u8>) -> (String, tokio::task::JoinHandle<()>) {
