@@ -776,10 +776,11 @@ mod tests {
 
         assert_eq!(store.get("replaceable").await.unwrap().unwrap(), b"second");
 
-        assert!(!should_use_windows_replace(&io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "fixture",
-        )));
+        let replace_error = io::Error::new(io::ErrorKind::AlreadyExists, "fixture");
+        #[cfg(windows)]
+        assert!(should_use_windows_replace(&replace_error));
+        #[cfg(not(windows))]
+        assert!(!should_use_windows_replace(&replace_error));
         assert!(
             replace_existing_secret(
                 "missing",

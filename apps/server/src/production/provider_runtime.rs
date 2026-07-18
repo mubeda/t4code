@@ -3032,6 +3032,155 @@ mod tests {
         executable
     }
 
+    #[cfg(windows)]
+    fn executable_fixture(temp: &TempDir, name: &str, kind: &str) -> std::path::PathBuf {
+        let script = temp.path().join(format!("{name}.js"));
+        let executable = temp.path().join(format!("{name}.cmd"));
+        let source = match kind {
+            "claude" => {
+                r#"process.stderr.write("fixture warning\n");
+process.stdin.resume();
+"#
+            }
+            "codex" => {
+                r#"const readline = require("node:readline");
+const lines = readline.createInterface({ input: process.stdin });
+lines.on("line", (line) => {
+  const request = JSON.parse(line);
+  let result;
+  switch (request.method) {
+    case "initialize":
+      result = { userAgent: "fixture" };
+      break;
+    case "thread/start":
+      result = { cwd: process.cwd(), model: "gpt-5", thread: { id: "native-codex-thread" } };
+      break;
+    case "thread/goal/set":
+      result = { goal: { status: "active" } };
+      break;
+    case "turn/start":
+      result = { turn: { id: "native-codex-turn" } };
+      break;
+    case "turn/interrupt":
+      result = {};
+      break;
+    case "thread/rollback":
+      result = { thread: { id: "native-codex-thread", turns: [] } };
+      break;
+    case "shutdown":
+      result = null;
+      break;
+    default:
+      return;
+  }
+  process.stdout.write(`${JSON.stringify({ id: request.id, result })}\n`);
+});
+"#
+            }
+            "acp" => {
+                r#"const readline = require("node:readline");
+const lines = readline.createInterface({ input: process.stdin });
+lines.on("line", (line) => {
+  const request = JSON.parse(line);
+  let result;
+  switch (request.method) {
+    case "initialize":
+    case "authenticate":
+    case "session/set_mode":
+    case "session/set_model":
+      result = {};
+      break;
+    case "session/new":
+      result = {
+        sessionId: "cursor-session",
+        configOptions: [{ id: "model", category: "model" }],
+        modes: {
+          currentModeId: "ask",
+          availableModes: [
+            { id: "ask", name: "Ask" },
+            { id: "code", name: "Agent" },
+            { id: "architect", name: "Plan" },
+          ],
+        },
+      };
+      break;
+    case "session/create":
+      result = {
+        sessionId: "grok-session",
+        modes: {
+          currentModeId: "code",
+          availableModes: [
+            { id: "code", name: "Agent" },
+            { id: "ask", name: "Ask" },
+          ],
+        },
+      };
+      break;
+    case "session/set_config_option":
+      result = { configOptions: [] };
+      break;
+    case "session/prompt":
+      result = { stopReason: "end_turn" };
+      break;
+    default:
+      return;
+  }
+  process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result })}\n`);
+});
+"#
+            }
+            _ => unreachable!("unknown provider fixture kind"),
+        };
+        std::fs::write(&script, source).expect("provider fixture script should write");
+        std::fs::write(
+            &executable,
+            format!("@echo off\r\nnode \"%~dp0{name}.js\" %*\r\n"),
+        )
+        .expect("provider fixture wrapper should write");
+        executable
+    }
+
+    #[cfg(unix)]
+    const CLAUDE_FIXTURE: &str =
+        "#!/bin/sh\nprintf '%s\\n' 'fixture warning' >&2\ncat >/dev/null\n";
+    #[cfg(windows)]
+    const CLAUDE_FIXTURE: &str = "claude";
+
+    #[cfg(unix)]
+    const CODEX_FIXTURE: &str = r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"id":%s,"result":{"userAgent":"fixture"}}\n' "$id" ;;
+    *'"method":"thread/start"'*) printf '{"id":%s,"result":{"cwd":"/tmp","model":"gpt-5","thread":{"id":"native-codex-thread"}}}\n' "$id" ;;
+    *'"method":"thread/goal/set"'*) printf '{"id":%s,"result":{"goal":{"status":"active"}}}\n' "$id" ;;
+    *'"method":"turn/start"'*) printf '{"id":%s,"result":{"turn":{"id":"native-codex-turn"}}}\n' "$id" ;;
+    *'"method":"turn/interrupt"'*) printf '{"id":%s,"result":{}}\n' "$id" ;;
+    *'"method":"thread/rollback"'*) printf '{"id":%s,"result":{"thread":{"id":"native-codex-thread","turns":[]}}}\n' "$id" ;;
+    *'"method":"shutdown"'*) printf '{"id":%s,"result":null}\n' "$id" ;;
+  esac
+done
+"#;
+    #[cfg(windows)]
+    const CODEX_FIXTURE: &str = "codex";
+
+    #[cfg(unix)]
+    const ACP_FIXTURE: &str = r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*|*'"method":"authenticate"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    *'"method":"session/new"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"cursor-session","configOptions":[{"id":"model","category":"model"}],"modes":{"currentModeId":"ask","availableModes":[{"id":"ask","name":"Ask"},{"id":"code","name":"Agent"},{"id":"architect","name":"Plan"}]}}}\n' "$id" ;;
+    *'"method":"session/create"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"grok-session","modes":{"currentModeId":"code","availableModes":[{"id":"code","name":"Agent"},{"id":"ask","name":"Ask"}]}}}\n' "$id" ;;
+    *'"method":"session/set_config_option"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[]}}\n' "$id" ;;
+    *'"method":"session/set_mode"'*|*'"method":"session/set_model"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    *'"method":"session/prompt"'*) sleep 0.1; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id" ;;
+  esac
+done
+"#;
+    #[cfg(windows)]
+    const ACP_FIXTURE: &str = "acp";
+
     #[tokio::test]
     async fn unit_supervisor_covers_complete_command_routing_and_shutdown_lifecycle() {
         let engine = supervisor_engine().await;
@@ -3267,18 +3416,13 @@ mod tests {
         engine.shutdown().await;
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn native_process_adapters_cover_live_codex_claude_cursor_and_grok_commands() {
         let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
         let temp = TempDir::new().expect("provider fixture directory");
         let factory = super::NativeProviderDriverFactory::new(temp.path().join("attachments"));
 
-        let claude_fixture = executable_fixture(
-            &temp,
-            "claude-fixture.sh",
-            "#!/bin/sh\nprintf '%s\\n' 'fixture warning' >&2\ncat >/dev/null\n",
-        );
+        let claude_fixture = executable_fixture(&temp, "claude-fixture", CLAUDE_FIXTURE);
         let mut claude_request = native_launch(&temp, "claudeAgent");
         claude_request.binary_path = claude_fixture.to_string_lossy().into_owned();
         claude_request.model = Some("claude-sonnet".to_owned());
@@ -3357,24 +3501,7 @@ mod tests {
             .await
             .expect("fresh Claude should shut down");
 
-        let codex_fixture = executable_fixture(
-            &temp,
-            "codex-fixture.sh",
-            r#"#!/bin/sh
-while IFS= read -r line; do
-  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
-  case "$line" in
-    *'"method":"initialize"'*) printf '{"id":%s,"result":{"userAgent":"fixture"}}\n' "$id" ;;
-    *'"method":"thread/start"'*) printf '{"id":%s,"result":{"cwd":"/tmp","model":"gpt-5","thread":{"id":"native-codex-thread"}}}\n' "$id" ;;
-    *'"method":"thread/goal/set"'*) printf '{"id":%s,"result":{"goal":{"status":"active"}}}\n' "$id" ;;
-    *'"method":"turn/start"'*) printf '{"id":%s,"result":{"turn":{"id":"native-codex-turn"}}}\n' "$id" ;;
-    *'"method":"turn/interrupt"'*) printf '{"id":%s,"result":{}}\n' "$id" ;;
-    *'"method":"thread/rollback"'*) printf '{"id":%s,"result":{"thread":{"id":"native-codex-thread","turns":[]}}}\n' "$id" ;;
-    *'"method":"shutdown"'*) printf '{"id":%s,"result":null}\n' "$id" ;;
-  esac
-done
-"#,
-        );
+        let codex_fixture = executable_fixture(&temp, "codex-fixture", CODEX_FIXTURE);
         let mut codex_request = native_launch(&temp, "codex");
         codex_request.binary_path = codex_fixture.to_string_lossy().into_owned();
         let codex = factory
@@ -3438,23 +3565,7 @@ done
         assert!(codex.answer("unknown".to_owned(), json!({})).await.is_err());
         codex.shutdown().await.expect("Codex should shut down");
 
-        let acp_fixture = executable_fixture(
-            &temp,
-            "acp-fixture.sh",
-            r#"#!/bin/sh
-while IFS= read -r line; do
-  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
-  case "$line" in
-    *'"method":"initialize"'*|*'"method":"authenticate"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
-    *'"method":"session/new"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"cursor-session","configOptions":[{"id":"model","category":"model"}],"modes":{"currentModeId":"ask","availableModes":[{"id":"ask","name":"Ask"},{"id":"code","name":"Agent"},{"id":"architect","name":"Plan"}]}}}\n' "$id" ;;
-    *'"method":"session/create"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"grok-session","modes":{"currentModeId":"code","availableModes":[{"id":"code","name":"Agent"},{"id":"ask","name":"Ask"}]}}}\n' "$id" ;;
-    *'"method":"session/set_config_option"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[]}}\n' "$id" ;;
-    *'"method":"session/set_mode"'*|*'"method":"session/set_model"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
-    *'"method":"session/prompt"'*) sleep 0.1; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id" ;;
-  esac
-done
-"#,
-        );
+        let acp_fixture = executable_fixture(&temp, "acp-fixture", ACP_FIXTURE);
         for provider in ["cursor", "grok"] {
             let mut request = native_launch(&temp, provider);
             request.binary_path = acp_fixture.to_string_lossy().into_owned();
@@ -3564,6 +3675,12 @@ done
         });
 
         let temp = TempDir::new().expect("OpenCode fixture directory");
+        #[cfg(windows)]
+        let endpoint_child = tokio::process::Command::new("cmd.exe")
+            .args(["/d", "/s", "/c", "ping -n 3 127.0.0.1 >NUL"])
+            .spawn()
+            .expect("endpoint child should spawn");
+        #[cfg(not(windows))]
         let endpoint_child = tokio::process::Command::new("/bin/sh")
             .args(["-c", "sleep 2"])
             .spawn()

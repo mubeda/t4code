@@ -401,6 +401,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.enableAssistantStreaming !== DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming
         ? ["Assistant output"]
         : []),
+      ...(settings.terminal.webglEnabled !== DEFAULT_UNIFIED_SETTINGS.terminal.webglEnabled
+        ? ["WebGL renderer"]
+        : []),
       ...(Duration.toMillis(settings.automaticGitFetchInterval) !==
       Duration.toMillis(DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval)
         ? ["Automatic Git fetch interval"]
@@ -435,6 +438,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.automaticGitFetchInterval,
       settings.enableAssistantStreaming,
       settings.sidebarThreadPreviewCount,
+      settings.terminal.webglEnabled,
       settings.timestampFormat,
       settings.wordWrap,
       theme,
@@ -465,6 +469,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
+      terminal: {
+        webglEnabled: DEFAULT_UNIFIED_SETTINGS.terminal.webglEnabled,
+      },
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
     });
     onRestored?.();
@@ -948,6 +955,36 @@ export function GeneralSettingsPanel() {
                 }}
               />
             </div>
+          }
+        />
+      </SettingsSection>
+
+      <SettingsSection title="Terminal">
+        <SettingsRow
+          title="WebGL renderer"
+          description="Render terminals with the GPU-accelerated WebGL renderer. Falls back automatically if WebGL is unavailable."
+          resetAction={
+            settings.terminal.webglEnabled !== DEFAULT_UNIFIED_SETTINGS.terminal.webglEnabled ? (
+              <SettingResetButton
+                label="WebGL renderer"
+                onClick={() =>
+                  updateSettings({
+                    terminal: {
+                      webglEnabled: DEFAULT_UNIFIED_SETTINGS.terminal.webglEnabled,
+                    },
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.terminal.webglEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ terminal: { webglEnabled: Boolean(checked) } })
+              }
+              aria-label="Use WebGL terminal renderer"
+            />
           }
         />
       </SettingsSection>

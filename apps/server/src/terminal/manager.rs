@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use super::{
     PortablePtyBackend, PtyBackend, PtyExit, PtyProcess, PtySpawnInput, TerminalAttachInput,
     TerminalEvent, TerminalMetadataEvent, TerminalOpenInput, TerminalRestartInput,
-    TerminalSessionSnapshot, TerminalStatus, TerminalSummary,
+    TerminalSessionSnapshot, TerminalStatus, TerminalSummary, history::TerminalHistory,
 };
 use crate::{
     diagnostics::{NativeProcessSampler, ProcessSampler, build_descendant_entries},
@@ -125,7 +125,7 @@ struct Session {
     worktree_path: Option<String>,
     status: TerminalStatus,
     pid: Option<u32>,
-    history: String,
+    history: TerminalHistory,
     exit_code: Option<i32>,
     exit_signal: Option<i32>,
     label: String,
@@ -150,7 +150,7 @@ impl Session {
             worktree_path: self.worktree_path.clone(),
             status: self.status,
             pid: self.pid,
-            history: self.history.clone(),
+            history: self.history.snapshot(),
             exit_code: self.exit_code,
             exit_signal: self.exit_signal,
             label: self.display_label(),
@@ -321,6 +321,12 @@ impl TerminalManager {
             attempted,
             message: last_error,
         })?;
+        let history = TerminalHistory::new(self.inner.options.history_line_limit);
+        debug_assert_eq!(
+            history.line_limit(),
+            self.inner.options.history_line_limit,
+            "session history must retain the manager's configured line limit"
+        );
         let session = Arc::new(Mutex::new(Session {
             thread_id: input.thread_id.clone(),
             terminal_id: input.terminal_id.clone(),
@@ -331,7 +337,7 @@ impl TerminalManager {
                 .map(|path| path.to_string_lossy().into_owned()),
             status: TerminalStatus::Running,
             pid: Some(process.pid()),
-            history: String::new(),
+            history,
             exit_code: None,
             exit_signal: None,
             label: terminal_label(&input.terminal_id),
@@ -386,11 +392,7 @@ impl TerminalManager {
                         Ok(data) => {
                             let event = {
                                 let mut session = output_session.lock().await;
-                                append_history(
-                                    &mut session.history,
-                                    &data,
-                                    output_inner.options.history_line_limit,
-                                );
+                                session.history.push(&data);
                                 let sequence = session.advance();
                                 TerminalEvent::Output {
                                     thread_id: session.thread_id.clone(),
@@ -839,34 +841,6 @@ fn validate_dimensions(cols: u16, rows: u16) -> Result<(), TerminalError> {
     Ok(())
 }
 
-fn append_history(history: &mut String, data: &str, line_limit: usize) {
-    history.push_str(data);
-    if line_limit == 0 {
-        history.clear();
-        return;
-    }
-    let line_count = history
-        .as_bytes()
-        .iter()
-        .filter(|byte| **byte == b'\n')
-        .count();
-    if line_count <= line_limit {
-        return;
-    }
-    let mut lines_to_remove = line_count - line_limit;
-    let truncate_at = history
-        .char_indices()
-        .find_map(|(index, character)| {
-            if character != '\n' {
-                return None;
-            }
-            lines_to_remove -= 1;
-            (lines_to_remove == 0).then_some(index + character.len_utf8())
-        })
-        .unwrap_or(0);
-    history.drain(..truncate_at);
-}
-
 fn terminal_label(terminal_id: &str) -> String {
     terminal_id
         .strip_prefix("term-")
@@ -933,6 +907,150 @@ fn now_iso() -> String {
 mod tests {
     use super::*;
 
+    #[derive(Debug)]
+    struct HistoryTestPty {
+        pid: u32,
+        output: broadcast::Sender<String>,
+        exit: tokio::sync::watch::Sender<Option<PtyExit>>,
+    }
+
+    impl HistoryTestPty {
+        fn new(pid: u32) -> Self {
+            let (output, _) = broadcast::channel(16);
+            let (exit, _) = tokio::sync::watch::channel(None);
+            Self { pid, output, exit }
+        }
+
+        fn emit(&self, data: &str) {
+            self.output.send(data.to_owned()).expect("output receiver");
+        }
+    }
+
+    impl PtyProcess for HistoryTestPty {
+        fn pid(&self) -> u32 {
+            self.pid
+        }
+
+        fn write(&self, _data: &str) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn resize(&self, _cols: u16, _rows: u16) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn kill(&self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn subscribe_output(&self) -> broadcast::Receiver<String> {
+            self.output.subscribe()
+        }
+
+        fn subscribe_exit(&self) -> tokio::sync::watch::Receiver<Option<PtyExit>> {
+            self.exit.subscribe()
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct HistoryTestBackend {
+        processes: std::sync::Mutex<Vec<Arc<HistoryTestPty>>>,
+    }
+
+    impl HistoryTestBackend {
+        fn latest(&self) -> Arc<HistoryTestPty> {
+            self.processes
+                .lock()
+                .expect("processes lock")
+                .last()
+                .cloned()
+                .expect("spawned process")
+        }
+    }
+
+    impl PtyBackend for HistoryTestBackend {
+        fn spawn(&self, _input: &PtySpawnInput) -> Result<Arc<dyn PtyProcess>, String> {
+            let mut processes = self.processes.lock().expect("processes lock");
+            let process = Arc::new(HistoryTestPty::new(processes.len() as u32 + 1));
+            processes.push(process.clone());
+            Ok(process)
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_history_survives_output_and_clear_but_restart_starts_fresh() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend::default());
+        let manager = TerminalManager::new(
+            backend.clone(),
+            TerminalManagerOptions {
+                history_line_limit: 2,
+                subprocess_poll_interval: Duration::ZERO,
+                ..TerminalManagerOptions::default()
+            },
+        );
+        let input = TerminalOpenInput::new(
+            "thread-history",
+            "term-history",
+            root.path().to_path_buf(),
+            80,
+            24,
+        );
+
+        manager.open(input.clone()).await.unwrap();
+        let original_session = manager
+            .require_session("thread-history", "term-history")
+            .await
+            .unwrap();
+        assert_eq!(original_session.lock().await.history.line_limit(), 2);
+
+        let mut events = manager.subscribe_events();
+        let process = backend.latest();
+        for chunk in ["one\n", "two\n", "three\n"] {
+            process.emit(chunk);
+            let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
+                .await
+                .expect("output timeout")
+                .expect("output event");
+            assert!(matches!(event, TerminalEvent::Output { data, .. } if data == chunk));
+        }
+
+        let attachment = manager
+            .attach(TerminalAttachInput::existing(
+                "thread-history",
+                "term-history",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(attachment.initial.history, "two\nthree\n");
+
+        manager
+            .clear("thread-history", "term-history")
+            .await
+            .unwrap();
+        let cleared = manager
+            .attach(TerminalAttachInput::existing(
+                "thread-history",
+                "term-history",
+            ))
+            .await
+            .unwrap();
+        assert!(cleared.initial.history.is_empty());
+        assert_eq!(original_session.lock().await.history.line_limit(), 2);
+
+        let restarted = manager.restart(input).await.unwrap();
+        assert!(restarted.history.is_empty());
+        let restarted_session = manager
+            .require_session("thread-history", "term-history")
+            .await
+            .unwrap();
+        assert!(!Arc::ptr_eq(&original_session, &restarted_session));
+        assert_eq!(restarted_session.lock().await.history.line_limit(), 2);
+        assert_eq!(backend.processes.lock().expect("processes lock").len(), 2);
+
+        manager.shutdown().await;
+    }
+
     #[tokio::test]
     async fn manager_covers_live_lifecycle_attachments_and_metadata() {
         let root = tempfile::tempdir().unwrap();
@@ -997,11 +1115,13 @@ mod tests {
 
     #[test]
     fn presentation_helpers_cover_history_and_process_labels() {
-        let mut history = "one\ntwo\nthree\n".to_owned();
-        append_history(&mut history, "four\n", 2);
-        assert_eq!(history, "three\nfour\n");
-        append_history(&mut history, "ignored", 0);
-        assert!(history.is_empty());
+        let mut history = TerminalHistory::new(2);
+        history.push("one\ntwo\nthree\n");
+        history.push("four\n");
+        assert_eq!(history.snapshot(), "three\nfour\n");
+        let mut cleared = TerminalHistory::new(0);
+        cleared.push("ignored");
+        assert!(cleared.snapshot().is_empty());
 
         assert_eq!(
             normalize_child_command_name("[/usr/bin/node.exe --flag]"),

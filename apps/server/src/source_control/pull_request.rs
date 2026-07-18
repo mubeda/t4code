@@ -1111,7 +1111,7 @@ fn operation_error(
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
+    use std::{path::Path, process::Command};
 
     use base64::Engine;
     use tempfile::TempDir;
@@ -1407,11 +1407,8 @@ esac
         }
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn provider_cli_flows_report_spawn_exit_and_payload_failures() {
-        use std::os::unix::fs::PermissionsExt;
-
         let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
         let temporary = tempfile::tempdir().expect("provider CLI directory");
         let cancellation = CancellationToken::new();
@@ -1436,9 +1433,12 @@ esac
                 .contains("execution failed")
         );
 
-        let failed = temporary.path().join("failed");
-        std::fs::write(&failed, "#!/bin/sh\nexit 7\n").unwrap();
-        std::fs::set_permissions(&failed, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let failed = provider_failure_fixture(
+            temporary.path(),
+            "failed",
+            "#!/bin/sh\nexit 7\n",
+            "@echo off\r\nexit /b 7\r\n",
+        );
         let failed_command = failed.to_string_lossy().into_owned();
         let failed_service = PullRequestService::with_provider_commands(
             failed_command.clone(),
@@ -1454,9 +1454,12 @@ esac
                 .contains("not found or provider authentication failed")
         );
 
-        let invalid = temporary.path().join("invalid");
-        std::fs::write(&invalid, "#!/bin/sh\nprintf invalid\n").unwrap();
-        std::fs::set_permissions(&invalid, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let invalid = provider_failure_fixture(
+            temporary.path(),
+            "invalid",
+            "#!/bin/sh\nprintf invalid\n",
+            "@echo off\r\necho invalid\r\n",
+        );
         let invalid_command = invalid.to_string_lossy().into_owned();
         let invalid_service = PullRequestService::with_provider_commands(
             invalid_command.clone(),
@@ -1497,6 +1500,30 @@ esac
                 .detail
                 .contains("unrecognized pull-request payload")
         );
+    }
+
+    fn provider_failure_fixture(
+        directory: &Path,
+        name: &str,
+        _unix_contents: &str,
+        _windows_contents: &str,
+    ) -> PathBuf {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let path = directory.join(name);
+            std::fs::write(&path, _unix_contents).expect("provider fixture should write");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("provider fixture should be executable");
+            path
+        }
+        #[cfg(windows)]
+        {
+            let path = directory.join(format!("{name}.cmd"));
+            std::fs::write(&path, _windows_contents).expect("provider fixture should write");
+            path
+        }
     }
 
     async fn bitbucket_repository() -> TempDir {

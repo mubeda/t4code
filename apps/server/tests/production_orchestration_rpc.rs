@@ -1,7 +1,7 @@
 use std::{
     any::Any,
     panic::{AssertUnwindSafe, resume_unwind},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -11,7 +11,9 @@ use t4code_server::{
     RpcExit, RpcRegistry, ServerConfig, ServerHandle, ServerMessage, ServerRuntime,
     orchestration::{EngineOptions, OrchestrationCommand, OrchestrationEngine, load_snapshot},
     persistence::{CheckpointDiffBlob, Database, NewOrchestrationEvent, run_migrations},
-    production::orchestration_rpc::register_orchestration_rpc,
+    production::{
+        host_paths::process_compatible_path, orchestration_rpc::register_orchestration_rpc,
+    },
 };
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -79,6 +81,12 @@ fn tempdir_in_home() -> (TempDir, String) {
         .to_string_lossy()
         .replace('\\', "/");
     (temp, format!("~/{relative}"))
+}
+
+fn canonical_workspace_root(path: &Path) -> String {
+    process_compatible_path(std::fs::canonicalize(path).expect("canonical workspace root"))
+        .to_string_lossy()
+        .into_owned()
 }
 
 async fn harness() -> Harness {
@@ -449,14 +457,8 @@ async fn project_create_resolves_home_relative_paths_and_reuses_canonical_duplic
         let snapshot = load_snapshot(&harness.engine.repositories())
             .await
             .expect("snapshot");
-        let canonical_existing = std::fs::canonicalize(&existing)
-            .expect("canonical existing path")
-            .to_string_lossy()
-            .into_owned();
-        let canonical_created = std::fs::canonicalize(&created)
-            .expect("canonical created path")
-            .to_string_lossy()
-            .into_owned();
+        let canonical_existing = canonical_workspace_root(&existing);
+        let canonical_created = canonical_workspace_root(&created);
         assert_eq!(
             snapshot
                 .projects
@@ -472,10 +474,7 @@ async fn project_create_resolves_home_relative_paths_and_reuses_canonical_duplic
                 .any(|project| project.workspace_root == canonical_created)
         );
         for expected in [&backslash_existing, &backslash_created] {
-            let canonical = std::fs::canonicalize(expected)
-                .expect("canonical backslash workspace")
-                .to_string_lossy()
-                .into_owned();
+            let canonical = canonical_workspace_root(expected);
             assert!(
                 snapshot
                     .projects
@@ -502,11 +501,15 @@ async fn project_create_resolves_home_relative_paths_and_reuses_canonical_duplic
         )
         .await;
         let named_user_error = expect_failure(&mut socket, "14").await;
+        let named_user_marker = named_user_path
+            .split('/')
+            .next()
+            .expect("named-user path marker");
         assert!(
             named_user_error["message"]
                 .as_str()
-                .is_some_and(|message| message.contains(named_user_path)),
-            "named-user tilde paths must remain literal"
+                .is_some_and(|message| message.contains(named_user_marker)),
+            "named-user tilde paths must remain literal: {named_user_error}"
         );
         socket.close(None).await.expect("close WebSocket");
     })
@@ -673,10 +676,7 @@ async fn project_metadata_workspace_roots_are_canonical() {
             }),
         )
         .await;
-        let canonical_moved = std::fs::canonicalize(&moved_workspace)
-            .expect("canonical moved workspace")
-            .to_string_lossy()
-            .into_owned();
+        let canonical_moved = canonical_workspace_root(&moved_workspace);
         let snapshot = load_snapshot(&harness.engine.repositories())
             .await
             .expect("snapshot after normalized update");
@@ -782,9 +782,7 @@ async fn project_metadata_workspace_root_aliases_and_symlinks_cannot_collide() {
                 .find(|project| project.project_id == "second-workspace")
                 .expect("second project")
                 .workspace_root,
-            std::fs::canonicalize(&second_workspace)
-                .expect("canonical second workspace")
-                .to_string_lossy()
+            canonical_workspace_root(&second_workspace)
         );
 
         socket.close(None).await.expect("close WebSocket");

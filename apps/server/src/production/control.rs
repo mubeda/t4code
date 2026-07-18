@@ -433,6 +433,7 @@ fn apply_settings_defaults(settings: &mut Value) {
             },
             "providerInstances": {},
             "observability": { "otlpTracesUrl": "", "otlpMetricsUrl": "" },
+            "terminal": { "webglEnabled": true },
         }),
     );
 }
@@ -698,6 +699,28 @@ mod tests {
     use crate::production::server_terminal::ProductionServerControl;
 
     use super::*;
+
+    #[tokio::test]
+    async fn server_settings_expose_terminal_webgl_default_and_patch() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let temp = tempfile::tempdir().expect("state directory");
+        let mut config = ServerConfig::new(temp.path());
+        config.environment_id = "environment-webgl".to_owned();
+        let control = NativeServerControl::new(config, json!({"policy": "test"})).await;
+
+        let settings = control
+            .call("server.getSettings", json!({}), CancellationToken::new())
+            .await
+            .expect("settings");
+        assert_eq!(settings["terminal"]["webglEnabled"], true);
+
+        let updated = control
+            .update_settings(json!({ "patch": { "terminal": { "webglEnabled": false } } }))
+            .await
+            .expect("patch applies");
+        assert_eq!(updated["terminal"]["webglEnabled"], false);
+        assert_eq!(updated["enableProviderUpdateChecks"], true);
+    }
 
     #[tokio::test]
     async fn unit_build_covers_server_control_settings_keybindings_and_streams() {

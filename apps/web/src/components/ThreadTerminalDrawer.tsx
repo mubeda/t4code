@@ -3,7 +3,15 @@ import { FitAddon } from "@xterm/addon-fit";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
+  type AtomCommandResult,
 } from "@t4code/client-runtime/state/runtime";
+import {
+  createTerminalInputScheduler,
+  createTerminalInputSchedulerRegistry,
+  type TerminalInputScheduler,
+  type TerminalInputSendResult,
+  terminalInputKey,
+} from "@t4code/client-runtime/state/terminal";
 import {
   Plus,
   SquareSplitHorizontal,
@@ -64,11 +72,158 @@ import { serverEnvironment } from "../state/server";
 import { previewEnvironment } from "../state/preview";
 import { terminalEnvironment } from "../state/terminal";
 import { openTerminalLinkInPreview } from "./preview/openTerminalLinkInPreview";
+import { createTerminalOutputSink } from "./terminalOutputSink";
+import { loadTerminalWebglAddon } from "./terminalWebgl";
 import { useAtomCommand } from "../state/use-atom-command";
+import { usePrimarySettings } from "../hooks/useSettings";
 
 const MIN_DRAWER_HEIGHT = 180;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
 const MULTI_CLICK_SELECTION_ACTION_DELAY_MS = 260;
+const terminalInputRegistry = createTerminalInputSchedulerRegistry();
+const terminalInputBindings = new Map<string, TerminalInputBinding>();
+const TERMINAL_WRITE_INTERRUPTED = Symbol("terminal-write-interrupted");
+
+interface TerminalInputBinding {
+  renderer: { readonly owner: object; readonly terminal: Terminal } | null;
+  write: ((data: string, fallbackError: string) => Promise<TerminalInputSendResult>) | null;
+  readonly pendingFallbacks: Array<{
+    remaining: number;
+    message: string;
+    onWriteError?: ((error: unknown) => void) | undefined;
+  }>;
+}
+
+type WebglAddonInstance = import("@xterm/addon-webgl").WebglAddon;
+
+interface WebglContextLossDisposable {
+  dispose(): void;
+}
+
+interface WebglLifecycle {
+  readonly terminal: Terminal;
+  readonly disposed: boolean;
+  setContextLossDisposable(disposable: WebglContextLossDisposable): void;
+  dispose(): void;
+}
+
+interface WebglLoseContextExtension {
+  loseContext(): void;
+}
+
+function createWebglLifecycle(addon: WebglAddonInstance, terminal: Terminal): WebglLifecycle {
+  let disposed = false;
+  let contextLossDisposable: WebglContextLossDisposable | null = null;
+
+  return {
+    terminal,
+    get disposed() {
+      return disposed;
+    },
+    setContextLossDisposable(disposable) {
+      if (disposed) {
+        try {
+          disposable.dispose();
+        } catch {
+          // Best-effort listener cleanup must not make the terminal unusable.
+        }
+        return;
+      }
+      contextLossDisposable = disposable;
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+
+      let context: WebGL2RenderingContext | undefined;
+      try {
+        context = (
+          addon as unknown as {
+            readonly _renderer?: { readonly _gl?: WebGL2RenderingContext };
+          }
+        )._renderer?._gl;
+      } catch {
+        // Private renderer details can change between compatible addon releases.
+      }
+
+      try {
+        contextLossDisposable?.dispose();
+      } catch {
+        // The addon owns this registration too; continue with renderer cleanup.
+      }
+      contextLossDisposable = null;
+
+      try {
+        addon.dispose();
+      } catch {
+        // Falling back must remain safe even if a partially activated addon throws.
+      }
+
+      try {
+        (
+          context?.getExtension("WEBGL_lose_context") as WebglLoseContextExtension | null
+        )?.loseContext();
+      } catch {
+        // Context release is best effort because this is an implementation detail.
+      }
+    },
+  };
+}
+
+export function releaseTerminalInputScheduler(
+  environmentId: string,
+  threadId: string,
+  terminalId: string,
+): void {
+  const key = terminalInputKey(environmentId, threadId, terminalId);
+  const binding = terminalInputBindings.get(key);
+  terminalInputRegistry.release(key);
+  if (binding) {
+    binding.renderer = null;
+    binding.write = null;
+    binding.pendingFallbacks.length = 0;
+  }
+  terminalInputBindings.delete(key);
+}
+
+function atomCommandTerminalInputResult(
+  result: AtomCommandResult<unknown, unknown>,
+  fallbackError: string,
+): TerminalInputSendResult {
+  if (result._tag === "Success") {
+    return { ok: true };
+  }
+  if (isAtomCommandInterrupted(result)) {
+    return { ok: false, error: TERMINAL_WRITE_INTERRUPTED };
+  }
+  const error = squashAtomCommandFailure(result);
+  return {
+    ok: false,
+    error: error instanceof Error ? error : new Error(fallbackError),
+  };
+}
+
+export function enqueueTerminalInput<A, E>(input: {
+  readonly environmentId: string;
+  readonly threadId: string;
+  readonly terminalId: string;
+  readonly data: string;
+  readonly fallbackError: string;
+  readonly write: (data: string) => Promise<AtomCommandResult<A, E>>;
+  readonly onWriteError?: ((error: unknown) => void) | undefined;
+}): void {
+  if (input.data.length === 0) return;
+  const inputKey = terminalInputKey(input.environmentId, input.threadId, input.terminalId);
+  const { binding, scheduler } = acquireTerminalInputBinding(inputKey);
+  binding.write = async (data, fallbackError) =>
+    atomCommandTerminalInputResult(await input.write(data), fallbackError);
+  binding.pendingFallbacks.push({
+    remaining: input.data.length,
+    message: input.fallbackError,
+    onWriteError: input.onWriteError,
+  });
+  scheduler.enqueue(input.data);
+}
 
 export function maxDrawerHeight(): number {
   if (typeof window === "undefined") return DEFAULT_THREAD_TERMINAL_HEIGHT;
@@ -83,6 +238,101 @@ export function clampDrawerHeight(height: number): number {
 
 function writeSystemMessage(terminal: Terminal, message: string): void {
   terminal.write(`\r\n[terminal] ${message}\r\n`);
+}
+
+function acquireTerminalInputBinding(inputKey: string): {
+  readonly binding: TerminalInputBinding;
+  readonly scheduler: TerminalInputScheduler;
+} {
+  let binding = terminalInputBindings.get(inputKey);
+  if (!binding) {
+    binding = {
+      renderer: null,
+      write: null,
+      pendingFallbacks: [],
+    };
+    terminalInputBindings.set(inputKey, binding);
+  }
+
+  const keyedBinding = binding;
+  const scheduler = terminalInputRegistry.acquire(inputKey, () => {
+    const rawScheduler = createTerminalInputScheduler({
+      send: async (data) => {
+        let remaining = data.length;
+        let fallbackError = "Terminal write failed";
+        let hasFallback = false;
+        const consumedFallbacks = new Set<(typeof keyedBinding.pendingFallbacks)[number]>();
+        const notifyFallbackFailures = (error: unknown) => {
+          if (error === TERMINAL_WRITE_INTERRUPTED) return;
+          const affectedFallbacks = new Set([
+            ...consumedFallbacks,
+            ...keyedBinding.pendingFallbacks,
+          ]);
+          for (const fallback of affectedFallbacks) {
+            try {
+              fallback.onWriteError?.(error);
+            } catch {
+              // Failure observers must not break scheduler cleanup.
+            }
+          }
+        };
+        while (remaining > 0 && keyedBinding.pendingFallbacks.length > 0) {
+          const pendingFallback = keyedBinding.pendingFallbacks[0]!;
+          consumedFallbacks.add(pendingFallback);
+          if (!hasFallback) {
+            fallbackError = pendingFallback.message;
+            hasFallback = true;
+          }
+          const consumed = Math.min(remaining, pendingFallback.remaining);
+          pendingFallback.remaining -= consumed;
+          remaining -= consumed;
+          if (pendingFallback.remaining === 0) {
+            keyedBinding.pendingFallbacks.shift();
+          }
+        }
+
+        const write = keyedBinding.write;
+        if (!write) {
+          const error = new Error(fallbackError);
+          notifyFallbackFailures(error);
+          return { ok: false, error };
+        }
+        let result: TerminalInputSendResult;
+        try {
+          result = await write(data, fallbackError);
+        } catch (error) {
+          notifyFallbackFailures(error);
+          throw error;
+        }
+        if (!result.ok) {
+          notifyFallbackFailures(result.error);
+        }
+        return result;
+      },
+      onWriteError: (error) => {
+        keyedBinding.pendingFallbacks.length = 0;
+        if (error === TERMINAL_WRITE_INTERRUPTED) return;
+        const active = keyedBinding.renderer?.terminal;
+        if (!active) return;
+        writeSystemMessage(
+          active,
+          error instanceof Error ? error.message : "Terminal write failed",
+        );
+      },
+    });
+
+    return {
+      enqueue: (data) => rawScheduler.enqueue(data),
+      reset: () => {
+        keyedBinding.pendingFallbacks.length = 0;
+        rawScheduler.reset();
+      },
+      pendingLength: () => rawScheduler.pendingLength(),
+      isDraining: () => rawScheduler.isDraining(),
+    };
+  });
+
+  return { binding: keyedBinding, scheduler };
 }
 
 export function writeTerminalBuffer(terminal: Terminal, buffer: string): void {
@@ -108,6 +358,10 @@ export function runtimeEnvSignature(runtimeEnv: Record<string, string> | undefin
       .filter(([key, value]) => key.length > 0 && typeof value === "string")
       .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey)),
   );
+}
+
+function isDocumentVisible(): boolean {
+  return typeof document === "undefined" || document.visibilityState === "visible";
 }
 
 export function normalizeComputedColor(value: string | null | undefined, fallback: string): string {
@@ -276,6 +530,7 @@ interface TerminalViewportProps {
   cwd: string;
   worktreePath?: string | null;
   runtimeEnv?: Record<string, string>;
+  visible: boolean;
   onSessionExited: () => void;
   onAddTerminalContext: (selection: TerminalContextSelection) => void;
   focusRequestId: number;
@@ -299,6 +554,7 @@ export function TerminalViewport({
   cwd,
   worktreePath,
   runtimeEnv,
+  visible,
   onSessionExited,
   onAddTerminalContext,
   focusRequestId,
@@ -332,8 +588,30 @@ export function TerminalViewport({
   const selectionActionRequestIdRef = useRef(0);
   const selectionActionOpenRef = useRef(false);
   const selectionActionTimerRef = useRef<number | null>(null);
+  const selectionActionFrameRef = useRef<number | null>(null);
   const keybindingsRef = useRef(keybindings);
+  const inputSchedulerRef = useRef<TerminalInputScheduler | null>(null);
+  const focusGenerationRef = useRef(0);
+  const fulfilledFocusRequestIdRef = useRef<number | null>(null);
+  const resizeRendererGenerationRef = useRef(0);
+  const lastRequestedSizeRef = useRef<{
+    readonly generation: number;
+    readonly cols: number;
+    readonly rows: number;
+  } | null>(null);
+  const webglGenerationRef = useRef(0);
+  const webglLifecycleRef = useRef<WebglLifecycle | null>(null);
+  const webglFailedRef = useRef(false);
+  const webglDiagnosticRecordedRef = useRef(false);
+  const [documentVisible, setDocumentVisible] = useState(isDocumentVisible);
+  const shouldRender = visible && isDocumentVisible() && documentVisible;
+  const webglEnabled = usePrimarySettings((settings) => settings.terminal.webglEnabled);
   const runtimeEnvKey = useMemo(() => runtimeEnvSignature(runtimeEnv), [runtimeEnv]);
+  const recordWebglDiagnosticOnce = useCallback(() => {
+    if (webglDiagnosticRecordedRef.current) return;
+    webglDiagnosticRecordedRef.current = true;
+    console.warn("[terminal] WebGL renderer unavailable; using the standard renderer.");
+  }, []);
   const handleSessionExited = useEffectEvent(() => {
     onSessionExited();
   });
@@ -350,29 +628,69 @@ export function TerminalViewport({
       ...(worktreePath !== undefined ? { worktreePath } : {}),
       ...(runtimeEnv ? { env: runtimeEnv } : {}),
     },
+    attach: shouldRender,
   });
-  const writeTerminal = useEffectEvent((data: string) =>
-    runTerminalWrite({
-      environmentId,
-      input: { threadId, terminalId, data },
-    }),
-  );
   const resizeTerminal = useEffectEvent((cols: number, rows: number) =>
     runTerminalResize({
       environmentId,
       input: { threadId, terminalId, cols, rows },
     }),
   );
-  const terminalBuffer = terminalSession.buffer;
+  const requestTerminalResize = useEffectEvent(
+    (rendererGeneration: number, cols: number, rows: number) => {
+      if (resizeRendererGenerationRef.current !== rendererGeneration) return;
+      const current = lastRequestedSizeRef.current;
+      if (
+        current?.generation === rendererGeneration &&
+        current.cols === cols &&
+        current.rows === rows
+      ) {
+        return;
+      }
+
+      const request = {
+        generation: rendererGeneration,
+        cols,
+        rows,
+      };
+      lastRequestedSizeRef.current = request;
+      void resizeTerminal(cols, rows).then((result) => {
+        if (
+          result._tag === "Failure" &&
+          resizeRendererGenerationRef.current === rendererGeneration &&
+          lastRequestedSizeRef.current === request
+        ) {
+          lastRequestedSizeRef.current = null;
+        }
+      });
+    },
+  );
   const terminalError = terminalSession.error;
   const terminalStatus = terminalSession.status;
-  const terminalVersion = terminalSession.version;
-  const previousSessionRef = useRef({
-    buffer: terminalBuffer,
-    error: terminalError,
-    status: terminalStatus,
-    version: terminalVersion,
+  const terminalGeneration = terminalSession.generation;
+  const transcriptRuntime = terminalSession.transcriptRuntime;
+  const hasAuthoritativeTerminalState = transcriptRuntime !== null;
+  const previousMetadataRef = useRef({
+    error: null as string | null,
+    status: "closed" as typeof terminalStatus,
   });
+  const previousRuntimeGenerationRef = useRef({
+    runtime: transcriptRuntime,
+    generation: terminalGeneration,
+  });
+
+  useEffect(() => {
+    if (!visible) return;
+
+    const updateDocumentVisibility = () => {
+      setDocumentVisible(document.visibilityState === "visible");
+    };
+    updateDocumentVisibility();
+    document.addEventListener("visibilitychange", updateDocumentVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", updateDocumentVisibility);
+    };
+  }, [visible]);
 
   useEffect(() => {
     keybindingsRef.current = keybindings;
@@ -380,7 +698,7 @@ export function TerminalViewport({
 
   useEffect(() => {
     const mount = containerRef.current;
-    if (!mount) return;
+    if (!mount || !shouldRender || transcriptRuntime === null) return;
 
     const localApi = readLocalApi();
 
@@ -398,20 +716,52 @@ export function TerminalViewport({
     terminal.open(mount);
     fitTerminalSafely(fitAddon);
 
+    const resizeRendererGeneration = resizeRendererGenerationRef.current + 1;
+    resizeRendererGenerationRef.current = resizeRendererGeneration;
+    lastRequestedSizeRef.current = null;
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
-    previousSessionRef.current = {
-      buffer: "",
-      status: "closed",
-      error: null,
-      version: 0,
+    const inputKey = terminalInputKey(environmentId, threadId, terminalId);
+    const rendererOwner = {};
+    const { binding: inputBinding, scheduler: inputScheduler } =
+      acquireTerminalInputBinding(inputKey);
+    inputSchedulerRef.current = inputScheduler;
+    inputBinding.renderer = { owner: rendererOwner, terminal };
+    inputBinding.write = async (data, fallbackError) => {
+      const result = await runTerminalWrite({
+        environmentId,
+        input: { threadId, terminalId, data },
+      });
+      return atomCommandTerminalInputResult(result, fallbackError);
     };
+    const createOutputSink = () =>
+      createTerminalOutputSink({
+        write: (data) => terminal.write(data),
+      });
+    let outputSink = createOutputSink();
+    const rendererAttachment = transcriptRuntime.attachRenderer((signal) => {
+      if (signal.type === "delta") {
+        outputSink.push(signal.data);
+        return;
+      }
+
+      // Reset is authoritative. Drop any old-generation delta still queued for
+      // a frame before replacing xterm's display with the bounded snapshot.
+      outputSink.dispose();
+      outputSink = createOutputSink();
+      writeTerminalBuffer(terminal, signal.snapshot);
+      terminal.clearSelection();
+    });
 
     const clearSelectionAction = () => {
       selectionActionRequestIdRef.current += 1;
       if (selectionActionTimerRef.current !== null) {
         window.clearTimeout(selectionActionTimerRef.current);
         selectionActionTimerRef.current = null;
+      }
+      if (selectionActionFrameRef.current !== null) {
+        window.cancelAnimationFrame(selectionActionFrameRef.current);
+        selectionActionFrameRef.current = null;
       }
     };
 
@@ -486,14 +836,10 @@ export function TerminalViewport({
       }
     };
 
-    const sendTerminalInput = async (data: string, fallbackError: string) => {
-      const activeTerminal = terminalRef.current;
-      if (!activeTerminal) return;
-      const result = await writeTerminal(data);
-      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-        const error = squashAtomCommandFailure(result);
-        writeSystemMessage(activeTerminal, error instanceof Error ? error.message : fallbackError);
-      }
+    const sendTerminalInput = (data: string, fallbackError: string) => {
+      if (inputBinding.renderer?.owner !== rendererOwner || data.length === 0) return;
+      inputBinding.pendingFallbacks.push({ remaining: data.length, message: fallbackError });
+      inputScheduler.enqueue(data);
     };
 
     terminal.attachCustomKeyEventHandler((event) => {
@@ -514,7 +860,7 @@ export function TerminalViewport({
       if (navigationData !== null) {
         event.preventDefault();
         event.stopPropagation();
-        void sendTerminalInput(navigationData, "Failed to move cursor");
+        sendTerminalInput(navigationData, "Failed to move cursor");
         return false;
       }
 
@@ -522,14 +868,14 @@ export function TerminalViewport({
       if (deleteData !== null) {
         event.preventDefault();
         event.stopPropagation();
-        void sendTerminalInput(deleteData, "Failed to delete terminal input");
+        sendTerminalInput(deleteData, "Failed to delete terminal input");
         return false;
       }
 
       if (!isTerminalClearShortcut(event)) return true;
       event.preventDefault();
       event.stopPropagation();
-      void sendTerminalInput("\u000c", "Failed to clear terminal");
+      sendTerminalInput("\u000c", "Failed to clear terminal");
       return false;
     });
 
@@ -618,17 +964,7 @@ export function TerminalViewport({
     });
 
     const inputDisposable = terminal.onData((data) => {
-      void (async () => {
-        const result = await writeTerminal(data);
-        if (result._tag === "Success" || isAtomCommandInterrupted(result)) {
-          return;
-        }
-        const error = squashAtomCommandFailure(result);
-        writeSystemMessage(
-          terminal,
-          error instanceof Error ? error.message : "Terminal write failed",
-        );
-      })();
+      sendTerminalInput(data, "Terminal write failed");
     });
 
     const selectionDisposable = terminal.onSelectionChange(() => {
@@ -651,7 +987,8 @@ export function TerminalViewport({
       const delay = terminalSelectionActionDelayForClickCount(event.detail);
       selectionActionTimerRef.current = window.setTimeout(() => {
         selectionActionTimerRef.current = null;
-        window.requestAnimationFrame(() => {
+        selectionActionFrameRef.current = window.requestAnimationFrame(() => {
+          selectionActionFrameRef.current = null;
           void showSelectionAction();
         });
       }, delay);
@@ -659,6 +996,7 @@ export function TerminalViewport({
     const handlePointerDown = (event: PointerEvent) => {
       clearSelectionAction();
       selectionGestureActiveRef.current = event.button === 0;
+      terminal.focus();
     };
     window.addEventListener("mouseup", handleMouseUp);
     mount.addEventListener("pointerdown", handlePointerDown);
@@ -684,120 +1022,239 @@ export function TerminalViewport({
       if (wasAtBottom) {
         activeTerminal.scrollToBottom();
       }
-      void resizeTerminal(activeTerminal.cols, activeTerminal.rows);
+      requestTerminalResize(resizeRendererGeneration, activeTerminal.cols, activeTerminal.rows);
     }, 30);
 
+    let disposed = false;
     return () => {
+      if (disposed) return;
+      disposed = true;
+
+      resizeRendererGenerationRef.current += 1;
+      lastRequestedSizeRef.current = null;
       window.clearTimeout(fitTimer);
+      outputSink.dispose();
+      rendererAttachment.detach();
       inputDisposable.dispose();
       selectionDisposable.dispose();
       terminalLinksDisposable.dispose();
-      if (selectionActionTimerRef.current !== null) {
-        window.clearTimeout(selectionActionTimerRef.current);
-      }
+      clearSelectionAction();
       window.removeEventListener("mouseup", handleMouseUp);
       mount.removeEventListener("pointerdown", handlePointerDown);
       themeObserver.disconnect();
-      terminalRef.current = null;
-      fitAddonRef.current = null;
+      if (inputBinding.renderer?.owner === rendererOwner) {
+        inputBinding.renderer = null;
+      }
+      if (inputSchedulerRef.current === inputScheduler) {
+        inputSchedulerRef.current = null;
+      }
+      if (terminalRef.current === terminal) {
+        terminalRef.current = null;
+      }
+      if (fitAddonRef.current === fitAddon) {
+        fitAddonRef.current = null;
+      }
+      webglGenerationRef.current += 1;
+      const activeWebglLifecycle = webglLifecycleRef.current;
+      if (activeWebglLifecycle?.terminal === terminal) {
+        activeWebglLifecycle.dispose();
+        if (webglLifecycleRef.current === activeWebglLifecycle) {
+          webglLifecycleRef.current = null;
+        }
+      }
       terminal.dispose();
     };
-    // autoFocus is intentionally omitted;
-    // it is only read at mount time and must not trigger terminal teardown/recreation.
-  }, [cwd, environmentId, runtimeEnvKey, terminalId, threadId, worktreePath]);
+    // Focus is handled by a separate activation effect so it never tears down this renderer.
+  }, [
+    cwd,
+    environmentId,
+    runtimeEnvKey,
+    shouldRender,
+    terminalId,
+    threadId,
+    transcriptRuntime,
+    worktreePath,
+  ]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
-    const current = {
-      buffer: terminalBuffer,
+    if (
+      !shouldRender ||
+      !webglEnabled ||
+      transcriptRuntime === null ||
+      terminal === null ||
+      webglFailedRef.current
+    ) {
+      return;
+    }
+
+    const generation = webglGenerationRef.current + 1;
+    webglGenerationRef.current = generation;
+    let cleanedUp = false;
+    let lifecycle: WebglLifecycle | null = null;
+    const isCurrent = () =>
+      !cleanedUp && webglGenerationRef.current === generation && terminalRef.current === terminal;
+
+    void (async () => {
+      try {
+        const { WebglAddon } = await loadTerminalWebglAddon();
+        if (!isCurrent()) return;
+
+        const addon = new WebglAddon();
+        lifecycle = createWebglLifecycle(addon, terminal);
+        terminal.loadAddon(addon);
+        if (!isCurrent()) {
+          lifecycle.dispose();
+          return;
+        }
+
+        const contextLossDisposable = addon.onContextLoss(() => {
+          const activeLifecycle = lifecycle;
+          if (activeLifecycle === null || activeLifecycle.disposed) return;
+          webglFailedRef.current = true;
+          activeLifecycle.dispose();
+          if (webglLifecycleRef.current === activeLifecycle) {
+            webglLifecycleRef.current = null;
+          }
+          recordWebglDiagnosticOnce();
+        });
+        lifecycle.setContextLossDisposable(contextLossDisposable);
+        if (!isCurrent() || lifecycle.disposed) {
+          lifecycle.dispose();
+          return;
+        }
+
+        webglLifecycleRef.current = lifecycle;
+      } catch {
+        lifecycle?.dispose();
+        if (!isCurrent()) return;
+
+        webglFailedRef.current = true;
+        if (webglLifecycleRef.current === lifecycle) {
+          webglLifecycleRef.current = null;
+        }
+        recordWebglDiagnosticOnce();
+      }
+    })();
+
+    return () => {
+      cleanedUp = true;
+      if (webglGenerationRef.current === generation) {
+        webglGenerationRef.current += 1;
+      }
+      lifecycle?.dispose();
+      if (webglLifecycleRef.current === lifecycle) {
+        webglLifecycleRef.current = null;
+      }
+    };
+  }, [recordWebglDiagnosticOnce, shouldRender, transcriptRuntime, webglEnabled]);
+
+  useEffect(() => {
+    if (!shouldRender || !hasAuthoritativeTerminalState) return;
+
+    const previous = previousMetadataRef.current;
+    previousMetadataRef.current = {
       error: terminalError,
       status: terminalStatus,
-      version: terminalVersion,
     };
-    if (!terminal) {
-      previousSessionRef.current = current;
-      return;
+    const terminal = terminalRef.current;
+
+    if (terminal !== null && terminalError !== null && terminalError !== previous.error) {
+      writeSystemMessage(terminal, terminalError);
     }
 
-    const previous = previousSessionRef.current;
-    if (current.version === previous.version) {
-      return;
-    }
-
-    if (
-      current.buffer.length >= previous.buffer.length &&
-      current.buffer.startsWith(previous.buffer)
-    ) {
-      terminal.write(current.buffer.slice(previous.buffer.length));
-    } else {
-      writeTerminalBuffer(terminal, current.buffer);
-    }
-    terminal.clearSelection();
-
-    if (current.error !== null && current.error !== previous.error) {
-      writeSystemMessage(terminal, current.error);
-    }
-
-    if (current.status === "running") {
+    if (terminalStatus === "running") {
       hasHandledExitRef.current = false;
     } else if (
-      (current.status === "closed" || current.status === "exited") &&
-      current.status !== previous.status &&
+      (terminalStatus === "closed" || terminalStatus === "exited") &&
+      terminalStatus !== previous.status &&
       !hasHandledExitRef.current
     ) {
       hasHandledExitRef.current = true;
-      writeSystemMessage(
-        terminal,
-        current.status === "closed" ? "Terminal closed" : "Process exited",
-      );
-      window.setTimeout(() => {
-        if (hasHandledExitRef.current) {
-          handleSessionExited();
-        }
-      }, 0);
+      if (terminal !== null) {
+        writeSystemMessage(
+          terminal,
+          terminalStatus === "closed" ? "Terminal closed" : "Process exited",
+        );
+      }
+      handleSessionExited();
     }
-
-    if (previous.version === 0 && autoFocus) {
-      window.requestAnimationFrame(() => {
-        terminal.focus();
-      });
-    }
-    previousSessionRef.current = current;
-  }, [autoFocus, terminalBuffer, terminalError, terminalStatus, terminalVersion]);
+  }, [hasAuthoritativeTerminalState, shouldRender, terminalError, terminalStatus]);
 
   useEffect(() => {
-    if (!autoFocus) return;
+    const previous = previousRuntimeGenerationRef.current;
+    previousRuntimeGenerationRef.current = {
+      runtime: transcriptRuntime,
+      generation: terminalGeneration,
+    };
+    if (
+      !shouldRender ||
+      transcriptRuntime === null ||
+      previous.runtime !== transcriptRuntime ||
+      terminalGeneration <= previous.generation
+    ) {
+      return;
+    }
+    inputSchedulerRef.current?.reset();
+  }, [shouldRender, terminalGeneration, transcriptRuntime]);
+
+  useEffect(() => {
+    const generation = focusGenerationRef.current + 1;
+    focusGenerationRef.current = generation;
+    if (!autoFocus || !shouldRender || fulfilledFocusRequestIdRef.current === focusRequestId) {
+      return;
+    }
     const terminal = terminalRef.current;
-    if (!terminal) return;
+    const fitAddon = fitAddonRef.current;
+    if (!terminal || !fitAddon) return;
     const frame = window.requestAnimationFrame(() => {
+      if (
+        focusGenerationRef.current !== generation ||
+        terminalRef.current !== terminal ||
+        fitAddonRef.current !== fitAddon
+      ) {
+        return;
+      }
       terminal.focus();
+      fulfilledFocusRequestIdRef.current = focusRequestId;
     });
     return () => {
+      focusGenerationRef.current += 1;
       window.cancelAnimationFrame(frame);
     };
-  }, [autoFocus, focusRequestId]);
+  }, [autoFocus, focusRequestId, shouldRender, transcriptRuntime]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
     const fitAddon = fitAddonRef.current;
-    if (!terminal || !fitAddon) return;
+    if (!shouldRender || !terminal || !fitAddon) return;
+    const resizeRendererGeneration = resizeRendererGenerationRef.current;
     const wasAtBottom = terminal.buffer.active.viewportY >= terminal.buffer.active.baseY;
     const frame = window.requestAnimationFrame(() => {
       fitTerminalSafely(fitAddon);
       if (wasAtBottom) {
         terminal.scrollToBottom();
       }
-      void resizeTerminal(terminal.cols, terminal.rows);
+      requestTerminalResize(resizeRendererGeneration, terminal.cols, terminal.rows);
     });
     return () => {
       window.cancelAnimationFrame(frame);
     };
-  }, [drawerHeight, environmentId, resizeEpoch, terminalId, threadId]);
+  }, [drawerHeight, environmentId, resizeEpoch, shouldRender, terminalId, threadId]);
   return (
     <div
       ref={containerRef}
       className="relative h-full w-full overflow-hidden rounded-[4px] bg-background"
-    />
+    >
+      {shouldRender && transcriptRuntime === null && terminalError !== null ? (
+        <div
+          role="alert"
+          className="absolute inset-0 flex items-center justify-center px-4 text-center text-xs text-destructive"
+        >
+          {terminalError}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -1353,6 +1810,7 @@ export default function ThreadTerminalDrawer({
                           {...(terminalLaunchLocation.runtimeEnv
                             ? { runtimeEnv: terminalLaunchLocation.runtimeEnv }
                             : {})}
+                          visible={visible}
                           onSessionExited={() => onCloseTerminal(terminalId)}
                           onAddTerminalContext={onAddTerminalContext}
                           focusRequestId={focusRequestId}
@@ -1381,6 +1839,7 @@ export default function ThreadTerminalDrawer({
                   {...(activeTerminalLaunchLocation.runtimeEnv
                     ? { runtimeEnv: activeTerminalLaunchLocation.runtimeEnv }
                     : {})}
+                  visible={visible}
                   onSessionExited={() => onCloseTerminal(resolvedActiveTerminalId)}
                   onAddTerminalContext={onAddTerminalContext}
                   focusRequestId={focusRequestId}

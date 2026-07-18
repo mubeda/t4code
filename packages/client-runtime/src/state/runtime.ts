@@ -396,7 +396,7 @@ export function environmentRpcKey<Input>(target: {
   return JSON.stringify([target.environmentId, target.input]);
 }
 
-function parseEnvironmentRpcKey<Input>(key: string): {
+export function parseEnvironmentRpcKey<Input>(key: string): {
   readonly environmentId: EnvironmentIdType;
   readonly input: Input;
 } {

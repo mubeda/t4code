@@ -295,6 +295,8 @@ async fn bootstrap_creates_worktree_updates_thread_runs_setup_then_dispatches_tu
         ]
     );
 
+    effects.shutdown().await;
+    engine.shutdown().await;
     git(
         repository.path(),
         &[
@@ -304,8 +306,6 @@ async fn bootstrap_creates_worktree_updates_thread_runs_setup_then_dispatches_tu
             worktree_path.to_string_lossy().as_ref(),
         ],
     );
-    effects.shutdown().await;
-    engine.shutdown().await;
 }
 
 #[tokio::test]

@@ -3,7 +3,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     process::Command,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 const PROCESS_FIXTURE_MODE: &str = "T4CODE_GIT_COVERAGE_PROCESS_MODE";
 const ISOLATED_GIT_TEST: &str = "T4CODE_GIT_COVERAGE_ISOLATED";
+static ISOLATED_GIT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn process_fixture() {
@@ -111,6 +112,9 @@ fn relaunch_with_isolated_git_config(test_name: &str) -> bool {
     if std::env::var_os(ISOLATED_GIT_TEST).is_some() {
         return false;
     }
+    let _relaunch_guard = ISOLATED_GIT_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let fixture = tempfile::tempdir().expect("isolated Git config fixture");
     let hooks = fixture.path().join("hooks");
     fs::create_dir(&hooks).expect("isolated hooks directory");

@@ -85,6 +85,9 @@
           "observability": {
             "otlpTracesUrl": "",
             "otlpMetricsUrl": ""
+          },
+          "terminal": {
+            "webglEnabled": true
           }
         }
       }

@@ -733,6 +733,18 @@ mod tests {
         Arc::new(|_| Box::pin(async { Ok(()) }))
     }
 
+    fn native_success_executable() -> PathBuf {
+        #[cfg(unix)]
+        {
+            PathBuf::from("/usr/bin/true")
+        }
+        #[cfg(windows)]
+        {
+            PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+                .join("System32/curl.exe")
+        }
+    }
+
     async fn spawn_raw_response(response: Vec<u8>) -> (String, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -757,26 +769,31 @@ mod tests {
         spawn_raw_response(response).await
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn native_relay_client_covers_resolution_installation_and_private_helpers() {
-        use std::os::unix::fs::PermissionsExt;
-
         let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
         let temp = TempDir::new().expect("temp dir");
-        let fixture = Path::new("/usr/bin/true");
+        let fixture = native_success_executable();
         let executable = temp.path().join("cloudflared");
-        fs::copy(fixture, &executable).await.expect("copy fixture");
-        fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o644))
-            .await
-            .expect("non-executable permissions");
+        fs::copy(&fixture, &executable).await.expect("copy fixture");
 
         assert!(!is_executable_file(&temp.path().join("missing")).await);
         assert!(!is_executable_file(temp.path()).await);
-        assert!(!is_executable_file(&executable).await);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o644))
+                .await
+                .expect("non-executable permissions");
+            assert!(!is_executable_file(&executable).await);
+        }
         make_executable(&executable).await.expect("make executable");
         assert!(is_executable_file(&executable).await);
+        #[cfg(unix)]
         assert!(make_executable(&temp.path().join("missing")).await.is_err());
+        #[cfg(windows)]
+        assert!(make_executable(&temp.path().join("missing")).await.is_ok());
         assert_eq!(executable_name("win32"), "cloudflared.exe");
         assert_eq!(executable_name("linux"), "cloudflared");
         assert!(!native_platform().is_empty());
@@ -828,32 +845,48 @@ mod tests {
         fs::remove_file(&lock_path).await.expect("remove lock");
 
         run_checked(
-            "/usr/bin/true",
+            &fixture,
             [OsString::from("--version")],
             "validation_failed",
-            "true failed",
+            "success fixture failed",
         )
         .await
         .expect("successful command");
         run_checked(
-            "/usr/bin/true",
+            &fixture,
             [
-                OsString::from("one"),
-                OsString::from("two"),
-                OsString::from("three"),
-                OsString::from("four"),
+                OsString::from("--version"),
+                OsString::from("--silent"),
+                OsString::from("--show-error"),
+                OsString::from("--location"),
             ],
             "validation_failed",
-            "true failed",
+            "success fixture failed",
         )
         .await
         .expect("successful four-argument command");
+        #[cfg(unix)]
+        let (failure_program, failure_args) = (
+            PathBuf::from("/usr/bin/false"),
+            vec![OsString::from("--version")],
+        );
+        #[cfg(windows)]
+        let (failure_program, failure_args) = (
+            PathBuf::from(std::env::var_os("ComSpec").expect("ComSpec")),
+            vec![
+                OsString::from("/D"),
+                OsString::from("/C"),
+                OsString::from("exit"),
+                OsString::from("/b"),
+                OsString::from("7"),
+            ],
+        );
         assert_eq!(
             run_checked(
-                "/usr/bin/false",
-                [OsString::from("--version")],
+                failure_program,
+                failure_args,
                 "validation_failed",
-                "false unexpectedly succeeded",
+                "failure fixture unexpectedly succeeded",
             )
             .await
             .expect_err("non-zero command")
@@ -939,7 +972,7 @@ mod tests {
                 .contains("unsupported_platform")
         );
 
-        let fixture_bytes = fs::read(fixture).await.expect("read fixture");
+        let fixture_bytes = fs::read(&fixture).await.expect("read fixture");
         let fixture_checksum = format!("{:x}", Sha256::digest(&fixture_bytes));
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
         let address = listener.local_addr().expect("server address");
@@ -965,10 +998,14 @@ mod tests {
             fixture_checksum,
             RelayReleaseArchive::Binary,
         );
-        let install_options = RelayClientOptions::new(temp.path().join("install"), "linux", "x64")
-            .with_search_path(OsString::new())
-            .with_release_asset(Some(asset))
-            .with_download_timeout(Duration::from_secs(5));
+        let install_options = RelayClientOptions::new(
+            temp.path().join("install"),
+            native_platform(),
+            native_arch(),
+        )
+        .with_search_path(OsString::new())
+        .with_release_asset(Some(asset))
+        .with_download_timeout(Duration::from_secs(5));
         let managed = install_options.managed_executable_path();
         let service = relay_client_service_with_options(install_options);
         let install_events = service.install().await.expect("install relay");
@@ -996,7 +1033,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn relay_installer_maps_lock_directory_download_and_activation_failures() {
         let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
@@ -1039,7 +1075,9 @@ mod tests {
                 .with_search_path(OsString::new()),
         )
         .expect("direct client");
-        let fixture = fs::read("/usr/bin/true").await.expect("true fixture");
+        let fixture = fs::read(native_success_executable())
+            .await
+            .expect("success fixture");
         let checksum = format!("{:x}", Sha256::digest(&fixture));
         let placeholder_asset = RelayReleaseAsset::new(
             "http://127.0.0.1:1/unreachable",
@@ -1149,12 +1187,13 @@ mod tests {
         server.await.expect("staging server");
     }
 
-    #[cfg(unix)]
     #[tokio::test]
-    async fn windows_named_relay_binary_installs_on_unix_fixture() {
+    async fn windows_named_relay_binary_installs_from_native_fixture() {
         let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
         let temp = TempDir::new().expect("temp dir");
-        let fixture = fs::read("/usr/bin/true").await.expect("true fixture");
+        let fixture = fs::read(native_success_executable())
+            .await
+            .expect("success fixture");
         let checksum = format!("{:x}", Sha256::digest(&fixture));
         let (url, server) = spawn_body_response(&fixture).await;
         let options = RelayClientOptions::new(temp.path(), "win32", "x64")

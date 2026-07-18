@@ -808,7 +808,6 @@ mod tests {
         assert_eq!(format_epoch_ms(i128::MAX), "1970-01-01T00:00:00Z");
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn unit_build_covers_server_terminal_callbacks_payloads_and_wire_adapters() {
         let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
@@ -855,7 +854,11 @@ mod tests {
                 terminal_id: "setup-1".to_owned(),
                 script_id: "script-1".to_owned(),
                 script_name: "Setup".to_owned(),
-                command: "printf setup".to_owned(),
+                command: if cfg!(windows) {
+                    "Write-Output setup".to_owned()
+                } else {
+                    "printf setup".to_owned()
+                },
                 cwd: temp.path().to_path_buf(),
                 worktree_path: temp.path().to_path_buf(),
                 env: BTreeMap::new(),

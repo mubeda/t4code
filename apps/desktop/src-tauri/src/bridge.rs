@@ -2320,14 +2320,11 @@ mod tests {
 
     #[test]
     fn tauri_ipc_handlers_preserve_runtime_agnostic_bridge_contracts() {
-        use tauri::test::{INVOKE_KEY, get_ipc_response, mock_builder, mock_context, noop_assets};
+        use tauri::test::{INVOKE_KEY, get_ipc_response, mock_builder};
 
-        let mut context = mock_context(noop_assets());
-        context
-            .config_mut()
-            .plugins
-            .0
-            .insert("updater".to_owned(), json!({"pubkey":"","windows":null}));
+        // Use the generated application context so IPC exercises the same command
+        // permissions as the production desktop shell.
+        let mut context = tauri::generate_context!();
         context.config_mut().identifier = format!("com.t4code.bridge-tests-{}", std::process::id());
         let app = mock_builder()
             .manage(BackendSupervisor::new())
@@ -2385,7 +2382,7 @@ mod tests {
                     cmd: cmd.to_owned(),
                     callback: tauri::ipc::CallbackFn(0),
                     error: tauri::ipc::CallbackFn(1),
-                    url: "tauri://localhost".parse().unwrap(),
+                    url: "http://tauri.localhost".parse().unwrap(),
                     body: tauri::ipc::InvokeBody::Json(body),
                     headers: Default::default(),
                     invoke_key: INVOKE_KEY.to_owned(),
@@ -2468,12 +2465,18 @@ mod tests {
             invoke("desktop_bridge_get_client_settings", json!({})).unwrap()["theme"],
             "dark"
         );
+        let set_catalog = invoke(
+            "desktop_bridge_set_connection_catalog",
+            json!({"catalog":"test-catalog"}),
+        );
+        #[cfg(target_os = "windows")]
+        assert_eq!(
+            set_catalog.expect("Windows DPAPI should protect the catalog"),
+            true
+        );
+        #[cfg(not(target_os = "windows"))]
         assert!(
-            invoke(
-                "desktop_bridge_set_connection_catalog",
-                json!({"catalog":"test-catalog"}),
-            )
-            .is_err(),
+            set_catalog.is_err(),
             "catalog persistence must fail closed without platform protection",
         );
         assert!(invoke("desktop_bridge_clear_connection_catalog", json!({})).is_ok());

@@ -78,6 +78,14 @@ export function quoteCmdArg(value) {
   return `"${value.replaceAll('"', '\\"')}"`;
 }
 
+export function defaultWindowsCargoRunner(options = {}) {
+  const command = options.command ?? "node";
+  const repoRoot = options.repoRoot ?? NodePath.resolve(import.meta.dirname, "..");
+  return [command, NodePath.join(repoRoot, "scripts", "run-windows-cargo-target.mjs")]
+    .map(quoteCmdArg)
+    .join(" ");
+}
+
 export function runMsvcX64(args, options = {}) {
   const consoleError = options.consoleError ?? console.error;
   const spawnSync = options.spawnSync ?? NodeChildProcess.spawnSync;
@@ -86,13 +94,24 @@ export function runMsvcX64(args, options = {}) {
     return 2;
   }
 
+  const cargoRunnerKey = "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER";
+  const env = {
+    ...process.env,
+    [cargoRunnerKey]:
+      options.env?.[cargoRunnerKey] ??
+      process.env[cargoRunnerKey] ??
+      defaultWindowsCargoRunner({
+        repoRoot: options.repoRoot,
+      }),
+    ...options.env,
+  };
   const vcvarsall = discoverVcVarsAll({
     programFilesX86: options.programFilesX86,
     existsSync: options.existsSync,
     spawnSync,
   });
   if (!vcvarsall) {
-    return run(args[0], args.slice(1), {}, spawnSync);
+    return run(args[0], args.slice(1), { env }, spawnSync);
   }
 
   const comspec = options.comspec ?? process.env.ComSpec ?? "cmd.exe";
@@ -114,7 +133,7 @@ export function runMsvcX64(args, options = {}) {
     ].join("\r\n"),
   );
 
-  const status = run(comspec, ["/d", "/c", scriptPath], {}, spawnSync);
+  const status = run(comspec, ["/d", "/c", scriptPath], { env }, spawnSync);
   try {
     rmSync(scriptPath, { force: true });
   } catch {}

@@ -6,6 +6,7 @@ import {
   ClientSettingsSchema,
   CodexSettings,
   DEFAULT_SERVER_SETTINGS,
+  DEFAULT_UNIFIED_SETTINGS,
   ServerSettings,
   ServerSettingsError,
   ServerSettingsPatch,
@@ -17,6 +18,48 @@ const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeCodexSettings = Schema.decodeUnknownSync(CodexSettings);
+
+describe("ServerSettings terminal", () => {
+  it("defaults webglEnabled to true for legacy configs", () => {
+    expect(decodeServerSettings({}).terminal.webglEnabled).toBe(true);
+  });
+
+  it("decodes an explicit false", () => {
+    expect(decodeServerSettings({ terminal: { webglEnabled: false } }).terminal.webglEnabled).toBe(
+      false,
+    );
+  });
+
+  it("decodes an explicit true", () => {
+    expect(decodeServerSettings({ terminal: { webglEnabled: true } }).terminal.webglEnabled).toBe(
+      true,
+    );
+  });
+
+  it("exposes terminal defaults from server and unified settings", () => {
+    expect(DEFAULT_SERVER_SETTINGS.terminal.webglEnabled).toBe(true);
+    expect(DEFAULT_UNIFIED_SETTINGS.terminal.webglEnabled).toBe(true);
+  });
+
+  it("decodes a webglEnabled patch", () => {
+    expect(
+      decodeServerSettingsPatch({ terminal: { webglEnabled: false } }).terminal?.webglEnabled,
+    ).toBe(false);
+  });
+
+  it("accepts an empty nested terminal patch", () => {
+    expect(decodeServerSettingsPatch({ terminal: {} }).terminal).toEqual({});
+  });
+
+  it("treats an omitted terminal patch as undefined", () => {
+    expect(decodeServerSettingsPatch({}).terminal).toBeUndefined();
+  });
+
+  it("rejects non-boolean webglEnabled values", () => {
+    expect(() => decodeServerSettings({ terminal: { webglEnabled: "false" } })).toThrow();
+    expect(() => decodeServerSettingsPatch({ terminal: { webglEnabled: 1 } })).toThrow();
+  });
+});
 
 describe("ClientSettings word wrap", () => {
   it("defaults word wrap on", () => {

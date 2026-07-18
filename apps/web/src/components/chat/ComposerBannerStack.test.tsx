@@ -75,12 +75,12 @@ async function mount(element: ReactElement): Promise<MountedTree> {
   const root = createRoot(container);
   const mounted = { container, root };
   mountedTrees.push(mounted);
-  await act(async () => root.render(element));
+  act(() => root.render(element));
   return mounted;
 }
 
 async function click(element: HTMLElement): Promise<void> {
-  await act(async () => element.click());
+  act(() => element.click());
 }
 
 function dismissButton(container: HTMLElement, label: string): HTMLButtonElement {
@@ -96,7 +96,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   for (const mounted of mountedTrees.splice(0)) {
-    await act(async () => mounted.root.unmount());
+    act(() => mounted.root.unmount());
     mounted.container.remove();
   }
   document.body.replaceChildren();
@@ -157,7 +157,7 @@ describe("ComposerBannerStack", () => {
     expect(button.closest("[style]")?.getAttribute("style")).toContain("translate3d(0, 4rem, 0)");
     expect(onDismiss).not.toHaveBeenCalled();
 
-    await act(async () => vi.advanceTimersByTime(220));
+    act(() => vi.advanceTimersByTime(220));
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
@@ -171,8 +171,32 @@ describe("ComposerBannerStack", () => {
     await click(button);
 
     expect(button.closest("[style]")?.getAttribute("style")).toContain("translate3d(0, 7rem, 0)");
-    await act(async () => vi.advanceTimersByTime(220));
+    act(() => vi.advanceTimersByTime(220));
     expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("guards concurrent dismissal and replaces a pending removed-item timeout", async () => {
+    const dismissFront = vi.fn();
+    const dismissSecond = vi.fn();
+    const clearTimeout = vi.spyOn(globalThis, "clearTimeout");
+    const second = item("second", {
+      onDismiss: dismissSecond,
+      dismissLabel: "Dismiss second",
+    });
+    const mounted = await mount(renderStack([item("front", { onDismiss: dismissFront }), second]));
+
+    await click(dismissButton(mounted.container, "Dismiss warning"));
+    await click(dismissButton(mounted.container, "Dismiss second"));
+    expect(dismissFront).not.toHaveBeenCalled();
+    expect(dismissSecond).not.toHaveBeenCalled();
+
+    act(() => mounted.root.render(renderStack([second])));
+    await click(dismissButton(mounted.container, "Dismiss second"));
+    expect(clearTimeout).toHaveBeenCalled();
+
+    act(() => vi.advanceTimersByTime(220));
+    expect(dismissFront).not.toHaveBeenCalled();
+    expect(dismissSecond).toHaveBeenCalledOnce();
   });
 
   it("clears pending dismissal on unmount", async () => {
@@ -183,9 +207,9 @@ describe("ComposerBannerStack", () => {
     );
     await click(dismissButton(mounted.container, "Dismiss front"));
 
-    await act(async () => mounted.root.unmount());
+    act(() => mounted.root.unmount());
     mountedTrees.splice(mountedTrees.indexOf(mounted), 1);
-    await act(async () => vi.advanceTimersByTime(220));
+    act(() => vi.advanceTimersByTime(220));
 
     expect(clearTimeout).toHaveBeenCalled();
     expect(onDismiss).not.toHaveBeenCalled();

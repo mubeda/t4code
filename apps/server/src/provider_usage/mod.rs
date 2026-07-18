@@ -321,9 +321,13 @@ async fn read_claude_keychain_credentials_with(
 
 async fn fetch_codex_usage() -> Result<ProviderUsageSnapshot, ProviderUsageFetchError> {
     let now = OffsetDateTime::now_utc();
-    let codex_home = std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")));
+    let codex_home = match std::env::var_os("CODEX_HOME") {
+        Some(home) => Some(PathBuf::from(home)),
+        None => match dirs::home_dir() {
+            Some(home) => Some(home.join(".codex")),
+            None => None,
+        },
+    };
     if !codex_home
         .as_ref()
         .is_some_and(|home| home.join("auth.json").is_file())
@@ -334,7 +338,10 @@ async fn fetch_codex_usage() -> Result<ProviderUsageSnapshot, ProviderUsageFetch
             "Codex not signed in.",
         ));
     }
-    let binary = std::env::var("CODEX_BIN").unwrap_or_else(|_| "codex".to_owned());
+    let binary = match std::env::var("CODEX_BIN") {
+        Ok(binary) => binary,
+        Err(_) => "codex".to_owned(),
+    };
     let executable = resolve_provider_executable(&binary).ok_or_else(|| {
         ProviderUsageFetchError::new(format!("Codex executable was not found: {binary}"))
     })?;
@@ -349,17 +356,26 @@ async fn fetch_codex_usage() -> Result<ProviderUsageSnapshot, ProviderUsageFetch
         .stderr(Stdio::null())
         .kill_on_drop(true);
     sanitize_provider_subprocess_environment(&mut command);
-    let mut child = command
-        .spawn()
-        .map_err(|error| ProviderUsageFetchError::new(error.to_string()))?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| ProviderUsageFetchError::new("Codex app-server stdin is unavailable."))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| ProviderUsageFetchError::new("Codex app-server stdout is unavailable."))?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => return Err(ProviderUsageFetchError::new(error.to_string())),
+    };
+    let mut stdin = match child.stdin.take() {
+        Some(stdin) => stdin,
+        None => {
+            return Err(ProviderUsageFetchError::new(
+                "Codex app-server stdin is unavailable.",
+            ));
+        }
+    };
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            return Err(ProviderUsageFetchError::new(
+                "Codex app-server stdout is unavailable.",
+            ));
+        }
+    };
     let operation = async {
         write_rpc(
             &mut stdin,
@@ -404,9 +420,14 @@ async fn fetch_codex_usage() -> Result<ProviderUsageSnapshot, ProviderUsageFetch
             now,
         ))
     };
-    let result = tokio::time::timeout(USAGE_TIMEOUT, operation)
-        .await
-        .map_err(|_| ProviderUsageFetchError::new("Codex app-server RPC timeout."))?;
+    let result = match tokio::time::timeout(USAGE_TIMEOUT, operation).await {
+        Ok(result) => result,
+        Err(_) => {
+            return Err(ProviderUsageFetchError::new(
+                "Codex app-server RPC timeout.",
+            ));
+        }
+    };
     let _ = child.start_kill();
     let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
     result
@@ -416,24 +437,25 @@ async fn write_rpc(
     stdin: &mut tokio::process::ChildStdin,
     message: &Value,
 ) -> Result<(), ProviderUsageFetchError> {
-    let mut bytes = serde_json::to_vec(message)
-        .map_err(|error| ProviderUsageFetchError::new(error.to_string()))?;
+    let mut bytes = match serde_json::to_vec(message) {
+        Ok(bytes) => bytes,
+        Err(error) => return Err(ProviderUsageFetchError::new(error.to_string())),
+    };
     bytes.push(b'\n');
-    stdin
-        .write_all(&bytes)
-        .await
-        .map_err(|error| ProviderUsageFetchError::new(error.to_string()))
+    match stdin.write_all(&bytes).await {
+        Ok(()) => Ok(()),
+        Err(error) => Err(ProviderUsageFetchError::new(error.to_string())),
+    }
 }
 
 async fn read_rpc_result<R: tokio::io::AsyncBufRead + Unpin>(
     lines: &mut tokio::io::Lines<R>,
     id: i64,
 ) -> Result<Value, ProviderUsageFetchError> {
-    while let Some(line) = lines
-        .next_line()
-        .await
-        .map_err(|error| ProviderUsageFetchError::new(error.to_string()))?
-    {
+    while let Some(line) = match lines.next_line().await {
+        Ok(line) => line,
+        Err(error) => return Err(ProviderUsageFetchError::new(error.to_string())),
+    } {
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
         };

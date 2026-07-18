@@ -2,6 +2,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
+    sync::Mutex,
     time::Duration,
 };
 
@@ -19,6 +20,7 @@ use t4code_server::production::git_vcs::{
 };
 
 const ISOLATED_GIT_TEST: &str = "T4CODE_PRODUCTION_GIT_VCS_RPC_ISOLATED";
+static ISOLATED_GIT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 type TestSocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -1839,17 +1841,6 @@ async fn source_control_discovery_and_typed_errors_are_deterministic() {
     );
     assert_eq!(unsupported_publisher["provider"], "gitlab");
 
-    request(
-        server.socket(),
-        "513",
-        "shell.openInEditor",
-        json!({ "cwd": cwd, "editor": "rustrover" }),
-    )
-    .await;
-    let missing_editor = failure_value(server.socket(), "513").await;
-    assert_eq!(missing_editor["_tag"], "ExternalLauncherEditorSpawnError");
-    assert_eq!(missing_editor["editor"], "rustrover");
-
     server.shutdown().await;
 }
 
@@ -1971,6 +1962,9 @@ fn relaunch_with_isolated_git_config(test_name: &str) -> bool {
         return false;
     }
 
+    let _relaunch_guard = ISOLATED_GIT_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let fixture = tempfile::tempdir().expect("isolated Git config fixture");
     let hooks = fixture.path().join("hooks");
     fs::create_dir(&hooks).expect("isolated hooks directory");

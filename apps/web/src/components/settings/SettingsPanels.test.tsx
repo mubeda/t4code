@@ -499,6 +499,9 @@ function changedSettings(): UnifiedSettings {
     addProjectBaseDirectory: "~/code",
     confirmThreadArchive: !DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
     confirmThreadDelete: !DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
+    terminal: {
+      webglEnabled: !DEFAULT_UNIFIED_SETTINGS.terminal.webglEnabled,
+    },
     textGenerationModelSelection: { instanceId: CODEX_INSTANCE_ID, model: "model-beta" },
   };
 }
@@ -533,6 +536,39 @@ beforeEach(() => {
 });
 
 describe("GeneralSettingsPanel", () => {
+  it("renders a WebGL renderer toggle bound to terminal.webglEnabled", () => {
+    h.settings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      terminal: { webglEnabled: true },
+    };
+
+    render(<GeneralSettingsPanel />);
+
+    const webglSwitch = control("switch", "Use WebGL terminal renderer");
+    expect(webglSwitch.props.checked).toBe(true);
+
+    invoke(webglSwitch, "onCheckedChange", false);
+    expect(h.updateSettings).toHaveBeenCalledWith({
+      terminal: { webglEnabled: false },
+    });
+  });
+
+  it("resets a changed WebGL renderer setting to its default", () => {
+    h.settings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      terminal: { webglEnabled: false },
+    };
+
+    render(<GeneralSettingsPanel />);
+
+    invoke(control("button", "Reset WebGL renderer to default"), "onClick");
+    expect(h.updateSettings).toHaveBeenCalledWith({
+      terminal: {
+        webglEnabled: DEFAULT_UNIFIED_SETTINGS.terminal.webglEnabled,
+      },
+    });
+  });
+
   it("renders default settings with no reset affordances and routes updates", () => {
     const assignSpy = vi.fn();
     vi.stubGlobal("window", {
@@ -862,6 +898,7 @@ describe("useSettingsRestore", () => {
       "Diff whitespace changes",
       "Auto-open task panel",
       "Assistant output",
+      "WebGL renderer",
       "Automatic Git fetch interval",
       "New thread mode",
       "New worktrees start from origin",
@@ -890,6 +927,9 @@ describe("useSettingsRestore", () => {
         timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
         wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
         confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
+        terminal: {
+          webglEnabled: DEFAULT_UNIFIED_SETTINGS.terminal.webglEnabled,
+        },
       }),
     );
     expect(onRestored).toHaveBeenCalledTimes(1);

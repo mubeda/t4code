@@ -1,3 +1,4 @@
+mod history;
 mod manager;
 mod model;
 mod pty;

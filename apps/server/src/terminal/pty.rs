@@ -50,14 +50,15 @@ impl PtyBackend for PortablePtyBackend {
         if !executable_is_discoverable(&input.shell, &input.env) {
             return Err(format!("shell executable was not found: {}", input.shell));
         }
-        let pair = native_pty_system()
-            .openpty(PtySize {
-                rows: input.rows,
-                cols: input.cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|error| error.to_string())?;
+        let pair = match native_pty_system().openpty(PtySize {
+            rows: input.rows,
+            cols: input.cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        }) {
+            Ok(pair) => pair,
+            Err(error) => return Err(error.to_string()),
+        };
         let mut command = CommandBuilder::new(&input.shell);
         command.args(&input.args);
         command.cwd(&input.cwd);
@@ -65,31 +66,36 @@ impl PtyBackend for PortablePtyBackend {
             command.env(key, value);
         }
 
-        let mut child = pair
-            .slave
-            .spawn_command(command)
-            .map_err(|error| error.to_string())?;
+        let mut child = match pair.slave.spawn_command(command) {
+            Ok(child) => child,
+            Err(error) => return Err(error.to_string()),
+        };
         drop(pair.slave);
-        let pid = child
-            .process_id()
-            .ok_or_else(|| "PTY child did not expose a process id".to_string())?;
+        let pid = match child.process_id() {
+            Some(pid) => pid,
+            None => return Err("PTY child did not expose a process id".to_string()),
+        };
         #[cfg(unix)]
         let process_group = pair.master.process_group_leader();
         #[cfg(windows)]
-        let job = WindowsJob::attach(
-            child
-                .as_raw_handle()
-                .ok_or_else(|| "PTY child did not expose a Windows process handle".to_owned())?,
-        )
-        .map_err(|error| error.to_string())?;
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|error| error.to_string())?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|error| error.to_string())?;
+        let job = {
+            let raw_handle = match child.as_raw_handle() {
+                Some(raw_handle) => raw_handle,
+                None => return Err("PTY child did not expose a Windows process handle".to_owned()),
+            };
+            match WindowsJob::attach(raw_handle) {
+                Ok(job) => job,
+                Err(error) => return Err(error.to_string()),
+            }
+        };
+        let mut reader = match pair.master.try_clone_reader() {
+            Ok(reader) => reader,
+            Err(error) => return Err(error.to_string()),
+        };
+        let writer = match pair.master.take_writer() {
+            Ok(writer) => writer,
+            Err(error) => return Err(error.to_string()),
+        };
         #[cfg(not(windows))]
         let killer = child.clone_killer();
         let (output, _) = broadcast::channel(256);
@@ -97,20 +103,24 @@ impl PtyBackend for PortablePtyBackend {
         let (resize, resize_requests) = mpsc::sync_channel(1);
 
         let output_sender = output.clone();
-        thread::Builder::new()
+        if let Err(error) = thread::Builder::new()
             .name(format!("t4code-pty-output-{pid}"))
             .spawn(move || read_output(&mut reader, &output_sender))
-            .map_err(|error| error.to_string())?;
-        thread::Builder::new()
+        {
+            return Err(error.to_string());
+        }
+        if let Err(error) = thread::Builder::new()
             .name(format!("t4code-pty-resize-{pid}"))
             .spawn(move || {
                 while let Ok(size) = resize_requests.recv() {
                     let _ = pair.master.resize(size);
                 }
             })
-            .map_err(|error| error.to_string())?;
+        {
+            return Err(error.to_string());
+        }
         let exit_sender = exit.clone();
-        thread::Builder::new()
+        if let Err(error) = thread::Builder::new()
             .name(format!("t4code-pty-wait-{pid}"))
             .spawn(move || {
                 let event = match child.wait() {
@@ -125,7 +135,9 @@ impl PtyBackend for PortablePtyBackend {
                 };
                 let _ = exit_sender.send(Some(event));
             })
-            .map_err(|error| error.to_string())?;
+        {
+            return Err(error.to_string());
+        }
 
         Ok(Arc::new(PortablePtyProcess {
             pid,
@@ -203,11 +215,17 @@ impl PtyProcess for PortablePtyProcess {
     }
 
     fn write(&self, data: &str) -> Result<(), String> {
-        let mut writer = self.writer.lock().map_err(|error| error.to_string())?;
-        writer
-            .write_all(data.as_bytes())
-            .map_err(|error| error.to_string())?;
-        writer.flush().map_err(|error| error.to_string())
+        let mut writer = match self.writer.lock() {
+            Ok(writer) => writer,
+            Err(error) => return Err(error.to_string()),
+        };
+        if let Err(error) = writer.write_all(data.as_bytes()) {
+            return Err(error.to_string());
+        }
+        match writer.flush() {
+            Ok(()) => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
@@ -238,7 +256,9 @@ impl PtyProcess for PortablePtyProcess {
         }
         #[cfg(windows)]
         {
-            self.job.terminate().map_err(|error| error.to_string())?;
+            if let Err(error) = self.job.terminate() {
+                return Err(error.to_string());
+            }
             Ok(())
         }
         #[cfg(not(windows))]
@@ -267,16 +287,20 @@ unsafe extern "C" {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(windows))]
     use std::io::{Error, ErrorKind};
+    #[cfg(not(windows))]
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::time::Duration;
 
+    #[cfg(not(windows))]
     #[derive(Debug)]
     enum TestWriter {
         WriteError,
         FlushError,
     }
 
+    #[cfg(not(windows))]
     impl Write for TestWriter {
         fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
             match self {
@@ -293,11 +317,13 @@ mod tests {
         }
     }
 
+    #[cfg(not(windows))]
     #[derive(Clone, Debug)]
     struct TestKiller {
         fail: bool,
     }
 
+    #[cfg(not(windows))]
     impl portable_pty::ChildKiller for TestKiller {
         fn kill(&mut self) -> std::io::Result<()> {
             if self.fail {
@@ -314,32 +340,72 @@ mod tests {
 
     #[test]
     fn executable_discovery_handles_absolute_relative_and_overridden_paths() {
+        let executable = std::env::current_exe().expect("current test executable");
+        let command = executable
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .expect("test executable file name");
+        let directory = executable.parent().expect("test executable directory");
         let overrides = BTreeMap::new();
-        assert!(executable_is_discoverable("/bin/sh", &overrides));
+        assert!(executable_is_discoverable(
+            executable.to_str().expect("test executable path"),
+            &overrides
+        ));
         assert!(!executable_is_discoverable(
-            "/definitely/missing/t4code-shell",
+            executable
+                .with_file_name("definitely-missing-t4code-shell")
+                .to_str()
+                .expect("missing executable path"),
             &overrides
         ));
 
         let mut isolated = BTreeMap::new();
-        isolated.insert("Path".to_owned(), "/bin".to_owned());
-        assert!(executable_is_discoverable("sh", &isolated));
-        isolated.insert("PATH".to_owned(), "/definitely/missing".to_owned());
+        isolated.insert(
+            "Path".to_owned(),
+            std::env::join_paths([directory])
+                .expect("test executable search path")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        assert!(executable_is_discoverable(command, &isolated));
+        isolated.insert(
+            "PATH".to_owned(),
+            executable
+                .parent()
+                .expect("test executable directory")
+                .join("definitely-missing-t4code-bin")
+                .to_string_lossy()
+                .into_owned(),
+        );
         assert!(!executable_is_discoverable("t4code-shell", &isolated));
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn portable_backend_streams_input_output_resize_and_exit() {
-        let backend = PortablePtyBackend;
-        let process = backend
-            .spawn(&PtySpawnInput {
-                shell: "/bin/sh".to_owned(),
-                args: vec![
+        let (shell, args, input, output_marker) = if cfg!(windows) {
+            (
+                "powershell.exe".to_owned(),
+                vec!["-NoLogo".to_owned(), "-NoProfile".to_owned()],
+                "Write-Output 'ready'; Write-Output 'got:hello from test'; exit 7\r\n",
+                "got:hello from test",
+            )
+        } else {
+            (
+                "/bin/sh".to_owned(),
+                vec![
                     "-c".to_owned(),
                     "printf 'ready\\n'; IFS= read -r line; printf 'got:%s\\n' \"$line\"; exit 7"
                         .to_owned(),
                 ],
+                "hello from test\n",
+                "got:hello from test",
+            )
+        };
+        let backend = PortablePtyBackend;
+        let process = backend
+            .spawn(&PtySpawnInput {
+                shell,
+                args,
                 cwd: std::env::temp_dir(),
                 cols: 80,
                 rows: 24,
@@ -353,11 +419,14 @@ mod tests {
         let mut exit = process.subscribe_exit();
         process.resize(100, 40).unwrap();
         process.resize(120, 50).unwrap();
-        process.write("hello from test\n").unwrap();
+        if cfg!(windows) {
+            process.write("\u{1b}[1;1R").unwrap();
+        }
+        process.write(input).unwrap();
 
         let text = tokio::time::timeout(Duration::from_secs(3), async {
             let mut text = String::new();
-            while !text.contains("got:hello from test") {
+            while !text.contains(output_marker) {
                 text.push_str(&output.recv().await.unwrap());
             }
             text
@@ -379,13 +448,28 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn portable_backend_kills_a_live_process_group() {
+        let (shell, args) = if cfg!(windows) {
+            (
+                "powershell.exe".to_owned(),
+                vec![
+                    "-NoLogo".to_owned(),
+                    "-NoProfile".to_owned(),
+                    "-Command".to_owned(),
+                    "Start-Sleep -Seconds 30".to_owned(),
+                ],
+            )
+        } else {
+            (
+                "/bin/sh".to_owned(),
+                vec!["-c".to_owned(), "sleep 30".to_owned()],
+            )
+        };
         let process = PortablePtyBackend
             .spawn(&PtySpawnInput {
-                shell: "/bin/sh".to_owned(),
-                args: vec!["-c".to_owned(), "sleep 30".to_owned()],
+                shell,
+                args,
                 cwd: std::env::temp_dir(),
                 cols: 80,
                 rows: 24,

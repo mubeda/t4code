@@ -398,11 +398,8 @@ mod tests {
         ));
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn service_maps_concurrency_and_filesystem_failures_to_workspace_errors() {
-        use std::os::unix::fs::PermissionsExt;
-
         let root = TempDir::new().unwrap();
         let service = WorkspaceService::default();
         let blocker = root.path().join("blocker");
@@ -425,31 +422,6 @@ mod tests {
             assert!(matches!(result, Err(WorkspaceError::Operation { .. })));
         }
 
-        std::fs::write(root.path().join("source.txt"), "copy source").unwrap();
-        let mut source_permissions = std::fs::metadata(root.path().join("source.txt"))
-            .unwrap()
-            .permissions();
-        source_permissions.set_mode(0o000);
-        std::fs::set_permissions(root.path().join("source.txt"), source_permissions).unwrap();
-        let copy_result = service.duplicate_entry(root.path(), "source.txt").await;
-        let mut source_permissions = std::fs::metadata(root.path().join("source.txt"))
-            .unwrap()
-            .permissions();
-        source_permissions.set_mode(0o600);
-        std::fs::set_permissions(root.path().join("source.txt"), source_permissions).unwrap();
-        assert!(matches!(copy_result, Err(WorkspaceError::Operation { .. })));
-
-        let unreadable = root.path().join("unreadable.txt");
-        std::fs::write(&unreadable, "private").unwrap();
-        let mut unreadable_permissions = std::fs::metadata(&unreadable).unwrap().permissions();
-        unreadable_permissions.set_mode(0o000);
-        std::fs::set_permissions(&unreadable, unreadable_permissions).unwrap();
-        let read_result = service.read_file(root.path(), "unreadable.txt").await;
-        let mut unreadable_permissions = std::fs::metadata(&unreadable).unwrap().permissions();
-        unreadable_permissions.set_mode(0o600);
-        std::fs::set_permissions(&unreadable, unreadable_permissions).unwrap();
-        assert!(matches!(read_result, Err(WorkspaceError::Operation { .. })));
-
         std::fs::create_dir(root.path().join("write-target")).unwrap();
         assert!(matches!(
             service
@@ -458,44 +430,74 @@ mod tests {
             Err(WorkspaceError::Operation { .. })
         ));
 
-        let locked = root.path().join("locked");
-        std::fs::create_dir(&locked).unwrap();
-        let mut locked_permissions = std::fs::metadata(&locked).unwrap().permissions();
-        locked_permissions.set_mode(0o500);
-        std::fs::set_permissions(&locked, locked_permissions).unwrap();
-        for result in [
-            service
-                .create_entry(root.path(), "locked/directory", EntryKind::Directory)
-                .await,
-            service
-                .create_entry(root.path(), "locked/file.txt", EntryKind::File)
-                .await,
-        ] {
-            assert!(matches!(result, Err(WorkspaceError::Operation { .. })));
-        }
-        let mut locked_permissions = std::fs::metadata(&locked).unwrap().permissions();
-        locked_permissions.set_mode(0o700);
-        std::fs::set_permissions(&locked, locked_permissions).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
 
-        for entry in ["rename-source", "delete-file"] {
-            std::fs::write(root.path().join(entry), entry).unwrap();
+            std::fs::write(root.path().join("source.txt"), "copy source").unwrap();
+            let mut source_permissions = std::fs::metadata(root.path().join("source.txt"))
+                .unwrap()
+                .permissions();
+            source_permissions.set_mode(0o000);
+            std::fs::set_permissions(root.path().join("source.txt"), source_permissions).unwrap();
+            let copy_result = service.duplicate_entry(root.path(), "source.txt").await;
+            let mut source_permissions = std::fs::metadata(root.path().join("source.txt"))
+                .unwrap()
+                .permissions();
+            source_permissions.set_mode(0o600);
+            std::fs::set_permissions(root.path().join("source.txt"), source_permissions).unwrap();
+            assert!(matches!(copy_result, Err(WorkspaceError::Operation { .. })));
+
+            let unreadable = root.path().join("unreadable.txt");
+            std::fs::write(&unreadable, "private").unwrap();
+            let mut unreadable_permissions = std::fs::metadata(&unreadable).unwrap().permissions();
+            unreadable_permissions.set_mode(0o000);
+            std::fs::set_permissions(&unreadable, unreadable_permissions).unwrap();
+            let read_result = service.read_file(root.path(), "unreadable.txt").await;
+            let mut unreadable_permissions = std::fs::metadata(&unreadable).unwrap().permissions();
+            unreadable_permissions.set_mode(0o600);
+            std::fs::set_permissions(&unreadable, unreadable_permissions).unwrap();
+            assert!(matches!(read_result, Err(WorkspaceError::Operation { .. })));
+
+            let locked = root.path().join("locked");
+            std::fs::create_dir(&locked).unwrap();
+            let mut locked_permissions = std::fs::metadata(&locked).unwrap().permissions();
+            locked_permissions.set_mode(0o500);
+            std::fs::set_permissions(&locked, locked_permissions).unwrap();
+            for result in [
+                service
+                    .create_entry(root.path(), "locked/directory", EntryKind::Directory)
+                    .await,
+                service
+                    .create_entry(root.path(), "locked/file.txt", EntryKind::File)
+                    .await,
+            ] {
+                assert!(matches!(result, Err(WorkspaceError::Operation { .. })));
+            }
+            let mut locked_permissions = std::fs::metadata(&locked).unwrap().permissions();
+            locked_permissions.set_mode(0o700);
+            std::fs::set_permissions(&locked, locked_permissions).unwrap();
+
+            for entry in ["rename-source", "delete-file"] {
+                std::fs::write(root.path().join(entry), entry).unwrap();
+            }
+            std::fs::create_dir(root.path().join("delete-directory")).unwrap();
+            let mut root_permissions = std::fs::metadata(root.path()).unwrap().permissions();
+            root_permissions.set_mode(0o500);
+            std::fs::set_permissions(root.path(), root_permissions).unwrap();
+            for result in [
+                service
+                    .rename_entry(root.path(), "rename-source", "rename-target")
+                    .await,
+                service.delete_entry(root.path(), "delete-file").await,
+                service.delete_entry(root.path(), "delete-directory").await,
+            ] {
+                assert!(matches!(result, Err(WorkspaceError::Operation { .. })));
+            }
+            let mut root_permissions = std::fs::metadata(root.path()).unwrap().permissions();
+            root_permissions.set_mode(0o700);
+            std::fs::set_permissions(root.path(), root_permissions).unwrap();
         }
-        std::fs::create_dir(root.path().join("delete-directory")).unwrap();
-        let mut root_permissions = std::fs::metadata(root.path()).unwrap().permissions();
-        root_permissions.set_mode(0o500);
-        std::fs::set_permissions(root.path(), root_permissions).unwrap();
-        for result in [
-            service
-                .rename_entry(root.path(), "rename-source", "rename-target")
-                .await,
-            service.delete_entry(root.path(), "delete-file").await,
-            service.delete_entry(root.path(), "delete-directory").await,
-        ] {
-            assert!(matches!(result, Err(WorkspaceError::Operation { .. })));
-        }
-        let mut root_permissions = std::fs::metadata(root.path()).unwrap().permissions();
-        root_permissions.set_mode(0o700);
-        std::fs::set_permissions(root.path(), root_permissions).unwrap();
 
         let closed = WorkspaceService::default();
         closed.permits.close();
