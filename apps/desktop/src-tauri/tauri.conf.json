@@ -36,6 +36,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    },
     "icon": [
       "../../../assets/prod/black-universal-1024.png",
       "../../../assets/prod/t4-black-windows.ico",
