@@ -17,7 +17,7 @@ const baseAjvOptions: AjvOptions = {
 const ajvDraft2020_12 = new Ajv2020.default(baseAjvOptions)
 
 function assertUnsupportedSchema(
-  schema: Schema.Top,
+  schema: Schema.Constraint,
   message: string,
   options?: Schema.ToJsonSchemaOptions
 ) {
@@ -514,14 +514,15 @@ describe("toJsonSchemaDocument", () => {
     })
 
     it("Error", () => {
-      const schema = Schema.Error
+      const schema = Schema.Error()
       assertJsonSchemaDocument(schema, {
         schema: {
           "type": "object",
           "properties": {
             "name": { "type": "string" },
             "message": { "type": "string" },
-            "stack": { "type": "string" }
+            "stack": { "type": "string" },
+            "cause": {}
           },
           "required": ["message"],
           "additionalProperties": false
@@ -1306,7 +1307,24 @@ describe("toJsonSchemaDocument", () => {
                 {
                   "format": "uuid",
                   "pattern":
-                    "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000)$"
+                    "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|[fF]{8}-[fF]{4}-[fF]{4}-[fF]{4}-[fF]{12})$"
+                }
+              ]
+            }
+          }
+        )
+      })
+
+      it("isGUID", () => {
+        assertJsonSchemaDocument(
+          Schema.String.annotate({ description: "description" }).check(Schema.isGUID()),
+          {
+            schema: {
+              "type": "string",
+              "description": "description",
+              "allOf": [
+                {
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$"
                 }
               ]
             }
@@ -1621,13 +1639,17 @@ describe("toJsonSchemaDocument", () => {
     assertJsonSchemaDocument(
       schema,
       {
-        schema: {}
+        schema: { anyOf: [{ type: "object" }, { type: "array" }] }
       }
     )
     assertJsonSchemaDocument(
       schema.annotate({ description: "a" }),
       {
         schema: {
+          "anyOf": [
+            { "type": "object" },
+            { "type": "array" }
+          ],
           "description": "a"
         }
       }
@@ -3524,6 +3546,81 @@ describe("toJsonSchemaDocument", () => {
             "contentMediaType": "application/json",
             "contentSchema": {
               "type": "string"
+            }
+          }
+        }
+      )
+    })
+
+    it("preserves the content schema identifier", () => {
+      const MyEvent = Schema.Struct({
+        value: Schema.String
+      }).annotate({ identifier: "MyEvent" })
+
+      assertJsonSchemaDocument(
+        Schema.fromJsonString(MyEvent),
+        {
+          schema: {
+            "$ref": "#/$defs/MyEventJsonString"
+          },
+          definitions: {
+            "MyEvent": {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "value"
+              ],
+              "additionalProperties": false
+            },
+            "MyEventJsonString": {
+              "type": "string",
+              "contentMediaType": "application/json",
+              "contentSchema": {
+                "$ref": "#/$defs/MyEvent"
+              }
+            }
+          }
+        }
+      )
+    })
+
+    it("respects an explicit encoded-side identifier", () => {
+      const MyEvent = Schema.Struct({
+        value: Schema.String
+      }).annotate({ identifier: "MyEvent" })
+      const MyWireEvent = Schema.flip(
+        Schema.flip(Schema.fromJsonString(MyEvent)).annotate({ identifier: "MyWireEvent" })
+      )
+
+      assertJsonSchemaDocument(
+        MyWireEvent,
+        {
+          schema: {
+            "$ref": "#/$defs/MyWireEvent"
+          },
+          definitions: {
+            "MyEvent": {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "value"
+              ],
+              "additionalProperties": false
+            },
+            "MyWireEvent": {
+              "type": "string",
+              "contentMediaType": "application/json",
+              "contentSchema": {
+                "$ref": "#/$defs/MyEvent"
+              }
             }
           }
         }

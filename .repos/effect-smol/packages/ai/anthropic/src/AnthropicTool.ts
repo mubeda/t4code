@@ -1,58 +1,9 @@
 /**
- * The `AnthropicTool` module defines Anthropic provider tools that can be
- * attached to Anthropic-backed Effect AI language model requests. These are
- * provider-defined tools: Anthropic owns the tool names, argument formats,
- * beta headers, and in some cases the execution environment.
- *
- * **Mental model**
- *
- * - Exports such as {@link Bash_20250124}, {@link CodeExecution_20250825},
- *   {@link ComputerUse_20250124}, and {@link WebSearch_20250305} create
- *   versioned provider-defined tool values understood by the Anthropic
- *   language model integration
- * - Tool-specific `Schema` exports describe the arguments Claude may provide
- *   when invoking that provider tool
- * - Some tools run on Anthropic infrastructure, such as
- *   {@link WebSearch_20250305}, {@link WebFetch_20250910}, and
- *   {@link CodeExecution_20250825}; handler-backed tools such as Bash,
- *   Computer Use, and Text Editor variants require application-side execution
- * - Selecting a versioned tool lets the Anthropic model layer add the beta
- *   header required by that exact Anthropic API version
- *
- * **Common tasks**
- *
- * - Enable terminal-style actions with {@link Bash_20250124}
- * - Enable sandboxed code execution with {@link CodeExecution_20250825}
- * - Enable desktop automation payloads with {@link ComputerUse_20250124}
- * - Enable persistent memory file operations with {@link Memory_20250818}
- * - Enable text-editor commands with {@link TextEditor_20250728}
- * - Enable hosted web capabilities with {@link WebSearch_20250305} or
- *   {@link WebFetch_20250910}
- * - Restrict tool discovery with {@link ToolSearchRegex_20251119} or
- *   {@link ToolSearchBM25_20251119}
- *
- * **Quickstart**
- *
- * **Example** (Creating hosted Anthropic tools)
- *
- * ```ts
- * import { AnthropicTool } from "@effect/ai-anthropic"
- *
- * const tools = [
- *   AnthropicTool.WebSearch_20250305({ maxUses: 3 }),
- *   AnthropicTool.WebFetch_20250910({
- *     citations: { enabled: true }
- *   })
- * ]
- * ```
- *
- * **Gotchas**
- *
- * - The suffix date is part of the Anthropic tool contract; choose the version
- *   that matches the model and beta behavior you intend to use
- * - Handler-backed tools expose schemas for Claude's requested actions, but
- *   your runtime is responsible for performing those actions and returning
- *   results
+ * The `AnthropicTool` module defines Anthropic provider tools and the schemas
+ * for their inputs and results. It covers Anthropic-owned tools such as Bash,
+ * Code Execution, Computer Use, Memory, Text Editor, Web Search, Web Fetch, and
+ * Tool Search, which can be attached to Anthropic-backed Effect AI language
+ * model requests.
  *
  * @since 4.0.0
  */
@@ -104,8 +55,8 @@ export type AnthropicTool =
  *
  * **When to use**
  *
- * Use when you need the model to execute bash commands and require the 2024-10-22
- * version of the Anthropic computer-use beta.
+ * Use when you want the model to execute bash commands with the 2024-10-22
+ * Anthropic computer-use beta.
  *
  * **Details**
  *
@@ -125,7 +76,7 @@ export const Bash_20241022 = Tool.providerDefined({
   success: Schema.String,
   parameters: Schema.Struct({
     command: Schema.String,
-    restart: Schema.optional(Schema.Boolean)
+    restart: Schema.optionalKey(Schema.Boolean)
   })
 })
 
@@ -134,8 +85,8 @@ export const Bash_20241022 = Tool.providerDefined({
  *
  * **When to use**
  *
- * Use when you need the model to execute bash commands and require the 2025-01-24
- * version of the Anthropic computer-use beta.
+ * Use when you want the model to execute bash commands with the 2025-01-24
+ * Anthropic computer-use beta.
  *
  * **Details**
  *
@@ -155,7 +106,7 @@ export const Bash_20250124 = Tool.providerDefined({
   success: Schema.String,
   parameters: Schema.Struct({
     command: Schema.String,
-    restart: Schema.optional(Schema.Boolean)
+    restart: Schema.optionalKey(Schema.Boolean)
   })
 })
 
@@ -250,8 +201,8 @@ export type CodeExecutionBashCommand = typeof CodeExecutionBashCommand.Type
  *
  * **When to use**
  *
- * Use to validate or construct the `view` command for Anthropic code execution
- * text editor tool calls.
+ * Use when you need the schema for provider-bound code-execution view requests
+ * before distinguishing them from create or replace text-editor commands.
  *
  * **Details**
  *
@@ -277,8 +228,8 @@ export const CodeExecutionTextEditorView = Schema.Struct({
  *
  * **When to use**
  *
- * Use when handling or validating the `view` command for Anthropic's text
- * editor code execution tool.
+ * Use when working at the Anthropic protocol boundary and the code-execution
+ * view request must be distinguished from standalone text-editor view requests.
  *
  * **Details**
  *
@@ -400,8 +351,8 @@ const CodeExecution_20250522_Parameters = Schema.Union([
  *
  * **When to use**
  *
- * Use when validating or constructing the input payload for the 2025-08-25
- * Anthropic code execution tool.
+ * Use when you need the schema for code-execution input at the Anthropic
+ * protocol boundary before sending source code to the 2025-08-25 tool.
  *
  * @see {@link CodeExecution_20250825} for the provider-defined tool that consumes this schema
  *
@@ -419,7 +370,8 @@ export const CodeExecution_20250825_Parameters = Schema.Struct({
  *
  * **When to use**
  *
- * Use when typing input passed to the 2025-08-25 Anthropic code execution tool.
+ * Use when exposing the 2025-08-25 code-execution payload separately from the
+ * provider tool definition, such as at a transport or persistence boundary.
  *
  * **Details**
  *
@@ -442,8 +394,8 @@ export type CodeExecution_20250825_Parameters = typeof CodeExecution_20250825_Pa
  *
  * **When to use**
  *
- * Use when you need the model to execute code in a sandboxed environment and
- * require the 2025-05-22 version of the Anthropic code-execution beta.
+ * Use when you want the model to execute code in a sandboxed environment with
+ * the 2025-05-22 Anthropic code-execution beta.
  *
  * **Details**
  *
@@ -470,8 +422,8 @@ export const CodeExecution_20250522 = Tool.providerDefined({
  *
  * **When to use**
  *
- * Use when you need the model to execute code in a sandboxed environment and
- * require the 2025-08-25 version of the Anthropic code-execution beta.
+ * Use when you want the model to execute code in a sandboxed environment with
+ * the 2025-08-25 Anthropic code-execution beta.
  *
  * **Details**
  *
@@ -514,6 +466,11 @@ export const CodeExecution_20250825 = Tool.providerDefined({
 /**
  * Schema for an `[x, y]` screen coordinate in pixels.
  *
+ * **When to use**
+ *
+ * Use when validating computer-use action payloads that carry a single screen
+ * position and provider-side bounds checks remain acceptable.
+ *
  * **Details**
  *
  * This is a two-number tuple used by computer-use actions that accept screen
@@ -537,6 +494,11 @@ export type Coordinate = typeof Coordinate.Type
 
 /**
  * Schema for an `[x1, y1, x2, y2]` screen region in pixels.
+ *
+ * **When to use**
+ *
+ * Use when validating computer-use action payloads that carry a rectangular
+ * screen region and provider-side bounds checks remain acceptable.
  *
  * **Details**
  *
@@ -656,6 +618,12 @@ export const ComputerUseKeyAction = Schema.Struct({
 /**
  * Computer-use action payload for pressing a key or key combination.
  *
+ * **When to use**
+ *
+ * Use when typing parsed computer-use key action payloads after schema
+ * validation, where provider-specific key-name validation is handled outside
+ * TypeScript.
+ *
  * **Details**
  *
  * The payload uses `action: "key"` and stores the key or key combination to
@@ -703,7 +671,7 @@ export const ComputerUseLeftClickAction = Schema.Struct({
    * The `[x, y]` coordinate on the screen to left click (defaults to the current
    * mouse position if omitted).
    */
-  coordinate: Schema.optional(Coordinate)
+  coordinate: Schema.optionalKey(Coordinate)
 })
 /**
  * Computer-use action payload for performing a left click, optionally at a specific coordinate.
@@ -861,7 +829,7 @@ export const ComputerUseDoubleClickAction = Schema.Struct({
    * The coordinate to double click (defaults to the current mouse position if
    * omitted).
    */
-  coordinate: Schema.optional(Coordinate)
+  coordinate: Schema.optionalKey(Coordinate)
 })
 /**
  * Computer-use action payload for performing a double click, optionally at a specific coordinate.
@@ -987,7 +955,7 @@ export const ComputerUseLeftMouseDownAction = Schema.Struct({
    * The coordinate at which the left mouse button should be held down (defaults
    * to the current mouse position if omitted).
    */
-  coordinate: Schema.optional(Coordinate)
+  coordinate: Schema.optionalKey(Coordinate)
 })
 /**
  * Computer-use action payload for pressing and holding the left mouse button, optionally at a specific coordinate.
@@ -1014,7 +982,7 @@ export const ComputerUseLeftMouseUpAction = Schema.Struct({
    * The coordinate at which the left mouse button should be released (defaults
    * to the current mouse position if omitted).
    */
-  coordinate: Schema.optional(Coordinate)
+  coordinate: Schema.optionalKey(Coordinate)
 })
 /**
  * Computer-use action payload for releasing the left mouse button, optionally at a specific coordinate.
@@ -1055,7 +1023,7 @@ export const ComputerUseMiddleClickAction = Schema.Struct({
    * The coordinate to middle click (defaults to the current mouse position if
    * omitted).
    */
-  coordinate: Schema.optional(Coordinate)
+  coordinate: Schema.optionalKey(Coordinate)
 })
 /**
  * Computer-use action payload for performing a middle click, optionally at a specific coordinate.
@@ -1092,7 +1060,7 @@ export const ComputerUseRightClickAction = Schema.Struct({
    * The coordinate to right click (defaults to the current mouse position if
    * omitted).
    */
-  coordinate: Schema.optional(Coordinate)
+  coordinate: Schema.optionalKey(Coordinate)
 })
 /**
  * Computer-use action payload for performing a right click, optionally at a specific coordinate.
@@ -1131,7 +1099,7 @@ export const ComputerUseScrollAction = Schema.Struct({
    * The coordinate to start scrolling from (defaults to the current mouse
    * position if omitted).
    */
-  coordinate: Schema.optional(Coordinate),
+  coordinate: Schema.optionalKey(Coordinate),
   /**
    * The direction to scroll.
    */
@@ -1180,7 +1148,7 @@ export const ComputerUseTripleClickAction = Schema.Struct({
    * The coordinate to triple click (defaults to the current mouse position if
    * omitted).
    */
-  coordinate: Schema.optional(Coordinate)
+  coordinate: Schema.optionalKey(Coordinate)
 })
 /**
  * Computer-use action payload for performing a triple click, optionally at a specific coordinate.
@@ -1249,6 +1217,11 @@ const ComputerUse_20250124_Actions = Schema.Union([
 
 /**
  * Zooms into a specific region of the screen at full resolution.
+ *
+ * **When to use**
+ *
+ * Use when building or validating the 2025-11-24 computer-use action for a
+ * zoom-enabled tool definition.
  *
  * **Details**
  *
@@ -1322,7 +1295,7 @@ export const ComputerUse_20241022 = Tool.providerDefined({
  *
  * **When to use**
  *
- * Use when configuring Anthropic computer use for Claude 4 models or Claude
+ * Use when you need Anthropic computer use for Claude 4 models or Claude
  * Sonnet 3.7 with the 2025-01-24 action set.
  *
  * **Details**
@@ -1353,7 +1326,7 @@ export const ComputerUse_20250124 = Tool.providerDefined({
  *
  * **When to use**
  *
- * Use when configuring Anthropic computer use for Claude Opus 4.5 with the
+ * Use when you need Anthropic computer use for Claude Opus 4.5 with the
  * 2025-11-24 action set and zoom-capable screen inspection.
  *
  * **Details**
@@ -1432,7 +1405,8 @@ export type ViewRange = typeof ViewRange.Type
  *
  * **Details**
  *
- * The payload contains `command: "create"` and a `path` string.
+ * The payload contains `command: "create"`, a `path` string, and the
+ * `file_text` content to write to the file.
  *
  * @category memory
  * @since 4.0.0
@@ -1442,7 +1416,11 @@ export const MemoryCreateCommand = Schema.Struct({
   /**
    * The path to the file that should be created.
    */
-  path: Schema.String
+  path: Schema.String,
+  /**
+   * The content to write to the file.
+   */
+  file_text: Schema.String
 })
 /**
  * Memory tool command payload for creating a new file at a path.
@@ -1605,7 +1583,7 @@ export const MemoryViewCommand = Schema.Struct({
   /**
    * The specific lines to view.
    */
-  view_range: Schema.optional(ViewRange)
+  view_range: Schema.optionalKey(ViewRange)
 })
 /**
  * Memory tool command payload for viewing a file or directory, optionally with a file line range.
@@ -1643,6 +1621,7 @@ export const Memory_20250818 = Tool.providerDefined({
   id: "anthropic.memory_20250818",
   customName: "AnthropicMemory",
   providerName: "memory",
+  requiresHandler: true,
   parameters: Memory_20250818_Commands,
   success: Schema.String
 })
@@ -1685,7 +1664,7 @@ export const TextEditorViewCommand = Schema.Struct({
    * Optional line range to view (only applies to files, not directories).
    * Lines are 1-indexed. Use -1 for end to read to end of file.
    */
-  view_range: Schema.optional(ViewRange)
+  view_range: Schema.optionalKey(ViewRange)
 })
 /**
  * Text editor command payload for viewing file contents or listing directory contents.
@@ -1733,6 +1712,11 @@ export const TextEditorCreateCommand = Schema.Struct({
 })
 /**
  * Text editor command payload for creating a new file with the specified content.
+ *
+ * **When to use**
+ *
+ * Use when typing parsed text-editor create command payloads after schema
+ * validation and before dispatching to Anthropic tool handlers.
  *
  * **Gotchas**
  *
@@ -1784,6 +1768,11 @@ export const TextEditorStrReplaceCommand = Schema.Struct({
 })
 /**
  * Text editor command payload for replacing one exact, unique string in a file.
+ *
+ * **When to use**
+ *
+ * Use when typing parsed text-editor replace command payloads that must carry
+ * one exact `old_str` match.
  *
  * **Gotchas**
  *
@@ -1902,8 +1891,8 @@ const TextEditor_StrReplaceBasedEdit_Args = Schema.Struct({
  *
  * **When to use**
  *
- * Use when configuring the 2024-10-22 `str_replace_editor` compatibility path
- * for Claude 3.5 Sonnet.
+ * Use when you need the 2024-10-22 `str_replace_editor` compatibility path for
+ * Claude 3.5 Sonnet.
  *
  * **Details**
  *
@@ -1930,7 +1919,7 @@ export const TextEditor_20241022 = Tool.providerDefined({
  *
  * **When to use**
  *
- * Use when configuring the 2025-01-24 Claude Sonnet 3.7 text editor tool using
+ * Use when you need the 2025-01-24 Claude Sonnet 3.7 text editor tool using
  * `str_replace_editor`.
  *
  * **Details**
@@ -1958,7 +1947,7 @@ export const TextEditor_20250124 = Tool.providerDefined({
  *
  * **When to use**
  *
- * Use when configuring the 2025-04-29 Claude 4 `str_replace_based_edit_tool`
+ * Use when you need the 2025-04-29 Claude 4 `str_replace_based_edit_tool`
  * version.
  *
  * **Details**
@@ -2023,8 +2012,8 @@ export const TextEditor_20250728 = Tool.providerDefined({
  *
  * **When to use**
  *
- * Use when providing location helps return more relevant results for
- * location-dependent queries like weather, local businesses, or events.
+ * Use when you need to localize search results for location-dependent queries
+ * like weather, local businesses, or events.
  *
  * **Details**
  *
@@ -2069,8 +2058,8 @@ export const WebSearchUserLocation = Schema.Struct({
  *
  * **When to use**
  *
- * Use when configuring `WebSearch_20250305` with search limits, domain filters,
- * or user location.
+ * Use when you need to configure `WebSearch_20250305` with search limits,
+ * domain filters, or user location.
  *
  * **Details**
  *
@@ -2167,7 +2156,7 @@ export type WebSearchParameters = typeof WebSearchParameters.Type
  *
  * **When to use**
  *
- * Use when Claude should search the web for real-time information.
+ * Use when you want Claude to search the web for real-time information.
  *
  * **Details**
  *
@@ -2203,7 +2192,7 @@ export const WebSearch_20250305 = Tool.providerDefined({
  *
  * **When to use**
  *
- * Use when configuring whether web fetch results should include citations.
+ * Use when you need to enable or disable citations on web fetch results.
  *
  * **Details**
  *
@@ -2223,6 +2212,11 @@ export const WebFetchCitationsConfig = Schema.Struct({
 })
 /**
  * Configuration payload for enabling or disabling citations on web fetch results.
+ *
+ * **When to use**
+ *
+ * Use when typing parsed web-fetch citation configuration shared between
+ * request arguments and handler code.
  *
  * **Details**
  *
@@ -2245,8 +2239,8 @@ export type WebFetchCitationsConfig = typeof WebFetchCitationsConfig.Type
  *
  * **When to use**
  *
- * Use when configuring `WebFetch_20250910` with usage limits, domain filters,
- * citations, or content token limits.
+ * Use when you need to configure `WebFetch_20250910` with usage limits, domain
+ * filters, citations, or content token limits.
  *
  * **Details**
  *
@@ -2293,6 +2287,11 @@ export const WebFetch_20250910_Args = Schema.Struct({
 })
 /**
  * Configuration arguments for the Anthropic web fetch tool, including usage limits, domain filters, citation settings, and token limits.
+ *
+ * **When to use**
+ *
+ * Use when typing parsed web-fetch tool configuration shared by the
+ * provider-defined tool and request-building code.
  *
  * **Gotchas**
  *
@@ -2341,6 +2340,11 @@ export const WebFetchParameters = Schema.Struct({
 /**
  * Type of the parameters Claude supplies when invoking the Anthropic web fetch tool.
  *
+ * **When to use**
+ *
+ * Use when typing Claude-supplied web-fetch tool parameters after schema
+ * validation, before enforcing URL provenance or length constraints.
+ *
  * **Details**
  *
  * The payload contains the single `url` parameter for Anthropic web fetch.
@@ -2364,7 +2368,8 @@ export type WebFetchParameters = typeof WebFetchParameters.Type
  *
  * **When to use**
  *
- * Use when Claude should retrieve the content of a specific web page or PDF.
+ * Use when you want Claude to retrieve the content of a specific web page or
+ * PDF.
  *
  * **Details**
  *

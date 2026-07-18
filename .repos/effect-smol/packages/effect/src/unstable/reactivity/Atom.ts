@@ -1,40 +1,12 @@
 /**
- * Reactive state primitives for values evaluated by an {@link AtomRegistry}.
+ * Reactive state primitives for values managed by an `AtomRegistry`.
  *
- * An {@link Atom} describes how to read a value. The registry is the runtime
- * owner: it evaluates reads, caches results, records dependency edges, runs
- * effects and streams with the configured runtime services, and disposes nodes
- * when they are no longer observed.
- *
- * **Mental model**
- *
- * Regular `get(atom)` calls inside a read function create dependencies. When a
- * dependency changes or refreshes, dependent atoms are invalidated and re-read
- * on demand. One-shot reads such as `get.once(atom)` read the current value
- * without creating an edge. The same atom can hold different cached values in
- * different registries, so stable atom identity matters; use {@link family} for
- * atoms parameterized by input values.
- *
- * **Common tasks**
- *
- * Use {@link readable} or {@link writable} for synchronous state, {@link make}
- * for effects and streams exposed as `AsyncResult`, {@link fn} for
- * command-style effects, {@link pull} for pull-based streams, and
- * {@link subscriptionRef} to expose a `SubscriptionRef`. Use {@link kvs},
- * {@link searchParam}, and {@link serializable} when atom values need
- * persistence, URL state, or server-to-client hydration. Read and mutate atoms
- * from Effect code with {@link get}, {@link set}, {@link update},
- * {@link refresh}, and {@link mount}; convert observed values to streams with
- * {@link toStream} or {@link toStreamResult}.
- *
- * **Gotchas**
- *
- * Cache lifetime belongs to the registry, not the atom object. Unobserved
- * non-`keepAlive` atoms can be disposed immediately or after their idle TTL,
- * which also releases finalizers and may rebuild effects, streams, and derived
- * state on the next read. Runtime-backed atoms refresh only through their
- * registered refresh hooks or explicit `Reactivity` invalidations; reading an
- * `Effect` by itself does not keep external data subscribed.
+ * An `Atom` describes how to produce or update one piece of reactive state. The
+ * registry runs atom reads, remembers current values, tracks dependencies
+ * between atoms, starts effects and streams, and cleans up atoms that are no
+ * longer used. This module includes the atom constructors and update helpers
+ * used for cached values, effect-backed values, streams, browser state, stored
+ * values, and server-rendered values.
  *
  * @since 4.0.0
  */
@@ -1108,8 +1080,8 @@ export interface AtomResultFn<Arg, A, E = never>
  *
  * **When to use**
  *
- * Use to write to an `AtomResultFn` when you need to clear the current async
- * result and return it to the initial state.
+ * Use when you need an `AtomResultFn` write value that clears the current async
+ * result and returns it to the initial state.
  *
  * @category symbols
  * @since 4.0.0
@@ -1129,7 +1101,7 @@ export type Reset = typeof Reset
  *
  * **When to use**
  *
- * Use to write to an `AtomResultFn` when you need to interrupt the currently
+ * Use when you need an `AtomResultFn` write value that interrupts the currently
  * running async computation.
  *
  * @category symbols
@@ -2132,7 +2104,7 @@ export const refreshOnWindowFocus: <A extends Atom<any>>(self: A) => WithoutSeri
  * @category KeyValueStore
  * @since 4.0.0
  */
-export const kvs = <S extends Schema.Codec<any, any>, const Mode extends "sync" | "async" = never>(options: {
+export const kvs = <S extends Schema.ConstraintCodec<any, any>, const Mode extends "sync" | "async" = never>(options: {
   readonly runtime: AtomRuntime<KeyValueStore.KeyValueStore, any>
   readonly key: string
   readonly schema: S
@@ -2178,7 +2150,7 @@ export const kvs = <S extends Schema.Codec<any, any>, const Mode extends "sync" 
       },
     (ctx, value: S["Type"]) => {
       ctx.set(setAtom, value as any)
-      ctx.setSelf(value)
+      ctx.setSelf(options.mode === "async" ? AsyncResult.success(value) : value)
     }
   ) as any
 }
@@ -2194,12 +2166,15 @@ export const kvs = <S extends Schema.Codec<any, any>, const Mode extends "sync" 
  *
  * If you pass a schema, it has to be synchronous and have no context.
  *
- * @category URL search params
+ * @category search params
  * @since 4.0.0
  */
-export const searchParam = <S extends Schema.Codec<any, string> = never>(name: string, options?: {
-  readonly schema?: S | undefined
-}): Writable<[S] extends [never] ? string : Option.Option<S["Type"]>> => {
+export const searchParam = <S extends Schema.ConstraintCodec<any, string> = never>(
+  name: string,
+  options?: {
+    readonly schema?: S | undefined
+  }
+): Writable<[S] extends [never] ? string : Option.Option<S["Type"]>> => {
   const decode = options?.schema && Schema.decodeExit(options.schema)
   const encode = options?.schema && Schema.encodeExit(options.schema)
   return writable(
@@ -2437,7 +2412,7 @@ export type SerializableTypeId = "~effect-atom/atom/Atom/Serializable"
  * @category Serializable
  * @since 4.0.0
  */
-export interface Serializable<S extends Schema.Top> {
+export interface Serializable<S extends Schema.Constraint> {
   readonly [SerializableTypeId]: {
     readonly key: string
     readonly encode: (value: S["Type"]) => S["Encoded"]
@@ -2465,17 +2440,17 @@ export const isSerializable = (self: Atom<any>): self is Atom<any> & Serializabl
  * @since 4.0.0
  */
 export const serializable: {
-  <R extends Atom<any>, S extends Schema.Codec<Type<R>, any>>(options: {
+  <R extends Atom<any>, S extends Schema.ConstraintCodec<Type<R>, any>>(options: {
     readonly key: string
     readonly schema: S
   }): (self: R) => R & Serializable<S>
-  <R extends Atom<any>, S extends Schema.Codec<Type<R>, any>>(self: R, options: {
+  <R extends Atom<any>, S extends Schema.ConstraintCodec<Type<R>, any>>(self: R, options: {
     readonly key: string
     readonly schema: S
   }): R & Serializable<S>
 } = dual(2, <R extends Atom<any>, A, I>(self: R, options: {
   readonly key: string
-  readonly schema: Schema.Codec<A, I>
+  readonly schema: Schema.ConstraintCodec<A, I>
 }): R & Serializable<any> => {
   const codecJson = Schema.toCodecJson(options.schema)
   return Object.assign(Object.create(Object.getPrototypeOf(self)), {

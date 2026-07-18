@@ -1,44 +1,12 @@
 /**
- * State containers for asynchronous values used by the reactivity APIs.
+ * Represents observable state for asynchronous values.
  *
- * `AsyncResult` records the latest observable state of work that may still be
- * loading, refreshing, retrying, or recovering from failure. The value is one of
- * `Initial`, `Success`, or `Failure`, and every variant also carries a `waiting`
- * flag so callers can keep rendering the current state while newer work is in
- * flight.
- *
- * **Mental model**
- *
- * The variant answers "what do we know right now?", while `waiting` answers "is
- * newer work currently running?". A success contains the current value and its
- * timestamp. A failure contains a `Cause` and may also keep the previous
- * success, which lets UI and atom code show stale data while exposing the latest
- * failure for error displays and retry logic.
- *
- * **Common tasks**
- *
- * - Start with {@link initial}, {@link success}, {@link failure}, or
- *   {@link fail}
- * - Convert Effect exits with {@link fromExit} and
- *   {@link fromExitWithPrevious}
- * - Mark existing state as loading with {@link waiting} or
- *   {@link waitingFrom}
- * - Read values and failures with {@link value}, {@link cause}, {@link error},
- *   {@link getOrElse}, and {@link toExit}
- * - Transform and combine results with {@link map}, {@link flatMap}, and
- *   {@link all}
- * - Render all states with {@link match}, {@link matchWithWaiting}, or
- *   {@link builder}
- *
- * **Gotchas**
- *
- * - `waiting` is an overlay, not a fourth variant; any variant can be waiting.
- * - {@link value} and {@link getOrElse} can read the previous success stored in
- *   a failure, so inspect {@link cause} or {@link error} when stale data and a
- *   current success must be distinguished.
- * - {@link matchWithWaiting} handles waiting before variant-specific branches,
- *   while {@link match} and {@link matchWithError} expose the underlying
- *   variant first.
+ * `AsyncResult<A, E>` records whether asynchronous work has no value yet,
+ * succeeded with an `A`, or failed with an `E`. Every state also carries a
+ * `waiting` flag, so callers can keep showing the current value while newer
+ * work is loading, refreshing, retrying, or recovering. This module includes
+ * constructors, checks, accessors, mapping and matching helpers, ways to combine
+ * several results, and schemas for encoding or decoding results.
  *
  * @since 4.0.0
  */
@@ -742,7 +710,7 @@ export const all = <const Arg extends Iterable<any> | Record<string, any>>(
 /**
  * Creates a typed builder for rendering an `AsyncResult` by handling waiting, initial, success, error, defect, interrupt, and failure cases.
  *
- * @category Builder
+ * @category constructors
  * @since 4.0.0
  */
 export const builder = <A extends AsyncResult<any, any>>(self: A): Builder<
@@ -756,7 +724,7 @@ export const builder = <A extends AsyncResult<any, any>>(self: A): Builder<
 /**
  * Type marker used by `Builder` to track whether defect failures still need to be handled.
  *
- * @category Builder
+ * @category models
  * @since 4.0.0
  */
 export interface Defect {
@@ -766,7 +734,7 @@ export interface Defect {
 /**
  * Type marker used by `Builder` to track whether interrupt failures still need to be handled.
  *
- * @category Builder
+ * @category models
  * @since 4.0.0
  */
 export interface Interrupt {
@@ -776,7 +744,7 @@ export interface Interrupt {
 /**
  * Fluent renderer for `AsyncResult` values that tracks unhandled cases at the type level and exposes `exhaustive` only after all possible cases are handled.
  *
- * @category Builder
+ * @category models
  * @since 4.0.0
  */
 export type Builder<Out, A, E, I, F> =
@@ -955,8 +923,8 @@ class BuilderImpl<Out, A, E> {
  * @since 4.0.0
  */
 export interface Schema<
-  Success extends Schema_.Top,
-  Error extends Schema_.Top
+  Success extends Schema_.Constraint,
+  Error extends Schema_.Constraint
 > extends
   Schema_.declareConstructor<
     AsyncResult<Success["Type"], Error["Type"]>,
@@ -975,8 +943,8 @@ export interface Schema<
  * @since 4.0.0
  */
 export const Schema = <
-  A extends Schema_.Top = Schema_.Never,
-  E extends Schema_.Top = Schema_.Never
+  A extends Schema_.Constraint = Schema_.Never,
+  E extends Schema_.Constraint = Schema_.Never
 >(
   options: {
     readonly success?: A | undefined
@@ -989,7 +957,7 @@ export const Schema = <
     AsyncResult<A["Type"], E["Type"]>,
     AsyncResult<A["Encoded"], E["Encoded"]>
   >()(
-    [success_, Schema_.Cause(error, Schema_.Defect)],
+    [success_, Schema_.Cause(error, Schema_.Defect())],
     ([value, cause]) => (input, ast, options) => {
       if (!isAsyncResult(input)) {
         return Effect.fail(new SchemaIssue.InvalidType(ast, Option.some(input)))
