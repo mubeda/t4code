@@ -52,7 +52,7 @@ jobs:
           run-install: false
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.88.0
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Cache Rust build output
         uses: Swatinem/rust-cache@v2

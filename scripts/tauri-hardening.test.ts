@@ -204,7 +204,8 @@ it.layer(NodeServices.layer)("Tauri production hardening", (it) => {
         false,
       );
       const desktopPackageJson = yield* decodeDesktopPackageConfiguration(desktopPackage);
-      assert.match(desktopPackageJson.scripts.build, /@tauri-apps\/cli@2\.11\.4 build$/);
+      assert.match(desktopPackageJson.scripts.build, /pnpm exec tauri build$/);
+      assert.notMatch(desktopPackage, /pnpm dlx/);
       assert.notMatch(desktopLib, /if\s*!cfg!\(debug_assertions\)[\s\S]*?backend\.start_default/);
       assert.match(desktopLib, /backend\.start_default\(app_handle\)\.await/);
       assert.notMatch(relayTracing, /from "\.\/observability\.ts"/);

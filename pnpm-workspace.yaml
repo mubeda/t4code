@@ -5,6 +5,13 @@ packages:
   - packages/*
   - scripts
 
+# WebdriverIO's current driver was published less than pnpm 11's default
+# 24-hour maturity window before this lockfile was generated. Keep the audited
+# exception exact so future geckodriver releases still wait for the default
+# quarantine period.
+minimumReleaseAgeExclude:
+  - geckodriver@6.1.1
+
 catalog:
   "@clerk/backend": 3.8.3-snapshot.v20260622234151
   "@clerk/clerk-js": 6.21.0-snapshot.v20260622234151
@@ -19,22 +26,25 @@ catalog:
   "@noble/curves": 1.9.1
   "@noble/hashes": 1.8.0
   "@pierre/diffs": 1.3.0-beta.5
-  "@types/node": 24.12.4
+  "@types/node": 26.1.1
   "@typescript/native-preview": 7.0.0-dev.20260604.1
   effect: 4.0.0-beta.78
   jose: 6.2.2
   typescript: ~6.0.3
-  vite: npm:@voidzero-dev/vite-plus-core@0.2.1
-  vite-plus: 0.2.1
+  vite: npm:@voidzero-dev/vite-plus-core@0.2.5
+  vite-plus: 0.2.5
   yaml: ^2.9.0
 
-ignoredBuiltDependencies:
-  - msw
-
-onlyBuiltDependencies:
-  - esbuild
-  - msgpackr-extract
-  - sharp
+allowBuilds:
+  "bufferutil@4.1.0": false
+  "edgedriver@6.3.0": false
+  "esbuild@0.25.12 || 0.28.1": true
+  "geckodriver@6.1.1": false
+  "msgpackr-extract@3.0.4": true
+  "msw@2.12.11": false
+  "sharp@0.34.5": true
+  "utf-8-validate@6.0.6": false
+  "workerd@1.20260526.1": false
 
 overrides:
   # Keep every Clerk consumer on the same snapshot train. Clerk publishes wallet

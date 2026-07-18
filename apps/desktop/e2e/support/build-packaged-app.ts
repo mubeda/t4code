@@ -30,8 +30,8 @@ export function planPackagedDesktopUiBuild(
     args: [
       "../../scripts/run-msvc-x64.mjs",
       "pnpm",
-      "dlx",
-      "@tauri-apps/cli@2.11.4",
+      "exec",
+      "tauri",
       "build",
       "--features",
       "desktop-e2e",
