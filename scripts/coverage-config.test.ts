@@ -161,6 +161,9 @@ function findViteShim(path: string) {
 }
 
 function findRepositorySubtractionReason(path: string): string | null {
+  if (NodePath.matchesGlob(path, "apps/desktop/e2e/**")) {
+    return "packaged-desktop-ui-automation";
+  }
   if (NodePath.matchesGlob(path, "**/*.d.ts")) {
     return "declaration";
   }

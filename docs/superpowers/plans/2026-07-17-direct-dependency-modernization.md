@@ -20,7 +20,7 @@ repository gates. The final phase requeries authoritative sources, closes the
 ledger, builds production-equivalent artifacts, and runs the UI smoke suite on
 all three operating systems.
 
-**Tech stack:** Node.js 26.5.0, pnpm 11.14.0, Vite+ 0.2.5, TypeScript 7.0.2,
+**Tech stack:** Node.js 26.5.0, pnpm 11.15.0, Vite+ 0.2.5, TypeScript 7.0.2,
 React 19, Effect 4 beta, Rust 1.97.1, Cargo, Tauri 2, WebdriverIO,
 `@wdio/tauri-service`, GitHub Actions, Ubuntu, macOS, and Windows.
 
@@ -526,7 +526,7 @@ git commit -m "test: add packaged desktop UI smoke suite"
 
 ## Phase 1: Upgrade Toolchains and CI Dependencies
 
-### Task 4: Pin Node 26.5.0, pnpm 11.14.0, Rust 1.97.1, Vite+ 0.2.5, and Tauri CLI
+### Task 4: Pin Node 26.5.0, pnpm 11.15.0, Rust 1.97.1, Vite+ 0.2.5, and Tauri CLI
 
 **Files:**
 
@@ -550,7 +550,7 @@ git commit -m "test: add packaged desktop UI smoke suite"
 Assert:
 
 - `engines.node` is exactly `26.5.0`;
-- `packageManager` is exactly `pnpm@11.14.0`;
+- `packageManager` is exactly `pnpm@11.15.0`;
 - the catalog pins Node types to 26.1.1 unless a newer Node 26-compatible patch
   exists at execution time;
 - both Vite+ declarations are exactly 0.2.5;
@@ -584,7 +584,8 @@ Set the exact versions above. Replace the devcontainer's Bun post-create path
 with Corepack/pnpm:
 
 ```text
-corepack enable && corepack prepare pnpm@11.14.0 --activate &&
+npm install --global corepack@0.35.0 &&
+corepack enable && corepack prepare pnpm@11.15.0 --activate &&
 pnpm install --frozen-lockfile
 ```
 
@@ -597,8 +598,9 @@ replace both `pnpm dlx` invocations with locked `pnpm exec tauri` commands.
 Regenerate lockfiles with:
 
 ```bash
+npm install --global corepack@0.35.0
 corepack enable
-corepack prepare pnpm@11.14.0 --activate
+corepack prepare pnpm@11.15.0 --activate
 pnpm install
 rustup toolchain install 1.97.1 --component rustfmt --component clippy
 rustup override set 1.97.1
@@ -622,7 +624,7 @@ git diff --exit-code -- package.json pnpm-workspace.yaml pnpm-lock.yaml \
   Cargo.toml Cargo.lock
 ```
 
-Expected versions: Node v26.5.0, pnpm 11.14.0, Rust 1.97.1. The final diff
+Expected versions: Node v26.5.0, pnpm 11.15.0, Rust 1.97.1. The final diff
 command is run after staging the intentional manifest/lockfile changes or
 against a saved pre-install diff; it must prove the frozen install itself adds
 no new changes.
@@ -1766,8 +1768,9 @@ upgraded, removed, preview, and platform-specific counts in the final report.
 From a clean checkout/worktree with no `node_modules` or build output, run:
 
 ```bash
+npm install --global corepack@0.35.0
 corepack enable
-corepack prepare pnpm@11.14.0 --activate
+corepack prepare pnpm@11.15.0 --activate
 pnpm install --frozen-lockfile
 cargo fetch --locked
 git diff --exit-code -- package.json pnpm-workspace.yaml pnpm-lock.yaml \

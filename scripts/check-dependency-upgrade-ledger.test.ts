@@ -305,8 +305,8 @@ describe("dependency upgrade ledger validation", () => {
     ) as DependencyLedger;
 
     expect(validateDependencyLedger(inventory, ledger)).toEqual([]);
-    expect(inventory.summary.javascriptDirect).toBe(70);
-    expect(inventory.summary.rustRegistry).toBe(49);
+    expect(inventory.summary.javascriptDirect).toBe(80);
+    expect(inventory.summary.rustRegistry).toBe(51);
     expect(inventory.summary.rustPath).toBe(1);
     expect(inventory.summary.actions).toBe(9);
   });

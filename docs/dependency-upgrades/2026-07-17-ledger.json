@@ -82,12 +82,12 @@
     }
   },
   "inventorySummary": {
-    "javascriptDirect": 77,
-    "javascriptLedger": 77,
-    "rustRegistry": 50,
+    "javascriptDirect": 80,
+    "javascriptLedger": 80,
+    "rustRegistry": 51,
     "rustPath": 1,
     "actions": 9,
-    "toolchains": 10
+    "toolchains": 9
   },
   "dependencies": [
     {
@@ -135,6 +135,17 @@
       "status": "current"
     },
     {
+      "key": "js:apps/desktop:@wdio/native-utils",
+      "name": "@wdio/native-utils",
+      "current": "2.5.0",
+      "target": "2.5.0",
+      "channel": "stable",
+      "source": "https://www.npmjs.com/package/@wdio/native-utils",
+      "cohort": "packaged-desktop-ui-testing",
+      "platforms": ["linux", "macos", "windows"],
+      "status": "green"
+    },
+    {
       "key": "js:apps/desktop:@wdio/spec-reporter",
       "name": "@wdio/spec-reporter",
       "current": "9.29.1",
@@ -166,6 +177,18 @@
       "cohort": "packaged-desktop-ui-testing",
       "platforms": ["linux", "macos", "windows"],
       "status": "current"
+    },
+    {
+      "key": "js:apps/web:@wdio/tauri-plugin",
+      "name": "@wdio/tauri-plugin",
+      "current": "1.2.0",
+      "target": "1.2.0",
+      "channel": "stable",
+      "source": "https://www.npmjs.com/package/@wdio/tauri-plugin",
+      "cohort": "packaged-desktop-ui-testing",
+      "platforms": ["linux", "macos", "windows"],
+      "status": "green",
+      "notes": "Compile-time gated to packaged desktop UI automation builds."
     },
     {
       "key": "action:actions/checkout",
@@ -214,7 +237,7 @@
     {
       "key": "action:dtolnay/rust-toolchain",
       "name": "dtolnay/rust-toolchain",
-      "current": "1.88.0 | stable",
+      "current": "1.97.1",
       "target": "immutable SHA for Rust 1.97.1",
       "channel": "stable",
       "source": "https://github.com/dtolnay/rust-toolchain",
@@ -874,13 +897,13 @@
     {
       "key": "js:catalog:@types/node",
       "name": "@types/node",
-      "current": "24.12.4",
+      "current": "26.1.1",
       "target": "26.1.1",
       "channel": "stable",
       "source": "https://www.npmjs.com/package/@types/node",
       "cohort": "javascript-compatible",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:catalog:@typescript/native-preview",
@@ -1060,6 +1083,18 @@
       "cohort": "packaged-desktop-ui-testing",
       "platforms": ["linux", "macos", "windows"],
       "status": "current",
+      "notes": "Optional Cargo feature; excluded from production bundles."
+    },
+    {
+      "key": "rust:workspace:tauri-plugin-wdio",
+      "name": "tauri-plugin-wdio",
+      "current": "=1.2.0",
+      "target": "1.2.0",
+      "channel": "stable",
+      "source": "https://crates.io/crates/tauri-plugin-wdio",
+      "cohort": "packaged-desktop-ui-testing",
+      "platforms": ["linux", "macos", "windows"],
+      "status": "green",
       "notes": "Optional Cargo feature; excluded from production bundles."
     },
     {
@@ -1611,30 +1646,30 @@
       "source": "https://containers.dev/features",
       "cohort": "toolchains",
       "platforms": ["linux"],
-      "status": "pending",
+      "status": "removed",
       "notes": "Remove Bun from the devcontainer and install with Corepack/pnpm."
     },
     {
       "key": "toolchain:devcontainer:git",
       "name": "devcontainer git",
-      "current": "1",
-      "target": "1",
+      "current": "1.3.8",
+      "target": "1.3.8",
       "channel": "stable",
       "source": "https://containers.dev/features",
       "cohort": "toolchains",
       "platforms": ["linux"],
-      "status": "current"
+      "status": "green"
     },
     {
       "key": "toolchain:devcontainer:node",
       "name": "devcontainer node",
-      "current": "24.13.1",
+      "current": "26.5.0",
       "target": "26.5.0",
       "channel": "stable",
       "source": "https://containers.dev/features",
       "cohort": "toolchains",
       "platforms": ["linux"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "toolchain:devcontainer:python",
@@ -1650,35 +1685,35 @@
     {
       "key": "toolchain:node",
       "name": "Node.js",
-      "current": "^24.13.1",
+      "current": "26.5.0",
       "target": "26.5.0",
       "channel": "stable",
       "source": "https://nodejs.org/en/about/previous-releases",
       "cohort": "toolchains",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "toolchain:pnpm",
       "name": "pnpm",
-      "current": "10.24.0",
-      "target": "11.14.0",
+      "current": "11.15.0",
+      "target": "11.15.0",
       "channel": "stable",
       "source": "https://github.com/pnpm/pnpm/releases",
       "cohort": "toolchains",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "toolchain:rust",
       "name": "Rust",
-      "current": "1.88",
+      "current": "1.97.1",
       "target": "1.97.1",
       "channel": "stable",
       "source": "https://releases.rs/",
       "cohort": "toolchains",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "toolchain:tauri-cli",
@@ -1689,31 +1724,31 @@
       "source": "https://www.npmjs.com/package/@tauri-apps/cli",
       "cohort": "toolchains",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending",
+      "status": "green",
       "notes": "Version is already current; replace pnpm dlx with a locked workspace dependency."
     },
     {
       "key": "toolchain:vite-core",
       "name": "@voidzero-dev/vite-plus-core",
-      "current": "npm:@voidzero-dev/vite-plus-core@0.2.1",
+      "current": "npm:@voidzero-dev/vite-plus-core@0.2.5",
       "target": "npm:@voidzero-dev/vite-plus-core@0.2.5",
       "channel": "preview",
       "source": "https://www.npmjs.com/package/@voidzero-dev/vite-plus-core",
       "cohort": "toolchains",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending",
+      "status": "green",
       "notes": "Keep the intentional npm alias paired atomically with vite-plus."
     },
     {
       "key": "toolchain:vite-plus",
       "name": "vite-plus",
-      "current": "0.2.1",
+      "current": "0.2.5",
       "target": "0.2.5",
       "channel": "stable",
       "source": "https://www.npmjs.com/package/vite-plus",
       "cohort": "toolchains",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     }
   ]
 }

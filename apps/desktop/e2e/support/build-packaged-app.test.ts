@@ -12,8 +12,8 @@ describe("planPackagedDesktopUiBuild", () => {
 
     expect(plan.args).toEqual(
       expect.arrayContaining([
-        "dlx",
-        "@tauri-apps/cli@2.11.4",
+        "exec",
+        "tauri",
         "build",
         "--features",
         "desktop-e2e",

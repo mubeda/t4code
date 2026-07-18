@@ -53,9 +53,9 @@
     "vite-plus": "catalog:"
   },
   "engines": {
-    "node": "^24.13.1"
+    "node": "26.5.0"
   },
-  "packageManager": "pnpm@10.24.0",
+  "packageManager": "pnpm@11.15.0",
   "msw": {
     "workerDirectory": [
       "apps/web/public"
