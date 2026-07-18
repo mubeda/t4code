@@ -16,7 +16,7 @@ jobs:
     steps:
       - id: config
         name: Build PR size label config
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           result-encoding: string
           script: |
@@ -64,7 +64,7 @@ jobs:
       issues: write
     steps:
       - name: Ensure PR size labels exist
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           PR_SIZE_LABELS_JSON: ${{ needs.prepare-config.outputs.labels_json }}
         with:
@@ -128,11 +128,11 @@ jobs:
       # git data. Do not add dependency installs, build/test scripts, or cache
       # actions here; use pull_request plus workflow_run for that pattern instead.
       - name: Checkout base repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
       - name: Sync PR size label
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           PR_SIZE_LABELS_JSON: ${{ needs.prepare-config.outputs.labels_json }}
         with:
