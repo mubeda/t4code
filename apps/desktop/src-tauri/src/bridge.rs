@@ -2324,7 +2324,7 @@ mod tests {
 
         // Use the generated application context so IPC exercises the same command
         // permissions as the production desktop shell.
-        let mut context = tauri::generate_context!();
+        let mut context = crate::desktop_context();
         context.config_mut().identifier = format!("com.t4code.bridge-tests-{}", std::process::id());
         let app = mock_builder()
             .manage(BackendSupervisor::new())
@@ -2382,7 +2382,13 @@ mod tests {
                     cmd: cmd.to_owned(),
                     callback: tauri::ipc::CallbackFn(0),
                     error: tauri::ipc::CallbackFn(1),
-                    url: "http://tauri.localhost".parse().unwrap(),
+                    url: if cfg!(any(windows, target_os = "android")) {
+                        "http://tauri.localhost"
+                    } else {
+                        "tauri://localhost"
+                    }
+                    .parse()
+                    .unwrap(),
                     body: tauri::ipc::InvokeBody::Json(body),
                     headers: Default::default(),
                     invoke_key: INVOKE_KEY.to_owned(),

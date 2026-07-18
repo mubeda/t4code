@@ -81,7 +81,7 @@ export function quoteCmdArg(value) {
 export function defaultWindowsCargoRunner(options = {}) {
   const command = options.command ?? "node";
   const repoRoot = options.repoRoot ?? NodePath.resolve(import.meta.dirname, "..");
-  return [command, NodePath.join(repoRoot, "scripts", "run-windows-cargo-target.mjs")]
+  return [command, NodePath.win32.join(repoRoot, "scripts", "run-windows-cargo-target.mjs")]
     .map(quoteCmdArg)
     .join(" ");
 }

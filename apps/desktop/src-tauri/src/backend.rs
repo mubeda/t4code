@@ -1143,13 +1143,13 @@ static WSL_COMMAND_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
 #[cfg(test)]
 static WSL_SERVER_BINARY_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 struct WslCommandOverrideGuard {
     previous_command: Option<PathBuf>,
     previous_server_binary: Option<PathBuf>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 impl WslCommandOverrideGuard {
     fn set(&self, program: PathBuf) {
         *WSL_COMMAND_OVERRIDE
@@ -1164,7 +1164,7 @@ impl WslCommandOverrideGuard {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 impl Drop for WslCommandOverrideGuard {
     fn drop(&mut self) {
         *WSL_COMMAND_OVERRIDE
@@ -1177,7 +1177,7 @@ impl Drop for WslCommandOverrideGuard {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 fn set_wsl_command_override(program: Option<PathBuf>) -> WslCommandOverrideGuard {
     let previous_command = std::mem::replace(
         &mut *WSL_COMMAND_OVERRIDE
