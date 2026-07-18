@@ -1649,13 +1649,14 @@
     {
       "key": "rust:workspace:zip",
       "name": "zip",
-      "current": "4.6.1",
+      "current": "8.6.0",
       "target": "8.6.0",
       "channel": "stable",
       "source": "https://crates.io/crates/zip",
       "cohort": "rust-archive",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green",
+      "notes": "Exact entry ordering, Zip 4 reader compatibility, redaction and placeholders, traversal rejection, and native archive-tool listing are covered."
     },
     {
       "key": "toolchain:devcontainer:bun",
