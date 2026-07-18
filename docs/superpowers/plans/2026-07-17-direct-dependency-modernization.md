@@ -10,13 +10,15 @@
 newest appropriate release while keeping all tests green and proving packaged
 T4Code compatibility on Windows, macOS, and Linux.
 
-**Architecture:** Execute independently revertible, risk-based cohorts. Build
-the cross-platform CI, ledger, and packaged UI harness before changing
-toolchains. Each cohort updates one coupled ecosystem, repairs only the
-compatibility failures caused by that ecosystem, runs its focused tests, and
-then runs the repository gates. The final phase requeries authoritative
-sources, closes the ledger, builds production-equivalent artifacts, and runs
-the UI smoke suite on all three operating systems.
+**Architecture:** First synchronize the isolated execution branch with the
+latest remote `main` and prove the resulting baseline with the complete test
+suite. Then execute independently revertible, risk-based cohorts. Build the
+cross-platform CI, ledger, and packaged UI harness before changing toolchains.
+Each cohort updates one coupled ecosystem, repairs only the compatibility
+failures caused by that ecosystem, runs its focused tests, and then runs the
+repository gates. The final phase requeries authoritative sources, closes the
+ledger, builds production-equivalent artifacts, and runs the UI smoke suite on
+all three operating systems.
 
 **Tech stack:** Node.js 26.5.0, pnpm 11.14.0, Vite+ 0.2.5, TypeScript 7.0.2,
 React 19, Effect 4 beta, Rust 1.97.1, Cargo, Tauri 2, WebdriverIO,
@@ -32,6 +34,10 @@ React 19, Effect 4 beta, Rust 1.97.1, Cargo, Tauri 2, WebdriverIO,
 - Start implementation in a clean isolated worktree with
   `superpowers:using-git-worktrees`. Do not copy or commit the unrelated dirty
   change in `apps/desktop/src-tauri/src/bridge.rs`.
+- Complete Phase -1 before editing a manifest, lockfile, workflow, source file,
+  test, patch, vendored reference, or upgrade ledger. The execution branch must
+  contain the latest `origin/main`, and the complete synchronized baseline must
+  be green.
 - Requery the package registries at the start of each task. When a newer
   release exists than the audited target in this plan, update the ledger and
   use the newer release if it still satisfies the approved stable/preview
@@ -60,6 +66,130 @@ overlapping suites, still run both because the repository defines both gates.
 
 ---
 
+## Phase -1: Synchronize Main and Prove the Baseline
+
+### Task 0: Retrieve the latest remote main and run the complete test baseline
+
+**Files:**
+
+- Do not modify repository files
+- Record the synchronized `origin/main` commit and command results in the
+  upgrade ledger when Task 1 creates it
+
+**Step 1: Create or enter the clean isolated execution worktree**
+
+Use `superpowers:using-git-worktrees`. The implementation worktree must contain
+the two approved planning commits but must not contain the unrelated dirty
+`apps/desktop/src-tauri/src/bridge.rs` change from the planning worktree.
+
+Run:
+
+```bash
+git status --porcelain
+git branch --show-current
+```
+
+Expected: `git status --porcelain` prints nothing and the branch is an
+implementation branch using the repository's `codex/` prefix.
+
+**Step 2: Retrieve all remote main changes**
+
+Run:
+
+```bash
+git fetch --prune origin main
+git log -1 --oneline origin/main
+git rev-list --left-right --count HEAD...origin/main
+```
+
+Inspect the divergence before changing history. Then replay the implementation
+branch on the latest remote main:
+
+```bash
+git rebase origin/main
+```
+
+Expected: the rebase succeeds without dropping either planning commit. If
+there is a conflict, stop normal execution, resolve it deliberately with
+`superpowers:systematic-debugging`, and review the resulting diff before
+continuing. Never discard main's changes or use a destructive reset.
+
+**Step 3: Prove the branch contains the retrieved main**
+
+Run:
+
+```bash
+git merge-base --is-ancestor origin/main HEAD
+git rev-parse origin/main
+git rev-parse HEAD
+git status --porcelain
+```
+
+Expected: the ancestor check exits 0, both commit IDs are recorded for Task 1,
+and the worktree remains clean.
+
+**Step 4: Restore the synchronized branch's locked dependencies**
+
+Activate the package-manager version declared by the synchronized
+`package.json`, then install without updating lockfiles:
+
+```bash
+corepack enable
+PACKAGE_MANAGER="$(node -p "require('./package.json').packageManager")"
+corepack prepare "$PACKAGE_MANAGER" --activate
+pnpm install --frozen-lockfile
+cargo fetch --locked
+```
+
+Expected: both installs succeed and neither lockfile changes. If `corepack` is
+not present in the selected Node distribution, use the repository-supported
+package-manager bootstrap to install the exact declared pnpm version; do not
+fall back to an arbitrary global pnpm.
+
+**Step 5: Run the complete synchronized unit-test baseline**
+
+Run:
+
+```bash
+vp check
+vp run typecheck
+vp test
+vp run test
+cargo test --workspace --all-targets -j 2
+```
+
+Expected: every command exits 0. This gate occurs before the first dependency
+or validation-harness edit.
+
+If any command fails:
+
+1. confirm the same failure exists on the synchronized, otherwise-unmodified
+   baseline;
+2. diagnose it with `superpowers:systematic-debugging`;
+3. stop dependency implementation until the baseline is repaired in a
+   separate, reviewable commit or the user explicitly approves a documented
+   pre-existing exception; and
+4. rerun all five commands after the repair.
+
+Do not label a baseline failure as an upgrade regression, and do not weaken or
+skip the failing test to continue.
+
+**Step 6: Prove tests did not mutate tracked inputs**
+
+Run:
+
+```bash
+git status --porcelain
+git diff --exit-code -- package.json pnpm-workspace.yaml pnpm-lock.yaml \
+  Cargo.toml Cargo.lock
+```
+
+Expected: the worktree is clean and manifests/lockfiles are unchanged. Record
+the remote-main SHA, implementation HEAD, tool versions, test commands,
+durations, and results when Task 1 creates the ledger.
+
+---
+
 ## Phase 0: Establish the Safety Net
 
 ### Task 1: Add the exhaustive upgrade ledger and validator
@@ -72,20 +202,13 @@ overlapping suites, still run both because the repository defines both gates.
 - Modify: `scripts/package.json`
 - Modify: `package.json`
 
-**Step 1: Capture the green baseline**
+**Step 1: Import the synchronized baseline evidence**
 
-Run:
-
-```bash
-vp check
-vp run typecheck
-vp test
-vp run test
-cargo test --workspace --all-targets -j 2
-```
-
-Expected: PASS. Record command durations and any existing non-fatal warnings in
-the ledger's metadata; do not treat warnings introduced later as pre-existing.
+Initialize the ledger metadata with the `origin/main` SHA, rebased
+implementation HEAD, tool versions, test commands, durations, results, and any
+existing non-fatal warnings recorded in Task 0. Assert that all five Task 0
+baseline commands passed before the first ledger row may move from `pending`.
+Do not treat warnings introduced later as pre-existing.
 
 **Step 2: Write the failing ledger tests**
 
@@ -1746,6 +1869,12 @@ git commit -m "docs: record dependency upgrade validation"
 
 ## Final Acceptance Checklist
 
+- [ ] The execution branch was rebased onto the latest fetched `origin/main`
+      before implementation began.
+- [ ] `git merge-base --is-ancestor origin/main HEAD` passed at the
+      synchronized baseline.
+- [ ] The complete Phase -1 unit/type/lint/Rust baseline passed before the
+      first dependency or harness change.
 - [ ] All 69 audited direct JavaScript dependencies are current, deliberately
       removed, or explicitly recorded as already current.
 - [ ] All 49 audited registry Rust crates are current under the stable-release
