@@ -765,6 +765,15 @@ describe("GeneralSettingsPanel", () => {
       expect(bridge.setUpdateChannel).toHaveBeenCalledWith("nightly");
     });
 
+    it("disables update checks when the packaged build has no updater state", () => {
+      stubDesktopWindow({ checkForUpdate: vi.fn(), setUpdateChannel: vi.fn() });
+      h.updateState = null;
+
+      render(<GeneralSettingsPanel />);
+
+      expect(control("button", "Check for Updates").props.disabled).toBe(true);
+    });
+
     it("reports update-track change failures", async () => {
       const bridge = {
         checkForUpdate: vi.fn().mockResolvedValue({ checked: true, state: {} }),

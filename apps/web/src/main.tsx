@@ -1,45 +1,15 @@
-import React from "react";
-import ReactDOM from "react-dom/client";
-import { ClerkProvider } from "@clerk/react";
-import { createHashHistory, createBrowserHistory } from "@tanstack/react-router";
-
 import "@fontsource-variable/dm-sans/index.css";
 import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
 import "@xterm/xterm/css/xterm.css";
 import "./index.css";
 
-import { isDesktopHost } from "./env";
-import { tauriDesktopBridgeReady } from "./tauriDesktopBridge";
-import { ManagedRelayAuthProvider } from "./cloud/managedAuth";
-import { hasCloudPublicConfig } from "./cloud/publicConfig";
-import { getRouter } from "./router";
-import { AppRoot } from "./AppRoot";
-import { installFrontendLogCapture } from "./diagnostics/frontendLogCapture";
-
-const clerkPublishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
-
-installFrontendLogCapture();
-
-async function renderApplication(): Promise<void> {
-  await tauriDesktopBridgeReady.catch(() => undefined);
-
-  // Desktop shells load bundled assets from custom/file origins, so hash history avoids path resolution issues.
-  const history = isDesktopHost ? createHashHistory() : createBrowserHistory();
-  const router = getRouter(history);
-  const app = <AppRoot router={router} />;
-
-  ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-    <React.StrictMode>
-      {clerkPublishableKey && hasCloudPublicConfig() ? (
-        <ClerkProvider publishableKey={clerkPublishableKey}>
-          <ManagedRelayAuthProvider>{app}</ManagedRelayAuthProvider>
-        </ClerkProvider>
-      ) : (
-        app
-      )}
-    </React.StrictMode>,
-  );
+async function main(): Promise<void> {
+  if (import.meta.env.VITE_T4CODE_DESKTOP_E2E === "1") {
+    await import("@wdio/tauri-plugin");
+  }
+  const { renderApplication } = await import("./bootstrap");
+  await renderApplication();
 }
 
-void renderApplication();
+void main();

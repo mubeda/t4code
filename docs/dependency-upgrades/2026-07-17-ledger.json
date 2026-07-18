@@ -59,17 +59,114 @@
         "vp run --filter @t4code/scripts typecheck",
         "vp check"
       ]
+    },
+    "packagedDesktopUiAutomation": {
+      "status": "green",
+      "driver": "@wdio/tauri-service 1.2.0 with test-only embedded WebDriver",
+      "platforms": ["linux-x64", "windows-x64", "macos-arm64", "macos-x64"],
+      "stateIsolation": "T4CODE_HOME and provider PATH shims are test-owned",
+      "workflow": ".github/workflows/desktop-ui-smoke.yml",
+      "localValidation": {
+        "platform": "macos-arm64",
+        "packagedSpecs": 3,
+        "supportAndContractTests": 108,
+        "desktopRustTests": 167,
+        "commands": [
+          "vp test run apps/desktop/e2e/support/*.test.ts apps/web/src/tauriInvokeRouting.test.ts apps/web/src/components/settings/SettingsPanels.test.tsx apps/web/src/components/ThreadTerminalDrawer.test.ts scripts/ci-platform-contract.test.ts",
+          "vp run --filter @t4code/desktop typecheck",
+          "cargo check -p t4code-desktop --features desktop-e2e",
+          "cargo test -p t4code-desktop -j 2",
+          "pnpm --filter @t4code/desktop test:ui"
+        ]
+      }
     }
   },
   "inventorySummary": {
-    "javascriptDirect": 70,
-    "javascriptLedger": 70,
-    "rustRegistry": 49,
+    "javascriptDirect": 77,
+    "javascriptLedger": 77,
+    "rustRegistry": 50,
     "rustPath": 1,
     "actions": 9,
     "toolchains": 10
   },
   "dependencies": [
+    {
+      "key": "js:apps/desktop:@wdio/cli",
+      "name": "@wdio/cli",
+      "current": "9.29.1",
+      "target": "9.29.1",
+      "channel": "stable",
+      "source": "https://www.npmjs.com/package/@wdio/cli",
+      "cohort": "packaged-desktop-ui-testing",
+      "platforms": ["linux", "macos", "windows"],
+      "status": "current"
+    },
+    {
+      "key": "js:apps/desktop:@wdio/globals",
+      "name": "@wdio/globals",
+      "current": "9.29.1",
+      "target": "9.29.1",
+      "channel": "stable",
+      "source": "https://www.npmjs.com/package/@wdio/globals",
+      "cohort": "packaged-desktop-ui-testing",
+      "platforms": ["linux", "macos", "windows"],
+      "status": "current"
+    },
+    {
+      "key": "js:apps/desktop:@wdio/local-runner",
+      "name": "@wdio/local-runner",
+      "current": "9.29.1",
+      "target": "9.29.1",
+      "channel": "stable",
+      "source": "https://www.npmjs.com/package/@wdio/local-runner",
+      "cohort": "packaged-desktop-ui-testing",
+      "platforms": ["linux", "macos", "windows"],
+      "status": "current"
+    },
+    {
+      "key": "js:apps/desktop:@wdio/mocha-framework",
+      "name": "@wdio/mocha-framework",
+      "current": "9.29.1",
+      "target": "9.29.1",
+      "channel": "stable",
+      "source": "https://www.npmjs.com/package/@wdio/mocha-framework",
+      "cohort": "packaged-desktop-ui-testing",
+      "platforms": ["linux", "macos", "windows"],
+      "status": "current"
+    },
+    {
+      "key": "js:apps/desktop:@wdio/spec-reporter",
+      "name": "@wdio/spec-reporter",
+      "current": "9.29.1",
+      "target": "9.29.1",
+      "channel": "stable",
+      "source": "https://www.npmjs.com/package/@wdio/spec-reporter",
+      "cohort": "packaged-desktop-ui-testing",
+      "platforms": ["linux", "macos", "windows"],
+      "status": "current"
+    },
+    {
+      "key": "js:apps/desktop:@wdio/tauri-service",
+      "name": "@wdio/tauri-service",
+      "current": "1.2.0",
+      "target": "1.2.0",
+      "channel": "stable",
+      "source": "https://www.npmjs.com/package/@wdio/tauri-service",
+      "cohort": "packaged-desktop-ui-testing",
+      "platforms": ["linux", "macos", "windows"],
+      "status": "current"
+    },
+    {
+      "key": "js:apps/desktop:webdriverio",
+      "name": "webdriverio",
+      "current": "9.29.1",
+      "target": "9.29.1",
+      "channel": "stable",
+      "source": "https://www.npmjs.com/package/webdriverio",
+      "cohort": "packaged-desktop-ui-testing",
+      "platforms": ["linux", "macos", "windows"],
+      "status": "current"
+    },
     {
       "key": "action:actions/checkout",
       "name": "actions/checkout",
@@ -952,6 +1049,18 @@
       "cohort": "rust-current",
       "platforms": ["linux", "macos", "windows"],
       "status": "current"
+    },
+    {
+      "key": "rust:workspace:tauri-plugin-wdio-webdriver",
+      "name": "tauri-plugin-wdio-webdriver",
+      "current": "=1.2.0",
+      "target": "1.2.0",
+      "channel": "stable",
+      "source": "https://crates.io/crates/tauri-plugin-wdio-webdriver",
+      "cohort": "packaged-desktop-ui-testing",
+      "platforms": ["linux", "macos", "windows"],
+      "status": "current",
+      "notes": "Optional Cargo feature; excluded from production bundles."
     },
     {
       "key": "rust:workspace:axum",

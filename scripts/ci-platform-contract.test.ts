@@ -8,8 +8,13 @@ import { parse as parseYaml } from "yaml";
 const REPOSITORY_ROOT = NodePath.resolve(import.meta.dirname, "..");
 const CI_WORKFLOW_PATH = NodePath.join(REPOSITORY_ROOT, ".github/workflows/ci.yml");
 const RELEASE_WORKFLOW_PATH = NodePath.join(REPOSITORY_ROOT, ".github/workflows/release.yml");
+const DESKTOP_UI_WORKFLOW_PATH = NodePath.join(
+  REPOSITORY_ROOT,
+  ".github/workflows/desktop-ui-smoke.yml",
+);
 
 interface WorkflowStep {
+  readonly if?: string;
   readonly name?: string;
   readonly run?: string;
   readonly uses?: string;
@@ -45,7 +50,7 @@ function requireJob(workflow: Workflow, name: string): WorkflowJob {
 
 function allStepCommands(job: WorkflowJob): string {
   return (job.steps ?? [])
-    .map((step) => [step.name, step.run, step.uses, JSON.stringify(step.with)].join("\n"))
+    .map((step) => [step.name, step.if, step.run, step.uses, JSON.stringify(step.with)].join("\n"))
     .join("\n");
 }
 
@@ -155,5 +160,46 @@ describe("cross-platform release contract", () => {
     expect(release.workflow.on?.schedule).toBeUndefined();
     expect(release.raw).toMatch(/workflow_dispatch:/);
     expect(release.raw).toMatch(/- nightly/);
+  });
+});
+
+describe("packaged desktop UI smoke contract", () => {
+  it("is manual and reusable without scheduled or release publishing triggers", () => {
+    const { raw, workflow } = readWorkflow(DESKTOP_UI_WORKFLOW_PATH);
+
+    expect(workflow.on?.workflow_dispatch).toBeDefined();
+    expect(workflow.on?.workflow_call).toBeDefined();
+    expect(workflow.on?.schedule).toBeUndefined();
+    expect(raw).not.toMatch(/softprops\/action-gh-release|gh release|npm publish/);
+  });
+
+  it("builds and tests packaged applications on all supported native runners", () => {
+    const { workflow } = readWorkflow(DESKTOP_UI_WORKFLOW_PATH);
+    const smoke = requireJob(workflow, "desktop_ui_smoke");
+    const matrix = smoke.strategy?.matrix?.include ?? [];
+    const commands = allStepCommands(smoke);
+
+    expect(smoke.strategy?.["fail-fast"]).toBe(false);
+    expect(matrix).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ runner: "ubuntu-22.04", platform: "linux", arch: "x64" }),
+        expect.objectContaining({ runner: "windows-2025", platform: "win", arch: "x64" }),
+        expect.objectContaining({ runner: "macos-26", platform: "mac", arch: "arm64" }),
+        expect.objectContaining({
+          runner: "macos-26-intel",
+          platform: "mac",
+          arch: "x64",
+        }),
+      ]),
+    );
+    expect(commands).toMatch(/vp install --frozen-lockfile/);
+    expect(commands).toMatch(/test:ui:build/);
+    expect(commands).toMatch(/test:ui:desktop/);
+    expect(commands).toMatch(/xvfb-run/);
+    expect(commands).toMatch(/hdiutil attach/);
+    expect(commands).toMatch(/hdiutil detach/);
+    expect(commands).not.toMatch(/bundle\/macos.*\.app/);
+    expect(commands).toMatch(/always\(\)/);
+    expect(commands).toMatch(/actions\/upload-artifact/);
   });
 });

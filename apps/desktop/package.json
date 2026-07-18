@@ -6,8 +6,20 @@
   "scripts": {
     "dev": "node ../../scripts/run-msvc-x64.mjs pnpm dlx @tauri-apps/cli@2.11.4 dev -- -p t4code-desktop",
     "build": "node ../../scripts/run-msvc-x64.mjs pnpm dlx @tauri-apps/cli@2.11.4 build",
-    "typecheck": "node ../../scripts/run-msvc-x64.mjs cargo check -p t4code-desktop",
-    "test": "node ../../scripts/run-msvc-x64.mjs cargo test -p t4code-desktop -j 2"
+    "typecheck": "node ../../scripts/run-msvc-x64.mjs cargo check -p t4code-desktop && tsgo --noEmit -p e2e/tsconfig.json",
+    "test": "node ../../scripts/run-msvc-x64.mjs cargo test -p t4code-desktop -j 2",
+    "test:ui": "wdio run ./e2e/wdio.conf.ts",
+    "test:ui:build": "node ./e2e/support/build-packaged-app.ts"
+  },
+  "devDependencies": {
+    "@wdio/cli": "9.29.1",
+    "@wdio/globals": "9.29.1",
+    "@wdio/local-runner": "9.29.1",
+    "@wdio/mocha-framework": "9.29.1",
+    "@wdio/native-utils": "2.5.0",
+    "@wdio/spec-reporter": "9.29.1",
+    "@wdio/tauri-service": "1.2.0",
+    "webdriverio": "9.29.1"
   },
   "productName": "T4Code (Alpha)"
 }
