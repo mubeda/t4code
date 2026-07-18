@@ -23,6 +23,7 @@
     "test:coverage": "vp run test:coverage:ts && vp run test:coverage:rust",
     "test:coverage:ts": "vp test --coverage",
     "test:coverage:rust": "node scripts/check-rust-coverage.ts",
+    "check:dependency-ledger": "node scripts/check-dependency-upgrade-ledger.ts",
     "test:desktop": "vp run --filter @t4code/desktop test",
     "fmt": "vp fmt",
     "fmt:check": "vp fmt --check",
