@@ -321,24 +321,24 @@
     {
       "key": "js:apps/marketing:@vercel/config",
       "name": "@vercel/config",
-      "current": "^0.3.0",
+      "current": "^0.5.5",
       "target": "0.5.5",
       "channel": "stable",
       "source": "https://www.npmjs.com/package/@vercel/config",
       "cohort": "stable-javascript-tooling",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:apps/marketing:astro",
       "name": "astro",
-      "current": "^7.0.3",
+      "current": "^7.1.1",
       "target": "7.1.1",
       "channel": "stable",
       "source": "https://www.npmjs.com/package/astro",
       "cohort": "stable-javascript-tooling",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:apps/web:@base-ui/react",
@@ -552,13 +552,13 @@
     {
       "key": "js:apps/web:@vitejs/plugin-react",
       "name": "@vitejs/plugin-react",
-      "current": "^6.0.0",
+      "current": "^6.0.3",
       "target": "6.0.3",
       "channel": "stable",
       "source": "https://www.npmjs.com/package/@vitejs/plugin-react",
       "cohort": "stable-javascript-tooling",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:apps/web:@xterm/addon-fit",
@@ -651,13 +651,13 @@
     {
       "key": "js:apps/web:msw",
       "name": "msw",
-      "current": "2.12.11",
+      "current": "2.15.0",
       "target": "2.15.0",
       "channel": "stable",
       "source": "https://www.npmjs.com/package/msw",
       "cohort": "stable-javascript-tooling",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:apps/web:react",
@@ -948,13 +948,13 @@
     {
       "key": "js:catalog:jose",
       "name": "jose",
-      "current": "6.2.2",
+      "current": "6.2.3",
       "target": "6.2.3",
       "channel": "stable",
       "source": "https://www.npmjs.com/package/jose",
       "cohort": "stable-javascript-tooling",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:catalog:typescript",
@@ -982,13 +982,13 @@
     {
       "key": "js:infra/relay:@cloudflare/workers-types",
       "name": "@cloudflare/workers-types",
-      "current": "^4.20260601.1",
+      "current": "^5.20260718.1",
       "target": "5.20260718.1",
       "channel": "stable",
       "source": "https://www.npmjs.com/package/@cloudflare/workers-types",
       "cohort": "stable-javascript-tooling",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:infra/relay:alchemy",
@@ -1027,24 +1027,24 @@
     {
       "key": "js:oxlint-plugin-t4code:@oxlint/plugins",
       "name": "@oxlint/plugins",
-      "current": "^1.63.0",
+      "current": "^1.74.0",
       "target": "1.74.0",
       "channel": "stable",
       "source": "https://www.npmjs.com/package/@oxlint/plugins",
       "cohort": "stable-javascript-tooling",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:packages/contracts:fast-check",
       "name": "fast-check",
-      "current": "^4.8.0",
+      "current": "^4.9.0",
       "target": "4.9.0",
       "channel": "stable",
       "source": "https://www.npmjs.com/package/fast-check",
       "cohort": "stable-javascript-tooling",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:scripts:smol-toml",
@@ -1072,13 +1072,13 @@
     {
       "key": "js:workspace:@vitest/coverage-v8",
       "name": "@vitest/coverage-v8",
-      "current": "4.1.9",
+      "current": "4.1.10",
       "target": "4.1.10",
       "channel": "stable",
       "source": "https://www.npmjs.com/package/@vitest/coverage-v8",
       "cohort": "stable-javascript-tooling",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "rust:apps/server/tests/fixtures/task8-harness:xpty",
