@@ -33,6 +33,8 @@ describe("repository toolchain contract", () => {
     expect(workspaceConfiguration.minimumReleaseAgeExclude).toEqual([
       "geckodriver@6.1.1",
       "@cloudflare/workers-types@5.20260718.1",
+      "@tanstack/router-generator@1.167.21",
+      "@tanstack/router-plugin@1.168.22",
     ]);
     expect(workspace).not.toMatch(/^trustLockfile:\s+true$/m);
     expect(workspaceConfiguration).not.toHaveProperty("ignoredBuiltDependencies");
