@@ -25,6 +25,7 @@ import { listen as importedTauriListen } from "@tauri-apps/api/event";
 
 import { readBrowserClientSettings, writeBrowserClientSettings } from "./clientPersistenceStorage";
 import { showContextMenuFallback } from "./contextMenuFallback";
+import { invokeTauriCommand, type TauriCommandMock } from "./tauriInvokeRouting";
 
 const CONNECTION_CATALOG_STORAGE_KEY = "t4code.connectionCatalog";
 const BACKEND_READY_EVENT = "desktop:backend-ready";
@@ -70,10 +71,22 @@ function isTauriDesktopCapabilityUnsupportedPayload(
 
 function tauriInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const invoke = window.__TAURI__?.core?.invoke;
-  if (invoke) {
-    return invoke<T>(command, args);
-  }
-  return importedTauriInvoke<T>(command, args);
+  const registeredMock =
+    import.meta.env.VITE_T4CODE_DESKTOP_E2E === "1" ? window.__wdio_mocks__?.[command] : undefined;
+  return invokeTauriCommand<T>({
+    command,
+    args,
+    ...(typeof registeredMock === "function"
+      ? { e2eMock: registeredMock as TauriCommandMock }
+      : {}),
+    ...(invoke
+      ? {
+          globalInvoke: (invokeCommand, invokeArgs) => invoke<unknown>(invokeCommand, invokeArgs),
+        }
+      : {}),
+    importedInvoke: (invokeCommand, invokeArgs) =>
+      importedTauriInvoke<unknown>(invokeCommand, invokeArgs),
+  });
 }
 
 function tauriListen<T>(event: string, listener: (payload: T) => void): () => void {

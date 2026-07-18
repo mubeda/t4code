@@ -360,8 +360,21 @@ export function runtimeEnvSignature(runtimeEnv: Record<string, string> | undefin
   );
 }
 
+export function resolveTerminalDocumentVisibility(
+  visibilityState: DocumentVisibilityState,
+  desktopUiAutomation: boolean,
+): boolean {
+  return desktopUiAutomation || visibilityState === "visible";
+}
+
 function isDocumentVisible(): boolean {
-  return typeof document === "undefined" || document.visibilityState === "visible";
+  return (
+    typeof document === "undefined" ||
+    resolveTerminalDocumentVisibility(
+      document.visibilityState,
+      import.meta.env.VITE_T4CODE_DESKTOP_E2E === "1",
+    )
+  );
 }
 
 export function normalizeComputedColor(value: string | null | undefined, fallback: string): string {
@@ -683,7 +696,7 @@ export function TerminalViewport({
     if (!visible) return;
 
     const updateDocumentVisibility = () => {
-      setDocumentVisible(document.visibilityState === "visible");
+      setDocumentVisible(isDocumentVisible());
     };
     updateDocumentVisibility();
     document.addEventListener("visibilitychange", updateDocumentVisibility);

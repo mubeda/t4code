@@ -1,0 +1,15 @@
+{
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "capabilities": [
+        {
+          "identifier": "desktop-e2e",
+          "description": "Test-only packaged desktop automation capability.",
+          "windows": ["main"],
+          "permissions": ["allow-desktop-bridge", "core:default", "wdio:default"]
+        }
+      ]
+    }
+  }
+}

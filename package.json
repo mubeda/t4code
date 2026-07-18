@@ -25,6 +25,8 @@
     "test:coverage:rust": "node scripts/check-rust-coverage.ts",
     "check:dependency-ledger": "node scripts/check-dependency-upgrade-ledger.ts",
     "test:desktop": "vp run --filter @t4code/desktop test",
+    "test:ui:desktop": "vp run --filter @t4code/desktop test:ui",
+    "test:ui:desktop:build": "vp run --filter @t4code/desktop test:ui:build",
     "fmt": "vp fmt",
     "fmt:check": "vp fmt --check",
     "build:contracts": "vp run --filter @t4code/contracts build",
