@@ -86,7 +86,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(desktop_bridge_commands!(bridge_invoke_handler))
-        .build(tauri::generate_context!())
+        .build(desktop_context())
         .expect("error while building T4Code Tauri application")
         .run(|app_handle, event| {
             if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
@@ -108,6 +108,10 @@ pub fn run() {
                 }
             }
         });
+}
+
+fn desktop_context<R: tauri::Runtime>() -> tauri::Context<R> {
+    tauri::generate_context!()
 }
 
 mod backend;
