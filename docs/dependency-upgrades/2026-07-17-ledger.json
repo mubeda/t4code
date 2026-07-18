@@ -1061,14 +1061,14 @@
     {
       "key": "js:workspace:@babel/plugin-transform-react-jsx",
       "name": "@babel/plugin-transform-react-jsx",
-      "current": "7.28.6",
+      "current": "removed",
       "target": "removed",
       "channel": "removal",
       "source": "https://www.npmjs.com/package/@babel/plugin-transform-react-jsx",
       "cohort": "babel-removal",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending",
-      "notes": "Direct dependency is unused and will be removed instead of migrated to Babel 8."
+      "status": "removed",
+      "notes": "Repository source/config scan and `pnpm why @babel/plugin-transform-react-jsx --depth 4` confirm there is no remaining consumer or direct root dependency."
     },
     {
       "key": "js:workspace:@vitest/coverage-v8",

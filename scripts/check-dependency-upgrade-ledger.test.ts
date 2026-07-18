@@ -180,7 +180,58 @@ function completeLedger(inventory: DependencyInventory): DependencyLedger {
   };
 }
 
+function findUnexpectedSourceReferences(root: string, dependency: string): Array<string> {
+  const ignoredDirectories = new Set([".git", ".repos", "node_modules", "target"]);
+  const ignoredFiles = new Set([
+    "docs/dependency-upgrades/2026-07-17-ledger.json",
+    "docs/superpowers/plans/2026-07-17-direct-dependency-modernization.md",
+    "package.json",
+    "pnpm-lock.yaml",
+    "scripts/check-dependency-upgrade-ledger.test.ts",
+  ]);
+  const sourceExtensions = new Set([
+    ".cjs",
+    ".js",
+    ".jsx",
+    ".json",
+    ".mjs",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".yaml",
+    ".yml",
+  ]);
+  const references: Array<string> = [];
+  const visit = (directory: string): void => {
+    for (const entry of NodeFS.readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory() && ignoredDirectories.has(entry.name)) continue;
+      const absolutePath = NodePath.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        visit(absolutePath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const relativePath = NodePath.relative(root, absolutePath).split(NodePath.sep).join("/");
+      if (ignoredFiles.has(relativePath)) continue;
+      if (!sourceExtensions.has(NodePath.extname(entry.name))) continue;
+      if (NodeFS.readFileSync(absolutePath, "utf8").includes(dependency)) {
+        references.push(relativePath);
+      }
+    }
+  };
+  visit(root);
+  return references.toSorted();
+}
+
 describe("dependency upgrade ledger discovery", () => {
+  it("keeps the direct Babel JSX transform plugin unused outside dependency metadata", () => {
+    const repositoryRoot = NodePath.resolve(import.meta.dirname, "..");
+
+    expect(
+      findUnexpectedSourceReferences(repositoryRoot, "@babel/plugin-transform-react-jsx"),
+    ).toEqual([]);
+  });
+
   it("discovers external JavaScript dependencies and excludes workspace links", () => {
     const root = createRepositoryFixture();
     const inventory = discoverDependencyInventory(root);
