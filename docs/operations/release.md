@@ -7,8 +7,7 @@ repository no longer packages or publishes Electron artifacts.
 
 `.github/workflows/release.yml` supports:
 
-- stable releases from tags matching `v*.*.*`;
-- scheduled nightly checks every three hours;
+- stable releases from tags matching `v*.*.*`; and
 - manual stable or nightly releases through `workflow_dispatch`.
 
 The preflight job runs `vp check`, `vp run typecheck`, and `vp run test`.
@@ -28,9 +27,11 @@ host and in-process server and embeds the built React assets. No Node runtime or
 TypeScript server is packaged. The release job publishes the resulting
 `.dmg`, `.AppImage`, and `.exe` files to one GitHub Release.
 
-Stable semantic versions are marked latest. Stable prerelease versions and all
-nightly versions are GitHub prereleases and are never marked latest. A scheduled
-nightly is skipped when `main` has not changed since the previous nightly tag.
+Stable semantic versions are marked latest. Stable prerelease versions are
+GitHub prereleases and are never marked latest.
+Manual nightly releases are GitHub prereleases and are never marked latest.
+Nightly releases run only when a maintainer explicitly selects the `nightly`
+channel in a manual workflow dispatch.
 
 ## Version Source
 
@@ -103,7 +104,8 @@ Equivalent root shortcuts are `dist:desktop:dmg`,
 
 1. Confirm `main` passes all required checks.
 2. Run `vp run release:smoke`.
-3. Create and push `vX.Y.Z`, or dispatch the workflow with an explicit version.
+3. Create and push `vX.Y.Z`, dispatch `stable` with an explicit version, or
+   dispatch the `nightly` channel.
 4. Confirm all four native matrix jobs complete.
 5. Confirm the GitHub Release contains exactly the expected installers.
 6. Install and smoke-test each artifact on its target operating system.

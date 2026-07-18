@@ -3319,6 +3319,7 @@ interface SidebarProjectsContentProps {
   threadPreviewCount: SidebarThreadPreviewCount;
   updateSettings: ReturnType<typeof useUpdateClientSettings>;
   openAddProject: () => void;
+  selectedProjectId: ProjectId | null;
   isManualProjectSorting: boolean;
   projectDnDSensors: ReturnType<typeof useSensors>;
   projectCollisionDetection: CollisionDetection;
@@ -3361,6 +3362,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     threadPreviewCount,
     updateSettings,
     openAddProject,
+    selectedProjectId,
     isManualProjectSorting,
     projectDnDSensors,
     projectCollisionDetection,
@@ -3532,8 +3534,12 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                     type="button"
                     aria-label="New worktree"
                     data-testid="sidebar-new-worktree-trigger"
-                    className="inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
-                    onClick={() => openCreateWorktreeDialog()}
+                    disabled={selectedProjectId === null}
+                    className="inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+                    onClick={() => {
+                      if (selectedProjectId === null) return;
+                      openCreateWorktreeDialog(selectedProjectId);
+                    }}
                   />
                 }
               >
@@ -3777,9 +3783,9 @@ export default function Sidebar() {
       ),
     [sidebarThreads],
   );
-  // Resolve the active route's project key to a logical key so it matches the
-  // sidebar's grouped project entries.
-  const activeRouteProjectKey = useMemo(() => {
+  // Keep the routed thread's physical project ID for project-scoped actions,
+  // and resolve its logical key separately for grouped sidebar highlighting.
+  const activeRouteProject = useMemo(() => {
     if (!routeThreadKey) {
       return null;
     }
@@ -3789,8 +3795,13 @@ export default function Sidebar() {
       projectPhysicalKeyByScopedRef.get(
         scopedProjectKey(scopeProjectRef(activeThread.environmentId, activeThread.projectId)),
       ) ?? scopedProjectKey(scopeProjectRef(activeThread.environmentId, activeThread.projectId));
-    return physicalToLogicalKey.get(physicalKey) ?? physicalKey;
+    return {
+      projectId: activeThread.projectId,
+      projectKey: physicalToLogicalKey.get(physicalKey) ?? physicalKey,
+    };
   }, [routeThreadKey, sidebarThreadByKey, physicalToLogicalKey, projectPhysicalKeyByScopedRef]);
+  const activeRouteProjectId = activeRouteProject?.projectId ?? null;
+  const activeRouteProjectKey = activeRouteProject?.projectKey ?? null;
 
   // Group threads by logical project key so all threads from grouped projects
   // are displayed together.
@@ -4240,7 +4251,7 @@ export default function Sidebar() {
           setCreateWorktreeDialogOpen(open);
           if (!open) setCreateWorktreeDialogProjectId(null);
         }}
-        defaultProjectId={createWorktreeDialogProjectId}
+        defaultProjectId={createWorktreeDialogProjectId ?? activeRouteProjectId}
       />
       {prewarmedSidebarThreadRefs.map((threadRef) => (
         <SidebarThreadDetailPrewarmer key={scopedThreadKey(threadRef)} threadRef={threadRef} />
@@ -4263,6 +4274,7 @@ export default function Sidebar() {
             threadPreviewCount={sidebarThreadPreviewCount}
             updateSettings={updateSettings}
             openAddProject={openAddProjectCommandPalette}
+            selectedProjectId={activeRouteProjectId}
             isManualProjectSorting={isManualProjectSorting}
             projectDnDSensors={projectDnDSensors}
             projectCollisionDetection={projectCollisionDetection}
