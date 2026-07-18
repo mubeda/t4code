@@ -42,6 +42,25 @@
       "Frozen pnpm install reported intentionally ignored build scripts for bufferutil, utf-8-validate, and workerd; installation completed successfully."
     ]
   },
+  "validationFoundation": {
+    "crossPlatformWorkflowContract": {
+      "status": "green",
+      "portableRunner": "ubuntu-24.04",
+      "nativeRunners": [
+        "ubuntu-22.04 x64",
+        "windows-2025 x64",
+        "macos-26 arm64",
+        "macos-26-intel x64"
+      ],
+      "tests": [
+        "scripts/ci-platform-contract.test.ts",
+        "scripts/tauri-hardening.test.ts",
+        "vp run release:smoke",
+        "vp run --filter @t4code/scripts typecheck",
+        "vp check"
+      ]
+    }
+  },
   "inventorySummary": {
     "javascriptDirect": 70,
     "javascriptLedger": 70,

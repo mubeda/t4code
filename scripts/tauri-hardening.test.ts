@@ -18,6 +18,7 @@ const TauriConfiguration = Schema.fromJsonString(
     }),
     bundle: Schema.Struct({
       icon: Schema.Array(Schema.String),
+      macOS: Schema.Struct({ minimumSystemVersion: Schema.String }),
       resources: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
     }),
   }),
@@ -48,6 +49,7 @@ it.layer(NodeServices.layer)("Tauri production hardening", (it) => {
       ];
 
       assert.deepEqual(tauri.bundle.icon, expectedIcons);
+      assert.equal(tauri.bundle.macOS.minimumSystemVersion, "11.0");
       for (const iconPath of [
         "assets/prod/black-universal-1024.png",
         "assets/prod/t4-black-windows.ico",

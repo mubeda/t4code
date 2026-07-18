@@ -18,7 +18,7 @@ system:
 | -------- | ---------------- | ------------ | --------------- |
 | macOS    | `macos-26`       | arm64        | DMG             |
 | macOS    | `macos-26-intel` | x64          | DMG             |
-| Linux    | `ubuntu-24.04`   | x64          | AppImage        |
+| Linux    | `ubuntu-22.04`   | x64          | AppImage        |
 | Windows  | `windows-2025`   | x64          | NSIS executable |
 
 Each matrix job installs the frontend build toolchain and Rust, restores Cargo
@@ -32,6 +32,17 @@ GitHub prereleases and are never marked latest.
 Manual nightly releases are GitHub prereleases and are never marked latest.
 Nightly releases run only when a maintainer explicitly selects the `nightly`
 channel in a manual workflow dispatch.
+
+## Supported Platforms
+
+- macOS 11 or newer on Apple Silicon (`arm64`) and Intel (`x64`);
+- Windows 10 or 11 on `x64`;
+- Linux `x64` AppImages built on Ubuntu 22.04 and exercised on Ubuntu 22.04,
+  Ubuntu 24.04, and Debian 12.
+
+Windows on ARM remains unsupported until `scripts/run-msvc-x64.mjs` is made
+architecture-aware. Linux release artifacts use Ubuntu 22.04 to keep the
+runtime glibc compatibility floor below the portable Ubuntu 24.04 CI jobs.
 
 ## Version Source
 
@@ -102,7 +113,7 @@ Equivalent root shortcuts are `dist:desktop:dmg`,
 
 ## Release Check
 
-1. Confirm `main` passes all required checks.
+1. Confirm `main` passes the portable and four native CI jobs.
 2. Run `vp run release:smoke`.
 3. Create and push `vX.Y.Z`, dispatch `stable` with an explicit version, or
    dispatch the `nightly` channel.
