@@ -772,46 +772,46 @@
     {
       "key": "js:catalog:@clerk/backend",
       "name": "@clerk/backend",
-      "current": "3.8.3-snapshot.v20260622234151",
+      "current": "3.11.7",
       "target": "3.11.7",
       "channel": "stable",
       "source": "https://www.npmjs.com/package/@clerk/backend",
       "cohort": "clerk",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:catalog:@clerk/clerk-js",
       "name": "@clerk/clerk-js",
-      "current": "6.21.0-snapshot.v20260622234151",
+      "current": "6.25.5",
       "target": "6.25.5",
       "channel": "stable",
       "source": "https://www.npmjs.com/package/@clerk/clerk-js",
       "cohort": "clerk",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:catalog:@clerk/react",
       "name": "@clerk/react",
-      "current": "6.11.0-snapshot.v20260622234151",
+      "current": "6.12.5",
       "target": "6.12.5",
       "channel": "stable",
       "source": "https://www.npmjs.com/package/@clerk/react",
       "cohort": "clerk",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:catalog:@clerk/shared",
       "name": "@clerk/shared",
-      "current": "4.21.0-snapshot.v20260622234151",
+      "current": "4.25.5",
       "target": "4.25.5",
       "channel": "stable",
       "source": "https://www.npmjs.com/package/@clerk/shared",
       "cohort": "clerk",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:catalog:@effect/atom-react",

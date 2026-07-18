@@ -15,10 +15,10 @@ minimumReleaseAgeExclude:
   - "@tanstack/router-plugin@1.168.22"
 
 catalog:
-  "@clerk/backend": 3.8.3-snapshot.v20260622234151
-  "@clerk/clerk-js": 6.21.0-snapshot.v20260622234151
-  "@clerk/react": 6.11.0-snapshot.v20260622234151
-  "@clerk/shared": 4.21.0-snapshot.v20260622234151
+  "@clerk/backend": 3.11.7
+  "@clerk/clerk-js": 6.25.5
+  "@clerk/react": 6.12.5
+  "@clerk/shared": 4.25.5
   "@tauri-apps/api": 2.11.1
   "@effect/atom-react": 4.0.0-beta.78
   "@effect/platform-node": 4.0.0-beta.78
@@ -54,7 +54,7 @@ overrides:
   # nominal state and cannot safely cross between duplicate package instances.
   fast-check: 4.9.0
 
-  # Keep every Clerk consumer on the same snapshot train. Clerk publishes wallet
+  # Keep every Clerk consumer on the same stable train. Clerk publishes wallet
   # auth integrations as required dependencies, but T4Code does not support
   # wallet auth, so keep that unused dependency tree out of installs.
   "@clerk/backend": "catalog:"
