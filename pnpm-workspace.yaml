@@ -11,6 +11,8 @@ packages:
 minimumReleaseAgeExclude:
   - geckodriver@6.1.1
   - "@cloudflare/workers-types@5.20260718.1"
+  - "@tanstack/router-generator@1.167.21"
+  - "@tanstack/router-plugin@1.168.22"
 
 catalog:
   "@clerk/backend": 3.8.3-snapshot.v20260622234151
