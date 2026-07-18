@@ -4,7 +4,7 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { AdoptPolicy } from "alchemy/AdoptPolicy";
 import { AlchemyContext, AlchemyContextLive } from "alchemy/AlchemyContext";
 import * as Apply from "alchemy/Apply";
-import { provideFreshArtifactStore } from "alchemy/Artifacts";
+import { ArtifactStore, createArtifactStore, provideFreshArtifactStore } from "alchemy/Artifacts";
 import { AuthProviders } from "alchemy/Auth/AuthProvider";
 import { CredentialsStoreLive } from "alchemy/Auth/Credentials";
 import { ProfileLive } from "alchemy/Auth/Profile";
@@ -611,7 +611,11 @@ const relayDeployOperationsLive = Layer.succeed(
   }),
 );
 
-const deployServices = Layer.merge(deployBaseServices, relayDeployOperationsLive);
+const deployServices = Layer.mergeAll(
+  deployBaseServices,
+  relayDeployOperationsLive,
+  Layer.succeed(ArtifactStore, createArtifactStore()),
+);
 
 export const deploy = Effect.fn("relay.deploy")(function* (options: RelayDeployOptions) {
   const configProvider = yield* loadDeployConfigProvider(options.envFile);

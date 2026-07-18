@@ -1,17 +1,18 @@
 import { adopt } from "@/AdoptPolicy";
 import * as AWS from "@/AWS";
 import { Stream } from "@/AWS/Kinesis";
+import * as Provider from "@/Provider";
 import { State } from "@/State";
-import * as Test from "@/Test/Vitest";
+import * as Test from "@/Test/Alchemy";
 import * as Kinesis from "@distilled.cloud/aws/kinesis";
-import { describe, expect } from "@effect/vitest";
+import { describe, expect } from "alchemy-test";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 
 const { test } = Test.make({ providers: AWS.providers() });
 
-describe("AWS.Kinesis.Stream", () => {
+describe.skipIf(!!process.env.FAST)("AWS.Kinesis.Stream", () => {
   test.provider(
     "create and delete stream with default props",
     (stack) =>
@@ -646,6 +647,42 @@ describe("AWS.Kinesis.Stream", () => {
     { timeout: 240_000 },
   );
 
+  // Canonical `list()` test (AWS account/region-scoped collection): deploy a
+  // real stream, resolve the typed provider via `Provider.findProvider`, call
+  // `list()`, and assert the deployed stream appears in the exhaustively-
+  // paginated, fully-hydrated result.
+  test.provider(
+    "list enumerates the deployed stream",
+    (stack) =>
+      Effect.gen(function* () {
+        yield* stack.destroy();
+
+        const stream = yield* stack.deploy(
+          Effect.gen(function* () {
+            return yield* Stream("ListStream", {
+              streamName: "alchemy-test-kinesis-stream-list",
+              tags: { Environment: "test" },
+            });
+          }),
+        );
+
+        const provider = yield* Provider.findProvider(Stream);
+        const all = yield* provider.list();
+
+        const found = all.find((s) => s.streamName === stream.streamName);
+        expect(found).toBeDefined();
+        // The hydrated element must match the full `read` Attributes shape.
+        expect(found?.streamArn).toEqual(stream.streamArn);
+        expect(found?.streamStatus).toEqual("ACTIVE");
+        expect(found?.tags?.Environment).toEqual("test");
+
+        yield* stack.destroy();
+
+        yield* assertStreamDeleted(stream.streamName);
+      }),
+    { timeout: 240_000 },
+  );
+
   class StreamStillExists extends Data.TaggedError("StreamStillExists") {}
 
   const assertStreamDeleted = Effect.fn(function* (streamName: string) {
@@ -658,9 +695,10 @@ describe("AWS.Kinesis.Stream", () => {
           e._tag === "StreamStillExists" ||
           // During stream deletion, AWS may return incomplete responses that fail parsing
           e._tag === "ParseError",
-        schedule: Schedule.exponential(500).pipe(
-          Schedule.both(Schedule.recurs(30)),
-        ),
+        schedule: Schedule.max([
+          Schedule.exponential(500),
+          Schedule.recurs(30),
+        ]),
       }),
       Effect.catchTag("ResourceNotFoundException", () => Effect.void),
     );

@@ -285,6 +285,13 @@ export const resolveReferenceRepoRef = Effect.fn("resolveReferenceRepoRef")(func
     });
   }
 
+  if (repo.packageSourceRefPrefix && version.startsWith(repo.packageSourceRefPrefix)) {
+    const ref = version.slice(repo.packageSourceRefPrefix.length);
+    if (ref.length > 0) {
+      return ref;
+    }
+  }
+
   return `${repo.versionTagPrefix}${version}`;
 });
 

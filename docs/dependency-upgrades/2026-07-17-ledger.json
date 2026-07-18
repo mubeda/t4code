@@ -822,7 +822,7 @@
       "source": "https://www.npmjs.com/package/@effect/atom-react",
       "cohort": "effect",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:catalog:@effect/platform-node",
@@ -833,7 +833,7 @@
       "source": "https://www.npmjs.com/package/@effect/platform-node",
       "cohort": "effect",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:catalog:@effect/sql-pg",
@@ -844,7 +844,7 @@
       "source": "https://www.npmjs.com/package/@effect/sql-pg",
       "cohort": "effect",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:catalog:@effect/tsgo",
@@ -866,7 +866,7 @@
       "source": "https://www.npmjs.com/package/@effect/vitest",
       "cohort": "effect",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:catalog:@noble/curves",
@@ -926,13 +926,13 @@
     {
       "key": "js:catalog:@typescript/native-preview",
       "name": "@typescript/native-preview",
-      "current": "7.0.0-dev.20260604.1",
+      "current": "7.0.0-dev.20260707.2",
       "target": "7.0.0-dev.20260707.2",
       "channel": "preview",
       "source": "https://www.npmjs.com/package/@typescript/native-preview",
       "cohort": "relay-preview",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:catalog:effect",
@@ -943,7 +943,7 @@
       "source": "https://www.npmjs.com/package/effect",
       "cohort": "effect",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:catalog:jose",
@@ -993,36 +993,36 @@
     {
       "key": "js:infra/relay:alchemy",
       "name": "alchemy",
-      "current": "https://pkg.ing/alchemy/078ff00",
+      "current": "https://pkg.ing/alchemy/cde008ab6b77783d3edbf5dc82750fbdfd279347",
       "target": "custom-source beta.63",
       "channel": "custom-source",
       "source": "https://pkg.ing/alchemy",
       "cohort": "relay-preview",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending",
+      "status": "green",
       "notes": "Preserve the pkg.ing custom source while moving to the audited beta.63 build."
     },
     {
       "key": "js:infra/relay:drizzle-kit",
       "name": "drizzle-kit",
-      "current": "1.0.0-rc.3",
+      "current": "1.0.0-rc.4",
       "target": "1.0.0-rc.4",
       "channel": "preview",
       "source": "https://www.npmjs.com/package/drizzle-kit",
       "cohort": "relay-preview",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:infra/relay:drizzle-orm",
       "name": "drizzle-orm",
-      "current": "1.0.0-rc.3",
+      "current": "1.0.0-rc.4",
       "target": "1.0.0-rc.4",
       "channel": "preview",
       "source": "https://www.npmjs.com/package/drizzle-orm",
       "cohort": "relay-preview",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:oxlint-plugin-t4code:@oxlint/plugins",

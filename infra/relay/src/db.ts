@@ -59,7 +59,7 @@ export const PlanetscaleDatabase = Effect.gen(function* () {
 
 export const RelayHyperdrive = Effect.gen(function* () {
   const { runtimeRole } = yield* PlanetscaleDatabase;
-  return yield* Cloudflare.Hyperdrive("RelayHyperdrive", {
+  return yield* Cloudflare.Hyperdrive.Connection("RelayHyperdrive", {
     origin: runtimeRole.origin,
     caching: {
       disabled: true,
