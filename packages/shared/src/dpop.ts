@@ -1,5 +1,5 @@
-import { p256 } from "@noble/curves/nist";
-import { sha256 } from "@noble/hashes/sha2";
+import { p256 } from "@noble/curves/nist.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 import * as Encoding from "effect/Encoding";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
@@ -164,6 +164,9 @@ export function verifyDpopProof(input: {
     }
 
     const signature = base64UrlToBytes(parts[2]);
+    if (signature.length !== 64) {
+      return { ok: false, reason: "Invalid DPoP signature." };
+    }
     const signatureInputHash = sha256(new TextEncoder().encode(`${parts[0]}.${parts[1]}`));
     const verified = p256.verify(
       signature,
@@ -172,6 +175,10 @@ export function verifyDpopProof(input: {
       {
         prehash: false,
         format: "compact",
+        // WebCrypto and JOSE accept both canonical low-S and high-S ECDSA
+        // signatures. Noble v2 rejects high-S by default, so explicitly retain
+        // the ES256 verification semantics used by browser-generated proofs.
+        lowS: false,
       },
     );
     return verified

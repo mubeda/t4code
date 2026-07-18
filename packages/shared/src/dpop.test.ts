@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import { p256 } from "@noble/curves/nist.js";
 import * as Encoding from "effect/Encoding";
 
 import {
@@ -10,6 +11,20 @@ import {
 } from "./dpop.ts";
 
 const textEncoder = new TextEncoder();
+const FIXED_P256_PUBLIC_KEY_HEX =
+  "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5";
+const FIXED_PUBLIC_JWK: DpopPublicJwk = {
+  kty: "EC",
+  crv: "P-256",
+  x: "axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY",
+  y: "T-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU",
+};
+const FIXED_DPOP_PROOF =
+  "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwiY3J2IjoiUC0yNTYiLCJ4IjoiYXhmUjh1RXNRa2Y0dk9ibFk2UkE4bmNEZllFdDZ6T2c5S0U1UmRpWXdwWSIsInkiOiJULU5DNHY0YWY1dU81LXRLZkEtZUZpdk9NMWRyTVY3T3k3WkFhRGVfVWZVIn19.eyJodG0iOiJQT1NUIiwiaHR1IjoiaHR0cHM6Ly9leGFtcGxlLmNvbS9vYXV0aC90b2tlbiIsImp0aSI6ImZpeGVkLXByb29mIiwiaWF0IjoxMDAsImF0aCI6IlB4YS0xd2lmUmxQbDd5R18wb0pOZnpxcTdNZWxtT2ZvbkZnT0ZnYXB6RkkifQ.UAXbIdhAIJ6w0LSMhULkW9Q86HY5bnsucvAGvgETDV4RJkld_hncSz3GvokWL49z5mFDoBnIuhAVnQHbresVPg";
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 function encodeJson(value: unknown): string {
   return Encoding.encodeBase64Url(textEncoder.encode(JSON.stringify(value)));
@@ -407,6 +422,38 @@ describe("verifyDpopProof", () => {
 });
 
 describe("DPoP helpers", () => {
+  it("preserves fixed P-256, JWK, SHA-256, and proof-verification vectors", () => {
+    const privateKey = new Uint8Array(32);
+    privateKey[31] = 1;
+
+    assert.equal(bytesToHex(p256.getPublicKey(privateKey, false)), FIXED_P256_PUBLIC_KEY_HEX);
+    assert.equal(
+      computeDpopJwkThumbprint(FIXED_PUBLIC_JWK),
+      "xx0BcA-wMohw8atYDJOe6peGModklG2wRHBlXHMvl0M",
+    );
+    assert.equal(computeDpopAccessTokenHash(""), "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU");
+    assert.equal(
+      computeDpopAccessTokenHash("access-token"),
+      "Pxa-1wifRlPl7yG_0oJNfzqq7MelmOfonFgOFgapzFI",
+    );
+    assert.deepEqual(
+      verifyDpopProof({
+        proof: FIXED_DPOP_PROOF,
+        method: "POST",
+        url: "https://example.com/oauth/token",
+        nowEpochSeconds: 100,
+        expectedThumbprint: "xx0BcA-wMohw8atYDJOe6peGModklG2wRHBlXHMvl0M",
+        expectedAccessToken: "access-token",
+      }),
+      {
+        ok: true,
+        thumbprint: "xx0BcA-wMohw8atYDJOe6peGModklG2wRHBlXHMvl0M",
+        jti: "fixed-proof",
+        iat: 100,
+      },
+    );
+  });
+
   it("normalizes URL case/default ports and rejects malformed URLs", () => {
     assert.equal(
       normalizeDpopHtu("HTTPS://EXAMPLE.COM:443/token?authorization=secret#fragment"),
