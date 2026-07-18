@@ -1218,13 +1218,14 @@
     {
       "key": "rust:workspace:junction",
       "name": "junction",
-      "current": "1.4.2",
+      "current": "2.0.0",
       "target": "2.0.0",
       "channel": "stable",
       "source": "https://crates.io/crates/junction",
       "cohort": "rust-platform-process",
       "platforms": ["windows"],
-      "status": "pending"
+      "status": "green",
+      "notes": "Windows junction lifecycle and bounded error regression coverage added; the Windows Server 2025 native CI leg performs the authoritative platform execution."
     },
     {
       "key": "rust:workspace:libc",
@@ -1383,13 +1384,13 @@
     {
       "key": "rust:workspace:sysinfo",
       "name": "sysinfo",
-      "current": "0.37",
+      "current": "0.39.6",
       "target": "0.39.6",
       "channel": "stable",
       "source": "https://crates.io/crates/sysinfo",
       "cohort": "rust-platform-process",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "rust:workspace:t4code-server",
