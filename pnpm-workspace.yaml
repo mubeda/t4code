@@ -5,12 +5,12 @@ packages:
   - packages/*
   - scripts
 
-# WebdriverIO's current driver was published less than pnpm 11's default
-# 24-hour maturity window before this lockfile was generated. Keep the audited
-# exception exact so future geckodriver releases still wait for the default
-# quarantine period.
+# These audited packages were published less than pnpm 11's default 24-hour
+# maturity window before this lockfile was generated. Keep each exception exact
+# so future releases still wait for the default quarantine period.
 minimumReleaseAgeExclude:
   - geckodriver@6.1.1
+  - "@cloudflare/workers-types@5.20260718.1"
 
 catalog:
   "@clerk/backend": 3.8.3-snapshot.v20260622234151
@@ -29,7 +29,7 @@ catalog:
   "@types/node": 26.1.1
   "@typescript/native-preview": 7.0.0-dev.20260604.1
   effect: 4.0.0-beta.78
-  jose: 6.2.2
+  jose: 6.2.3
   typescript: ~6.0.3
   vite: npm:@voidzero-dev/vite-plus-core@0.2.5
   vite-plus: 0.2.5
@@ -41,7 +41,7 @@ allowBuilds:
   "esbuild@0.25.12 || 0.28.1": true
   "geckodriver@6.1.1": false
   "msgpackr-extract@3.0.4": true
-  "msw@2.12.11": false
+  "msw@2.15.0": false
   "sharp@0.34.5": true
   "utf-8-validate@6.0.6": false
   "workerd@1.20260526.1": false

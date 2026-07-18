@@ -772,7 +772,6 @@ git commit -m "ci: upgrade and pin GitHub Actions"
 **Target cohort:**
 
 - `@cloudflare/workers-types` 5.20260717.1;
-- `@effect/tsgo` 0.24.1;
 - `@oxlint/plugins` 1.74.0;
 - `@vercel/config` 0.5.5;
 - `@vitejs/plugin-react` 6.0.3;
@@ -1615,8 +1614,17 @@ git commit -m "build: remove unused Babel JSX plugin"
 - Modify: `scripts/toolchain-contract.test.ts`
 - Modify: `docs/dependency-upgrades/2026-07-17-ledger.json`
 
-**Target:** TypeScript 7.0.2 or a newer stable TypeScript 7 release found at
-phase start.
+**Targets:**
+
+- TypeScript 7.0.2 or a newer stable TypeScript 7 release found at phase
+  start; and
+- `@effect/tsgo` 0.24.1 or a newer compatible stable release found at phase
+  start.
+
+`@effect/tsgo` 0.24 no longer recognizes the legacy
+`@typescript/native-preview` backend and its prepare hook requires the
+TypeScript 7 native package (or an alias to it). Upgrade both declarations in
+this task so a frozen install never lands in a partially patched state.
 
 **Step 1: Requery the blocker**
 
