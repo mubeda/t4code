@@ -1,8 +1,8 @@
 import * as AWS from "@/AWS";
 import { Bucket } from "@/AWS/S3";
-import * as Test from "@/Test/Vitest";
+import * as Test from "@/Test/Alchemy";
 import * as S3 from "@distilled.cloud/aws/s3";
-import { expect } from "@effect/vitest";
+import { expect } from "alchemy-test";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
@@ -347,9 +347,7 @@ const assertBucketDeleted = Effect.fn(function* (bucketName: string) {
     Effect.flatMap(() => Effect.fail(new BucketStillExists())),
     Effect.retry({
       while: (e) => e._tag === "BucketStillExists",
-      schedule: Schedule.exponential(100).pipe(
-        Schedule.both(Schedule.recurs(10)),
-      ),
+      schedule: Schedule.max([Schedule.exponential(100), Schedule.recurs(10)]),
     }),
     Effect.catchTag("NotFound", () => Effect.void),
     Effect.catch(() => Effect.void),

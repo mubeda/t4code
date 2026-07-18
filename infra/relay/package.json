@@ -14,8 +14,8 @@
     "@t4code/client-runtime": "workspace:*",
     "@t4code/contracts": "workspace:*",
     "@t4code/shared": "workspace:*",
-    "alchemy": "https://pkg.ing/alchemy/078ff00",
-    "drizzle-orm": "1.0.0-rc.3",
+    "alchemy": "https://pkg.ing/alchemy/cde008ab6b77783d3edbf5dc82750fbdfd279347",
+    "drizzle-orm": "1.0.0-rc.4",
     "effect": "catalog:"
   },
   "devDependencies": {
@@ -23,7 +23,7 @@
     "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
-    "drizzle-kit": "1.0.0-rc.3",
+    "drizzle-kit": "1.0.0-rc.4",
     "vite": "catalog:",
     "vite-plus": "catalog:"
   }

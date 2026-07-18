@@ -1,8 +1,8 @@
 import * as AWS from "@/AWS";
 import * as Alchemy from "@/index.ts";
 import * as State from "@/State";
-import * as Test from "@/Test/Vitest";
-import { describe, expect } from "@effect/vitest";
+import * as Test from "@/Test/Alchemy";
+import { describe, expect } from "alchemy-test";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import * as HttpClient from "effect/unstable/http/HttpClient";
@@ -43,9 +43,10 @@ afterAll.skipIf(!!process.env.NO_DESTROY)(destroy(Stack), { timeout: 60_000 });
 // (eventual consistency) can both take a while on the first hit. Retrying on
 // any non-200 lets the first request wait through that window; warm calls
 // return on the first try and never retry.
-const readinessSchedule = Schedule.fixed("2 seconds").pipe(
-  Schedule.both(Schedule.recurs(75)),
-);
+const readinessSchedule = Schedule.max([
+  Schedule.fixed("2 seconds"),
+  Schedule.recurs(75),
+]);
 
 // Lambda Function URLs come back with a trailing slash (`https://…on.aws/`).
 // Naively concatenating `${baseUrl}${path}` would yield a double slash

@@ -2,6 +2,7 @@ import * as NodeURL from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { AlchemyContext } from "alchemy/AlchemyContext";
+import { ArtifactStore, createArtifactStore } from "alchemy/Artifacts";
 import { AuthProviders } from "alchemy/Auth/AuthProvider";
 import { Cli } from "alchemy/Cli/Cli";
 import * as InMemoryState from "alchemy/State/InMemoryState";
@@ -325,6 +326,7 @@ const runDeploy = (
         NodeServices.layer,
         FetchHttpClient.layer,
         Layer.succeed(AuthProviders, {}),
+        Layer.succeed(ArtifactStore, createArtifactStore()),
         Layer.succeed(RelayDeployOperations, operations),
         Layer.succeed(Cli, {
           approvePlan: () => Effect.succeed(true),

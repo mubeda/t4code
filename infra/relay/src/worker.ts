@@ -62,8 +62,9 @@ const relayApiLayer = Layer.mergeAll(healthApi, metadataApi, clientApi, tokenApi
 
 const CloudMintKeyPair = Alchemy.KeyPair("CloudMintKeyPair");
 
-export default class Api extends Cloudflare.Worker<Api>()(
-  "Api",
+export class Api extends Cloudflare.Worker<Api, {}>()("Api") {}
+
+export default Api.make(
   RelayDeploymentConfig.pipe(
     Effect.map(({ relayPublicDomain }) => ({
       main: import.meta.filename,
@@ -73,7 +74,6 @@ export default class Api extends Cloudflare.Worker<Api>()(
       },
       domain: relayPublicDomain,
     })),
-    Effect.orDie,
   ),
   Effect.gen(function* () {
     //
@@ -98,19 +98,19 @@ export default class Api extends Cloudflare.Worker<Api>()(
 
     const cloudMintPrivateKey = yield* cloudMintKeyPair.privateKey;
     const cloudMintPublicKey = yield* cloudMintKeyPair.publicKey;
-    const hyperdrive = yield* Cloudflare.Hyperdrive.bind(yield* RelayDb.RelayHyperdrive);
+    const hyperdrive = yield* Cloudflare.Hyperdrive.Connect(yield* RelayDb.RelayHyperdrive);
     const db = yield* Drizzle.postgres(hyperdrive.connectionString);
 
-    const managedEndpointTunnelBinding = yield* Cloudflare.TunnelReadWrite.bind();
+    const managedEndpointTunnelBinding = yield* Cloudflare.Tunnel.ReadWriteTunnel();
     // Keep Worker custom-domain reconciliation ordered after API zone provisioning.
     yield* yield* relayApiZone.zoneId;
-    const managedEndpointDnsBinding = yield* Cloudflare.DnsReadWrite.bind(managedEndpointZone);
+    const managedEndpointDnsBinding = yield* Cloudflare.DNS.ReadWriteDns(managedEndpointZone);
     const managedEndpointZoneName = yield* managedEndpointZone.name;
 
     //
     // 3. Runtime layers and app construction
     //
-    const alchemyRuntimeContext = yield* Alchemy.RuntimeContext;
+    const alchemyRuntimeContext = yield* Cloudflare.Worker;
 
     const loadSettings = Effect.gen(function* () {
       return RelayConfiguration.RelayConfiguration.of({
@@ -158,7 +158,7 @@ export default class Api extends Cloudflare.Worker<Api>()(
       Layer.provide(runtimeLayer),
     );
 
-    yield* Cloudflare.cron("*/5 * * * *").subscribe(() =>
+    yield* Cloudflare.Workers.cron("*/5 * * * *", () =>
       DpopProofs.DpopProofReplay.pipe(
         Effect.flatMap((dpopProofs) => dpopProofs.pruneExpired),
         Effect.withSpan("relay.cron.prune_expired_dpop_proofs"),
@@ -185,13 +185,13 @@ export default class Api extends Cloudflare.Worker<Api>()(
   }).pipe(
     Effect.provide(
       Layer.empty.pipe(
-        Layer.provideMerge(Cloudflare.HyperdriveBindingLive),
-        Layer.provideMerge(Cloudflare.CronEventSourceLive),
-        Layer.provideMerge(Cloudflare.QueueBindingLive),
-        Layer.provideMerge(Cloudflare.QueueEventSourceLive),
-        Layer.provideMerge(Cloudflare.TunnelReadWriteLive),
-        Layer.provideMerge(Cloudflare.DnsReadWriteLive),
+        Layer.provideMerge(Cloudflare.Hyperdrive.ConnectBinding),
+        Layer.provideMerge(Cloudflare.Workers.CronEventSourceLive),
+        Layer.provideMerge(Cloudflare.Queues.WriteQueueBinding),
+        Layer.provideMerge(Cloudflare.Queues.EventSourceLive),
+        Layer.provideMerge(Cloudflare.Tunnel.ReadWriteTunnelBinding),
+        Layer.provideMerge(Cloudflare.DNS.ReadWriteDnsHttp),
       ),
     ),
   ),
-) {}
+);

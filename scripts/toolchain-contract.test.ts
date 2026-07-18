@@ -48,7 +48,7 @@ describe("repository toolchain contract", () => {
       "msw@2.15.0": false,
       "sharp@0.34.5": true,
       "utf-8-validate@6.0.6": false,
-      "workerd@1.20260526.1": false,
+      "workerd@1.20260704.1": false,
     });
   });
 

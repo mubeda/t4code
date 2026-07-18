@@ -51,8 +51,10 @@ export const RelayDeploymentConfig = Effect.gen(function* () {
 export const ManagedEndpointZone = RelayDeploymentConfig.pipe(
   Effect.flatMap(({ stage, managedEndpointZoneName }) =>
     relayOwnsManagedEndpointZone(stage)
-      ? Cloudflare.Zone("ManagedEndpointZone", { name: managedEndpointZoneName }).pipe(adopt(true))
-      : Cloudflare.Zone.ref("ManagedEndpointZone", {
+      ? Cloudflare.Zone.Zone("ManagedEndpointZone", { name: managedEndpointZoneName }).pipe(
+          adopt(true),
+        )
+      : Cloudflare.Zone.Zone.ref("ManagedEndpointZone", {
           stage: MANAGED_ENDPOINT_ZONE_OWNER_STAGE,
         }).pipe(
           // Alchemy beta's DNS binding policy uses LogicalId to derive a
@@ -67,8 +69,8 @@ export const RelayApiZone = RelayDeploymentConfig.pipe(
     relayApiZoneName === managedEndpointZoneName
       ? ManagedEndpointZone
       : relayOwnsManagedEndpointZone(stage)
-        ? Cloudflare.Zone("RelayApiZone", { name: relayApiZoneName }).pipe(adopt(true))
-        : Cloudflare.Zone.ref("RelayApiZone", {
+        ? Cloudflare.Zone.Zone("RelayApiZone", { name: relayApiZoneName }).pipe(adopt(true))
+        : Cloudflare.Zone.Zone.ref("RelayApiZone", {
             stage: MANAGED_ENDPOINT_ZONE_OWNER_STAGE,
           }),
   ),

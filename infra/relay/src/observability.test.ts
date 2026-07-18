@@ -91,6 +91,7 @@ const traceLayer = makeRelayTraceLayer({
 const inertAxiomProviders = Axiom.Providers.of({
   kind: "ProviderCollection",
   get: () => undefined,
+  providers: {},
 });
 
 it.effect("exports schema error fields as span attributes", () =>
