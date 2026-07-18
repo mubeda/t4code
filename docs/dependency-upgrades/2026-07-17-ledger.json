@@ -816,7 +816,7 @@
     {
       "key": "js:catalog:@effect/atom-react",
       "name": "@effect/atom-react",
-      "current": "4.0.0-beta.78",
+      "current": "4.0.0-beta.99",
       "target": "4.0.0-beta.99",
       "channel": "preview",
       "source": "https://www.npmjs.com/package/@effect/atom-react",
@@ -827,7 +827,7 @@
     {
       "key": "js:catalog:@effect/platform-node",
       "name": "@effect/platform-node",
-      "current": "4.0.0-beta.78",
+      "current": "4.0.0-beta.99",
       "target": "4.0.0-beta.99",
       "channel": "preview",
       "source": "https://www.npmjs.com/package/@effect/platform-node",
@@ -838,7 +838,7 @@
     {
       "key": "js:catalog:@effect/sql-pg",
       "name": "@effect/sql-pg",
-      "current": "4.0.0-beta.78",
+      "current": "4.0.0-beta.99",
       "target": "4.0.0-beta.99",
       "channel": "preview",
       "source": "https://www.npmjs.com/package/@effect/sql-pg",
@@ -860,7 +860,7 @@
     {
       "key": "js:catalog:@effect/vitest",
       "name": "@effect/vitest",
-      "current": "4.0.0-beta.78",
+      "current": "4.0.0-beta.99",
       "target": "4.0.0-beta.99",
       "channel": "preview",
       "source": "https://www.npmjs.com/package/@effect/vitest",
@@ -937,7 +937,7 @@
     {
       "key": "js:catalog:effect",
       "name": "effect",
-      "current": "4.0.0-beta.78",
+      "current": "4.0.0-beta.99",
       "target": "4.0.0-beta.99",
       "channel": "preview",
       "source": "https://www.npmjs.com/package/effect",

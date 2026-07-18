@@ -1,41 +1,12 @@
 /**
  * Parses and persists HTTP `multipart/form-data` request bodies.
  *
- * `Multipart` turns incoming byte streams into typed {@link Part} values. Text
- * parts become decoded {@link Field} values, while upload parts remain streamed
- * {@link File} values until they are collected or written to scoped temporary
- * files. The persisted representation can then be decoded with schemas for
- * request handlers that receive fields and uploaded files together.
- *
- * **Mental model**
- *
- * Multipart parsing is incremental. {@link makeChannel} consumes request body
- * chunks and emits fields or files as soon as the parser reaches each part. A
- * `File` owns a one-shot byte stream for that upload; {@link toPersisted}
- * drains those file streams into scoped paths and collects text fields into a
- * {@link Persisted} record.
- *
- * **Common tasks**
- *
- * - Parse a request body stream into {@link Part} values with {@link makeChannel}.
- * - Persist parsed parts with {@link toPersisted} before schema decoding.
- * - Decode persisted forms with {@link schemaPersisted}, {@link schemaJson},
- *   {@link PersistedFileSchema}, or {@link SingleFileSchema}.
- * - Configure parser limits with {@link limitsServices} or the `Max*` context
- *   references.
- *
- * **Gotchas**
- *
- * Multipart request bodies are usually one-shot streams. Read each file stream
- * once, and use `contentEffect` only when the file is small enough to hold in
- * memory. Paths produced by {@link toPersisted} are scoped resources and stop
- * being valid when the scope closes. Client-provided file names are metadata,
- * not trusted filesystem paths.
- *
- * **See also**
- *
- * {@link Part}, {@link Field}, {@link File}, {@link Persisted},
- * {@link makeChannel}, {@link toPersisted}.
+ * `Multipart` turns incoming byte streams into typed form parts. Text parts
+ * become decoded fields, while upload parts stay as streamed files until they
+ * are collected or written to scoped temporary files. The persisted
+ * representation can then be decoded with schemas for handlers that receive
+ * fields and uploaded files together. This module also includes multipart error
+ * types, schema helpers for persisted files, and parser limit settings.
  *
  * @since 4.0.0
  */
@@ -55,7 +26,7 @@ import * as Predicate from "../../Predicate.ts"
 import * as Pull from "../../Pull.ts"
 import * as Schema from "../../Schema.ts"
 import type { ParseOptions } from "../../SchemaAST.ts"
-import * as Transformation from "../../SchemaTransformation.ts"
+import * as SchemaTransformation from "../../SchemaTransformation.ts"
 import type * as Scope from "../../Scope.ts"
 import * as Stream from "../../Stream.ts"
 import * as UndefinedOr from "../../UndefinedOr.ts"
@@ -306,7 +277,7 @@ export const PersistedFileSchema: PersistedFileSchema = Schema.declare(
           contentType: Schema.String.annotate({ contentEncoding: "binary" }),
           path: Schema.String
         }),
-        Transformation.transform({
+        SchemaTransformation.transform({
           decode: ({ contentType, key, name, path }) => new PersistedFileImpl(key, name, contentType, path),
           encode: (file) => ({
             key: file.key,
@@ -344,7 +315,7 @@ export const SingleFileSchema: Schema.decodeTo<PersistedFileSchema, Schema.$Arra
   ).pipe(
     Schema.decodeTo(
       PersistedFileSchema,
-      Transformation.transform({
+      SchemaTransformation.transform({
         decode: ([file]) => file,
         encode: (file) => [file]
       })
@@ -362,8 +333,8 @@ export const SingleFileSchema: Schema.decodeTo<PersistedFileSchema, Schema.$Arra
  * @category schemas
  * @since 4.0.0
  */
-export const schemaPersisted = <A, I extends Partial<Persisted>, RD, RE>(
-  schema: Schema.Codec<A, I, RD, RE>
+export const schemaPersisted = <A, I extends Partial<Persisted>, RD>(
+  schema: Schema.ConstraintCodec<A, I, RD, unknown>
 ): (input: unknown, options?: ParseOptions) => Effect.Effect<A, Schema.SchemaError, RD> =>
   Schema.decodeUnknownEffect(schema)
 
@@ -378,7 +349,7 @@ export const schemaPersisted = <A, I extends Partial<Persisted>, RD, RE>(
  * @category schemas
  * @since 4.0.0
  */
-export const schemaJson = <A, I, RD, RE>(schema: Schema.Codec<A, I, RD, RE>, options?: ParseOptions | undefined): {
+export const schemaJson = <A, RD>(schema: Schema.ConstraintDecoder<A, RD>, options?: ParseOptions | undefined): {
   (
     field: string
   ): (persisted: Persisted) => Effect.Effect<A, Schema.SchemaError, RD>
@@ -481,7 +452,9 @@ export const makeChannel = <IE>(headers: Record<string, string>): Channel.Channe
           exit = Option.some(Exit.fail(convertError(error_)))
         },
         onDone() {
-          exit = Option.some(Exit.fail(Cause.Done()))
+          if (Option.isNone(exit)) {
+            exit = Option.some(Exit.fail(Cause.Done()))
+          }
         }
       })
 

@@ -216,10 +216,10 @@ export const make = Effect.gen(function* () {
     and(whereAllocationOwnership(input), currentOperationExists(input.ownership));
 
   let service: ManagedEndpointAllocations["Service"];
-  const waitForOperation = Schedule.both(
+  const waitForOperation = Schedule.max([
     Schedule.exponential("10 millis"),
     Schedule.recurs(5),
-  ).pipe(
+  ]).pipe(
     Schedule.while(
       ({ input }) =>
         isManagedEndpointAllocationPersistenceError(input) && input.stage === "operation-busy",
