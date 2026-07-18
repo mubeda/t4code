@@ -199,4 +199,15 @@ mod tests {
 
         assert_eq!(allowed, registered);
     }
+
+    #[test]
+    fn desktop_bridge_permission_toml_round_trips_without_schema_drift() {
+        let source = include_str!("../permissions/desktop-bridge.toml");
+        let parsed: toml::Value = toml::from_str(source).expect("permission TOML should parse");
+        let encoded = toml::to_string(&parsed).expect("permission TOML should encode");
+        let reparsed: toml::Value =
+            toml::from_str(&encoded).expect("encoded permission TOML should parse");
+
+        assert_eq!(reparsed, parsed);
+    }
 }
