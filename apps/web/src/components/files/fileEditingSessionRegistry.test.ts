@@ -17,6 +17,14 @@ function fakeSession(relativePath: string) {
   };
 }
 
+function deferredResult<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 describe("FileEditingSessionRegistry", () => {
   it("reuses one session per exact open file", () => {
     const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
@@ -154,7 +162,87 @@ describe("FileEditingSessionRegistry", () => {
     expect(calls).toEqual(["settle", "dispose"]);
   });
 
-  it("disposes removed sessions and contains settle rejections during reconciliation", async () => {
+  it.each([
+    ["rename", "saved"],
+    ["rename", "failed"],
+    ["delete", "saved"],
+    ["delete", "failed"],
+  ] as const)(
+    "keeps a closing session visible while a deferred %s mutation follows a %s settle",
+    async (operation, settleResult) => {
+      const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
+      const session = registry.getOrCreate("src/nested/app.ts", () =>
+        fakeSession("src/nested/app.ts"),
+      );
+      const settlement = deferredResult<"saved" | "failed">();
+      session.settle.mockReturnValueOnce(settlement.promise);
+
+      const closing = registry.reconcile([]);
+      let acquisitionCompleted = false;
+      const acquisition = registry
+        .beginPathMutation(
+          operation === "rename"
+            ? {
+                kind: "rename",
+                fromRelativePath: "src",
+                toRelativePath: "lib",
+              }
+            : { kind: "delete", relativePath: "src" },
+        )
+        .then((lease) => {
+          acquisitionCompleted = true;
+          return lease;
+        });
+      await Promise.resolve();
+
+      expect(acquisitionCompleted).toBe(false);
+      expect(session.dispose).not.toHaveBeenCalled();
+
+      settlement.resolve(settleResult);
+      const lease = await acquisition;
+      await closing;
+
+      if (settleResult === "failed") {
+        expect(lease).toBeNull();
+        expect(registry.get("src/nested/app.ts")).toBe(session);
+        expect(session.pauseSaving).not.toHaveBeenCalled();
+        expect(session.dispose).not.toHaveBeenCalled();
+        return;
+      }
+
+      expect(lease).not.toBeNull();
+      expect(session.pauseSaving).toHaveBeenCalledOnce();
+      expect(session.dispose).not.toHaveBeenCalled();
+      if (operation === "rename") {
+        lease!.commitRename("lib");
+        expect(session.rename).toHaveBeenCalledWith("lib/nested/app.ts");
+      } else {
+        lease!.commitDelete();
+      }
+      lease!.release();
+
+      expect(session.settle).toHaveBeenCalledOnce();
+      await vi.waitFor(() => expect(session.dispose).toHaveBeenCalledOnce());
+    },
+  );
+
+  it("settles and disposes a concurrently reconciled session exactly once", async () => {
+    const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
+    const session = registry.getOrCreate("src/app.ts", () => fakeSession("src/app.ts"));
+    const settlement = deferredResult<"saved">();
+    session.settle.mockReturnValueOnce(settlement.promise);
+
+    const firstClosing = registry.reconcile([]);
+    const secondClosing = registry.reconcile([]);
+    settlement.resolve("saved");
+    await Promise.all([firstClosing, secondClosing]);
+
+    expect(session.settle).toHaveBeenCalledOnce();
+    expect(session.dispose).toHaveBeenCalledOnce();
+    expect(registry.get("src/app.ts")).toBeUndefined();
+  });
+
+  it("retains rejected sessions and disposes successfully settled sessions during reconciliation", async () => {
     const reportError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
       const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
@@ -166,11 +254,11 @@ describe("FileEditingSessionRegistry", () => {
       await expect(registry.reconcile(["a.ts"])).resolves.toBeUndefined();
 
       expect(registry.get("a.ts")).toBe(retained);
-      expect(registry.get("b.ts")).toBeUndefined();
+      expect(registry.get("b.ts")).toBe(rejected);
       expect(registry.get("c.ts")).toBeUndefined();
       expect(retained.settle).not.toHaveBeenCalled();
       expect(retained.dispose).not.toHaveBeenCalled();
-      expect(rejected.dispose).toHaveBeenCalledOnce();
+      expect(rejected.dispose).not.toHaveBeenCalled();
       expect(removed.dispose).toHaveBeenCalledOnce();
       expect(reportError).toHaveBeenCalledWith(
         "[file-editing-session-registry] session cleanup failed",
@@ -320,10 +408,8 @@ describe("FileEditingSessionRegistry", () => {
     expect(session.dispose).not.toHaveBeenCalled();
 
     lease!.release();
-    await Promise.resolve();
-    await Promise.resolve();
     expect(session.resumeSaving).toHaveBeenCalledOnce();
-    expect(session.dispose).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(session.dispose).toHaveBeenCalledOnce());
   });
 
   it("waits to dispose a leased session until its rename outcome is known", async () => {

@@ -33,10 +33,29 @@ interface ActivePathMutation<Session> {
   complete(): void;
 }
 
+interface SettlingSessionClose {
+  readonly phase: "settling";
+  closeRequested: boolean;
+  readonly settlement: Promise<FileSaveSettleResult>;
+  completion: Promise<void>;
+}
+
+interface FailedSessionClose {
+  readonly phase: "failed";
+}
+
+interface SettledSessionClose {
+  readonly phase: "settled";
+  readonly result: Exclude<FileSaveSettleResult, "failed">;
+}
+
+type SessionCloseState = SettlingSessionClose | FailedSessionClose | SettledSessionClose;
+
 export class FileEditingSessionRegistry<
   Session extends ManagedFileEditingSession = ManagedFileEditingSession,
 > {
   private sessions = new Map<string, Session>();
+  private readonly sessionCloseStates = new Map<Session, SessionCloseState>();
   private readonly activePathMutations = new Set<ActivePathMutation<Session>>();
   private latestOpenRelativePaths: ReadonlySet<string> | null = null;
   private ownerCount = 0;
@@ -50,7 +69,10 @@ export class FileEditingSessionRegistry<
 
   getOrCreate(relativePath: string, create: () => Session): Session {
     const existing = this.sessions.get(relativePath);
-    if (existing) return existing;
+    if (existing) {
+      this.markSessionOpen(existing);
+      return existing;
+    }
     const session = create();
     this.sessions.set(relativePath, session);
     for (const mutation of this.activePathMutations) {
@@ -97,7 +119,7 @@ export class FileEditingSessionRegistry<
     let results: FileSaveSettleResult[];
     try {
       results = await Promise.all(
-        [...mutation.sessions.values()].map((session) => session.settle()),
+        [...mutation.sessions.values()].map((session) => this.settleSessionForMutation(session)),
       );
     } catch (error) {
       await this.releaseMutationAfterFailedAcquisition(mutation);
@@ -140,14 +162,16 @@ export class FileEditingSessionRegistry<
   async reconcile(openRelativePaths: readonly string[]): Promise<void> {
     const open = new Set(openRelativePaths);
     this.latestOpenRelativePaths = open;
+    for (const [path, session] of this.sessions) {
+      if (open.has(path)) this.markSessionOpen(session);
+    }
     const leasedSessions = new Set(
       [...this.activePathMutations].flatMap((mutation) => [...mutation.sessions.values()]),
     );
-    const removed = [...this.sessions.entries()].filter(
-      ([path, session]) => !open.has(path) && !leasedSessions.has(session),
-    );
-    for (const [path] of removed) this.sessions.delete(path);
-    await Promise.all(removed.map(([, session]) => this.settleAndDisposeSession(session)));
+    const closing = [...this.sessions.entries()]
+      .filter(([path, session]) => !open.has(path) && !leasedSessions.has(session))
+      .map(([, session]) => this.closeSession(session));
+    await Promise.all(closing);
   }
 
   acquireOwnership(): () => void {
@@ -192,16 +216,115 @@ export class FileEditingSessionRegistry<
   }
 
   private async settleAndDisposeSession(session: Session): Promise<void> {
-    try {
-      await session.settle();
-    } catch (error) {
-      this.reportSessionCleanupError(error);
-    } finally {
+    const closeState = this.sessionCloseStates.get(session);
+    if (closeState?.phase === "settling") {
+      await closeState.completion;
+    } else if (closeState === undefined) {
       try {
-        session.dispose();
+        await session.settle();
       } catch (error) {
         this.reportSessionCleanupError(error);
       }
+    }
+    this.sessionCloseStates.delete(session);
+    try {
+      session.dispose();
+    } catch (error) {
+      this.reportSessionCleanupError(error);
+    }
+  }
+
+  private closeSession(session: Session): Promise<void> {
+    const existing = this.sessionCloseStates.get(session);
+    if (existing?.phase === "failed") return Promise.resolve();
+    if (existing?.phase === "settled") {
+      this.disposeSettledSession(session);
+      return Promise.resolve();
+    }
+    if (existing?.phase === "settling") {
+      existing.closeRequested = true;
+      return existing.completion;
+    }
+
+    const settlement = Promise.resolve()
+      .then(() => session.settle())
+      .catch((error: unknown) => {
+        this.reportSessionCleanupError(error);
+        return "failed" as const;
+      });
+    const closeState: SettlingSessionClose = {
+      phase: "settling",
+      closeRequested: true,
+      settlement,
+      completion: Promise.resolve(),
+    };
+    closeState.completion = settlement.then((result) => {
+      this.finishClosingSession(session, closeState, result);
+    });
+    this.sessionCloseStates.set(session, closeState);
+    return closeState.completion;
+  }
+
+  private finishClosingSession(
+    session: Session,
+    closeState: SettlingSessionClose,
+    result: FileSaveSettleResult,
+  ): void {
+    if (this.sessionCloseStates.get(session) !== closeState) return;
+    if (!closeState.closeRequested) {
+      this.sessionCloseStates.delete(session);
+      return;
+    }
+    if (result === "failed") {
+      this.sessionCloseStates.set(session, { phase: "failed" });
+      return;
+    }
+    if (this.disposed || this.isSessionLeased(session)) {
+      this.sessionCloseStates.set(session, { phase: "settled", result });
+      return;
+    }
+    this.disposeSettledSession(session);
+  }
+
+  private disposeSettledSession(session: Session): void {
+    this.removeSessionReferences(session);
+    this.sessionCloseStates.delete(session);
+    try {
+      session.dispose();
+    } catch (error) {
+      this.reportSessionCleanupError(error);
+    }
+  }
+
+  private settleSessionForMutation(session: Session): Promise<FileSaveSettleResult> {
+    const closeState = this.sessionCloseStates.get(session);
+    if (closeState?.phase === "settling") return closeState.settlement;
+    if (closeState?.phase === "failed") return Promise.resolve("failed");
+    if (closeState?.phase === "settled") return Promise.resolve(closeState.result);
+    return session.settle();
+  }
+
+  private markSessionOpen(session: Session): void {
+    const closeState = this.sessionCloseStates.get(session);
+    if (closeState?.phase === "settling") {
+      closeState.closeRequested = false;
+      return;
+    }
+    this.sessionCloseStates.delete(session);
+  }
+
+  private isSessionLeased(session: Session): boolean {
+    for (const mutation of this.activePathMutations) {
+      for (const candidate of mutation.sessions.values()) {
+        if (candidate === session) return true;
+      }
+    }
+    return false;
+  }
+
+  private removeSessionReferences(session: Session): void {
+    for (const [path, candidate] of this.sessions) {
+      if (candidate === session) this.sessions.delete(path);
     }
   }
 
@@ -230,6 +353,7 @@ export class FileEditingSessionRegistry<
         isPathAtOrUnder(candidate, destinationRelativePath) && !sourceSessions.has(session),
     );
     for (const [, session] of displacedEntries) {
+      this.sessionCloseStates.delete(session);
       this.discardAndDisposeSession(session);
       mutation.pausedSessions.delete(session);
     }
@@ -260,6 +384,7 @@ export class FileEditingSessionRegistry<
     );
     for (const [candidate] of deletedEntries) this.sessions.delete(candidate);
     for (const [, session] of deletedEntries) {
+      this.sessionCloseStates.delete(session);
       this.discardAndDisposeSession(session);
       mutation.pausedSessions.delete(session);
     }

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { AtomCommandResult } from "@t4code/client-runtime/state/runtime";
+import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 
 const pierre = vi.hoisted(() => {
@@ -235,6 +236,54 @@ describe("FileEditingSession", () => {
     session.subscribe(postDisposeListener);
     (editor.options["onAttach"] as () => void)();
     expect(postDisposeListener).not.toHaveBeenCalled();
+  });
+
+  it("retains a failed closing session so reopening preserves its editor, history, and retryable save", async () => {
+    vi.useFakeTimers();
+    const persist = vi.fn<
+      (relativePath: string, contents: string) => Promise<AtomCommandResult<void, Error>>
+    >(async () => AsyncResult.failure(Cause.fail(new Error("save failed"))));
+    const onPendingChange = vi.fn();
+    const registry = new FileEditingSessionRegistry<FileEditingSession<never>>();
+    const createSession = vi.fn(
+      () =>
+        new FileEditingSession<never, void, Error>({
+          cwd: "/repo",
+          relativePath: "src/app.ts",
+          debounceMs: 500,
+          persist,
+          onPendingChange,
+          onConfirmed: vi.fn(),
+        }),
+    );
+    const session = registry.getOrCreate("src/app.ts", createSession);
+    const editor = session.editor as unknown as InstanceType<typeof pierre.Editor>;
+    editor.canUndo = true;
+    (editor.options["onChange"] as (file: { contents: string }) => void)({
+      contents: "retryable contents",
+    });
+    (editor.options["onAttach"] as () => void)();
+
+    await registry.reconcile([]);
+
+    expect(registry.get("src/app.ts")).toBe(session);
+    expect(editor.cleanUp).not.toHaveBeenCalled();
+    expect(session.getSnapshot()).toMatchObject({
+      save: { phase: "failed", canSave: true },
+      canUndo: true,
+    });
+    expect(onPendingChange).toHaveBeenLastCalledWith("src/app.ts", true);
+
+    const reopened = registry.getOrCreate("src/app.ts", createSession);
+    expect(reopened).toBe(session);
+    expect(reopened.editor).toBe(editor);
+    expect(createSession).toHaveBeenCalledOnce();
+    await expect(reopened.flush()).resolves.toBe("failed");
+    expect(persist).toHaveBeenLastCalledWith("src/app.ts", "retryable contents");
+    expect(reopened.getSnapshot().save).toMatchObject({
+      phase: "failed",
+      canSave: true,
+    });
   });
 
   it("keeps Save disabled when Undo edits during a deferred write or mutation pause", async () => {
