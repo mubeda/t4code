@@ -2206,6 +2206,17 @@ function ChatViewContent(props: ChatViewProps) {
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
   const activeWorkspaceRoot = activeThreadWorktreePath ?? activeProjectCwd ?? undefined;
+  const filePreviewViewKey =
+    activeProject && activeWorkspaceRoot
+      ? JSON.stringify([
+          activeProject.environmentId,
+          activeWorkspaceRoot,
+          typeof composerDraftTarget === "string" ? "draft" : "thread",
+          typeof composerDraftTarget === "string"
+            ? composerDraftTarget
+            : scopedThreadKey(composerDraftTarget),
+        ])
+      : null;
   const activeTerminalLaunchContext =
     terminalUiLaunchContext?.threadId === activeThreadId ? terminalUiLaunchContext : null;
   // Default true while loading to avoid toolbar flicker.
@@ -5055,7 +5066,7 @@ function ChatViewContent(props: ChatViewProps) {
       activeWorkspaceRoot ? (
       <Suspense fallback={null}>
         <FilePreviewPanel
-          key={`${activeProject.environmentId}:${activeWorkspaceRoot}`}
+          key={filePreviewViewKey}
           environmentId={activeProject.environmentId}
           cwd={activeWorkspaceRoot}
           projectName={activeProject.title}

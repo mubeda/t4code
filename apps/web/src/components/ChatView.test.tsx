@@ -11,7 +11,15 @@
  * realistic state. Handler props captured from mocked children are then
  * invoked to exercise the send/interrupt/approval command flows.
  */
-import { act, StrictMode, type ComponentProps, type ReactNode, type RefObject } from "react";
+import {
+  act,
+  StrictMode,
+  type ComponentProps,
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useState,
+} from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -56,6 +64,15 @@ const h = vi.hoisted(() => {
       environmentId: string;
       threadId: string;
       terminalId: string;
+    }>,
+    filePreviewRevealEvents: [] as Array<{
+      relativePath: unknown;
+      revealRequestId: unknown;
+    }>,
+    filePreviewCommentActions: [] as Array<{
+      kind: "submit" | "remove";
+      composerDraftTarget: unknown;
+      entryId: string;
     }>,
   };
 });
@@ -376,12 +393,49 @@ vi.mock("./DiffPanel", () => ({
 vi.mock("./SourceControlPanel", () => ({
   default: () => <div data-mock="source-control-panel" />,
 }));
-vi.mock("./files/FilePreviewPanel", () => ({
-  default: (props: Record<string, unknown>) => {
-    h.captured["filePreviewPanel"] = props;
-    return <div data-mock="file-preview-panel" />;
-  },
-}));
+vi.mock("./files/FilePreviewPanel", () => {
+  let nextInstanceId = 0;
+  return {
+    default: (props: Record<string, unknown>) => {
+      const [instanceId] = useState(() => {
+        nextInstanceId += 1;
+        return nextInstanceId;
+      });
+      const [viewState, setViewState] = useState<{
+        annotationEntryIds: string[];
+        selectedRange: { start: number; end: number } | null;
+      }>(() => ({ annotationEntryIds: [], selectedRange: null }));
+
+      useEffect(() => {
+        h.filePreviewRevealEvents.push({
+          relativePath: props["relativePath"],
+          revealRequestId: props["revealRequestId"],
+        });
+      }, [props["relativePath"], props["revealRequestId"]]);
+
+      const recordCommentAction = (kind: "submit" | "remove", entryId: string): void => {
+        if (!viewState.annotationEntryIds.includes(entryId)) return;
+        h.filePreviewCommentActions.push({
+          kind,
+          composerDraftTarget: props["composerDraftTarget"],
+          entryId,
+        });
+      };
+
+      h.captured["filePreviewPanel"] = {
+        ...props,
+        mockView: {
+          instanceId,
+          viewState,
+          setViewState,
+          submitAnnotation: (entryId: string) => recordCommentAction("submit", entryId),
+          removeAnnotation: (entryId: string) => recordCommentAction("remove", entryId),
+        },
+      };
+      return <div data-mock="file-preview-panel" />;
+    },
+  };
+});
 
 import ChatView from "./ChatView";
 import type { Project, Thread } from "../types";
@@ -540,6 +594,7 @@ function deferredResult<T>() {
 function fakeEditingSession(relativePath: string) {
   return {
     relativePath,
+    editor: { history: [] as string[] },
     flush: vi.fn(async () => "saved" as const),
     settle: vi.fn<() => Promise<"saved" | "failed">>(async () => "saved"),
     pauseSaving: vi.fn(),
@@ -611,6 +666,8 @@ beforeEach(() => {
   h.settings = { ...DEFAULT_SERVER_SETTINGS, ...DEFAULT_CLIENT_SETTINGS };
   h.navigateCalls = [];
   h.releasedTerminalInputs = [];
+  h.filePreviewRevealEvents = [];
+  h.filePreviewCommentActions = [];
 
   for (const { store, pristine } of resettableStores) {
     store.setState({ ...pristine }, true);
@@ -1311,6 +1368,20 @@ describe("ChatView handlers (captured from mocked children)", () => {
 });
 
 describe("ChatView file editing registry lifetime", () => {
+  interface MockFilePreviewView {
+    instanceId: number;
+    viewState: {
+      annotationEntryIds: string[];
+      selectedRange: { start: number; end: number } | null;
+    };
+    setViewState: (state: {
+      annotationEntryIds: string[];
+      selectedRange: { start: number; end: number } | null;
+    }) => void;
+    submitAnnotation: (entryId: string) => void;
+    removeAnnotation: (entryId: string) => void;
+  }
+
   function prepareDomTest(): void {
     vi.unstubAllGlobals();
     Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -1348,6 +1419,76 @@ describe("ChatView file editing registry lifetime", () => {
       useRightPanelStore.getState().open(nextThreadRef, "files");
     }
   }
+
+  it("remounts thread-local file view state while reusing the project editing session", async () => {
+    prepareDomTest();
+    const secondThreadId = ThreadId.make("thread-2");
+    const project = makeProject();
+    const firstThread = makeThread();
+    const secondThread = makeThread({ id: secondThreadId });
+    h.environments = [makeEnvironmentPresentation()];
+    h.primaryEnvironment = h.environments[0]!;
+    seedProjectAndThread(project, firstThread, "file");
+    seedProjectAndThread(project, secondThread, "file");
+    seedGitStatus(true);
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      const firstRegistry = await renderStrictChatView(root, environmentId, threadId);
+      const session = firstRegistry.getOrCreate("src/app.ts", () =>
+        fakeEditingSession("src/app.ts"),
+      );
+      session.editor.history.push("thread-a edit");
+      const firstView = capturedProps<{ mockView: MockFilePreviewView }>(
+        "filePreviewPanel",
+      ).mockView;
+      await act(async () => {
+        firstView.setViewState({
+          annotationEntryIds: ["thread-a-comment"],
+          selectedRange: { start: 3, end: 5 },
+        });
+      });
+      const seededFirstView = capturedProps<{ mockView: MockFilePreviewView }>(
+        "filePreviewPanel",
+      ).mockView;
+      expect(seededFirstView.viewState).toEqual({
+        annotationEntryIds: ["thread-a-comment"],
+        selectedRange: { start: 3, end: 5 },
+      });
+      const revealEventBeforeSwitch = h.filePreviewRevealEvents.at(-1);
+      const revealCountBeforeSwitch = h.filePreviewRevealEvents.length;
+
+      const secondRegistry = await renderStrictChatView(root, environmentId, secondThreadId);
+      const secondPanel = capturedProps<{
+        composerDraftTarget: unknown;
+        mockView: MockFilePreviewView;
+      }>("filePreviewPanel");
+
+      expect(secondPanel.composerDraftTarget).toEqual(
+        scopeThreadRef(environmentId, secondThreadId),
+      );
+      expect(secondPanel.mockView.instanceId).not.toBe(seededFirstView.instanceId);
+      expect(secondPanel.mockView.viewState).toEqual({
+        annotationEntryIds: [],
+        selectedRange: null,
+      });
+      secondPanel.mockView.submitAnnotation("thread-a-comment");
+      secondPanel.mockView.removeAnnotation("thread-a-comment");
+      expect(h.filePreviewCommentActions).toEqual([]);
+      expect(h.filePreviewRevealEvents.length).toBeGreaterThan(revealCountBeforeSwitch);
+      expect(h.filePreviewRevealEvents.at(-1)).toEqual(revealEventBeforeSwitch);
+
+      expect(secondRegistry).toBe(firstRegistry);
+      expect(secondRegistry.get("src/app.ts")).toBe(session);
+      expect(secondRegistry.get("src/app.ts")?.editor).toBe(session.editor);
+      expect(session.editor.history).toEqual(["thread-a edit"]);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
+  });
 
   it("reuses one registry across same-workspace project threads and replaces it for workspace, project, and environment changes", async () => {
     prepareDomTest();
