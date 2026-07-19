@@ -1,12 +1,12 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet, VecDeque},
     sync::{Arc, Mutex, Weak},
     time::{Duration, Instant},
 };
 
 use super::{
     AttributionKind, AttributionScope, PROCESS_CLAIM_LABEL_MAX_SCALARS, ProcessClaim,
-    ProcessIdentity, ProcessRow, bound_diagnostic_string,
+    ProcessIdentity, ProcessRow,
 };
 
 const REGISTRY_CAPACITY: usize = 512;
@@ -43,6 +43,7 @@ pub struct ProcessRegistration {
 struct RegistryState {
     next_registration_id: u64,
     entries: HashMap<u64, RegistryEntry>,
+    registration_order: VecDeque<u64>,
 }
 
 #[derive(Debug)]
@@ -52,7 +53,7 @@ struct RegistryEntry {
     binding: RegistrationBinding,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 enum RegistrationBinding {
     Unbound { deadline: Instant },
     Bound(ProcessIdentity),
@@ -65,6 +66,7 @@ impl ProcessAttributionRegistry {
             inner: Arc::new(Mutex::new(RegistryState {
                 next_registration_id: 0,
                 entries: HashMap::new(),
+                registration_order: VecDeque::new(),
             })),
         }
     }
@@ -76,9 +78,17 @@ impl ProcessAttributionRegistry {
     ) -> Option<ProcessRegistration> {
         let now = Instant::now();
         let mut state = lock_state(&self.inner);
-        state.entries.retain(|_, entry| {
-            !matches!(entry.binding, RegistrationBinding::Unbound { deadline } if deadline <= now)
-        });
+        {
+            let RegistryState {
+                entries,
+                registration_order,
+                ..
+            } = &mut *state;
+            entries.retain(|_, entry| {
+                !matches!(entry.binding, RegistrationBinding::Unbound { deadline } if deadline <= now)
+            });
+            registration_order.retain(|registration_id| entries.contains_key(registration_id));
+        }
         if state.entries.len() >= REGISTRY_CAPACITY {
             tracing::warn!(
                 capacity = REGISTRY_CAPACITY,
@@ -88,8 +98,7 @@ impl ProcessAttributionRegistry {
         }
 
         metadata.label = normalize_label(&metadata.label);
-        let registration_id = state.next_registration_id;
-        state.next_registration_id = state.next_registration_id.wrapping_add(1);
+        let registration_id = next_unused_registration_id(&mut state);
         state.entries.insert(
             registration_id,
             RegistryEntry {
@@ -100,6 +109,7 @@ impl ProcessAttributionRegistry {
                 },
             },
         );
+        state.registration_order.push_back(registration_id);
 
         Some(ProcessRegistration {
             registration_id,
@@ -109,48 +119,59 @@ impl ProcessAttributionRegistry {
 
     #[must_use]
     pub fn bind_and_snapshot(&self, rows: &[ProcessRow], now: Instant) -> Vec<ProcessClaim> {
-        let identities = rows
-            .iter()
-            .map(|row| ProcessIdentity {
+        let mut sampled_identities = HashSet::with_capacity(rows.len());
+        let mut identities_by_pid = HashMap::with_capacity(rows.len());
+        for row in rows {
+            let identity = ProcessIdentity {
                 pid: row.pid,
                 started_at: row.started_at,
-            })
-            .collect::<Vec<_>>();
-        let mut state = lock_state(&self.inner);
-        state.entries.retain(|_, entry| match entry.binding {
-            RegistrationBinding::Unbound { deadline } => deadline > now,
-            RegistrationBinding::Bound(identity) => identities.contains(&identity),
-        });
-
-        for entry in state.entries.values_mut() {
-            if matches!(entry.binding, RegistrationBinding::Unbound { .. })
-                && let Some(identity) = identities
-                    .iter()
-                    .copied()
-                    .find(|identity| identity.pid == entry.pid)
-            {
-                entry.binding = RegistrationBinding::Bound(identity);
-            }
+            };
+            sampled_identities.insert(identity);
+            identities_by_pid.entry(identity.pid).or_insert(identity);
         }
 
-        let mut snapshot = state
-            .entries
-            .iter()
-            .filter_map(|(registration_id, entry)| match entry.binding {
-                RegistrationBinding::Bound(identity) => Some((
-                    *registration_id,
-                    ProcessClaim {
+        let mut state = lock_state(&self.inner);
+        let mut snapshot = Vec::with_capacity(state.entries.len());
+        let mut stale_registration_ids = Vec::new();
+        {
+            let RegistryState {
+                entries,
+                registration_order,
+                ..
+            } = &mut *state;
+            registration_order.retain(|registration_id| {
+                let Some(entry) = entries.get_mut(registration_id) else {
+                    return false;
+                };
+                let retained = match entry.binding {
+                    RegistrationBinding::Unbound { deadline } if deadline <= now => false,
+                    RegistrationBinding::Unbound { .. } => {
+                        if let Some(identity) = identities_by_pid.get(&entry.pid) {
+                            entry.binding = RegistrationBinding::Bound(*identity);
+                        }
+                        true
+                    }
+                    RegistrationBinding::Bound(identity) => sampled_identities.contains(&identity),
+                };
+                if !retained {
+                    stale_registration_ids.push(*registration_id);
+                    return false;
+                }
+                if let RegistrationBinding::Bound(identity) = entry.binding {
+                    snapshot.push(ProcessClaim {
                         identity,
                         scope: entry.metadata.scope,
                         kind: entry.metadata.kind,
                         label: entry.metadata.label.clone(),
-                    },
-                )),
-                RegistrationBinding::Unbound { .. } => None,
-            })
-            .collect::<Vec<_>>();
-        snapshot.sort_by_key(|(registration_id, _)| *registration_id);
-        snapshot.into_iter().map(|(_, claim)| claim).collect()
+                    });
+                }
+                true
+            });
+            for registration_id in &stale_registration_ids {
+                entries.remove(registration_id);
+            }
+        }
+        snapshot
     }
 }
 
@@ -163,7 +184,12 @@ impl Default for ProcessAttributionRegistry {
 impl ProcessRegistration {
     pub fn unregister(&self) {
         if let Some(registry) = self.registry.upgrade() {
-            lock_state(&registry).entries.remove(&self.registration_id);
+            let mut state = lock_state(&registry);
+            if state.entries.remove(&self.registration_id).is_some() {
+                state
+                    .registration_order
+                    .retain(|registration_id| *registration_id != self.registration_id);
+            }
         }
     }
 }
@@ -180,9 +206,43 @@ fn lock_state(registry: &Mutex<RegistryState>) -> std::sync::MutexGuard<'_, Regi
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+fn next_unused_registration_id(state: &mut RegistryState) -> u64 {
+    let mut registration_id = state.next_registration_id;
+    for _ in 0..REGISTRY_CAPACITY {
+        if !state.entries.contains_key(&registration_id) {
+            state.next_registration_id = registration_id.wrapping_add(1);
+            return registration_id;
+        }
+        registration_id = registration_id.wrapping_add(1);
+    }
+    unreachable!("registry capacity was checked before allocating an ID")
+}
+
 fn normalize_label(label: &str) -> String {
-    let normalized = label.split_whitespace().collect::<Vec<_>>().join(" ");
-    bound_diagnostic_string(&normalized, PROCESS_CLAIM_LABEL_MAX_SCALARS)
+    let mut normalized = String::with_capacity(PROCESS_CLAIM_LABEL_MAX_SCALARS);
+    let mut pending_separator = false;
+    let mut output_scalars = 0_usize;
+    for character in label.chars() {
+        if character.is_whitespace() {
+            pending_separator = !normalized.is_empty();
+            continue;
+        }
+        let required_scalars = usize::from(pending_separator) + 1;
+        if output_scalars.saturating_add(required_scalars) > PROCESS_CLAIM_LABEL_MAX_SCALARS {
+            break;
+        }
+        if pending_separator {
+            normalized.push(' ');
+            output_scalars += 1;
+            pending_separator = false;
+        }
+        normalized.push(character);
+        output_scalars += 1;
+        if output_scalars == PROCESS_CLAIM_LABEL_MAX_SCALARS {
+            break;
+        }
+    }
+    normalized
 }
 
 #[cfg(test)]
@@ -379,6 +439,88 @@ mod tests {
 
         assert_eq!(claims[0].label, format!("provider {}", "é".repeat(71)));
         assert_eq!(claims[0].label.chars().count(), 80);
+    }
+
+    #[test]
+    fn oversized_labels_stop_before_allocating_or_emitting_a_trailing_separator() {
+        let registry = ProcessAttributionRegistry::new();
+        let oversized_label = format!("{}{}", "x ".repeat(500_000), "é".repeat(500_000));
+        let _registration = registry
+            .register_pid(42, metadata(&oversized_label))
+            .expect("registration should fit");
+
+        let claims = registry.bind_and_snapshot(&[row(42, 1, 100)], Instant::now());
+
+        assert_eq!(claims[0].label, format!("{}x", "x ".repeat(39)));
+        assert_eq!(claims[0].label.chars().count(), 79);
+    }
+
+    #[test]
+    fn wraparound_allocates_unused_ids_without_replacing_entries_or_reordering_snapshot() {
+        let registry = ProcessAttributionRegistry::new();
+        lock_state(registry.inner.as_ref()).next_registration_id = u64::MAX;
+        let _first = registry
+            .register_pid(1, metadata("first"))
+            .expect("registration should fit");
+        let _second = registry
+            .register_pid(2, metadata("second"))
+            .expect("registration should fit");
+        lock_state(registry.inner.as_ref()).next_registration_id = u64::MAX;
+        let _third = registry
+            .register_pid(3, metadata("third"))
+            .expect("registration should fit");
+
+        let claims = registry.bind_and_snapshot(
+            &[row(1, 0, 10), row(2, 0, 20), row(3, 0, 30)],
+            Instant::now(),
+        );
+
+        assert_eq!(
+            claims
+                .iter()
+                .map(|claim| claim.label.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second", "third"]
+        );
+    }
+
+    #[test]
+    fn snapshots_bind_first_pid_identity_and_preserve_registration_order() {
+        let registry = ProcessAttributionRegistry::new();
+        let _first = registry
+            .register_pid(2, metadata("first"))
+            .expect("registration should fit");
+        let _second = registry
+            .register_pid(1, metadata("second"))
+            .expect("registration should fit");
+
+        let claims = registry.bind_and_snapshot(
+            &[row(2, 0, 20), row(1, 0, 10), row(2, 0, 30)],
+            Instant::now(),
+        );
+
+        assert_eq!(
+            claims
+                .iter()
+                .map(|claim| (claim.label.as_str(), claim.identity))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "first",
+                    ProcessIdentity {
+                        pid: 2,
+                        started_at: 20
+                    }
+                ),
+                (
+                    "second",
+                    ProcessIdentity {
+                        pid: 1,
+                        started_at: 10
+                    }
+                ),
+            ]
+        );
     }
 
     #[test]
