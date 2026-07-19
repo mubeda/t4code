@@ -113,6 +113,32 @@ describe("FileSaveCoordinator", () => {
     });
   });
 
+  it("does not start another write when a saving listener settles", async () => {
+    vi.useFakeTimers();
+    const write = deferred();
+    const persist = vi
+      .fn<(contents: string) => Promise<AtomCommandResult<void, never>>>()
+      .mockReturnValue(write.promise);
+    const coordinator = new FileSaveCoordinator({
+      debounceMs: 500,
+      persist,
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+    });
+    let settled: Promise<unknown> | undefined;
+    coordinator.subscribe(() => {
+      if (coordinator.getSnapshot().phase === "saving") settled = coordinator.settle();
+    });
+
+    coordinator.change("draft");
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(persist).toHaveBeenCalledOnce();
+
+    write.resolve(AsyncResult.success(undefined));
+    await expect(settled).resolves.toBe("saved");
+  });
+
   it("settle waits for an in-flight write and then persists a newer revision", async () => {
     vi.useFakeTimers();
     const firstWrite = deferred();
