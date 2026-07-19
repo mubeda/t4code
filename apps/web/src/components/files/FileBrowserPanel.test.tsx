@@ -253,6 +253,7 @@ import FileBrowserPanel, {
   collapseDirectoryTreePaths,
   expandedDirectoryTreePaths,
 } from "./FileBrowserPanel";
+import { FileEditingSessionRegistry } from "./fileEditingSessionRegistry";
 
 /** Row menus receive every handler defined, so treat them as non-optional. */
 type RowActions = { [K in keyof FileTreeMenuActions]-?: NonNullable<FileTreeMenuActions[K]> };
@@ -318,6 +319,19 @@ function mutationLease() {
     commitRename: vi.fn(),
     commitDelete: vi.fn(),
     release: vi.fn(),
+  };
+}
+
+function editingSession(relativePath: string) {
+  return {
+    relativePath,
+    flush: vi.fn(async () => "saved" as const),
+    settle: vi.fn(async () => "saved" as const),
+    pauseSaving: vi.fn(),
+    resumeSaving: vi.fn(),
+    discardPendingSave: vi.fn(),
+    rename: vi.fn(),
+    dispose: vi.fn(),
   };
 }
 
@@ -892,6 +906,50 @@ describe("delete entry", () => {
     expect(lease.commitDelete.mock.invocationCallOrder[0]).toBeLessThan(
       lease.release.mock.invocationCallOrder[0]!,
     );
+  });
+
+  it("finishes a successful directory delete when editor cleanup reports an error", async () => {
+    const reportError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      setEntries([entry("src", "directory")]);
+      testState.commandResults["deleteEntry"] = { _tag: "Success", value: {} };
+      const refresh = vi.fn();
+      testState.entriesQuery.refresh = refresh;
+      const registry = new FileEditingSessionRegistry<ReturnType<typeof editingSession>>();
+      const rejected = registry.getOrCreate("src/a.ts", () => editingSession("src/a.ts"));
+      const cleaned = registry.getOrCreate("src/nested/b.ts", () =>
+        editingSession("src/nested/b.ts"),
+      );
+      rejected.discardPendingSave.mockImplementation(() => {
+        throw new Error("discard failed");
+      });
+      renderPanel(
+        baseProps({
+          onBeginPathMutation: (relativePath) => registry.beginPathMutation(relativePath),
+        }),
+      );
+
+      rowActionsFor("src", "directory").onDelete();
+      (lastDialogRequest()["onConfirm"] as () => void)();
+      await flushPromises();
+
+      expect(registry.get("src/a.ts")).toBeUndefined();
+      expect(registry.get("src/nested/b.ts")).toBeUndefined();
+      expect(rejected.dispose).toHaveBeenCalledOnce();
+      expect(cleaned.dispose).toHaveBeenCalledOnce();
+      expect(testState.closeFileSurfacesUnder).toHaveBeenCalledWith(threadRef, "src");
+      expect(refresh).toHaveBeenCalledOnce();
+      expect(testState.toastAdd).not.toHaveBeenCalled();
+      expect(reportError).toHaveBeenCalledWith(
+        "[file-editing-session-registry] session cleanup failed",
+        expect.objectContaining({ message: "discard failed" }),
+      );
+      const nextLease = await registry.beginPathMutation("src");
+      expect(nextLease).not.toBeNull();
+      nextLease!.release();
+    } finally {
+      reportError.mockRestore();
+    }
   });
 
   it("contains rejected delete lease acquisition without running the command", async () => {
