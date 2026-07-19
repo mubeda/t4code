@@ -75,9 +75,10 @@ const DEPENDENCY_SECTIONS = [
   "peerDependencies",
 ] as const;
 const CARGO_DEPENDENCY_TABLES = new Set(["dependencies", "dev-dependencies", "build-dependencies"]);
-const IGNORED_DIRECTORIES = new Set([
+export const DEPENDENCY_AUDIT_IGNORED_DIRECTORIES: ReadonlySet<string> = new Set([
   ".git",
   ".repos",
+  ".superpowers",
   ".vite-plus",
   "dist",
   "node_modules",
@@ -120,7 +121,9 @@ function walkFiles(root: string, predicate: (relativePath: string) => boolean): 
   const files: Array<string> = [];
   const visit = (directory: string): void => {
     for (const entry of NodeFS.readdirSync(directory, { withFileTypes: true })) {
-      if (entry.isDirectory() && IGNORED_DIRECTORIES.has(entry.name)) continue;
+      if (entry.isDirectory() && DEPENDENCY_AUDIT_IGNORED_DIRECTORIES.has(entry.name)) {
+        continue;
+      }
       const absolutePath = NodePath.join(directory, entry.name);
       if (entry.isDirectory()) {
         visit(absolutePath);

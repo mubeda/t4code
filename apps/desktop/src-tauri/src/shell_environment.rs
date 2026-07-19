@@ -795,6 +795,7 @@ printf '__T4CODE_PATH_START__/user/bin:/usr/bin__T4CODE_PATH_END__'",
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn preparing_a_merged_path_does_not_mutate_the_process_environment() {
         let before = std::env::var_os("PATH");
