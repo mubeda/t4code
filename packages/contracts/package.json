@@ -23,7 +23,7 @@
   "scripts": {
     "generate:rust-auth-fixtures": "node scripts/export-rust-auth-fixtures.ts",
     "generate:rust-rpc-fixtures": "node scripts/export-rust-rpc-fixtures.ts",
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "tsc --noEmit",
     "test": "vp test run"
   },
   "dependencies": {

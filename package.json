@@ -47,8 +47,8 @@
     "@effect/tsgo": "catalog:",
     "@oxlint/plugins": "^1.74.0",
     "@types/node": "catalog:",
-    "@typescript/native-preview": "catalog:",
     "@vitest/coverage-v8": "4.1.10",
+    "typescript": "catalog:",
     "vite-plus": "catalog:"
   },
   "engines": {
