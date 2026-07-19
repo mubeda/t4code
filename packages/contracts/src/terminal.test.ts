@@ -240,6 +240,67 @@ describe("TerminalLaunchCommand", () => {
       }),
     ).toThrow();
   });
+
+  it("measures command string bounds in UTF-16 code units", () => {
+    const astral = "😀";
+    const atBoundary = decodeSync(TerminalLaunchCommand, {
+      executable: astral.repeat(TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH / 2),
+      args: [astral.repeat(TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH / 2)],
+      label: astral.repeat(TERMINAL_LAUNCH_LABEL_MAX_LENGTH / 2),
+    });
+
+    expect(atBoundary.executable.length).toBe(TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH);
+    expect(atBoundary.args[0]?.length).toBe(TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH);
+    expect(atBoundary.label?.length).toBe(TERMINAL_LAUNCH_LABEL_MAX_LENGTH);
+    for (const value of [
+      {
+        executable: astral.repeat(TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH / 2 + 1),
+        args: [],
+      },
+      {
+        executable: "codex",
+        args: [astral.repeat(TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH / 2 + 1)],
+      },
+      {
+        executable: "codex",
+        args: [],
+        label: astral.repeat(TERMINAL_LAUNCH_LABEL_MAX_LENGTH / 2 + 1),
+      },
+    ]) {
+      expect(() => decodeSync(TerminalLaunchCommand, value)).toThrow();
+    }
+  });
+
+  it("uses ECMAScript trim semantics without trimming arguments", () => {
+    const decoded = decodeSync(TerminalLaunchCommand, {
+      executable: "\uFEFFcodex\uFEFF",
+      args: ["\uFEFF--model\uFEFF"],
+      label: "\uFEFFCodex Terminal\uFEFF",
+    });
+
+    expect(decoded).toEqual({
+      executable: "codex",
+      args: ["\uFEFF--model\uFEFF"],
+      label: "Codex Terminal",
+    });
+    expect(
+      decodeSync(TerminalLaunchCommand, {
+        executable: "\u0085codex\u0085",
+        args: [],
+        label: "\u0085Codex Terminal\u0085",
+      }),
+    ).toEqual({
+      executable: "\u0085codex\u0085",
+      args: [],
+      label: "\u0085Codex Terminal\u0085",
+    });
+    expect(() =>
+      decodeSync(TerminalLaunchCommand, {
+        executable: "\uFEFF",
+        args: [],
+      }),
+    ).toThrow();
+  });
 });
 
 describe("TerminalWriteInput", () => {

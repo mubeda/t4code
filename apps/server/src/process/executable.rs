@@ -5,7 +5,7 @@ use std::{
 
 pub(crate) fn locate_executable<E>(
     command: &str,
-    cwd: &Path,
+    cwd: Option<&Path>,
     search_path: Option<&OsStr>,
     extensions: &[E],
 ) -> Option<PathBuf>
@@ -17,7 +17,7 @@ where
         return command_path.is_file().then(|| command_path.to_path_buf());
     }
     if command_path.components().count() > 1 {
-        let resolved = cwd.join(command_path);
+        let resolved = cwd?.join(command_path);
         return resolved.is_file().then_some(resolved);
     }
 
@@ -28,7 +28,7 @@ where
             let directory = if directory.is_absolute() {
                 directory
             } else {
-                cwd.join(directory)
+                cwd?.join(directory)
             };
             extensions.iter().find_map(|extension| {
                 let extension = extension.as_ref().trim();
