@@ -163,6 +163,29 @@ describe("FileEditingSessionRegistry", () => {
     }
   });
 
+  it("contains synchronous session disposal errors and continues registry disposal", async () => {
+    const reportError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
+      const rejected = registry.getOrCreate("a.ts", () => fakeSession("a.ts"));
+      const disposed = registry.getOrCreate("b.ts", () => fakeSession("b.ts"));
+      rejected.dispose.mockImplementation(() => {
+        throw new Error("dispose failed");
+      });
+
+      await expect(registry.dispose()).resolves.toBeUndefined();
+
+      expect(rejected.dispose).toHaveBeenCalledOnce();
+      expect(disposed.dispose).toHaveBeenCalledOnce();
+      expect(reportError).toHaveBeenCalledWith(
+        "[file-editing-session-registry] session cleanup failed",
+        expect.objectContaining({ message: "dispose failed" }),
+      );
+    } finally {
+      reportError.mockRestore();
+    }
+  });
+
   it("disposes a remap collision and retains the renamed source session", async () => {
     const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
     const source = registry.getOrCreate("src/a.ts", () => fakeSession("src/a.ts"));
@@ -249,8 +272,9 @@ describe("FileEditingSessionRegistry", () => {
       lease!.release();
       await expect(disposal).resolves.toBeUndefined();
       expect(disposalCompleted).toBe(true);
+      expect(session.dispose).toHaveBeenCalledOnce();
       expect(reportError).toHaveBeenCalledWith(
-        "[file-editing-session-registry] mutation cleanup failed",
+        "[file-editing-session-registry] session cleanup failed",
         expect.objectContaining({ message: "save failed" }),
       );
     } finally {

@@ -213,10 +213,7 @@ export class FileEditingSessionRegistry<
         for (const candidate of mutation.sessions.keys()) this.sessions.delete(candidate);
         if (resumeSaving) {
           await Promise.all(
-            [...mutation.sessions.values()].map(async (session) => {
-              await session.settle();
-              session.dispose();
-            }),
+            [...mutation.sessions.values()].map((session) => this.settleAndDisposeSession(session)),
           );
         }
       } else if (this.latestOpenRelativePaths) {
