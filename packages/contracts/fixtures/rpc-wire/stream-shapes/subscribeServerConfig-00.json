@@ -64,7 +64,7 @@
             },
             "cursor": {
               "enabled": false,
-              "binaryPath": "agent",
+              "binaryPath": "cursor-agent",
               "apiEndpoint": "",
               "customModels": []
             },
