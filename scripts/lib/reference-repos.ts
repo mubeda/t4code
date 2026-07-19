@@ -29,6 +29,6 @@ export const referenceRepos: ReadonlyArray<ReferenceRepo> = [
     packageVersionPath: ["dependencies", "alchemy"],
     versionTagPrefix: "v",
     packageSourceRefPrefix: "https://pkg.ing/alchemy/",
-    prunePaths: [".gitmodules", ".vendor/alchemy"],
+    prunePaths: [".gitmodules", ".vendor/alchemy", "cloudflare-tools", "distilled"],
   },
 ];

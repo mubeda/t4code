@@ -22,7 +22,8 @@ describe("referenceRepos", () => {
         versionSourcePath: "infra/relay/package.json",
         packageVersionPath: ["dependencies", "alchemy"],
         versionTagPrefix: "v",
-        prunePaths: [".gitmodules", ".vendor/alchemy"],
+        packageSourceRefPrefix: "https://pkg.ing/alchemy/",
+        prunePaths: [".gitmodules", ".vendor/alchemy", "cloudflare-tools", "distilled"],
       },
     ]);
   });
