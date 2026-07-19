@@ -48,11 +48,13 @@ interface FileBrowserPanelProps {
   availableEditors: ReadonlyArray<EditorId>;
   onOpenFile: (relativePath: string) => void;
   /**
-   * Awaited before rename/delete fs ops so the open file surface can flush a
-   * pending debounced save while the pre-mutation path still exists (otherwise
-   * its unmount-time save would resurrect the old path).
+   * Awaited before rename/delete/duplicate fs ops so matching editing sessions
+   * can settle while the pre-mutation path still exists. Returning false
+   * prevents the filesystem mutation.
    */
-  onBeforePathMutation?: (relativePath: string) => Promise<void>;
+  onBeforePathMutation?: (relativePath: string) => Promise<boolean>;
+  onPathRenamed?: (fromRelativePath: string, toRelativePath: string) => void;
+  onPathDeleted?: (relativePath: string) => void;
 }
 
 const TREE_UNSAFE_CSS = `
@@ -102,6 +104,8 @@ export default function FileBrowserPanel({
   availableEditors,
   onOpenFile,
   onBeforePathMutation,
+  onPathRenamed,
+  onPathDeleted,
 }: FileBrowserPanelProps) {
   const { resolvedTheme } = useTheme();
   const entriesQuery = useProjectEntriesQuery(environmentId, cwd);
@@ -251,7 +255,7 @@ export default function FileBrowserPanel({
           if (name === currentName) return;
           const toRelativePath = joinRelativePath(parentRelativePath(relativePath), name);
           void (async () => {
-            await onBeforePathMutation?.(relativePath);
+            if (onBeforePathMutation && !(await onBeforePathMutation(relativePath))) return;
             const result = await renameEntry({
               environmentId,
               input: { cwd, fromRelativePath: relativePath, toRelativePath },
@@ -265,6 +269,7 @@ export default function FileBrowserPanel({
               }
               return;
             }
+            onPathRenamed?.(relativePath, result.value.relativePath);
             remapFileSurfaces(threadRef, relativePath, result.value.relativePath);
             entriesQuery.refresh();
           })();
@@ -276,6 +281,7 @@ export default function FileBrowserPanel({
       entriesQuery,
       environmentId,
       onBeforePathMutation,
+      onPathRenamed,
       remapFileSurfaces,
       renameEntry,
       showMutationError,
@@ -297,7 +303,7 @@ export default function FileBrowserPanel({
         destructive: true,
         onConfirm: () => {
           void (async () => {
-            await onBeforePathMutation?.(relativePath);
+            if (onBeforePathMutation && !(await onBeforePathMutation(relativePath))) return;
             const result = await deleteEntry({ environmentId, input: { cwd, relativePath } });
             if (result._tag === "Failure") {
               if (!isAtomCommandInterrupted(result)) {
@@ -305,6 +311,7 @@ export default function FileBrowserPanel({
               }
               return;
             }
+            onPathDeleted?.(relativePath);
             closeFileSurfacesUnder(threadRef, relativePath);
             entriesQuery.refresh();
           })();
@@ -318,6 +325,7 @@ export default function FileBrowserPanel({
       entriesQuery,
       environmentId,
       onBeforePathMutation,
+      onPathDeleted,
       showMutationError,
       threadRef,
     ],
@@ -327,7 +335,7 @@ export default function FileBrowserPanel({
     (relativePath: string) => {
       void (async () => {
         // Flush a pending edit first so the copy matches what's on screen.
-        await onBeforePathMutation?.(relativePath);
+        if (onBeforePathMutation && !(await onBeforePathMutation(relativePath))) return;
         const result = await duplicateEntry({ environmentId, input: { cwd, relativePath } });
         if (result._tag === "Failure") {
           if (!isAtomCommandInterrupted(result)) {
