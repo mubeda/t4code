@@ -19,7 +19,8 @@ use crate::{
     crypto::sha256_hex,
     diagnostic_bundle::DiagnosticBundleService,
     diagnostics::{
-        DiagnosticsMonitor, NativeProcessSampler, ProcessAttributionRegistry, TraceDiagnosticsStore,
+        DesktopUiProcessObserver, DiagnosticsMonitor, NativeProcessSampler, NativeResourceSampler,
+        ProcessAttributionRegistry, TraceDiagnosticsStore,
     },
     git::GitRepository,
     mcp::preview_automation::PreviewAutomationBroker,
@@ -72,6 +73,7 @@ pub struct ProductionRuntime {
     trace_collector: BrowserTraceCollector,
     trace_diagnostics: TraceDiagnosticsStore,
     diagnostic_bundle: DiagnosticBundleService,
+    _resource_sampler: Arc<NativeResourceSampler>,
 }
 
 impl ProductionRuntime {
@@ -84,6 +86,7 @@ impl ProductionRuntime {
         database: Database,
         auth: AuthService,
         asset_secret: Vec<u8>,
+        ui_process_observer: Arc<dyn DesktopUiProcessObserver>,
     ) -> Result<Self, String> {
         let orchestration = OrchestrationEngine::start(
             database,
@@ -99,6 +102,12 @@ impl ProductionRuntime {
             .await
             .map_err(|error| error.to_string())?;
         let process_attribution = ProcessAttributionRegistry::new();
+        let process_sampler = Arc::new(NativeProcessSampler::default());
+        let resource_sampler = Arc::new(NativeResourceSampler::new(
+            process_sampler.clone(),
+            process_attribution.clone(),
+            ui_process_observer,
+        ));
         let terminal_manager = TerminalManager::with_process_attribution(
             Arc::new(PortablePtyBackend),
             TerminalManagerOptions::default(),
@@ -116,7 +125,7 @@ impl ProductionRuntime {
             orchestration.clone(),
             Arc::new(NativeProviderDriverFactory::with_process_attribution(
                 state_paths.attachments_dir.clone(),
-                process_attribution,
+                process_attribution.clone(),
             )),
             SupervisorOptions::default(),
             operational_logs.provider(),
@@ -139,7 +148,6 @@ impl ProductionRuntime {
         let workspace_preview =
             WorkspacePreviewRpcServices::new(workspace, preview, preview_automation.clone());
 
-        let process_sampler = Arc::new(NativeProcessSampler::default());
         let process_monitor = Arc::new(DiagnosticsMonitor::new(
             process_sampler.clone(),
             Duration::from_secs(2),
@@ -203,6 +211,7 @@ impl ProductionRuntime {
             trace_collector,
             trace_diagnostics,
             diagnostic_bundle,
+            _resource_sampler: resource_sampler,
         })
     }
 
@@ -753,9 +762,23 @@ mod tests {
             .await
             .expect("database should migrate");
         let auth = AuthService::new(&config, vec![7_u8; 32]);
-        let runtime = ProductionRuntime::start(&config, database, auth, vec![9_u8; 32])
-            .await
-            .expect("production runtime should start");
+        let runtime = ProductionRuntime::start(
+            &config,
+            database,
+            auth,
+            vec![9_u8; 32],
+            Arc::new(crate::diagnostics::NotApplicableUiProcessObserver),
+        )
+        .await
+        .expect("production runtime should start");
+        let resources =
+            crate::diagnostics::ResourceSampler::sample(runtime._resource_sampler.as_ref())
+                .await
+                .expect("attributed resources should sample");
+        assert_eq!(
+            resources.ui_coverage.status,
+            crate::diagnostics::UiCoverageStatus::NotApplicable
+        );
 
         let snapshot = runtime
             .json(JsonOperation::OrchestrationSnapshot, None, route_context())

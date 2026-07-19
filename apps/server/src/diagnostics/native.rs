@@ -30,6 +30,16 @@ impl ProcessSampler for NativeProcessSampler {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Vec<ProcessRow>, SamplingError>> + Send + '_>,
     > {
+        self.collect_rows()
+    }
+}
+
+impl NativeProcessSampler {
+    pub(crate) fn collect_rows(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<ProcessRow>, SamplingError>> + Send + '_>,
+    > {
         let system = self.system.clone();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || collect_rows(&system))
@@ -37,9 +47,7 @@ impl ProcessSampler for NativeProcessSampler {
                 .map_err(|error| SamplingError::Failed(error.to_string()))?
         })
     }
-}
 
-impl NativeProcessSampler {
     pub async fn signal_descendant(
         &self,
         server_pid: u32,
