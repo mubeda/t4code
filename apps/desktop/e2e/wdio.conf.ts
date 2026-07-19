@@ -5,7 +5,7 @@ import * as NodePath from "node:path";
 
 import { resolveDesktopAppPath, type DesktopUiPlatform } from "./support/app-path.ts";
 import {
-  archiveAndCleanupDesktopUiTestContext,
+  deferDesktopUiTestContextCleanupUntilExit,
   prepareDesktopUiTestContext,
 } from "./support/test-project.ts";
 import { normalizeWebDriverRequest } from "./support/webdriver-request.ts";
@@ -147,7 +147,10 @@ export const config = {
     }
   },
   onComplete: () => {
-    archiveAndCleanupDesktopUiTestContext(testContext);
+    // WDIO invokes configuration hooks before launcher service hooks. Defer shared fixture cleanup
+    // until process exit so the Tauri service has released Windows filesystem handles first.
+    // oxlint-disable-next-line t4code/no-global-process-runtime -- The standalone launcher owns this process lifecycle.
+    deferDesktopUiTestContextCleanupUntilExit(testContext, process);
     console.log(`Desktop UI artifacts: ${testContext.artifactDirectory}`);
   },
 };

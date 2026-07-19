@@ -17,6 +17,12 @@ export interface DesktopUiTestContext {
 
 export type DesktopUiDirectoryRemover = (path: string, options: NodeFS.RmDirOptions) => void;
 
+export interface DesktopUiExitRegistrar {
+  once(event: "exit", listener: () => void): unknown;
+}
+
+export type DesktopUiTestContextCleaner = (context: DesktopUiTestContext) => void;
+
 const codexFixtureSource = String.raw`
 import readline from "node:readline";
 
@@ -240,6 +246,16 @@ export function archiveAndCleanupDesktopUiTestContext(
     force: true,
     maxRetries: 10,
     retryDelay: 100,
+  });
+}
+
+export function deferDesktopUiTestContextCleanupUntilExit(
+  context: DesktopUiTestContext,
+  exitRegistrar: DesktopUiExitRegistrar,
+  cleanContext: DesktopUiTestContextCleaner = archiveAndCleanupDesktopUiTestContext,
+): void {
+  exitRegistrar.once("exit", () => {
+    cleanContext(context);
   });
 }
 
