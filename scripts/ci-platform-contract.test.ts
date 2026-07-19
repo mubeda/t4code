@@ -215,4 +215,13 @@ describe("packaged desktop UI smoke contract", () => {
       "${{ runner.temp }}/t4code-desktop-ui-artifacts",
     );
   });
+
+  it("exports an absolute Linux AppImage path to the packaged UI harness", () => {
+    const { workflow } = readWorkflow(DESKTOP_UI_WORKFLOW_PATH);
+    const smoke = requireJob(workflow, "desktop_ui_smoke");
+    const resolveStep = smoke.steps?.find((step) => step.name === "Resolve Linux AppImage");
+
+    expect(resolveStep?.run).toContain('find "$GITHUB_WORKSPACE/target/release/bundle/appimage"');
+    expect(resolveStep?.run).toContain('echo "T4CODE_E2E_APP_PATH=$app_path"');
+  });
 });
