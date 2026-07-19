@@ -48,10 +48,10 @@ describe("packaged preferences, native integrations, and platform capabilities",
     await addEnvironment.click();
     await expect(browser.$("//*[normalize-space()='Add Environment']")).toBeDisplayed();
     await expect(browser.$("//*[normalize-space()='SSH']")).toBeDisplayed();
-    await browser.keys("Escape");
     if (process.env.T4CODE_E2E_PLATFORM === "win") {
       await expect(browser.$("//*[normalize-space()='WSL backend']")).toBeDisplayed();
     }
+    await browser.keys("Escape");
 
     await browser.url(`${appOrigin}/#/settings/diagnostics`);
     const openLogsFolder = browser.$('button[aria-label="Open logs folder"]');
