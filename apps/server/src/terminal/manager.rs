@@ -291,24 +291,47 @@ impl TerminalManager {
             }
         }
 
-        let candidates = resolve_shell_candidates(
-            Platform::current(),
-            self.inner.options.preferred_shell.as_deref(),
-            &input.env,
-        );
+        let spawn_candidates = if let Some(command) = input.command.as_ref() {
+            vec![(
+                PtySpawnInput {
+                    executable: command.executable.clone(),
+                    args: command.args.clone(),
+                    cwd: input.cwd.clone(),
+                    cols: input.cols,
+                    rows: input.rows,
+                    env: input.env.clone(),
+                },
+                format!("{} {:?}", command.executable, command.args),
+            )]
+        } else {
+            resolve_shell_candidates(
+                Platform::current(),
+                self.inner.options.preferred_shell.as_deref(),
+                &input.env,
+            )
+            .into_iter()
+            .map(|candidate| {
+                let attempted = format_shell_candidate(&candidate);
+                (
+                    PtySpawnInput {
+                        executable: candidate.command,
+                        args: candidate.args,
+                        cwd: input.cwd.clone(),
+                        cols: input.cols,
+                        rows: input.rows,
+                        env: input.env.clone(),
+                    },
+                    attempted,
+                )
+            })
+            .collect::<Vec<_>>()
+        };
+
         let mut attempted = Vec::new();
-        let mut last_error = "no shell candidates were available".to_string();
+        let mut last_error = "no terminal launch candidates were available".to_owned();
         let mut spawned = None;
-        for candidate in candidates {
-            attempted.push(format_shell_candidate(&candidate));
-            let spawn = PtySpawnInput {
-                shell: candidate.command,
-                args: candidate.args,
-                cwd: input.cwd.clone(),
-                cols: input.cols,
-                rows: input.rows,
-                env: input.env.clone(),
-            };
+        for (spawn, attempted_label) in spawn_candidates {
+            attempted.push(attempted_label);
             match self.inner.backend.spawn(&spawn) {
                 Ok(process) => {
                     spawned = Some(process);
@@ -340,7 +363,11 @@ impl TerminalManager {
             history,
             exit_code: None,
             exit_signal: None,
-            label: terminal_label(&input.terminal_id),
+            label: input
+                .command
+                .as_ref()
+                .and_then(|command| command.label.clone())
+                .unwrap_or_else(|| terminal_label(&input.terminal_id)),
             has_running_subprocess: false,
             child_command_label: None,
             updated_at: now_iso(),
@@ -552,6 +579,7 @@ impl TerminalManager {
                     cols: input.cols.unwrap_or(120),
                     rows: input.rows.unwrap_or(30),
                     env: input.env.clone(),
+                    command: input.command.clone(),
                 })
                 .await?;
                 self.inner
@@ -589,6 +617,7 @@ impl TerminalManager {
                 cols: input.cols.unwrap_or(current_cols),
                 rows: input.rows.unwrap_or(current_rows),
                 env: input.env,
+                command: input.command,
             })
             .await?;
             session = self
@@ -955,6 +984,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct HistoryTestBackend {
         processes: std::sync::Mutex<Vec<Arc<HistoryTestPty>>>,
+        spawns: std::sync::Mutex<Vec<PtySpawnInput>>,
     }
 
     impl HistoryTestBackend {
@@ -966,15 +996,99 @@ mod tests {
                 .cloned()
                 .expect("spawned process")
         }
+
+        fn spawns(&self) -> Vec<PtySpawnInput> {
+            self.spawns.lock().expect("spawns lock").clone()
+        }
     }
 
     impl PtyBackend for HistoryTestBackend {
-        fn spawn(&self, _input: &PtySpawnInput) -> Result<Arc<dyn PtyProcess>, String> {
+        fn spawn(&self, input: &PtySpawnInput) -> Result<Arc<dyn PtyProcess>, String> {
+            self.spawns.lock().expect("spawns lock").push(input.clone());
             let mut processes = self.processes.lock().expect("processes lock");
             let process = Arc::new(HistoryTestPty::new(processes.len() as u32 + 1));
             processes.push(process.clone());
             Ok(process)
         }
+    }
+
+    #[tokio::test]
+    async fn structured_command_spawns_once_with_exact_program_args_cwd_and_env() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend::default());
+        let manager = TerminalManager::new(
+            backend.clone(),
+            TerminalManagerOptions {
+                subprocess_poll_interval: Duration::ZERO,
+                ..TerminalManagerOptions::default()
+            },
+        );
+        let mut input = TerminalOpenInput::new(
+            "thread-provider",
+            "term-provider",
+            root.path().to_path_buf(),
+            120,
+            30,
+        );
+        input.env.insert("T4CODE_TEST".to_owned(), "1".to_owned());
+        input.command = Some(crate::terminal::TerminalLaunchCommand {
+            executable: "/opt/Provider CLI/codex".to_owned(),
+            args: vec!["--dangerously-bypass-approvals-and-sandbox".to_owned()],
+            label: Some("Codex Terminal".to_owned()),
+        });
+
+        let first = manager.open(input.clone()).await.unwrap();
+        let second = manager.open(input).await.unwrap();
+
+        assert_eq!(first.pid, second.pid);
+        assert_eq!(first.label, "Codex Terminal");
+        let spawns = backend.spawns();
+        assert_eq!(spawns.len(), 1);
+        assert_eq!(spawns[0].executable, "/opt/Provider CLI/codex");
+        assert_eq!(
+            spawns[0].args,
+            vec!["--dangerously-bypass-approvals-and-sandbox"]
+        );
+        assert_eq!(spawns[0].cwd, root.path());
+        assert_eq!(
+            spawns[0].env.get("T4CODE_TEST").map(String::as_str),
+            Some("1")
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_creates_a_missing_structured_command_without_shell_fallback() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend::default());
+        let manager = TerminalManager::new(
+            backend.clone(),
+            TerminalManagerOptions {
+                subprocess_poll_interval: Duration::ZERO,
+                ..TerminalManagerOptions::default()
+            },
+        );
+        let attachment = manager
+            .attach(TerminalAttachInput {
+                thread_id: "thread-provider".to_owned(),
+                terminal_id: "term-provider".to_owned(),
+                cwd: Some(root.path().to_path_buf()),
+                worktree_path: Some(root.path().to_path_buf()),
+                cols: Some(90),
+                rows: Some(28),
+                env: std::collections::BTreeMap::new(),
+                restart_if_not_running: false,
+                command: Some(crate::terminal::TerminalLaunchCommand {
+                    executable: "claude".to_owned(),
+                    args: vec!["--dangerously-skip-permissions".to_owned()],
+                    label: Some("Claude Terminal".to_owned()),
+                }),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(attachment.initial.label, "Claude Terminal");
+        assert_eq!(backend.spawns().len(), 1);
+        assert_eq!(backend.spawns()[0].executable, "claude");
     }
 
     #[tokio::test]

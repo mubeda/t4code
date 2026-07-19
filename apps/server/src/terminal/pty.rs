@@ -21,7 +21,7 @@ pub struct PtyExit {
 
 #[derive(Clone, Debug)]
 pub struct PtySpawnInput {
-    pub shell: String,
+    pub executable: String,
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub cols: u16,
@@ -47,8 +47,11 @@ pub struct PortablePtyBackend;
 
 impl PtyBackend for PortablePtyBackend {
     fn spawn(&self, input: &PtySpawnInput) -> Result<Arc<dyn PtyProcess>, String> {
-        if !executable_is_discoverable(&input.shell, &input.env) {
-            return Err(format!("shell executable was not found: {}", input.shell));
+        if !executable_is_discoverable(&input.executable, &input.env) {
+            return Err(format!(
+                "terminal executable was not found: {}",
+                input.executable
+            ));
         }
         let pair = match native_pty_system().openpty(PtySize {
             rows: input.rows,
@@ -59,7 +62,7 @@ impl PtyBackend for PortablePtyBackend {
             Ok(pair) => pair,
             Err(error) => return Err(error.to_string()),
         };
-        let mut command = CommandBuilder::new(&input.shell);
+        let mut command = CommandBuilder::new(&input.executable);
         command.args(&input.args);
         command.cwd(&input.cwd);
         for (key, value) in &input.env {
@@ -382,7 +385,7 @@ mod tests {
 
     #[tokio::test]
     async fn portable_backend_streams_input_output_resize_and_exit() {
-        let (shell, args, input, output_marker) = if cfg!(windows) {
+        let (executable, args, input, output_marker) = if cfg!(windows) {
             (
                 "cmd.exe".to_owned(),
                 vec!["/D".to_owned(), "/Q".to_owned()],
@@ -405,7 +408,7 @@ mod tests {
         let backend = PortablePtyBackend;
         let process = backend
             .spawn(&PtySpawnInput {
-                shell,
+                executable,
                 args,
                 cwd: std::env::temp_dir(),
                 cols: 80,
@@ -451,7 +454,7 @@ mod tests {
 
     #[tokio::test]
     async fn portable_backend_kills_a_live_process_group() {
-        let (shell, args) = if cfg!(windows) {
+        let (executable, args) = if cfg!(windows) {
             (
                 "powershell.exe".to_owned(),
                 vec![
@@ -469,7 +472,7 @@ mod tests {
         };
         let process = PortablePtyBackend
             .spawn(&PtySpawnInput {
-                shell,
+                executable,
                 args,
                 cwd: std::env::temp_dir(),
                 cols: 80,
@@ -488,10 +491,10 @@ mod tests {
     }
 
     #[test]
-    fn portable_backend_rejects_a_missing_shell_before_opening_a_pty() {
+    fn portable_backend_rejects_a_missing_executable_before_opening_a_pty() {
         let error = PortablePtyBackend
             .spawn(&PtySpawnInput {
-                shell: "/definitely/missing/t4code-shell".to_owned(),
+                executable: "/definitely/missing/t4code-shell".to_owned(),
                 args: Vec::new(),
                 cwd: std::env::temp_dir(),
                 cols: 80,
@@ -499,7 +502,7 @@ mod tests {
                 env: BTreeMap::new(),
             })
             .unwrap_err();
-        assert!(error.contains("shell executable was not found"));
+        assert!(error.contains("terminal executable was not found"));
     }
 
     #[cfg(not(windows))]

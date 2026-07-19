@@ -541,6 +541,7 @@ impl TerminalStartPayload {
             cols,
             rows,
             env: self.env,
+            command: None,
         })
     }
 }
@@ -571,6 +572,7 @@ impl TerminalAttachPayload {
             rows: self.rows,
             env: self.env,
             restart_if_not_running: self.restart_if_not_running,
+            command: None,
         }
     }
 }

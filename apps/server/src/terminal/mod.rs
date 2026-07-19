@@ -8,7 +8,8 @@ pub use manager::{
     TerminalMetadataAttachment, TerminalSubprocessInspector,
 };
 pub use model::{
-    TerminalAttachInput, TerminalEvent, TerminalMetadataEvent, TerminalOpenInput,
-    TerminalRestartInput, TerminalSessionSnapshot, TerminalStatus, TerminalSummary,
+    TerminalAttachInput, TerminalEvent, TerminalLaunchCommand, TerminalMetadataEvent,
+    TerminalOpenInput, TerminalRestartInput, TerminalSessionSnapshot, TerminalStatus,
+    TerminalSummary,
 };
 pub use pty::{PortablePtyBackend, PtyBackend, PtyExit, PtyProcess, PtySpawnInput};
