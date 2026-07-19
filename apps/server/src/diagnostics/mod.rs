@@ -2,6 +2,7 @@ mod attribution;
 mod model;
 mod monitor;
 mod native;
+mod registry;
 mod trace;
 
 pub use attribution::{
@@ -17,5 +18,9 @@ pub use model::{
 };
 pub use monitor::{DiagnosticsMonitor, ProcessSampler, SamplingError, SamplingLease};
 pub use native::{NativeProcessSampler, ProcessSignal, SignalError};
+pub use registry::{
+    ProcessAttributionRegistry, ProcessRegistration, ProcessRegistrationMetadata,
+    RegistrationSource,
+};
 pub use trace::TraceDiagnosticsStore;
 pub(crate) use trace::redact_sensitive_text;
