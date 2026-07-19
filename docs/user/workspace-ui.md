@@ -36,7 +36,9 @@ The active thread's main chat is always the first center tab and cannot be
 closed. The chat header `+` menu contains:
 
 - enabled AI providers, which create new chat panels
-- Open Terminal, which creates a terminal panel in the current worktree
+- Open Terminal, which creates a shell terminal panel in the current worktree
+- enabled provider terminal actions, which launch the selected provider CLI in
+  the current worktree using that provider instance's configured binary path
 - Add custom action, which opens the custom action dialog
 
 Each extra chat panel is an isolated AI session. For contributors, this is
