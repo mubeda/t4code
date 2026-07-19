@@ -18,6 +18,14 @@ Claude, Cursor, Grok, and OpenCode. The center-panel `+` menu lists provider
 instances that are visible and ready, then creates a hidden panel thread for the
 chosen provider instance.
 
+The same menu also exposes provider terminal actions for enabled instances.
+Each action resolves the instance's configured binary path plus the built-in
+provider terminal arguments and stores a structured launch command on a center
+terminal surface. Terminal attachment sends the executable and argument vector
+to the Rust terminal manager, which starts it directly under the PTY in the
+host thread's current worktree. Ordinary terminal actions continue to launch
+the user's shell.
+
 ## Client transport
 
 `wsTransport.ts` manages connection state: `connecting` → `open` → `reconnecting` → `closed` → `disposed`. Outbound requests are queued while disconnected and flushed on reconnect. Inbound pushes are decoded and validated at the boundary, then cached per channel. Subscribers can opt into `replayLatest` to receive the last push on subscribe.
