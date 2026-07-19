@@ -18,7 +18,10 @@ use crate::{
         ProviderUsageStatus, ProviderUsageWindow,
     },
     rpc::{RpcRegistry, RpcResult, RpcStreamChunk},
-    terminal::{TerminalAttachInput, TerminalManager, TerminalMetadataEvent, TerminalOpenInput},
+    terminal::{
+        TerminalAttachInput, TerminalLaunchCommand, TerminalManager, TerminalMetadataEvent,
+        TerminalOpenInput,
+    },
 };
 
 pub type JsonFuture = Pin<Box<dyn Future<Output = RpcResult> + Send + 'static>>;
@@ -521,6 +524,7 @@ struct TerminalStartPayload {
     rows: Option<u16>,
     #[serde(default)]
     env: BTreeMap<String, String>,
+    command: Option<TerminalLaunchCommand>,
 }
 
 impl TerminalStartPayload {
@@ -541,7 +545,7 @@ impl TerminalStartPayload {
             cols,
             rows,
             env: self.env,
-            command: None,
+            command: self.command,
         })
     }
 }
@@ -559,6 +563,7 @@ struct TerminalAttachPayload {
     env: BTreeMap<String, String>,
     #[serde(default)]
     restart_if_not_running: bool,
+    command: Option<TerminalLaunchCommand>,
 }
 
 impl TerminalAttachPayload {
@@ -572,7 +577,7 @@ impl TerminalAttachPayload {
             rows: self.rows,
             env: self.env,
             restart_if_not_running: self.restart_if_not_running,
-            command: None,
+            command: self.command,
         }
     }
 }
@@ -790,7 +795,7 @@ mod tests {
         ServerConfig,
         diagnostics::{ProcessResourceBucket, ProcessResourceSummary},
         production::control::NativeServerControl,
-        terminal::{PortablePtyBackend, TerminalManagerOptions},
+        terminal::{PortablePtyBackend, TerminalLaunchCommand, TerminalManagerOptions},
     };
 
     use super::*;
@@ -873,11 +878,24 @@ mod tests {
             "threadId":"thread-2",
             "terminalId":"terminal-2",
             "cwd":temp.path(),
-            "env":{}
+            "env":{},
+            "command": {
+                "executable": "/opt/codex",
+                "args": ["--dangerously-bypass-approvals-and-sandbox"],
+                "label": "Codex Terminal"
+            }
         }))
         .expect("terminal start payload");
         let open = start.into_open(false).expect("default dimensions");
         assert_eq!((open.cols, open.rows), (120, 30));
+        assert_eq!(
+            open.command,
+            Some(TerminalLaunchCommand {
+                executable: "/opt/codex".to_owned(),
+                args: vec!["--dangerously-bypass-approvals-and-sandbox".to_owned()],
+                label: Some("Codex Terminal".to_owned()),
+            })
+        );
         let missing_dimensions: TerminalStartPayload = decode_payload(&json!({
             "threadId":"thread-2",
             "terminalId":"terminal-2",
@@ -893,12 +911,25 @@ mod tests {
             "cols":80,
             "rows":24,
             "env":{"UNIT":"1"},
-            "restartIfNotRunning":true
+            "restartIfNotRunning":true,
+            "command": {
+                "executable": "/opt/codex",
+                "args": ["--dangerously-bypass-approvals-and-sandbox"],
+                "label": "Codex Terminal"
+            }
         }))
         .expect("terminal attach payload");
         let attach = attach.into_attach();
         assert_eq!(attach.cols, Some(80));
         assert!(attach.restart_if_not_running);
+        assert_eq!(
+            attach.command,
+            Some(TerminalLaunchCommand {
+                executable: "/opt/codex".to_owned(),
+                args: vec!["--dangerously-bypass-approvals-and-sandbox".to_owned()],
+                label: Some("Codex Terminal".to_owned()),
+            })
+        );
         assert!(decode_payload::<TerminalStartPayload>(&json!({})).is_err());
 
         let now = OffsetDateTime::UNIX_EPOCH;
