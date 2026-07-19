@@ -9,8 +9,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     cloud::{RelayClientInstallEvent, RelayClientService, RelayClientStatus},
     diagnostics::{
-        AttributedProcessSnapshot, AttributionKind, CurrentProcessDiagnostics, DiagnosticsMonitor,
-        NativeProcessSampler, NativeResourceSampler, ProcessResourceHistory, ProcessSignal,
+        AttributionKind, CurrentProcessDiagnostics, DiagnosticsMonitor, NativeProcessSampler,
+        NativeResourceSampler, ProcessResourceHistory, ProcessSignal, build_process_tree_entries,
     },
     production::orchestration_effects::SetupScriptLaunch,
     provider_usage::{
@@ -616,13 +616,7 @@ fn process_diagnostics_to_wire(current: CurrentProcessDiagnostics) -> Value {
     let error = current.error.map_or_else(effect_none, |message| {
         effect_some(json!({ "message": message }))
     });
-    let Some(AttributedProcessSnapshot {
-        server_identity,
-        processes,
-        totals,
-        ..
-    }) = current.snapshot
-    else {
+    let Some(snapshot) = current.snapshot else {
         return json!({
             "serverPid": std::process::id(),
             "readAt": format_epoch_ms(read_at_ms),
@@ -633,32 +627,35 @@ fn process_diagnostics_to_wire(current: CurrentProcessDiagnostics) -> Value {
             "error": error,
         });
     };
-    let server_pid = server_identity.pid;
+    let server_pid = snapshot.server_identity.pid;
+    let processes = build_process_tree_entries(&snapshot.native_rows, server_pid);
+    let total_rss_bytes = processes
+        .iter()
+        .map(|process| process.rss_bytes)
+        .sum::<u64>();
+    let total_cpu_percent = processes
+        .iter()
+        .map(|process| f64::from(process.cpu_percent))
+        .sum::<f64>();
 
     json!({
         "serverPid": server_pid,
         "readAt": format_epoch_ms(read_at_ms),
-        "processCount": totals.combined.process_count,
-        "totalRssBytes": totals.combined.rss_bytes,
-        "totalCpuPercent": totals.combined.cpu_percent,
+        "processCount": processes.len(),
+        "totalRssBytes": total_rss_bytes,
+        "totalCpuPercent": total_cpu_percent,
         "processes": processes.into_iter().map(|process| {
-            let is_server = process.identity == server_identity;
-            let command = if process.label.trim().is_empty() {
-                process.process_key.clone()
-            } else {
-                process.label
-            };
             json!({
-                "pid": process.identity.pid,
-                "ppid": if is_server { 0 } else { server_pid },
-                "pgid": effect_none(),
-                "status": "Unknown",
+                "pid": process.pid,
+                "ppid": process.ppid,
+                "pgid": process.pgid.map_or_else(effect_none, |pgid| effect_some(json!(pgid))),
+                "status": process.status,
                 "cpuPercent": process.cpu_percent,
                 "rssBytes": process.rss_bytes,
-                "elapsed": "00:00:00",
-                "command": command,
-                "depth": usize::from(!is_server),
-                "childPids": [],
+                "elapsed": process.elapsed,
+                "command": process.command,
+                "depth": process.depth,
+                "childPids": process.child_pids,
             })
         }).collect::<Vec<_>>(),
         "error": error,
@@ -666,6 +663,19 @@ fn process_diagnostics_to_wire(current: CurrentProcessDiagnostics) -> Value {
 }
 
 fn resource_history_to_wire(history: ProcessResourceHistory) -> Value {
+    let latest_sampled_at_ms = history.latest_sampled_at_ms;
+    let mut top_processes = history
+        .processes
+        .into_iter()
+        .filter(|process| Some(process.last_seen_at_ms) == latest_sampled_at_ms)
+        .collect::<Vec<_>>();
+    top_processes.sort_by(|left, right| {
+        right
+            .cpu_seconds_approx
+            .total_cmp(&left.cpu_seconds_approx)
+            .then_with(|| left.process_key.cmp(&right.process_key))
+    });
+
     json!({
         "readAt": format_epoch_ms(history.read_at_ms),
         "windowMs": history.window_ms,
@@ -680,7 +690,7 @@ fn resource_history_to_wire(history: ProcessResourceHistory) -> Value {
             "maxRssBytes": bucket.rss_bytes.peak.combined,
             "maxProcessCount": bucket.max_process_count.combined,
         })).collect::<Vec<_>>(),
-        "topProcesses": history.processes.into_iter().map(|process| json!({
+        "topProcesses": top_processes.into_iter().map(|process| json!({
             "processKey": process.process_key, "pid": process.pid, "ppid": 0,
             "command": if process.label.trim().is_empty() { "unknown" } else { &process.label },
             "depth": 0, "isServerRoot": process.kind == AttributionKind::Server,
@@ -797,9 +807,10 @@ mod tests {
     use crate::{
         ServerConfig,
         diagnostics::{
-            AttributionConfidence, AttributionKind, AttributionScope, BucketMetric,
-            NativeResourceSampler, NotApplicableUiProcessObserver, ProcessAttributionRegistry,
-            ProcessResourceBucket, ProcessResourceSummary, SplitMetric, UiCoverage,
+            AttributedProcess, AttributedProcessSnapshot, AttributionConfidence, AttributionKind,
+            AttributionScope, BucketMetric, NativeResourceSampler, NotApplicableUiProcessObserver,
+            ProcessAttributionRegistry, ProcessAttributionTotals, ProcessIdentity,
+            ProcessResourceBucket, ProcessResourceSummary, ProcessRow, SplitMetric, UiCoverage,
         },
         production::control::NativeServerControl,
         terminal::{PortablePtyBackend, TerminalManagerOptions},
@@ -819,6 +830,171 @@ mod tests {
         assert!(decode_payload::<TerminalSessionPayload>(&invalid).is_err());
         assert!(decode_payload::<TerminalWritePayload>(&invalid).is_err());
         assert_eq!(format_epoch_ms(i128::MAX), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn legacy_history_wire_only_ranks_processes_present_in_the_latest_sample() {
+        fn summary(
+            process_key: &str,
+            last_seen_at_ms: i128,
+            cpu_seconds_approx: f64,
+        ) -> ProcessResourceSummary {
+            ProcessResourceSummary {
+                process_key: process_key.to_owned(),
+                pid: 1,
+                scope: AttributionScope::Core,
+                kind: AttributionKind::Provider,
+                label: process_key.to_owned(),
+                confidence: AttributionConfidence::Exact,
+                first_seen_at_ms: 0,
+                last_seen_at_ms,
+                current_cpu_percent: 1.0,
+                avg_cpu_percent: 1.0,
+                max_cpu_percent: 1.0,
+                cpu_seconds_approx,
+                current_rss_bytes: 1,
+                max_rss_bytes: 1,
+                sample_count: 1,
+            }
+        }
+
+        let wire = resource_history_to_wire(ProcessResourceHistory {
+            read_at_ms: 2_000,
+            latest_sampled_at_ms: Some(2_000),
+            window_ms: 60_000,
+            bucket_ms: 1_000,
+            sample_interval_ms: 500,
+            retained_sample_count: 2,
+            total_cpu_seconds_approx: SplitMetric::default(),
+            ui_coverage: UiCoverage::default(),
+            buckets: Vec::new(),
+            processes: vec![
+                summary("exited:high-cpu", 1_000, 100.0),
+                summary("active:z", 2_000, 2.0),
+                summary("active:b", 2_000, 4.0),
+                summary("active:a", 2_000, 4.0),
+            ],
+            error: None,
+        });
+
+        assert_eq!(
+            wire["topProcesses"]
+                .as_array()
+                .expect("top processes")
+                .iter()
+                .map(|process| process["processKey"].as_str().expect("process key"))
+                .collect::<Vec<_>>(),
+            ["active:a", "active:b", "active:z"]
+        );
+    }
+
+    #[test]
+    fn legacy_current_wire_reproduces_the_native_multilevel_server_tree() {
+        let mut server = ProcessRow::fixture(10, 1, "/opt/t4code server");
+        server.started_at = 100;
+        server.pgid = Some(10);
+        server.status = "Sleep".to_owned();
+        server.cpu_percent = 1.5;
+        server.rss_bytes = 100;
+        server.elapsed = "01:02:03".to_owned();
+        let mut child = ProcessRow::fixture(11, 10, "codex --model gpt");
+        child.started_at = 110;
+        child.pgid = Some(10);
+        child.status = "Run".to_owned();
+        child.cpu_percent = 2.5;
+        child.rss_bytes = 200;
+        child.elapsed = "00:02:00".to_owned();
+        let mut grandchild = ProcessRow::fixture(12, 11, "git status");
+        grandchild.started_at = 120;
+        grandchild.pgid = Some(12);
+        grandchild.status = "Stop".to_owned();
+        grandchild.cpu_percent = 3.5;
+        grandchild.rss_bytes = 300;
+        grandchild.elapsed = "00:00:05".to_owned();
+
+        let wire = process_diagnostics_to_wire(CurrentProcessDiagnostics {
+            snapshot: Some(Arc::new(AttributedProcessSnapshot {
+                sampled_at_ms: 1_000,
+                server_identity: ProcessIdentity {
+                    pid: 10,
+                    started_at: 100,
+                },
+                native_rows: Arc::from([server, child, grandchild]),
+                processes: Vec::new(),
+                totals: ProcessAttributionTotals::default(),
+                ui_coverage: UiCoverage::default(),
+            })),
+            error: None,
+        });
+        let processes = wire["processes"].as_array().expect("processes");
+
+        assert_eq!(wire["processCount"], 3);
+        assert_eq!(wire["totalRssBytes"], 600);
+        assert_eq!(wire["totalCpuPercent"], 7.5);
+        assert_eq!(
+            processes
+                .iter()
+                .map(|process| process["pid"].as_u64().expect("pid"))
+                .collect::<Vec<_>>(),
+            [10, 11, 12]
+        );
+        assert_eq!(processes[0]["ppid"], 1);
+        assert_eq!(processes[0]["pgid"]["value"], 10);
+        assert_eq!(processes[0]["status"], "Sleep");
+        assert_eq!(processes[0]["elapsed"], "01:02:03");
+        assert_eq!(processes[0]["command"], "/opt/t4code server");
+        assert_eq!(processes[0]["depth"], 0);
+        assert_eq!(processes[0]["childPids"], json!([11]));
+        assert_eq!(processes[1]["depth"], 1);
+        assert_eq!(processes[1]["childPids"], json!([12]));
+        assert_eq!(processes[2]["depth"], 2);
+    }
+
+    #[test]
+    fn legacy_current_wire_excludes_independently_claimed_roots() {
+        let server = ProcessRow::fixture(10, 1, "t4code");
+        let server_child = ProcessRow::fixture(11, 10, "server child");
+        let claimed_root = ProcessRow::fixture(20, 1, "claimed provider");
+        let claimed_child = ProcessRow::fixture(21, 20, "claimed provider child");
+        let claimed_identity = ProcessIdentity {
+            pid: 20,
+            started_at: 0,
+        };
+
+        let wire = process_diagnostics_to_wire(CurrentProcessDiagnostics {
+            snapshot: Some(Arc::new(AttributedProcessSnapshot {
+                sampled_at_ms: 1_000,
+                server_identity: ProcessIdentity {
+                    pid: 10,
+                    started_at: 0,
+                },
+                native_rows: Arc::from([server, server_child, claimed_root, claimed_child]),
+                processes: vec![AttributedProcess {
+                    identity: claimed_identity,
+                    process_key: claimed_identity.key(),
+                    scope: AttributionScope::External,
+                    kind: AttributionKind::Provider,
+                    label: "claimed/provider".to_owned(),
+                    confidence: AttributionConfidence::Exact,
+                    cpu_percent: 99.0,
+                    rss_bytes: 9_999,
+                }],
+                totals: ProcessAttributionTotals::default(),
+                ui_coverage: UiCoverage::default(),
+            })),
+            error: None,
+        });
+
+        assert_eq!(
+            wire["processes"]
+                .as_array()
+                .expect("processes")
+                .iter()
+                .map(|process| process["pid"].as_u64().expect("pid"))
+                .collect::<Vec<_>>(),
+            [10, 11]
+        );
+        assert_eq!(wire["processCount"], 2);
     }
 
     #[tokio::test]
@@ -952,6 +1128,7 @@ mod tests {
 
         let history = resource_history_to_wire(ProcessResourceHistory {
             read_at_ms: 0,
+            latest_sampled_at_ms: Some(1_000),
             window_ms: 60_000,
             bucket_ms: 1_000,
             sample_interval_ms: 500,

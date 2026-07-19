@@ -1,4 +1,5 @@
 mod attribution;
+mod history;
 mod model;
 mod monitor;
 mod native;
@@ -11,11 +12,14 @@ pub use attribution::{
     ProcessAttribution, ProcessAttributionTotals, ProcessClaim, ProcessResourceTotals,
     ResourceAttributor,
 };
+pub use history::{
+    AttributedProcessSample, BucketMetric, ProcessResourceBucket, ProcessResourceHistory,
+    ProcessResourceSummary, SplitMetric,
+};
 pub use model::{
-    AttributedProcessSample, BucketMetric, DescendantEntry, PROCESS_CLAIM_LABEL_MAX_SCALARS,
-    PROCESS_COMMAND_MAX_SCALARS, ProcessDiagnosticsResult, ProcessIdentity, ProcessResourceBucket,
-    ProcessResourceHistory, ProcessResourceSummary, ProcessRow, SplitMetric,
-    bound_diagnostic_string, build_descendant_entries, build_process_tree_entries,
+    DescendantEntry, PROCESS_CLAIM_LABEL_MAX_SCALARS, PROCESS_COMMAND_MAX_SCALARS,
+    ProcessDiagnosticsResult, ProcessIdentity, ProcessRow, bound_diagnostic_string,
+    build_descendant_entries, build_process_tree_entries,
 };
 pub use monitor::{CurrentProcessDiagnostics, DiagnosticsMonitor, ProcessSampler, SamplingError};
 pub use native::{NativeProcessSampler, ProcessSignal, SignalError};
