@@ -293,8 +293,13 @@ fn add_totals(left: ProcessResourceTotals, right: ProcessResourceTotals) -> Proc
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::*;
-    use crate::diagnostics::{ProcessIdentity, ProcessRow};
+    use crate::diagnostics::{
+        ProcessAttributionRegistry, ProcessIdentity, ProcessRegistrationMetadata, ProcessRow,
+        RegistrationSource,
+    };
 
     fn row(pid: u32, ppid: u32, started_at: u64, cpu: f32, rss: u64) -> ProcessRow {
         ProcessRow {
@@ -577,6 +582,42 @@ mod tests {
                 .iter()
                 .all(|process| process.identity != identity(10, 100))
         );
+    }
+
+    #[test]
+    fn stale_registry_claim_is_omitted_and_server_descendant_falls_back() {
+        let registry = ProcessAttributionRegistry::new();
+        let _registration = registry
+            .register_pid(
+                42,
+                ProcessRegistrationMetadata {
+                    scope: AttributionScope::External,
+                    kind: AttributionKind::Provider,
+                    label: "external/provider".to_owned(),
+                    source: RegistrationSource::Provider,
+                },
+            )
+            .expect("registration should fit");
+        let now = Instant::now();
+        let _ = registry.bind_and_snapshot(&[row(42, 1, 20, 0.0, 0)], now);
+        let rows = [row(1, 0, 10, 1.0, 100), row(42, 1, 30, 2.0, 200)];
+
+        let attribution = ResourceAttributor::attribute(
+            &rows,
+            identity(1, 10),
+            &registry.bind_and_snapshot(&rows, now),
+            UiCoverage::Unavailable,
+        );
+
+        let process = attribution
+            .processes
+            .iter()
+            .find(|process| process.identity == identity(42, 30))
+            .expect("server descendant should be included");
+        assert_eq!(process.scope, AttributionScope::External);
+        assert_eq!(process.kind, AttributionKind::Unknown);
+        assert_eq!(process.label, "external/unknown/fallback");
+        assert_eq!(process.confidence, AttributionConfidence::Fallback);
     }
 
     #[test]
