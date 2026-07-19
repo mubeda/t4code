@@ -88,6 +88,7 @@ impl DesktopUiProcessObserver for NotApplicableUiProcessObserver {
 pub struct AttributedProcessSnapshot {
     pub sampled_at_ms: i128,
     pub server_identity: ProcessIdentity,
+    pub native_rows: Arc<[ProcessRow]>,
     pub processes: Vec<AttributedProcess>,
     pub totals: ProcessAttributionTotals,
     pub ui_coverage: UiCoverage,
@@ -177,6 +178,7 @@ impl ResourceSampler for NativeResourceSampler {
             Ok(AttributedProcessSnapshot {
                 sampled_at_ms: OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000,
                 server_identity,
+                native_rows: rows.into(),
                 processes: attribution.processes,
                 totals: attribution.totals,
                 ui_coverage: attribution.ui_coverage,

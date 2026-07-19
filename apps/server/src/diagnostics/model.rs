@@ -2,11 +2,6 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::{
-    AttributedProcess, AttributionConfidence, AttributionKind, AttributionScope,
-    ProcessAttributionTotals, UiCoverage,
-};
-
 pub const PROCESS_CLAIM_LABEL_MAX_SCALARS: usize = 80;
 pub const PROCESS_COMMAND_MAX_SCALARS: usize = 512;
 
@@ -160,69 +155,6 @@ pub struct ProcessDiagnosticsResult {
     pub total_rss_bytes: u64,
     pub total_cpu_percent: f64,
     pub processes: Vec<DescendantEntry>,
-    pub error: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct AttributedProcessSample {
-    pub sampled_at_ms: i128,
-    pub processes: Vec<AttributedProcess>,
-    pub totals: ProcessAttributionTotals,
-    pub ui_coverage: UiCoverage,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct SplitMetric<T> {
-    pub combined: T,
-    pub core: T,
-    pub external: T,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct BucketMetric<T> {
-    pub average: SplitMetric<T>,
-    pub peak: SplitMetric<T>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ProcessResourceBucket {
-    pub started_at_ms: i128,
-    pub ended_at_ms: i128,
-    pub cpu_percent: BucketMetric<f64>,
-    pub rss_bytes: BucketMetric<u64>,
-    pub max_process_count: SplitMetric<usize>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ProcessResourceSummary {
-    pub process_key: String,
-    pub pid: u32,
-    pub scope: AttributionScope,
-    pub kind: AttributionKind,
-    pub label: String,
-    pub confidence: AttributionConfidence,
-    pub first_seen_at_ms: i128,
-    pub last_seen_at_ms: i128,
-    pub current_cpu_percent: f64,
-    pub avg_cpu_percent: f64,
-    pub max_cpu_percent: f64,
-    pub cpu_seconds_approx: f64,
-    pub current_rss_bytes: u64,
-    pub max_rss_bytes: u64,
-    pub sample_count: usize,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ProcessResourceHistory {
-    pub read_at_ms: i128,
-    pub window_ms: u64,
-    pub bucket_ms: u64,
-    pub sample_interval_ms: u64,
-    pub retained_sample_count: usize,
-    pub total_cpu_seconds_approx: SplitMetric<f64>,
-    pub ui_coverage: UiCoverage,
-    pub buckets: Vec<ProcessResourceBucket>,
-    pub processes: Vec<ProcessResourceSummary>,
     pub error: Option<String>,
 }
 

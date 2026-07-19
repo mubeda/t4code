@@ -575,6 +575,7 @@ impl ResourceSampler for CountingSampler {
                     pid: std::process::id(),
                     started_at: 1,
                 },
+                native_rows: Arc::from([]),
                 processes: Vec::new(),
                 totals: ProcessAttributionTotals::default(),
                 ui_coverage: UiCoverage::default(),
