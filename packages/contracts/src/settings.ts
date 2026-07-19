@@ -39,6 +39,33 @@ export const SidebarThreadPreviewCount = Schema.Int.check(
 export type SidebarThreadPreviewCount = typeof SidebarThreadPreviewCount.Type;
 export const DEFAULT_SIDEBAR_THREAD_PREVIEW_COUNT: SidebarThreadPreviewCount = 6;
 
+export const TERMINAL_CUSTOM_FONT_FAMILY_MAX_LENGTH = 128;
+
+export const TerminalCustomFontFamily = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(TERMINAL_CUSTOM_FONT_FAMILY_MAX_LENGTH),
+  Schema.isPattern(/^[^,\u0000-\u001f\u007f]+$/u),
+);
+
+const TerminalFontPreferenceValue = Schema.Union([
+  Schema.Struct({ mode: Schema.Literal("bundled") }),
+  Schema.Struct({ mode: Schema.Literal("system") }),
+  Schema.Struct({
+    mode: Schema.Literal("custom"),
+    family: TerminalCustomFontFamily,
+  }),
+]);
+
+export type TerminalFontPreference = typeof TerminalFontPreferenceValue.Type;
+
+export const BUNDLED_TERMINAL_FONT_PREFERENCE = {
+  mode: "bundled",
+} as const satisfies TerminalFontPreference;
+
+export const TerminalFontPreference = TerminalFontPreferenceValue.pipe(
+  Schema.catchDecoding(() => Effect.succeedSome(BUNDLED_TERMINAL_FONT_PREFERENCE)),
+  Schema.withDecodingDefault(Effect.succeed(BUNDLED_TERMINAL_FONT_PREFERENCE)),
+);
+
 export const ClientSettingsSchema = Schema.Struct({
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
@@ -91,6 +118,7 @@ export const ClientSettingsSchema = Schema.Struct({
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
   ),
+  terminalFontPreference: TerminalFontPreference,
   wordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
 export type ClientSettings = typeof ClientSettingsSchema.Type;
@@ -578,6 +606,7 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),
   timestampFormat: Schema.optionalKey(TimestampFormat),
+  terminalFontPreference: Schema.optionalKey(TerminalFontPreference),
   wordWrap: Schema.optionalKey(Schema.Boolean),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;
