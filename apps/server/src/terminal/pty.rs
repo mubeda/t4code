@@ -10,6 +10,8 @@ use std::{
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tokio::sync::{broadcast, watch};
 
+use crate::process::Platform;
+
 #[cfg(windows)]
 use crate::process::WindowsJob;
 
@@ -47,7 +49,7 @@ pub struct PortablePtyBackend;
 
 impl PtyBackend for PortablePtyBackend {
     fn spawn(&self, input: &PtySpawnInput) -> Result<Arc<dyn PtyProcess>, String> {
-        if !executable_is_discoverable(&input.executable, &input.env) {
+        if !executable_is_discoverable(&input.executable, &input.cwd, &input.env) {
             return Err(format!(
                 "terminal executable was not found: {}",
                 input.executable
@@ -158,10 +160,26 @@ impl PtyBackend for PortablePtyBackend {
     }
 }
 
-fn executable_is_discoverable(command: &str, overrides: &BTreeMap<String, String>) -> bool {
+fn executable_is_discoverable(
+    command: &str,
+    cwd: &Path,
+    overrides: &BTreeMap<String, String>,
+) -> bool {
+    executable_is_discoverable_on(Platform::current(), command, cwd, overrides)
+}
+
+fn executable_is_discoverable_on(
+    platform: Platform,
+    command: &str,
+    cwd: &Path,
+    overrides: &BTreeMap<String, String>,
+) -> bool {
     let command_path = Path::new(command);
-    if command_path.is_absolute() || command_path.components().count() > 1 {
+    if command_path.is_absolute() {
         return command_path.is_file();
+    }
+    if command_path.components().count() > 1 {
+        return cwd.join(command_path).is_file();
     }
 
     let path = overrides
@@ -173,7 +191,39 @@ fn executable_is_discoverable(command: &str, overrides: &BTreeMap<String, String
         return false;
     };
 
-    env::split_paths(&path).any(|directory| directory.join(command_path).is_file())
+    let extensions = if platform == Platform::Windows {
+        let path_extensions = overrides
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case("PATHEXT"))
+            .map(|(_, value)| value.clone())
+            .or_else(|| env::var("PATHEXT").ok())
+            .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_owned());
+        std::iter::once(String::new())
+            .chain(
+                path_extensions
+                    .split(';')
+                    .map(str::trim)
+                    .filter(|extension| !extension.is_empty())
+                    .map(|extension| {
+                        if extension.starts_with('.') {
+                            extension.to_owned()
+                        } else {
+                            format!(".{extension}")
+                        }
+                    }),
+            )
+            .collect::<Vec<_>>()
+    } else {
+        vec![String::new()]
+    };
+
+    env::split_paths(&path).any(|directory| {
+        extensions.iter().any(|extension| {
+            directory
+                .join(format!("{}{extension}", command_path.to_string_lossy()))
+                .is_file()
+        })
+    })
 }
 
 fn read_output(reader: &mut dyn Read, sender: &broadcast::Sender<String>) {
@@ -352,6 +402,7 @@ mod tests {
         let overrides = BTreeMap::new();
         assert!(executable_is_discoverable(
             executable.to_str().expect("test executable path"),
+            directory,
             &overrides
         ));
         assert!(!executable_is_discoverable(
@@ -359,6 +410,7 @@ mod tests {
                 .with_file_name("definitely-missing-t4code-shell")
                 .to_str()
                 .expect("missing executable path"),
+            directory,
             &overrides
         ));
 
@@ -370,7 +422,7 @@ mod tests {
                 .to_string_lossy()
                 .into_owned(),
         );
-        assert!(executable_is_discoverable(command, &isolated));
+        assert!(executable_is_discoverable(command, directory, &isolated));
         isolated.insert(
             "PATH".to_owned(),
             executable
@@ -380,7 +432,62 @@ mod tests {
                 .to_string_lossy()
                 .into_owned(),
         );
-        assert!(!executable_is_discoverable("t4code-shell", &isolated));
+        assert!(!executable_is_discoverable(
+            "t4code-shell",
+            directory,
+            &isolated
+        ));
+    }
+
+    #[test]
+    fn executable_discovery_honors_windows_pathext_for_bare_commands() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("claude.exe"), b"fixture").unwrap();
+        let mut environment = BTreeMap::new();
+        environment.insert(
+            "Path".to_owned(),
+            std::env::join_paths([directory.path()])
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        );
+        environment.insert("PATHEXT".to_owned(), ".com;.exe;.bat;.cmd".to_owned());
+
+        assert!(executable_is_discoverable_on(
+            Platform::Windows,
+            "claude",
+            directory.path(),
+            &environment,
+        ));
+        assert!(!executable_is_discoverable_on(
+            Platform::Unix,
+            "claude",
+            directory.path(),
+            &environment,
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn portable_backend_discovers_a_relative_executable_from_the_terminal_cwd() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let cwd = tempfile::tempdir().unwrap();
+        let executable = cwd.path().join("provider-fixture");
+        std::fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let process = PortablePtyBackend
+            .spawn(&PtySpawnInput {
+                executable: "./provider-fixture".to_owned(),
+                args: Vec::new(),
+                cwd: cwd.path().to_path_buf(),
+                cols: 80,
+                rows: 24,
+                env: BTreeMap::new(),
+            })
+            .unwrap();
+        assert!(process.pid() > 0);
     }
 
     #[tokio::test]

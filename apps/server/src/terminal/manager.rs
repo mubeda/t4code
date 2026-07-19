@@ -985,6 +985,7 @@ mod tests {
     struct HistoryTestBackend {
         processes: std::sync::Mutex<Vec<Arc<HistoryTestPty>>>,
         spawns: std::sync::Mutex<Vec<PtySpawnInput>>,
+        fail_spawns: bool,
     }
 
     impl HistoryTestBackend {
@@ -1005,6 +1006,9 @@ mod tests {
     impl PtyBackend for HistoryTestBackend {
         fn spawn(&self, input: &PtySpawnInput) -> Result<Arc<dyn PtyProcess>, String> {
             self.spawns.lock().expect("spawns lock").push(input.clone());
+            if self.fail_spawns {
+                return Err("provider spawn failed".to_owned());
+            }
             let mut processes = self.processes.lock().expect("processes lock");
             let process = Arc::new(HistoryTestPty::new(processes.len() as u32 + 1));
             processes.push(process.clone());
@@ -1089,6 +1093,113 @@ mod tests {
         assert_eq!(attachment.initial.label, "Claude Terminal");
         assert_eq!(backend.spawns().len(), 1);
         assert_eq!(backend.spawns()[0].executable, "claude");
+    }
+
+    #[tokio::test]
+    async fn structured_command_failure_does_not_fall_back_to_a_shell_candidate() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend {
+            fail_spawns: true,
+            ..HistoryTestBackend::default()
+        });
+        let manager = TerminalManager::new(
+            backend.clone(),
+            TerminalManagerOptions {
+                preferred_shell: Some("/bin/sh".to_owned()),
+                subprocess_poll_interval: Duration::ZERO,
+                ..TerminalManagerOptions::default()
+            },
+        );
+        let mut input = TerminalOpenInput::new(
+            "thread-provider",
+            "term-provider",
+            root.path().to_path_buf(),
+            120,
+            30,
+        );
+        input.command = Some(crate::terminal::TerminalLaunchCommand {
+            executable: "missing-provider".to_owned(),
+            args: vec!["--direct".to_owned()],
+            label: Some("Provider Terminal".to_owned()),
+        });
+
+        let error = manager.open(input).await.unwrap_err();
+
+        assert!(matches!(
+            error,
+            TerminalError::Spawn {
+                ref attempted,
+                ref message,
+            } if attempted == &["missing-provider [\"--direct\"]"]
+                && message == "provider spawn failed"
+        ));
+        let spawns = backend.spawns();
+        assert_eq!(spawns.len(), 1);
+        assert_eq!(spawns[0].executable, "missing-provider");
+        assert_eq!(spawns[0].args, ["--direct"]);
+    }
+
+    #[tokio::test]
+    async fn structured_command_restart_if_not_running_preserves_the_direct_launch() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend::default());
+        let manager = TerminalManager::new(
+            backend.clone(),
+            TerminalManagerOptions {
+                subprocess_poll_interval: Duration::ZERO,
+                ..TerminalManagerOptions::default()
+            },
+        );
+        let command = crate::terminal::TerminalLaunchCommand {
+            executable: "claude".to_owned(),
+            args: vec!["--dangerously-skip-permissions".to_owned()],
+            label: Some("Claude Terminal".to_owned()),
+        };
+        let mut input = TerminalOpenInput::new(
+            "thread-provider",
+            "term-provider",
+            root.path().to_path_buf(),
+            90,
+            28,
+        );
+        input.command = Some(command.clone());
+        manager.open(input).await.unwrap();
+
+        let mut events = manager.subscribe_events();
+        backend
+            .latest()
+            .exit
+            .send(Some(PtyExit {
+                exit_code: Some(0),
+                signal: None,
+            }))
+            .unwrap();
+        let exited = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(exited, TerminalEvent::Exited { .. }));
+
+        let attachment = manager
+            .attach(TerminalAttachInput {
+                thread_id: "thread-provider".to_owned(),
+                terminal_id: "term-provider".to_owned(),
+                cwd: Some(root.path().to_path_buf()),
+                worktree_path: Some(root.path().to_path_buf()),
+                cols: Some(90),
+                rows: Some(28),
+                env: std::collections::BTreeMap::new(),
+                restart_if_not_running: true,
+                command: Some(command),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(attachment.initial.label, "Claude Terminal");
+        let spawns = backend.spawns();
+        assert_eq!(spawns.len(), 2);
+        assert_eq!(spawns[1].executable, "claude");
+        assert_eq!(spawns[1].args, ["--dangerously-skip-permissions"]);
     }
 
     #[tokio::test]
