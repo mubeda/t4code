@@ -927,7 +927,10 @@ describe("ChatView", () => {
       expect(markup).toContain('data-mock="center-terminal-panel"');
 
       const centerTerminal = capturedProps<Record<string, unknown>>("centerTerminalPanel");
-      expect(centerTerminal["terminalId"]).toBe("term-9");
+      expect(centerTerminal["surface"]).toMatchObject({
+        kind: "terminal",
+        terminalId: "term-9",
+      });
     });
   });
 });

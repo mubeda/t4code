@@ -5342,7 +5342,7 @@ function ChatViewContent(props: ChatViewProps) {
           <CenterTerminalPanel
             key={activeCenterSurface.id}
             threadRef={activeThreadRef}
-            terminalId={activeCenterSurface.terminalId}
+            surface={activeCenterSurface}
             keybindings={keybindings}
             focusRequestId={terminalFocusRequestId}
             onAddTerminalContext={addTerminalContextToDraft}

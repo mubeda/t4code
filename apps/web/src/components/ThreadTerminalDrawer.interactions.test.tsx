@@ -2941,6 +2941,39 @@ describe("TerminalViewport mounted lifecycle", () => {
 });
 
 describe("ThreadTerminalDrawer mounted controls", () => {
+  it("forwards provider launch commands to terminal attachment", async () => {
+    await mount(
+      <ThreadTerminalDrawer
+        {...drawerProps({
+          threadRef: scopeThreadRef(EnvironmentId.make("environment-1"), THREAD_ID),
+          terminalCommandsById: new Map([
+            [
+              "term-1",
+              {
+                executable: "/opt/codex",
+                args: ["--dangerously-bypass-approvals-and-sandbox"],
+                label: "Codex Terminal",
+              },
+            ],
+          ]),
+        })}
+      />,
+    );
+
+    expect(testState.attachedSessionInputs).toContainEqual({
+      environmentId: "environment-1",
+      terminal: expect.objectContaining({
+        terminalId: "term-1",
+        command: {
+          executable: "/opt/codex",
+          args: ["--dangerously-bypass-approvals-and-sandbox"],
+          label: "Codex Terminal",
+        },
+      }),
+      attach: true,
+    });
+  });
+
   it("passes visibility to every active split pane without retaining hidden xterms", async () => {
     const props = drawerProps({
       visible: false,

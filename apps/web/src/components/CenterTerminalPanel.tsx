@@ -5,6 +5,7 @@ import { resolveTerminalSessionLabel } from "@t4code/shared/terminalLabels";
 import { useMemo } from "react";
 
 import type { TerminalContextSelection } from "~/lib/terminalContext";
+import type { CenterSurface } from "~/centerPanelStore";
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { useProject, useThread } from "~/state/entities";
 import { useKnownTerminalSessions } from "~/state/terminalSessions";
@@ -14,7 +15,7 @@ import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 interface CenterTerminalPanelProps {
   /** The HOST thread ref — center terminals reuse the host thread's attach layer. */
   threadRef: ScopedThreadRef;
-  terminalId: string;
+  surface: Extract<CenterSurface, { kind: "terminal" }>;
   keybindings: ResolvedKeybindingsConfig;
   focusRequestId: number;
   onAddTerminalContext: (selection: TerminalContextSelection) => void;
@@ -37,12 +38,13 @@ const noop = () => undefined;
  */
 export function CenterTerminalPanel({
   threadRef,
-  terminalId,
+  surface,
   keybindings,
   focusRequestId,
   onAddTerminalContext,
   onClose,
 }: CenterTerminalPanelProps) {
+  const { terminalId, command, label } = surface;
   const serverThread = useThread(threadRef);
   const draftThread = useComposerDraftStore((store) => store.getDraftThreadByRef(threadRef));
   const projectRef = serverThread
@@ -59,14 +61,11 @@ export function CenterTerminalPanel({
   const activeSummary =
     knownTerminalSessions.find((session) => session.target.terminalId === terminalId)?.state
       .summary ?? null;
-  const worktreePath = activeSummary?.worktreePath ?? threadWorktreePath;
+  const worktreePath = threadWorktreePath;
   const cwd = useMemo(
     () =>
-      activeSummary?.cwd ??
-      (project
-        ? projectScriptCwd({ project: { cwd: project.workspaceRoot }, worktreePath })
-        : null),
-    [activeSummary?.cwd, project, worktreePath],
+      project ? projectScriptCwd({ project: { cwd: project.workspaceRoot }, worktreePath }) : null,
+    [project, worktreePath],
   );
   const runtimeEnv = useMemo(
     () =>
@@ -75,9 +74,13 @@ export function CenterTerminalPanel({
         : {},
     [project, worktreePath],
   );
+  const terminalCommandsById = useMemo(
+    () => (command ? new Map([[terminalId, command]]) : undefined),
+    [command, terminalId],
+  );
   const terminalLabelsById = useMemo(
-    () => new Map([[terminalId, resolveTerminalSessionLabel(terminalId, activeSummary)]]),
-    [terminalId, activeSummary],
+    () => new Map([[terminalId, label ?? resolveTerminalSessionLabel(terminalId, activeSummary)]]),
+    [activeSummary, label, terminalId],
   );
 
   if (!project || !cwd) return null;
@@ -101,6 +104,7 @@ export function CenterTerminalPanel({
       onHeightChange={noop}
       onAddTerminalContext={onAddTerminalContext}
       terminalLabelsById={terminalLabelsById}
+      {...(terminalCommandsById ? { terminalCommandsById } : {})}
       keybindings={keybindings}
     />
   );
