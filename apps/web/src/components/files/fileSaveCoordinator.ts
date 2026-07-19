@@ -120,7 +120,7 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
       return Promise.resolve(false);
     }
 
-    const inFlight = this.persistLatestOnce();
+    const inFlight = Promise.resolve().then(() => this.persistLatestOnce());
     this.inFlight = inFlight;
     return inFlight.finally(() => {
       if (this.inFlight === inFlight) this.inFlight = null;
