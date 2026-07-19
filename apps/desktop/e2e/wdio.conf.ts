@@ -8,6 +8,7 @@ import {
   archiveAndCleanupDesktopUiTestContext,
   prepareDesktopUiTestContext,
 } from "./support/test-project.ts";
+import { normalizeWebDriverRequest } from "./support/webdriver-request.ts";
 
 // oxlint-disable-next-line t4code/no-global-process-runtime -- The standalone WDIO config detects the host once and passes it to pure adapters.
 const hostPlatform = process.platform;
@@ -80,6 +81,7 @@ export const config = {
   waitforTimeout: 20_000,
   connectionRetryTimeout: 120_000,
   connectionRetryCount: 1,
+  transformRequest: normalizeWebDriverRequest,
   framework: "mocha",
   reporters: ["spec"],
   mochaOpts: {
