@@ -18,7 +18,11 @@ import {
   settlePromise,
   squashAtomCommandFailure,
 } from "@t4code/client-runtime/state/runtime";
-import { DEFAULT_UNIFIED_SETTINGS } from "@t4code/contracts/settings";
+import {
+  BUNDLED_TERMINAL_FONT_PREFERENCE,
+  DEFAULT_UNIFIED_SETTINGS,
+  type TerminalFontPreference,
+} from "@t4code/contracts/settings";
 import { createModelSelection } from "@t4code/shared/model";
 import * as Arr from "effect/Array";
 import * as Duration from "effect/Duration";
@@ -58,6 +62,10 @@ import {
 import { usePrimaryEnvironment } from "../../state/environments";
 import { useProjects } from "../../state/entities";
 import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
+import {
+  isCustomTerminalFontAvailable,
+  normalizeCustomTerminalFontFamily,
+} from "../../lib/terminalFont";
 import { formatRelativeTime, formatRelativeTimeLabel } from "../../timestampFormat";
 import { Button } from "../ui/button";
 import { DraftInput } from "../ui/draft-input";
@@ -104,6 +112,21 @@ const THEME_OPTIONS = [
   },
 ] as const;
 
+const TERMINAL_FONT_OPTIONS = [
+  {
+    value: "bundled",
+    label: "Bundled Nerd Font",
+  },
+  {
+    value: "system",
+    label: "System monospace",
+  },
+  {
+    value: "custom",
+    label: "Custom font",
+  },
+] as const;
+
 const TIMESTAMP_FORMAT_LABELS = {
   locale: "System default",
   "12-hour": "12-hour",
@@ -111,6 +134,33 @@ const TIMESTAMP_FORMAT_LABELS = {
 } as const;
 
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
+
+function terminalFontPreferenceForMode(
+  current: TerminalFontPreference,
+  mode: unknown,
+): TerminalFontPreference | null {
+  switch (mode) {
+    case "bundled":
+      return BUNDLED_TERMINAL_FONT_PREFERENCE;
+    case "system":
+      return { mode: "system" };
+    case "custom":
+      return current.mode === "custom"
+        ? current
+        : { mode: "custom", family: "JetBrains Mono" };
+    default:
+      return null;
+  }
+}
+
+function terminalFontPreferencesEqual(
+  left: TerminalFontPreference,
+  right: TerminalFontPreference,
+): boolean {
+  if (left.mode !== right.mode) return false;
+  if (left.mode !== "custom" || right.mode !== "custom") return true;
+  return left.family === right.family;
+}
 
 function withoutProviderInstanceKey<V>(
   record: Readonly<Record<ProviderInstanceId, V>> | undefined,
@@ -401,6 +451,12 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.enableAssistantStreaming !== DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming
         ? ["Assistant output"]
         : []),
+      ...(!terminalFontPreferencesEqual(
+        settings.terminalFontPreference,
+        DEFAULT_UNIFIED_SETTINGS.terminalFontPreference,
+      )
+        ? ["Terminal font"]
+        : []),
       ...(settings.terminal.webglEnabled !== DEFAULT_UNIFIED_SETTINGS.terminal.webglEnabled
         ? ["WebGL renderer"]
         : []),
@@ -438,6 +494,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.automaticGitFetchInterval,
       settings.enableAssistantStreaming,
       settings.sidebarThreadPreviewCount,
+      settings.terminalFontPreference,
       settings.terminal.webglEnabled,
       settings.timestampFormat,
       settings.wordWrap,
@@ -469,6 +526,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
+      terminalFontPreference: DEFAULT_UNIFIED_SETTINGS.terminalFontPreference,
       terminal: {
         webglEnabled: DEFAULT_UNIFIED_SETTINGS.terminal.webglEnabled,
       },
@@ -519,6 +577,11 @@ export function GeneralSettingsPanel() {
     settings.textGenerationModelSelection ?? null,
     DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection ?? null,
   );
+  const terminalFontPreference = settings.terminalFontPreference;
+  const customTerminalFontAvailable =
+    terminalFontPreference.mode === "custom"
+      ? isCustomTerminalFontAvailable(terminalFontPreference.family)
+      : null;
 
   return (
     <SettingsPageContainer>
@@ -960,6 +1023,79 @@ export function GeneralSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection title="Terminal">
+        <SettingsRow
+          title="Terminal font"
+          description="Use bundled Nerd Font symbols for prompt, file, and developer-tool icons."
+          resetAction={
+            !terminalFontPreferencesEqual(
+              terminalFontPreference,
+              DEFAULT_UNIFIED_SETTINGS.terminalFontPreference,
+            ) ? (
+              <SettingResetButton
+                label="terminal font"
+                onClick={() =>
+                  updateSettings({
+                    terminalFontPreference: DEFAULT_UNIFIED_SETTINGS.terminalFontPreference,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={terminalFontPreference.mode}
+              onValueChange={(mode) => {
+                const nextPreference = terminalFontPreferenceForMode(
+                  terminalFontPreference,
+                  mode,
+                );
+                if (nextPreference !== null) {
+                  updateSettings({ terminalFontPreference: nextPreference });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-48" aria-label="Terminal font preset">
+                <SelectValue>
+                  {TERMINAL_FONT_OPTIONS.find(
+                    (option) => option.value === terminalFontPreference.mode,
+                  )?.label ?? "Bundled Nerd Font"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {TERMINAL_FONT_OPTIONS.map((option) => (
+                  <SelectItem hideIndicator key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+        {terminalFontPreference.mode === "custom" ? (
+          <SettingsRow
+            title="Custom font family"
+            description="Enter one installed font family name. T4Code keeps bundled symbol fallbacks."
+            status={
+              customTerminalFontAvailable === false
+                ? "This font is not available on this device."
+                : null
+            }
+            control={
+              <DraftInput
+                value={terminalFontPreference.family}
+                aria-label="Custom terminal font family"
+                onCommit={(input) => {
+                  const family = normalizeCustomTerminalFontFamily(input);
+                  if (family !== null) {
+                    updateSettings({
+                      terminalFontPreference: { mode: "custom", family },
+                    });
+                  }
+                }}
+              />
+            }
+          />
+        ) : null}
         <SettingsRow
           title="WebGL renderer"
           description="Render terminals with the GPU-accelerated WebGL renderer. Falls back automatically if WebGL is unavailable."
