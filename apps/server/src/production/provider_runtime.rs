@@ -1456,6 +1456,10 @@ pub(crate) fn resolve_provider_executable_in_path(
     input: &str,
     search_path: Option<&OsStr>,
 ) -> Option<PathBuf> {
+    let path = PathBuf::from(input);
+    if path.is_file() {
+        return Some(path);
+    }
     let cwd = std::env::current_dir().ok()?;
     locate_executable(input, &cwd, search_path, provider_executable_extensions())
 }
@@ -2807,6 +2811,24 @@ mod tests {
     use tempfile::TempDir;
     use tokio::{net::TcpListener, sync::mpsc, time::timeout};
 
+    struct CurrentDirectoryGuard {
+        original: std::path::PathBuf,
+    }
+
+    impl CurrentDirectoryGuard {
+        fn enter(path: &std::path::Path) -> Self {
+            let original = std::env::current_dir().expect("read original current directory");
+            std::env::set_current_dir(path).expect("enter fixture current directory");
+            Self { original }
+        }
+    }
+
+    impl Drop for CurrentDirectoryGuard {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.original).expect("restore original current directory");
+        }
+    }
+
     #[derive(Default)]
     struct SupervisorDriverState {
         launches: usize,
@@ -4015,6 +4037,54 @@ done
         let directory = tempfile::TempDir::new().unwrap();
         let executable = directory.path().join("provider-fixture");
         std::fs::write(&executable, b"fixture").unwrap();
+
+        assert_eq!(
+            super::resolve_provider_executable_in_path(
+                &executable.to_string_lossy(),
+                Some(std::ffi::OsStr::new(""))
+            ),
+            Some(executable)
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_executable_resolution_keeps_one_component_file_in_process_cwd() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let directory = tempfile::TempDir::new().expect("provider fixture directory");
+        let search_directory = tempfile::TempDir::new().expect("provider search directory");
+        let executable_name = if cfg!(windows) {
+            "provider-fixture.exe"
+        } else {
+            "provider-fixture"
+        };
+        std::fs::write(directory.path().join(executable_name), b"fixture")
+            .expect("write provider fixture");
+        let _current_directory = CurrentDirectoryGuard::enter(directory.path());
+
+        assert_eq!(
+            super::resolve_provider_executable_in_path(
+                executable_name,
+                Some(search_directory.path().as_os_str())
+            ),
+            Some(std::path::PathBuf::from(executable_name))
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn provider_executable_resolution_keeps_absolute_file_when_cwd_is_inaccessible() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let directory = tempfile::TempDir::new().expect("provider fixture directory");
+        let executable = directory.path().join("provider-fixture");
+        std::fs::write(&executable, b"fixture").expect("write provider fixture");
+        let inaccessible_cwd = directory.path().join("removed-cwd");
+        std::fs::create_dir(&inaccessible_cwd).expect("create temporary current directory");
+        let _current_directory = CurrentDirectoryGuard::enter(&inaccessible_cwd);
+        std::fs::remove_dir(&inaccessible_cwd).expect("remove current directory");
+        assert!(
+            std::env::current_dir().is_err(),
+            "fixture must make the process cwd inaccessible"
+        );
 
         assert_eq!(
             super::resolve_provider_executable_in_path(

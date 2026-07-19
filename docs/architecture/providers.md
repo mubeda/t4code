@@ -14,9 +14,9 @@ Methods mirror the `NativeApi` interface defined in `@t4code/contracts`:
 - `shell.openInEditor`, `server.getConfig`
 
 Provider instances are configured per driver. Current drivers include Codex,
-Claude, Cursor, Grok, and OpenCode. The center-panel `+` menu lists provider
-instances that are visible and ready, then creates a hidden panel thread for the
-chosen provider instance.
+Claude, Cursor, Grok, and OpenCode. Enabled instances remain visible in the
+center-panel `+` menu. Ready instances can create a hidden panel thread; unready
+instances are disabled with their readiness reason.
 
 The same menu also exposes provider terminal actions for enabled instances.
 Each action resolves the instance's configured binary path plus the built-in
