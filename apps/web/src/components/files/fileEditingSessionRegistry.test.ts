@@ -69,6 +69,52 @@ describe("FileEditingSessionRegistry", () => {
     expect(registry.get("lib/nested/a.ts")).toBeUndefined();
   });
 
+  it("contains per-session delete cleanup failures and removes every descendant", async () => {
+    const reportError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
+      const discardRejected = registry.getOrCreate("src/a.ts", () => fakeSession("src/a.ts"));
+      const disposeRejected = registry.getOrCreate("src/b.ts", () => fakeSession("src/b.ts"));
+      const cleaned = registry.getOrCreate("src/nested/c.ts", () => fakeSession("src/nested/c.ts"));
+      const unrelated = registry.getOrCreate("other.ts", () => fakeSession("other.ts"));
+      discardRejected.discardPendingSave.mockImplementation(() => {
+        throw new Error("discard failed");
+      });
+      disposeRejected.dispose.mockImplementation(() => {
+        throw new Error("dispose failed");
+      });
+      const lease = await registry.beginPathMutation("src");
+
+      expect(() => lease!.commitDelete()).not.toThrow();
+      lease!.release();
+
+      expect(registry.get("src/a.ts")).toBeUndefined();
+      expect(registry.get("src/b.ts")).toBeUndefined();
+      expect(registry.get("src/nested/c.ts")).toBeUndefined();
+      expect(registry.get("other.ts")).toBe(unrelated);
+      for (const session of [discardRejected, disposeRejected, cleaned]) {
+        expect(session.discardPendingSave).toHaveBeenCalledOnce();
+        expect(session.dispose).toHaveBeenCalledOnce();
+        expect(session.resumeSaving).not.toHaveBeenCalled();
+      }
+      expect(unrelated.discardPendingSave).not.toHaveBeenCalled();
+      expect(unrelated.dispose).not.toHaveBeenCalled();
+      expect(reportError).toHaveBeenCalledWith(
+        "[file-editing-session-registry] session cleanup failed",
+        expect.objectContaining({ message: "discard failed" }),
+      );
+      expect(reportError).toHaveBeenCalledWith(
+        "[file-editing-session-registry] session cleanup failed",
+        expect.objectContaining({ message: "dispose failed" }),
+      );
+      const nextLease = await registry.beginPathMutation("src");
+      expect(nextLease).not.toBeNull();
+      nextLease!.release();
+    } finally {
+      reportError.mockRestore();
+    }
+  });
+
   it("reconciles removed sessions after settling them", async () => {
     const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
     const retained = registry.getOrCreate("a.ts", () => fakeSession("a.ts"));

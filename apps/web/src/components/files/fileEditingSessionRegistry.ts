@@ -192,10 +192,22 @@ export class FileEditingSessionRegistry<
   }
 
   private deleteMutation(mutation: ActivePathMutation<Session>): void {
-    for (const [candidate, session] of mutation.sessions) {
-      this.sessions.delete(candidate);
+    for (const candidate of mutation.sessions.keys()) this.sessions.delete(candidate);
+    for (const session of mutation.sessions.values()) {
+      this.discardAndDisposeSession(session);
+    }
+  }
+
+  private discardAndDisposeSession(session: Session): void {
+    try {
       session.discardPendingSave();
+    } catch (error) {
+      this.reportSessionCleanupError(error);
+    }
+    try {
       session.dispose();
+    } catch (error) {
+      this.reportSessionCleanupError(error);
     }
   }
 
