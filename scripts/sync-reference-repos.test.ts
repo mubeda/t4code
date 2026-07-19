@@ -449,6 +449,8 @@ it.layer(NodeServices.layer)("sync-reference-repos", (it) => {
             "--",
             ".repos/alchemy-effect/.gitmodules",
             ".repos/alchemy-effect/.vendor/alchemy",
+            ".repos/alchemy-effect/cloudflare-tools",
+            ".repos/alchemy-effect/distilled",
           ],
         },
       ]);
