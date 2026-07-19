@@ -10,6 +10,10 @@ use std::{
 };
 
 use crate::{
+    diagnostics::{
+        AttributionKind, AttributionScope, ProcessAttributionRegistry, ProcessRegistration,
+        ProcessRegistrationMetadata, RegistrationSource,
+    },
     orchestration::{
         engine::{
             ActivityInput, OrchestrationCommand, OrchestrationEngine, ProposedPlanInput,
@@ -72,6 +76,7 @@ pub(crate) fn sanitize_provider_subprocess_environment(command: &mut tokio::proc
 pub struct ProviderLaunchRequest {
     pub thread_id: String,
     pub provider: String,
+    pub provider_label: String,
     pub provider_instance_id: Option<String>,
     pub binary_path: String,
     pub cwd: PathBuf,
@@ -595,6 +600,12 @@ async fn launch_request_for_command(
     Ok(ProviderLaunchRequest {
         thread_id: thread_id.clone(),
         provider: provider.to_owned(),
+        provider_label: instance
+            .and_then(|value| value.display_name.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(provider)
+            .to_owned(),
         provider_instance_id: Some(instance_id),
         binary_path: binary.binary_path.clone(),
         cwd: process_compatible_path(
@@ -1361,13 +1372,23 @@ fn now() -> String {
 #[derive(Clone, Debug)]
 pub struct NativeProviderDriverFactory {
     attachments: AttachmentMaterializer,
+    attribution: ProcessAttributionRegistry,
 }
 
 impl NativeProviderDriverFactory {
     #[must_use]
     pub fn new(attachments_dir: PathBuf) -> Self {
+        Self::with_process_attribution(attachments_dir, ProcessAttributionRegistry::new())
+    }
+
+    #[must_use]
+    pub fn with_process_attribution(
+        attachments_dir: PathBuf,
+        attribution: ProcessAttributionRegistry,
+    ) -> Self {
         Self {
             attachments: AttachmentMaterializer::new(attachments_dir),
+            attribution,
         }
     }
 }
@@ -1379,22 +1400,37 @@ impl ProviderDriverFactory for NativeProviderDriverFactory {
     ) -> BoxRuntimeFuture<'_, Result<Arc<dyn ProviderDriver>, ProviderRuntimeError>> {
         Box::pin(async move {
             match request.provider.as_str() {
-                "codex" => Ok(
-                    Arc::new(CodexDriver::spawn(request, self.attachments.clone()).await?)
-                        as Arc<dyn ProviderDriver>,
-                ),
-                "cursor" => Ok(Arc::new(
-                    CursorDriver::spawn(request, self.attachments.clone()).await?,
+                "codex" => Ok(Arc::new(
+                    CodexDriver::spawn(request, self.attachments.clone(), self.attribution.clone())
+                        .await?,
                 ) as Arc<dyn ProviderDriver>),
-                "grok" => Ok(
-                    Arc::new(GrokDriver::spawn(request, self.attachments.clone()).await?)
-                        as Arc<dyn ProviderDriver>,
-                ),
+                "cursor" => Ok(Arc::new(
+                    CursorDriver::spawn(
+                        request,
+                        self.attachments.clone(),
+                        self.attribution.clone(),
+                    )
+                    .await?,
+                ) as Arc<dyn ProviderDriver>),
+                "grok" => Ok(Arc::new(
+                    GrokDriver::spawn(request, self.attachments.clone(), self.attribution.clone())
+                        .await?,
+                ) as Arc<dyn ProviderDriver>),
                 "opencode" => Ok(Arc::new(
-                    OpenCodeDriver::spawn(request, self.attachments.clone()).await?,
+                    OpenCodeDriver::spawn(
+                        request,
+                        self.attachments.clone(),
+                        self.attribution.clone(),
+                    )
+                    .await?,
                 ) as Arc<dyn ProviderDriver>),
                 "claude" | "claudeAgent" => Ok(Arc::new(
-                    ClaudeDriver::spawn(request, self.attachments.clone()).await?,
+                    ClaudeDriver::spawn(
+                        request,
+                        self.attachments.clone(),
+                        self.attribution.clone(),
+                    )
+                    .await?,
                 ) as Arc<dyn ProviderDriver>),
                 provider => Err(ProviderRuntimeError::UnsupportedProvider {
                     provider: provider.to_owned(),
@@ -1406,10 +1442,50 @@ impl ProviderDriverFactory for NativeProviderDriverFactory {
 
 type SharedChild = Arc<Mutex<Box<dyn ChildWrapper>>>;
 
+#[derive(Debug)]
+struct AttributedChild {
+    inner: Box<dyn ChildWrapper>,
+    registration: Option<ProcessRegistration>,
+}
+
+impl ChildWrapper for AttributedChild {
+    fn inner(&self) -> &dyn ChildWrapper {
+        self.inner.as_ref()
+    }
+
+    fn inner_mut(&mut self) -> &mut dyn ChildWrapper {
+        self.inner.as_mut()
+    }
+
+    fn into_inner(self: Box<Self>) -> Box<dyn ChildWrapper> {
+        let Self { inner, .. } = *self;
+        inner
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        let status = self.inner.try_wait()?;
+        if status.is_some() {
+            self.registration.take();
+        }
+        Ok(status)
+    }
+
+    fn wait(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = std::io::Result<std::process::ExitStatus>> + Send + '_>> {
+        Box::pin(async move {
+            let status = self.inner.wait().await?;
+            self.registration.take();
+            Ok(status)
+        })
+    }
+}
+
 fn spawn_child(
     request: &ProviderLaunchRequest,
     args: &[String],
     pipe_output: bool,
+    attribution: ProcessAttributionRegistry,
 ) -> Result<Box<dyn ChildWrapper>, ProviderRuntimeError> {
     let provider = request.provider.clone();
     let executable = resolve_provider_executable(&request.binary_path).ok_or_else(|| {
@@ -1439,12 +1515,27 @@ fn spawn_child(
         sanitize_provider_subprocess_environment(command);
     });
     configure_supervised_background_command_wrap(&mut command);
-    command
+    let inner = command
         .spawn()
         .map_err(|error| ProviderRuntimeError::Spawn {
             provider,
             detail: error.to_string(),
-        })
+        })?;
+    let registration = inner.id().and_then(|pid| {
+        attribution.register_pid(
+            pid,
+            ProcessRegistrationMetadata {
+                scope: AttributionScope::External,
+                kind: AttributionKind::Provider,
+                label: request.provider_label.clone(),
+                source: RegistrationSource::Provider,
+            },
+        )
+    });
+    Ok(Box::new(AttributedChild {
+        inner,
+        registration,
+    }))
 }
 
 pub(crate) fn resolve_provider_executable(input: &str) -> Option<PathBuf> {
@@ -1554,6 +1645,7 @@ impl CodexDriver {
     async fn spawn(
         mut request: ProviderLaunchRequest,
         attachments: AttachmentMaterializer,
+        attribution: ProcessAttributionRegistry,
     ) -> Result<Self, ProviderRuntimeError> {
         if let Some(layout) = request.codex_home.as_ref() {
             materialize_codex_shadow_home(layout)
@@ -1583,7 +1675,7 @@ impl CodexDriver {
             ]);
         }
         args.push("app-server".to_owned());
-        let mut child = spawn_child(&request, &args, true)?;
+        let mut child = spawn_child(&request, &args, true, attribution)?;
         let stdout = child
             .stdout()
             .take()
@@ -1757,13 +1849,14 @@ impl CursorDriver {
     async fn spawn(
         request: ProviderLaunchRequest,
         attachments: AttachmentMaterializer,
+        attribution: ProcessAttributionRegistry,
     ) -> Result<Self, ProviderRuntimeError> {
         let mut args = Vec::new();
         if let Some(endpoint) = request.endpoint.as_ref() {
             args.extend(["-e".to_owned(), endpoint.clone()]);
         }
         args.push("acp".to_owned());
-        let mut child = spawn_child(&request, &args, true)?;
+        let mut child = spawn_child(&request, &args, true, attribution)?;
         let stdout = child
             .stdout()
             .take()
@@ -1932,6 +2025,7 @@ impl GrokDriver {
     async fn spawn(
         mut request: ProviderLaunchRequest,
         attachments: AttachmentMaterializer,
+        attribution: ProcessAttributionRegistry,
     ) -> Result<Self, ProviderRuntimeError> {
         request
             .environment
@@ -1948,7 +2042,7 @@ impl GrokDriver {
         }
         .to_owned();
         let args = vec!["agent".to_owned(), "stdio".to_owned()];
-        let mut child = spawn_child(&request, &args, true)?;
+        let mut child = spawn_child(&request, &args, true, attribution)?;
         let stdout = child
             .stdout()
             .take()
@@ -2121,6 +2215,7 @@ impl OpenCodeDriver {
     async fn spawn(
         mut request: ProviderLaunchRequest,
         attachments: AttachmentMaterializer,
+        attribution: ProcessAttributionRegistry,
     ) -> Result<Self, ProviderRuntimeError> {
         if let Some(endpoint) = request.endpoint.as_ref() {
             let runtime = OpenCodeSessionRuntime::new_with_options(
@@ -2159,7 +2254,12 @@ impl OpenCodeDriver {
             "--hostname=127.0.0.1".to_owned(),
             format!("--port={port}"),
         ];
-        let child = Arc::new(Mutex::new(spawn_child(&request, &args, false)?));
+        let child = Arc::new(Mutex::new(spawn_child(
+            &request,
+            &args,
+            false,
+            attribution,
+        )?));
         wait_for_endpoint(&endpoint, &child).await?;
         let runtime = OpenCodeSessionRuntime::new_with_options(
             &endpoint,
@@ -2331,6 +2431,7 @@ impl ClaudeDriver {
     async fn spawn(
         mut request: ProviderLaunchRequest,
         attachments: AttachmentMaterializer,
+        attribution: ProcessAttributionRegistry,
     ) -> Result<Self, ProviderRuntimeError> {
         let mode = claude_mode(&request.runtime_mode, &request.interaction_mode);
         let session_id = request
@@ -2377,7 +2478,7 @@ impl ClaudeDriver {
             });
             args.extend(["--mcp-config".to_owned(), config.to_string()]);
         }
-        let mut child = spawn_child(&request, &args, true)?;
+        let mut child = spawn_child(&request, &args, true, attribution)?;
         let stdout = child
             .stdout()
             .take()
@@ -2810,6 +2911,10 @@ async fn wait_for_endpoint(
 mod tests {
     use super::{ProviderDriver, ProviderDriverFactory};
     use crate::{
+        diagnostics::{
+            AttributionKind, AttributionScope, NativeProcessSampler, ProcessAttributionRegistry,
+            ProcessRow, ProcessSampler,
+        },
         orchestration::engine::{EngineOptions, OrchestrationCommand},
         persistence::{Database, ProviderSessionRuntime, run_migrations},
         server_settings::{
@@ -2822,7 +2927,10 @@ mod tests {
         routing::{get, post},
     };
     use serde_json::{Value, json};
-    use std::sync::{Arc, Mutex as StdMutex};
+    use std::{
+        sync::{Arc, Mutex as StdMutex},
+        time::Instant,
+    };
     use tempfile::TempDir;
     use tokio::{net::TcpListener, sync::mpsc, time::timeout};
 
@@ -3008,6 +3116,7 @@ mod tests {
         super::ProviderLaunchRequest {
             thread_id: "native-test-thread".to_owned(),
             provider: provider.to_owned(),
+            provider_label: provider.to_owned(),
             provider_instance_id: Some(provider.to_owned()),
             binary_path: format!("missing-{provider}"),
             cwd: temp.path().to_path_buf(),
@@ -3190,6 +3299,72 @@ done
     #[cfg(windows)]
     const ACP_FIXTURE: &str = "acp";
 
+    async fn live_claims(
+        registry: &ProcessAttributionRegistry,
+    ) -> Vec<crate::diagnostics::ProcessClaim> {
+        let rows = NativeProcessSampler::default()
+            .sample()
+            .await
+            .expect("native process sample");
+        registry.bind_and_snapshot(&rows, Instant::now())
+    }
+
+    #[tokio::test]
+    async fn native_factory_attributes_provider_until_child_exit() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let temp = TempDir::new().expect("provider fixture directory");
+        let registry = ProcessAttributionRegistry::new();
+        let factory = super::NativeProviderDriverFactory::with_process_attribution(
+            temp.path().join("attachments"),
+            registry.clone(),
+        );
+        let fixture = executable_fixture(&temp, "attributed-claude", CLAUDE_FIXTURE);
+        let mut request = native_launch(&temp, "claudeAgent");
+        request.provider_label = "Configured Claude".to_owned();
+        request.binary_path = fixture.to_string_lossy().into_owned();
+
+        let driver = factory
+            .create(request)
+            .await
+            .expect("native provider should spawn");
+        let claims = live_claims(&registry).await;
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].scope, AttributionScope::External);
+        assert_eq!(claims[0].kind, AttributionKind::Provider);
+        assert_eq!(claims[0].label, "Configured Claude");
+
+        driver.shutdown().await.expect("provider should shut down");
+        assert!(live_claims(&registry).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn consuming_attributed_child_releases_provider_registration() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let temp = TempDir::new().expect("provider fixture directory");
+        let registry = ProcessAttributionRegistry::new();
+        let fixture = executable_fixture(&temp, "consumed-claude", CLAUDE_FIXTURE);
+        let mut request = native_launch(&temp, "claudeAgent");
+        request.binary_path = fixture.to_string_lossy().into_owned();
+        let child = super::spawn_child(&request, &[], false, registry.clone())
+            .expect("provider child should spawn");
+        let pid = child.id().expect("provider child pid");
+        assert_eq!(
+            registry
+                .bind_and_snapshot(&[ProcessRow::fixture(pid, 0, "claude")], Instant::now())
+                .len(),
+            1
+        );
+
+        let mut inner = child.into_inner();
+        assert!(
+            registry
+                .bind_and_snapshot(&[ProcessRow::fixture(pid, 0, "claude")], Instant::now())
+                .is_empty()
+        );
+        let _ = inner.start_kill();
+        let _ = inner.wait().await;
+    }
+
     #[tokio::test]
     async fn unit_supervisor_covers_complete_command_routing_and_shutdown_lifecycle() {
         let engine = supervisor_engine().await;
@@ -3307,6 +3482,7 @@ done
             resolved_launch.provider_instance_id.as_deref(),
             Some("codex-custom")
         );
+        assert_eq!(resolved_launch.provider_label, "Custom Codex");
         assert_eq!(
             resolved_launch.environment.get("UNIT_ENV"),
             Some(&"enabled".to_owned())
@@ -3324,6 +3500,23 @@ done
         );
         assert!(resolved_launch.codex_home.is_some());
         assert!(resolved_launch.resume_cursor.is_none());
+        settings
+            .provider_instances
+            .get_mut("codex-custom")
+            .unwrap()
+            .display_name = Some("   ".to_owned());
+        std::fs::write(
+            settings_root.join("settings.json"),
+            serde_json::to_vec(&settings).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            super::launch_request_for_command(&engine, &settings_root, &launch_command)
+                .await
+                .unwrap()
+                .provider_label,
+            "codex"
+        );
         engine
             .repositories()
             .upsert_provider_session_runtime(ProviderSessionRuntime {
@@ -3437,9 +3630,13 @@ done
         claude_request.model = Some("claude-sonnet".to_owned());
         claude_request.agent = Some("reviewer".to_owned());
         claude_request.resume_cursor = Some(json!({"sessionId":"claude-session"}));
-        let claude = super::ClaudeDriver::spawn(claude_request, factory.attachments.clone())
-            .await
-            .expect("Claude driver should create");
+        let claude = super::ClaudeDriver::spawn(
+            claude_request,
+            factory.attachments.clone(),
+            factory.attribution.clone(),
+        )
+        .await
+        .expect("Claude driver should create");
         assert_eq!(
             claude
                 .start()
@@ -3501,10 +3698,13 @@ done
 
         let mut fresh_claude_request = native_launch(&temp, "claudeAgent");
         fresh_claude_request.binary_path = claude_fixture.to_string_lossy().into_owned();
-        let fresh_claude =
-            super::ClaudeDriver::spawn(fresh_claude_request, factory.attachments.clone())
-                .await
-                .expect("fresh Claude driver should create");
+        let fresh_claude = super::ClaudeDriver::spawn(
+            fresh_claude_request,
+            factory.attachments.clone(),
+            factory.attribution.clone(),
+        )
+        .await
+        .expect("fresh Claude driver should create");
         fresh_claude
             .shutdown()
             .await

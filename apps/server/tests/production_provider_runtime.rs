@@ -409,6 +409,7 @@ fn launch() -> ProviderLaunchRequest {
     ProviderLaunchRequest {
         thread_id: "t1".to_owned(),
         provider: "codex".to_owned(),
+        provider_label: "codex".to_owned(),
         provider_instance_id: Some("codex".to_owned()),
         binary_path: "codex".to_owned(),
         cwd: "C:/repo".into(),
