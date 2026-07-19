@@ -2,10 +2,24 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ProcessIdentity {
+    pub pid: u32,
+    pub started_at: u64,
+}
+
+impl ProcessIdentity {
+    #[must_use]
+    pub fn key(self) -> String {
+        format!("{}:{}", self.pid, self.started_at)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessRow {
     pub pid: u32,
+    pub started_at: u64,
     pub ppid: u32,
     pub pgid: Option<i32>,
     pub status: String,
@@ -21,6 +35,7 @@ impl ProcessRow {
     pub fn fixture(pid: u32, ppid: u32, command: impl Into<String>) -> Self {
         Self {
             pid,
+            started_at: 0,
             ppid,
             pgid: None,
             status: "Run".to_string(),

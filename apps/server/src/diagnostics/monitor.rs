@@ -15,8 +15,8 @@ use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ProcessResourceBucket, ProcessResourceHistory, ProcessResourceSummary, ProcessRow,
-    ProcessSample, build_descendant_entries,
+    ProcessIdentity, ProcessResourceBucket, ProcessResourceHistory, ProcessResourceSummary,
+    ProcessRow, ProcessSample, build_descendant_entries,
 };
 
 const RETENTION: Duration = Duration::from_secs(60 * 60);
@@ -173,7 +173,11 @@ fn collect_samples(
     if let Some(root) = row_by_pid.get(&server_pid) {
         samples.push(ProcessSample {
             sampled_at_ms,
-            process_key: format!("{}:{}", root.pid, root.command),
+            process_key: ProcessIdentity {
+                pid: root.pid,
+                started_at: root.started_at,
+            }
+            .key(),
             pid: root.pid,
             ppid: root.ppid,
             command: root.command.clone(),
@@ -185,13 +189,17 @@ fn collect_samples(
         });
     }
     for entry in build_descendant_entries(rows, server_pid) {
-        let cpu_core = row_by_pid
+        let row = row_by_pid
             .get(&entry.pid)
-            .and_then(|row| row.cpu_core_percent)
-            .unwrap_or(entry.cpu_percent);
+            .expect("descendant entries originate from the sampled rows");
+        let cpu_core = row.cpu_core_percent.unwrap_or(entry.cpu_percent);
         samples.push(ProcessSample {
             sampled_at_ms,
-            process_key: format!("{}:{}", entry.pid, entry.command),
+            process_key: ProcessIdentity {
+                pid: entry.pid,
+                started_at: row.started_at,
+            }
+            .key(),
             pid: entry.pid,
             ppid: entry.ppid,
             command: entry.command,
@@ -381,6 +389,24 @@ mod tests {
             depth: 0,
             is_server_root: pid == 10,
         }
+    }
+
+    #[test]
+    fn samples_use_process_start_identity_as_their_key() {
+        let mut root = ProcessRow::fixture(10, 1, "t4code.exe");
+        root.started_at = 100;
+        let mut child = ProcessRow::fixture(11, 10, "codex.exe");
+        child.started_at = 200;
+
+        let samples = collect_samples(&[root, child], 10, 1_000);
+
+        assert_eq!(
+            samples
+                .iter()
+                .map(|sample| sample.process_key.as_str())
+                .collect::<Vec<_>>(),
+            ["10:100", "11:200"]
+        );
     }
 
     #[test]

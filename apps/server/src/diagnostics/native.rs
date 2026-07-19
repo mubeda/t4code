@@ -101,6 +101,7 @@ fn collect_rows(system: &Arc<Mutex<System>>) -> Result<Vec<ProcessRow>, Sampling
                 let raw_cpu = process.cpu_usage().max(0.0);
                 ProcessRow {
                     pid,
+                    started_at: process.start_time(),
                     ppid: process.parent().map(Pid::as_u32).unwrap_or(0),
                     pgid: None,
                     status: format!("{:?}", process.status()),
@@ -190,6 +191,7 @@ pub enum SignalError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostics::ProcessIdentity;
 
     #[tokio::test]
     async fn native_sampler_refreshes_repeatedly_and_keeps_the_current_process() {
@@ -204,7 +206,26 @@ mod tests {
             assert!(current.cpu_percent.is_finite());
             assert!(current.cpu_core_percent.is_some_and(f32::is_finite));
             assert!(current.rss_bytes > 0);
+            assert!(current.started_at > 0);
         }
+    }
+
+    #[test]
+    fn process_identity_distinguishes_reused_pids() {
+        let first = ProcessRow::fixture(42, 1, "first");
+        let mut second = ProcessRow::fixture(42, 1, "second");
+        second.started_at = 1;
+
+        let first_identity = ProcessIdentity {
+            pid: first.pid,
+            started_at: first.started_at,
+        };
+        let second_identity = ProcessIdentity {
+            pid: second.pid,
+            started_at: second.started_at,
+        };
+
+        assert_ne!(first_identity.key(), second_identity.key());
     }
 
     #[tokio::test]
