@@ -617,6 +617,18 @@
       "status": "current"
     },
     {
+      "key": "js:apps/web:fontkitten",
+      "name": "fontkitten",
+      "current": "1.0.3",
+      "target": "1.0.3",
+      "channel": "stable",
+      "source": "https://www.npmjs.com/package/fontkitten",
+      "cohort": "javascript-current",
+      "platforms": ["linux", "macos", "windows"],
+      "status": "current",
+      "notes": "Development-only parser used to verify the checked-in terminal font asset."
+    },
+    {
       "key": "js:apps/web:happy-dom",
       "name": "happy-dom",
       "current": "^20.10.6",
