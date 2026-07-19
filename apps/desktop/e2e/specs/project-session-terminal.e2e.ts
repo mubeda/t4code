@@ -1,8 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off - Packaged UI tests save native screenshots.
-import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import { desktopUiFixture } from "../support/test-project.ts";
+import { terminalOutputEventCount } from "../support/terminal-events.ts";
 import { ensureMainSidebarOpen, setDesktopUiWindowSize } from "../support/ui-state.ts";
 
 const artifactDirectory = process.env.T4CODE_E2E_ARTIFACT_DIR;
@@ -12,14 +12,6 @@ if (!artifactDirectory) {
 const stateRoot = process.env.T4CODE_HOME;
 if (!stateRoot) {
   throw new Error("T4CODE_HOME is required.");
-}
-const terminalEventsPath = NodePath.join(stateRoot, "userdata", "logs", "terminals", "events.log");
-
-function terminalOutputEventCount(): number {
-  if (!NodeFS.existsSync(terminalEventsPath)) return 0;
-  return NodeFS.readFileSync(terminalEventsPath, "utf8")
-    .split(/\r?\n/)
-    .filter((line) => line.includes('"eventType":"activity"') && line.includes('"output"')).length;
 }
 
 describe("packaged project session and terminal", () => {
@@ -64,9 +56,9 @@ describe("packaged project session and terminal", () => {
         return document.activeElement === element;
       }),
     ).toBe(true);
-    const outputEventsBeforeInput = terminalOutputEventCount();
+    const outputEventsBeforeInput = terminalOutputEventCount(stateRoot);
     await browser.keys(["echo T4CODE_TERMINAL_SMOKE", "Enter"]);
-    await browser.waitUntil(() => terminalOutputEventCount() > outputEventsBeforeInput, {
+    await browser.waitUntil(() => terminalOutputEventCount(stateRoot) > outputEventsBeforeInput, {
       timeoutMsg: "The terminal did not produce output after WebDriver keyboard input.",
     });
 

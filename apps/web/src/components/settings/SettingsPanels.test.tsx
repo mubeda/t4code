@@ -620,6 +620,8 @@ describe("GeneralSettingsPanel", () => {
 
     expect(markup).toContain("Theme");
     expect(markup).toContain("Time format");
+    expect(markup).toContain('aria-label="Terminal font"');
+    expect(markup).toContain("stored only on this device");
     expect(markup).toContain("Terminal logs only.");
     expect(markup).toContain("9.9.9-test");
     expect(renderedText()).toContain(
