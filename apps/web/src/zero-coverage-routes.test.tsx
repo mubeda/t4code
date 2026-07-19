@@ -364,7 +364,11 @@ describe("center terminal and preview surfaces", () => {
     const renderPanel = () => (
       <CenterTerminalPanel
         threadRef={threadRef}
-        terminalId="terminal-1"
+        surface={{
+          id: "terminal:terminal-1",
+          kind: "terminal",
+          terminalId: "terminal-1",
+        }}
         keybindings={{} as never}
         focusRequestId={3}
         onAddTerminalContext={onAddTerminalContext}
@@ -393,7 +397,7 @@ describe("center terminal and preview surfaces", () => {
     h.serverThread = {
       environmentId: threadRef.environmentId,
       projectId: "project-1",
-      worktreePath: null,
+      worktreePath: "/repo/current-worktree",
     };
     h.knownSessions = [
       {
@@ -402,7 +406,10 @@ describe("center terminal and preview surfaces", () => {
       },
     ];
     await rerender(mounted, renderPanel());
-    expect(h.drawerProps).toMatchObject({ cwd: "/custom", worktreePath: "/custom-tree" });
+    expect(h.drawerProps).toMatchObject({
+      cwd: "/repo/current-worktree",
+      worktreePath: "/repo/current-worktree",
+    });
     (h.drawerProps!.onCloseTerminal as () => void)();
     (h.drawerProps!.onAddTerminalContext as (value: unknown) => void)({
       terminalId: "terminal-1",
