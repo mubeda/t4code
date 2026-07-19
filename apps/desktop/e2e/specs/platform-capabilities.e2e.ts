@@ -48,10 +48,33 @@ describe("packaged preferences, native integrations, and platform capabilities",
     await addEnvironment.click();
     await expect(browser.$("//*[normalize-space()='Add Environment']")).toBeDisplayed();
     await expect(browser.$("//*[normalize-space()='SSH']")).toBeDisplayed();
-    if (process.env.T4CODE_E2E_PLATFORM === "win") {
-      await expect(browser.$("//*[normalize-space()='WSL backend']")).toBeDisplayed();
-    }
     await browser.keys("Escape");
+
+    if (process.env.T4CODE_E2E_PLATFORM === "win") {
+      const wslState = await browser.execute(async () => {
+        const bridge = Reflect.get(window, "desktopBridge") as
+          | {
+              readonly getWslState?: () => Promise<{
+                readonly available: boolean;
+                readonly enabled: boolean;
+                readonly wslOnly: boolean;
+              }>;
+            }
+          | undefined;
+        return (await bridge?.getWslState?.()) ?? null;
+      });
+      if (!wslState) {
+        throw new Error("Expected the packaged Windows desktop bridge to report WSL state.");
+      }
+
+      const wslBackend = browser.$("//*[normalize-space()='WSL backend']");
+      if (wslState.available || wslState.enabled || wslState.wslOnly) {
+        await wslBackend.scrollIntoView();
+        await expect(wslBackend).toBeDisplayed();
+      } else {
+        await expect(wslBackend).not.toExist();
+      }
+    }
 
     await browser.url(`${appOrigin}/#/settings/diagnostics`);
     const openLogsFolder = browser.$('button[aria-label="Open logs folder"]');
