@@ -152,8 +152,16 @@ describe("center panel actions", () => {
 
   it("opens, activates, and closes individual surfaces", async () => {
     const actions = useCenterPanelActions();
-    expect(actions.openTerminalPanel(hostRef, ["term-1", "term-3"])).toBe("term-2");
-    expect(h.openTerminalPanel).toHaveBeenCalledWith(hostRef, "term-2");
+    const options = {
+      label: "Codex Terminal",
+      command: {
+        executable: "/opt/codex",
+        args: ["--dangerously-bypass-approvals-and-sandbox"],
+        label: "Codex Terminal",
+      },
+    };
+    expect(actions.openTerminalPanel(hostRef, ["term-1", "term-3"], options)).toBe("term-2");
+    expect(h.openTerminalPanel).toHaveBeenCalledWith(hostRef, "term-2", options);
 
     actions.activateSurface(hostRef, "terminal:term-2");
     expect(h.activateSurface).toHaveBeenCalledWith(hostRef, "terminal:term-2");

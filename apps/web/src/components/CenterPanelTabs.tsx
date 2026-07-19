@@ -32,7 +32,11 @@ function centerSurfaceTitle(
     case "chat":
       return surface.providerLabel ?? "Chat";
     case "terminal":
-      return terminalLabelsById?.get(surface.terminalId) ?? getTerminalLabel(surface.terminalId);
+      return (
+        surface.label ??
+        terminalLabelsById?.get(surface.terminalId) ??
+        getTerminalLabel(surface.terminalId)
+      );
   }
 }
 
