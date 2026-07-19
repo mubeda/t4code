@@ -20,10 +20,7 @@ if (!projectPath) {
   throw new Error("T4CODE_E2E_PROJECT_PATH is required.");
 }
 
-const terminalInputMarkerPath = NodePath.join(
-  projectPath,
-  "terminal-input-smoke.txt",
-);
+const terminalInputMarkerPath = NodePath.join(projectPath, "terminal-input-smoke.txt");
 
 describe("packaged project session and terminal", () => {
   it("streams a fixture response, reconnects, and exercises terminal lifecycle", async () => {
@@ -68,17 +65,14 @@ describe("packaged project session and terminal", () => {
       }),
     ).toBe(true);
     const outputEventsBeforeInput = terminalOutputEventCount(stateRoot);
-    await sendTerminalCommand(
-      "echo T4CODE_TERMINAL_SMOKE > terminal-input-smoke.txt",
-    );
+    await sendTerminalCommand("echo T4CODE_TERMINAL_SMOKE > terminal-input-smoke.txt");
     await browser.waitUntil(() => terminalOutputEventCount(stateRoot) > outputEventsBeforeInput, {
       timeoutMsg: "The terminal did not produce output after WebDriver keyboard input.",
     });
     await browser.waitUntil(
       () =>
         NodeFS.existsSync(terminalInputMarkerPath) &&
-        NodeFS.readFileSync(terminalInputMarkerPath, "utf8").trim() ===
-          "T4CODE_TERMINAL_SMOKE",
+        NodeFS.readFileSync(terminalInputMarkerPath, "utf8").trim() === "T4CODE_TERMINAL_SMOKE",
       {
         timeout: 5_000,
         timeoutMsg: "The terminal command was not delivered exactly once to the fixture shell.",

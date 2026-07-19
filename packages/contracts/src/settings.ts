@@ -43,7 +43,7 @@ export const TERMINAL_CUSTOM_FONT_FAMILY_MAX_LENGTH = 128;
 
 export const TerminalCustomFontFamily = TrimmedNonEmptyString.check(
   Schema.isMaxLength(TERMINAL_CUSTOM_FONT_FAMILY_MAX_LENGTH),
-  Schema.isPattern(/^[^,\u0000-\u001f\u007f]+$/u),
+  Schema.isPattern(/^[^,\p{Cc}]+$/u),
 );
 
 const TerminalFontPreferenceValue = Schema.Union([

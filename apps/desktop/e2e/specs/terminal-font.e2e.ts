@@ -58,12 +58,9 @@ async function ensureFixtureProjectImported(): Promise<void> {
 }
 
 async function waitForTerminalOutputToSettle(previousCount: number): Promise<void> {
-  await browser.waitUntil(
-    () => terminalOutputEventCount(preparedStateRoot) > previousCount,
-    {
-      timeoutMsg: "The terminal did not produce output for the Nerd Font glyph probe.",
-    },
-  );
+  await browser.waitUntil(() => terminalOutputEventCount(preparedStateRoot) > previousCount, {
+    timeoutMsg: "The terminal did not produce output for the Nerd Font glyph probe.",
+  });
 
   let lastCount = terminalOutputEventCount(preparedStateRoot);
   let stablePolls = 0;
@@ -99,10 +96,7 @@ describe("packaged terminal font support", () => {
         .load('12px "T4Code Symbols Nerd Font Mono"', probe)
         .then(() => {
           done({
-            loaded: document.fonts.check(
-              '12px "T4Code Symbols Nerd Font Mono"',
-              probe,
-            ),
+            loaded: document.fonts.check('12px "T4Code Symbols Nerd Font Mono"', probe),
             familyRegistered: [...document.fonts].some(
               (face) => face.family === "T4Code Symbols Nerd Font Mono",
             ),
@@ -112,9 +106,7 @@ describe("packaged terminal font support", () => {
           done({ loaded: false, familyRegistered: false, error: String(error) });
         });
     }, fontGlyphProbe);
-    expect(fontProbe).toEqual(
-      expect.objectContaining({ loaded: true, familyRegistered: true }),
-    );
+    expect(fontProbe).toEqual(expect.objectContaining({ loaded: true, familyRegistered: true }));
 
     await selectTerminalFont("System monospace");
     await expect(selector).toHaveText(expect.stringContaining("System monospace"));

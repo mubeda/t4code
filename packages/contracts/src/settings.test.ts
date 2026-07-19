@@ -77,8 +77,7 @@ describe("ClientSettings terminal font", () => {
 
   it("decodes each supported preference", () => {
     expect(
-      decodeClientSettings({ terminalFontPreference: { mode: "system" } })
-        .terminalFontPreference,
+      decodeClientSettings({ terminalFontPreference: { mode: "system" } }).terminalFontPreference,
     ).toEqual({ mode: "system" });
     expect(
       decodeClientSettings({
