@@ -44,8 +44,9 @@ export class FileEditingSession<LAnnotation, A = unknown, E = unknown> {
   private readonly unsubscribeCoordinator: () => void;
   private readonly listeners = new Set<() => void>();
   private editorChangeHandler: FileEditorChangeHandler<LAnnotation> | null = null;
+  private editorInstance: Editor<LAnnotation> | null = null;
+  private disposed = false;
   private snapshot!: FileEditingSessionSnapshot;
-  editor: Editor<LAnnotation>;
 
   constructor(private readonly options: FileEditingSessionOptions<A, E>) {
     this.cwd = options.cwd;
@@ -57,7 +58,6 @@ export class FileEditingSession<LAnnotation, A = unknown, E = unknown> {
       onPendingChange: (pending) => options.onPendingChange(this.currentRelativePath, pending),
       onConfirmed: (contents) => options.onConfirmed(this.currentRelativePath, contents),
     });
-    this.editor = this.createEditor();
     this.snapshot = this.readSnapshot();
     this.unsubscribeCoordinator = this.coordinator.subscribe(() => this.publish());
   }
@@ -70,11 +70,22 @@ export class FileEditingSession<LAnnotation, A = unknown, E = unknown> {
     return this.currentCacheKey;
   }
 
+  get editor(): Editor<LAnnotation> {
+    if (this.editorInstance === null) {
+      this.editorInstance = this.createEditor();
+      this.snapshot = this.readSnapshot();
+    }
+    return this.editorInstance;
+  }
+
   private createEditor(): Editor<LAnnotation> {
     const editorOptions: EditorOptions<LAnnotation> = {
       persistState: true,
-      onAttach: () => this.publish(),
+      onAttach: () => {
+        if (!this.disposed) this.publish();
+      },
       onChange: (file, lineAnnotations) => {
+        if (this.disposed) return;
         this.coordinator.change(file.contents);
         this.editorChangeHandler?.(file, lineAnnotations);
         this.publish();
@@ -86,8 +97,8 @@ export class FileEditingSession<LAnnotation, A = unknown, E = unknown> {
   private readSnapshot(): FileEditingSessionSnapshot {
     return {
       save: this.coordinator.getSnapshot(),
-      canUndo: this.editor.canUndo,
-      canRedo: this.editor.canRedo,
+      canUndo: this.editorInstance?.canUndo ?? false,
+      canRedo: this.editorInstance?.canRedo ?? false,
     };
   }
 
@@ -105,6 +116,7 @@ export class FileEditingSession<LAnnotation, A = unknown, E = unknown> {
   }
 
   readonly subscribe = (listener: () => void): (() => void) => {
+    if (this.disposed) return () => {};
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
@@ -114,6 +126,7 @@ export class FileEditingSession<LAnnotation, A = unknown, E = unknown> {
   readonly getSnapshot = (): FileEditingSessionSnapshot => this.snapshot;
 
   setEditorChangeHandler(handler: FileEditorChangeHandler<LAnnotation> | null): void {
+    if (this.disposed) return;
     this.editorChangeHandler = handler;
   }
 
@@ -138,34 +151,44 @@ export class FileEditingSession<LAnnotation, A = unknown, E = unknown> {
   }
 
   undo(): void {
-    if (!this.editor.canUndo) return;
-    this.editor.undo();
+    if (!this.editorInstance?.canUndo) return;
+    this.editorInstance.undo();
     this.publish();
   }
 
   redo(): void {
-    if (!this.editor.canRedo) return;
-    this.editor.redo();
+    if (!this.editorInstance?.canRedo) return;
+    this.editorInstance.redo();
     this.publish();
   }
 
   rename(relativePath: string): void {
+    if (relativePath === this.currentRelativePath) return;
+    const previousRelativePath = this.currentRelativePath;
+    const pending = this.coordinator.hasPendingWork();
+    if (pending) this.options.onPendingChange(previousRelativePath, false);
     this.currentRelativePath = relativePath;
+    if (pending) this.options.onPendingChange(relativePath, true);
   }
 
   changeOutsideEditor(contents: string): void {
-    this.editor.cleanUp();
+    if (this.disposed) return;
+    this.editorInstance?.cleanUp();
+    this.editorInstance = null;
     this.currentCacheKey = createSessionCacheKey(this.cwd);
-    this.editor = this.createEditor();
     this.coordinator.change(contents);
     this.publish();
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     this.unsubscribeCoordinator();
     this.coordinator.dispose();
-    this.editor.cleanUp();
+    const editor = this.editorInstance;
+    this.editorInstance = null;
     this.editorChangeHandler = null;
     this.listeners.clear();
+    editor?.cleanUp();
   }
 }

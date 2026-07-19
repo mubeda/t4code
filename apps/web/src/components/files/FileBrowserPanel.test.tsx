@@ -717,7 +717,11 @@ describe("rename entry", () => {
     (request["onSubmit"] as (name: string) => void)("renamed.ts");
     await flushPromises();
 
-    expect(onBeginPathMutation).toHaveBeenCalledWith("src/app.ts");
+    expect(onBeginPathMutation).toHaveBeenCalledWith({
+      kind: "rename",
+      fromRelativePath: "src/app.ts",
+      toRelativePath: "src/renamed.ts",
+    });
     const call = testState.commandCalls.find((entry) => entry.label === "renameEntry");
     expect(call?.input).toEqual({
       environmentId,
@@ -748,7 +752,11 @@ describe("rename entry", () => {
     await flushPromises();
 
     expect(testState.commandCalls.some((call) => call.label === "renameEntry")).toBe(false);
-    expect(onBeginPathMutation).toHaveBeenCalledWith("src/app.ts");
+    expect(onBeginPathMutation).toHaveBeenCalledWith({
+      kind: "rename",
+      fromRelativePath: "src/app.ts",
+      toRelativePath: "src/renamed.ts",
+    });
   });
 
   it("holds a mutation lease until a delayed rename remaps surfaces", async () => {
@@ -769,7 +777,11 @@ describe("rename entry", () => {
     (lastDialogRequest()["onSubmit"] as (name: string) => void)("renamed.ts");
     await flushPromises();
 
-    expect(onBeginPathMutation).toHaveBeenCalledWith("src/app.ts");
+    expect(onBeginPathMutation).toHaveBeenCalledWith({
+      kind: "rename",
+      fromRelativePath: "src/app.ts",
+      toRelativePath: "src/renamed.ts",
+    });
     expect(lease.release).not.toHaveBeenCalled();
 
     renameResult.resolve({
@@ -866,7 +878,10 @@ describe("delete entry", () => {
     (request["onConfirm"] as () => void)();
     await flushPromises();
 
-    expect(onBeginPathMutation).toHaveBeenCalledWith("src/app.ts");
+    expect(onBeginPathMutation).toHaveBeenCalledWith({
+      kind: "delete",
+      relativePath: "src/app.ts",
+    });
     expect(lease.commitDelete).toHaveBeenCalledOnce();
     expect(lease.commitDelete.mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(testState.closeFileSurfacesUnder).mock.invocationCallOrder[0]!,
@@ -885,7 +900,10 @@ describe("delete entry", () => {
     await flushPromises();
 
     expect(testState.commandCalls.some((call) => call.label === "deleteEntry")).toBe(false);
-    expect(onBeginPathMutation).toHaveBeenCalledWith("src/app.ts");
+    expect(onBeginPathMutation).toHaveBeenCalledWith({
+      kind: "delete",
+      relativePath: "src/app.ts",
+    });
   });
 
   it("commits delete before releasing the mutation lease", async () => {
@@ -925,7 +943,7 @@ describe("delete entry", () => {
       });
       renderPanel(
         baseProps({
-          onBeginPathMutation: (relativePath) => registry.beginPathMutation(relativePath),
+          onBeginPathMutation: (request) => registry.beginPathMutation(request),
         }),
       );
 
@@ -944,7 +962,10 @@ describe("delete entry", () => {
         "[file-editing-session-registry] session cleanup failed",
         expect.objectContaining({ message: "discard failed" }),
       );
-      const nextLease = await registry.beginPathMutation("src");
+      const nextLease = await registry.beginPathMutation({
+        kind: "delete",
+        relativePath: "src",
+      });
       expect(nextLease).not.toBeNull();
       nextLease!.release();
     } finally {
@@ -1007,7 +1028,10 @@ describe("duplicate entry", () => {
     rowActionsFor("src/app.ts", "file").onDuplicate();
     await flushPromises();
 
-    expect(onBeginPathMutation).toHaveBeenCalledWith("src/app.ts");
+    expect(onBeginPathMutation).toHaveBeenCalledWith({
+      kind: "duplicate",
+      relativePath: "src/app.ts",
+    });
     expect(onOpenFile).toHaveBeenCalledWith("src/app copy.ts");
   });
 

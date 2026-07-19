@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import type { AtomCommandResult } from "@t4code/client-runtime/state/runtime";
 import { AsyncResult } from "effect/unstable/reactivity";
 
 const pierre = vi.hoisted(() => {
+  const instances: Editor[] = [];
   class Editor {
     readonly options: Record<string, unknown>;
     canUndo = false;
@@ -12,9 +14,10 @@ const pierre = vi.hoisted(() => {
 
     constructor(options: Record<string, unknown>) {
       this.options = options;
+      instances.push(this);
     }
   }
-  return { Editor };
+  return { Editor, instances };
 });
 
 vi.mock("@pierre/diffs/editor", () => ({ Editor: pierre.Editor }));
@@ -30,12 +33,42 @@ function deferred() {
   return { promise, resolve };
 }
 
+function deferredResult<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("FileEditingSession", () => {
   beforeEach(() => {
     vi.useRealTimers();
+    pierre.instances.length = 0;
   });
 
-  it("creates a persistent Pierre editor and publishes native history capabilities", () => {
+  it("creates Pierre lazily for source access and reuses that editor", () => {
+    const session = new FileEditingSession({
+      cwd: "/repo",
+      relativePath: "README.md",
+      debounceMs: 500,
+      persist: vi.fn(async () => AsyncResult.success(undefined)),
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+    });
+
+    expect(pierre.instances).toHaveLength(0);
+    session.changeOutsideEditor("- [x] rendered-only edit\n");
+    expect(pierre.instances).toHaveLength(0);
+
+    const editor = session.editor;
+    expect(session.editor).toBe(editor);
+    expect(pierre.instances).toEqual([editor]);
+  });
+
+  it("publishes native history capabilities from the persistent source editor", () => {
     const session = new FileEditingSession({
       cwd: "/repo",
       relativePath: "src/app.ts",
@@ -78,7 +111,7 @@ describe("FileEditingSession", () => {
     expect(persist).toHaveBeenCalledWith("src/new.ts", "renamed contents");
   });
 
-  it("resets source history for an out-of-editor Markdown change", () => {
+  it("invalidates existing source history without eagerly constructing a replacement", () => {
     const session = new FileEditingSession({
       cwd: "/repo",
       relativePath: "README.md",
@@ -93,10 +126,159 @@ describe("FileEditingSession", () => {
     session.changeOutsideEditor("- [x] done\n");
 
     expect(firstEditor.cleanUp).toHaveBeenCalledOnce();
-    expect(session.editor).not.toBe(firstEditor);
+    expect(pierre.instances).toEqual([firstEditor]);
     expect(session.cacheKey).not.toBe(firstCacheKey);
     expect(session.getSnapshot().save.phase).toBe("pending");
     expect(session.getSnapshot().canUndo).toBe(false);
+    expect(session.editor).not.toBe(firstEditor);
+    expect(pierre.instances).toHaveLength(2);
+  });
+
+  it("migrates a pending marker from the old file path to the renamed path", () => {
+    const onPendingChange = vi.fn();
+    const session = new FileEditingSession({
+      cwd: "/repo",
+      relativePath: "src/old.ts",
+      debounceMs: 500,
+      persist: vi.fn(async () => AsyncResult.success(undefined)),
+      onPendingChange,
+      onConfirmed: vi.fn(),
+    });
+    session.pauseSaving();
+    const editor = session.editor as unknown as InstanceType<typeof pierre.Editor>;
+    (editor.options["onChange"] as (file: { contents: string }) => void)({
+      contents: "edited during rename",
+    });
+
+    session.rename("src/new.ts");
+
+    expect(onPendingChange.mock.calls).toEqual([
+      ["src/old.ts", true],
+      ["src/old.ts", false],
+      ["src/new.ts", true],
+    ]);
+  });
+
+  it("migrates pending descendant markers during a directory rename", async () => {
+    const onPendingChange = vi.fn();
+    const registry = new FileEditingSessionRegistry<FileEditingSession<never>>();
+    const session = registry.getOrCreate(
+      "src/nested/a.ts",
+      () =>
+        new FileEditingSession({
+          cwd: "/repo",
+          relativePath: "src/nested/a.ts",
+          debounceMs: 500,
+          persist: vi.fn(async () => AsyncResult.success(undefined)),
+          onPendingChange,
+          onConfirmed: vi.fn(),
+        }),
+    );
+    const lease = await registry.beginPathMutation({
+      kind: "rename",
+      fromRelativePath: "src",
+      toRelativePath: "lib",
+    });
+    const editor = session.editor as unknown as InstanceType<typeof pierre.Editor>;
+    (editor.options["onChange"] as (file: { contents: string }) => void)({
+      contents: "edited during directory rename",
+    });
+
+    lease!.commitRename("lib");
+    lease!.release();
+
+    expect(onPendingChange.mock.calls).toEqual([
+      ["src/nested/a.ts", true],
+      ["src/nested/a.ts", false],
+      ["lib/nested/a.ts", true],
+    ]);
+  });
+
+  it("delegates redo, flush, and settle and stops notifications after unsubscribe/dispose", async () => {
+    const persist = vi.fn(async () => AsyncResult.success(undefined));
+    const session = new FileEditingSession({
+      cwd: "/repo",
+      relativePath: "src/app.ts",
+      debounceMs: 500,
+      persist,
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+    });
+    const editor = session.editor as unknown as InstanceType<typeof pierre.Editor>;
+    const listener = vi.fn();
+    const unsubscribe = session.subscribe(listener);
+    editor.canRedo = true;
+    (editor.options["onAttach"] as () => void)();
+    session.redo();
+    expect(editor.redo).toHaveBeenCalledOnce();
+
+    (editor.options["onChange"] as (file: { contents: string }) => void)({
+      contents: "flush me",
+    });
+    await expect(session.flush()).resolves.toBe("saved");
+    expect(persist).toHaveBeenCalledWith("src/app.ts", "flush me");
+    (editor.options["onChange"] as (file: { contents: string }) => void)({
+      contents: "settle me",
+    });
+    await expect(session.settle()).resolves.toBe("saved");
+    expect(persist).toHaveBeenLastCalledWith("src/app.ts", "settle me");
+
+    unsubscribe();
+    const notificationsBeforeDispose = listener.mock.calls.length;
+    (editor.options["onAttach"] as () => void)();
+    expect(listener).toHaveBeenCalledTimes(notificationsBeforeDispose);
+
+    session.dispose();
+    session.dispose();
+    expect(editor.cleanUp).toHaveBeenCalledOnce();
+    const postDisposeListener = vi.fn();
+    session.subscribe(postDisposeListener);
+    (editor.options["onAttach"] as () => void)();
+    expect(postDisposeListener).not.toHaveBeenCalled();
+  });
+
+  it("keeps Save disabled when Undo edits during a deferred write or mutation pause", async () => {
+    vi.useFakeTimers();
+    const write = deferredResult<AtomCommandResult<void, never>>();
+    const persist = vi
+      .fn<() => Promise<AtomCommandResult<void, never>>>()
+      .mockReturnValueOnce(write.promise)
+      .mockResolvedValue(AsyncResult.success(undefined));
+    const session = new FileEditingSession({
+      cwd: "/repo",
+      relativePath: "src/app.ts",
+      debounceMs: 500,
+      persist: (_relativePath, _contents) => persist(),
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+    });
+    const editor = session.editor as unknown as InstanceType<typeof pierre.Editor>;
+    const onChange = editor.options["onChange"] as (file: { contents: string }) => void;
+    editor.canUndo = true;
+    editor.undo.mockImplementation(() => onChange({ contents: "undo result" }));
+
+    onChange({ contents: "first write" });
+    await vi.advanceTimersByTimeAsync(500);
+    session.undo();
+    expect(session.getSnapshot().save).toMatchObject({
+      phase: "saving",
+      canSave: false,
+    });
+
+    write.resolve(AsyncResult.success(undefined));
+    await vi.runAllTimersAsync();
+    session.pauseSaving();
+    session.undo();
+    expect(session.getSnapshot().save).toMatchObject({
+      phase: "pending",
+      canSave: false,
+    });
+
+    session.resumeSaving();
+    expect(session.getSnapshot().save).toMatchObject({
+      phase: "pending",
+      canSave: true,
+    });
   });
 
   it("keeps autosaving after its editor change handler is cleared", async () => {
@@ -146,7 +328,11 @@ describe("FileEditingSession", () => {
     );
     const editor = session.editor as unknown as InstanceType<typeof pierre.Editor>;
     const command = deferred();
-    const lease = await registry.beginPathMutation("src/old.ts");
+    const lease = await registry.beginPathMutation({
+      kind: "rename",
+      fromRelativePath: "src/old.ts",
+      toRelativePath: "src/new.ts",
+    });
     expect(lease).not.toBeNull();
 
     const mutation = command.promise.then(() => {
@@ -186,7 +372,11 @@ describe("FileEditingSession", () => {
     );
     const editor = session.editor as unknown as InstanceType<typeof pierre.Editor>;
     const command = deferred();
-    const lease = await registry.beginPathMutation("src/old.ts");
+    const lease = await registry.beginPathMutation({
+      kind: "rename",
+      fromRelativePath: "src/old.ts",
+      toRelativePath: "src/new.ts",
+    });
     expect(lease).not.toBeNull();
 
     const mutation = command.promise.then(() => lease!.release());
@@ -200,6 +390,156 @@ describe("FileEditingSession", () => {
     await mutation;
     await vi.advanceTimersByTimeAsync(500);
     expect(persist).toHaveBeenCalledWith("src/old.ts", "edited during failed rename");
+  });
+
+  it("discards destination edits after delayed rename success and contains cleanup failure", async () => {
+    vi.useFakeTimers();
+    const reportError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const persist = vi.fn(async () => AsyncResult.success(undefined));
+      const registry = new FileEditingSessionRegistry<FileEditingSession<never>>();
+      const createSession = (relativePath: string) =>
+        new FileEditingSession<never>({
+          cwd: "/repo",
+          relativePath,
+          debounceMs: 500,
+          persist,
+          onPendingChange: vi.fn(),
+          onConfirmed: vi.fn(),
+        });
+      const source = registry.getOrCreate("src/old.ts", () => createSession("src/old.ts"));
+      const destination = registry.getOrCreate("src/new.ts", () => createSession("src/new.ts"));
+      const sourceEditor = source.editor as unknown as InstanceType<typeof pierre.Editor>;
+      const destinationEditor = destination.editor as unknown as InstanceType<typeof pierre.Editor>;
+      destinationEditor.cleanUp.mockImplementation(() => {
+        throw new Error("destination cleanup failed");
+      });
+      const command = deferredResult<"success">();
+      const lease = await registry.beginPathMutation({
+        kind: "rename",
+        fromRelativePath: "src/old.ts",
+        toRelativePath: "src/new.ts",
+      });
+      const mutation = command.promise
+        .then(() => lease!.commitRename("src/new.ts"))
+        .finally(() => lease!.release());
+
+      (sourceEditor.options["onChange"] as (file: { contents: string }) => void)({
+        contents: "source edit",
+      });
+      (destinationEditor.options["onChange"] as (file: { contents: string }) => void)({
+        contents: "destination edit",
+      });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(persist).not.toHaveBeenCalled();
+
+      command.resolve("success");
+      await mutation;
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(persist).toHaveBeenCalledOnce();
+      expect(persist).toHaveBeenCalledWith("src/new.ts", "source edit");
+      expect(destinationEditor.cleanUp).toHaveBeenCalledOnce();
+      expect(registry.get("src/new.ts")).toBe(source);
+      expect(reportError).toHaveBeenCalledWith(
+        "[file-editing-session-registry] session cleanup failed",
+        expect.objectContaining({ message: "destination cleanup failed" }),
+      );
+    } finally {
+      reportError.mockRestore();
+    }
+  });
+
+  it("resumes source and destination edits unchanged after delayed rename failure", async () => {
+    vi.useFakeTimers();
+    const persist = vi.fn(async () => AsyncResult.success(undefined));
+    const registry = new FileEditingSessionRegistry<FileEditingSession<never>>();
+    const createSession = (relativePath: string) =>
+      new FileEditingSession<never>({
+        cwd: "/repo",
+        relativePath,
+        debounceMs: 500,
+        persist,
+        onPendingChange: vi.fn(),
+        onConfirmed: vi.fn(),
+      });
+    const source = registry.getOrCreate("src/old.ts", () => createSession("src/old.ts"));
+    const destination = registry.getOrCreate("src/new.ts", () => createSession("src/new.ts"));
+    const sourceEditor = source.editor as unknown as InstanceType<typeof pierre.Editor>;
+    const destinationEditor = destination.editor as unknown as InstanceType<typeof pierre.Editor>;
+    const command = deferredResult<"failure">();
+    const lease = await registry.beginPathMutation({
+      kind: "rename",
+      fromRelativePath: "src/old.ts",
+      toRelativePath: "src/new.ts",
+    });
+    const mutation = command.promise.finally(() => lease!.release());
+
+    (sourceEditor.options["onChange"] as (file: { contents: string }) => void)({
+      contents: "source edit",
+    });
+    (destinationEditor.options["onChange"] as (file: { contents: string }) => void)({
+      contents: "destination edit",
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(persist).not.toHaveBeenCalled();
+
+    command.resolve("failure");
+    await mutation;
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(persist.mock.calls).toEqual([
+      ["src/old.ts", "source edit"],
+      ["src/new.ts", "destination edit"],
+    ]);
+    expect(registry.get("src/old.ts")).toBe(source);
+    expect(registry.get("src/new.ts")).toBe(destination);
+  });
+
+  it("resumes source and destination edits unchanged after a delayed rename throw", async () => {
+    vi.useFakeTimers();
+    const persist = vi.fn(async () => AsyncResult.success(undefined));
+    const registry = new FileEditingSessionRegistry<FileEditingSession<never>>();
+    const createSession = (relativePath: string) =>
+      new FileEditingSession<never>({
+        cwd: "/repo",
+        relativePath,
+        debounceMs: 500,
+        persist,
+        onPendingChange: vi.fn(),
+        onConfirmed: vi.fn(),
+      });
+    const source = registry.getOrCreate("src/old.ts", () => createSession("src/old.ts"));
+    const destination = registry.getOrCreate("src/new.ts", () => createSession("src/new.ts"));
+    const sourceEditor = source.editor as unknown as InstanceType<typeof pierre.Editor>;
+    const destinationEditor = destination.editor as unknown as InstanceType<typeof pierre.Editor>;
+    const command = deferredResult<never>();
+    const lease = await registry.beginPathMutation({
+      kind: "rename",
+      fromRelativePath: "src/old.ts",
+      toRelativePath: "src/new.ts",
+    });
+    const mutation = command.promise.catch(() => undefined).finally(() => lease!.release());
+
+    (sourceEditor.options["onChange"] as (file: { contents: string }) => void)({
+      contents: "source edit",
+    });
+    (destinationEditor.options["onChange"] as (file: { contents: string }) => void)({
+      contents: "destination edit",
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(persist).not.toHaveBeenCalled();
+
+    command.reject(new Error("rename command threw"));
+    await mutation;
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(persist.mock.calls).toEqual([
+      ["src/old.ts", "source edit"],
+      ["src/new.ts", "destination edit"],
+    ]);
+    expect(registry.get("src/old.ts")).toBe(source);
+    expect(registry.get("src/new.ts")).toBe(destination);
   });
 
   it("discards edits made during a delayed delete", async () => {
@@ -220,7 +560,10 @@ describe("FileEditingSession", () => {
     );
     const editor = session.editor as unknown as InstanceType<typeof pierre.Editor>;
     const command = deferred();
-    const lease = await registry.beginPathMutation("src/app.ts");
+    const lease = await registry.beginPathMutation({
+      kind: "delete",
+      relativePath: "src/app.ts",
+    });
     expect(lease).not.toBeNull();
 
     const mutation = command.promise.then(() => {
@@ -256,7 +599,10 @@ describe("FileEditingSession", () => {
       });
     const affected = registry.getOrCreate("src/app.ts", () => createSession("src/app.ts"));
     const unrelated = registry.getOrCreate("docs/readme.md", () => createSession("docs/readme.md"));
-    const lease = await registry.beginPathMutation("src");
+    const lease = await registry.beginPathMutation({
+      kind: "delete",
+      relativePath: "src",
+    });
     expect(lease).not.toBeNull();
 
     const affectedEditor = affected.editor as unknown as InstanceType<typeof pierre.Editor>;

@@ -39,16 +39,22 @@ function ToolbarAction({
     <Tooltip>
       <TooltipTrigger
         render={
-          <Button
-            aria-label={label}
-            className={className}
-            disabled={disabled}
-            size="icon-xs"
-            variant="ghost"
-            onClick={onClick}
+          <span
+            aria-label={disabled ? label : undefined}
+            className="inline-flex"
+            tabIndex={disabled ? 0 : undefined}
           >
-            {children}
-          </Button>
+            <Button
+              aria-label={label}
+              className={className}
+              disabled={disabled}
+              size="icon-xs"
+              variant="ghost"
+              onClick={onClick}
+            >
+              {children}
+            </Button>
+          </span>
         }
       />
       <TooltipPopup>{tooltip}</TooltipPopup>
@@ -114,7 +120,9 @@ export function FileEditorToolbar({
   const saveActionClassName =
     savePhase === "failed"
       ? "text-destructive hover:text-destructive"
-      : "text-muted-foreground hover:text-foreground";
+      : canSave
+        ? "text-foreground hover:text-foreground"
+        : "text-muted-foreground hover:text-muted-foreground";
 
   return (
     <div
@@ -135,7 +143,11 @@ export function FileEditorToolbar({
         )}
       </ToolbarAction>
       <ToolbarAction
-        className="text-muted-foreground hover:text-foreground"
+        className={
+          canUndo
+            ? "text-foreground hover:text-foreground"
+            : "text-muted-foreground hover:text-muted-foreground"
+        }
         disabled={!canUndo}
         label="Undo"
         tooltip="Undo (Ctrl/Cmd+Z)"
@@ -144,7 +156,11 @@ export function FileEditorToolbar({
         <Undo2 className="text-current" />
       </ToolbarAction>
       <ToolbarAction
-        className="text-muted-foreground hover:text-foreground"
+        className={
+          canRedo
+            ? "text-foreground hover:text-foreground"
+            : "text-muted-foreground hover:text-muted-foreground"
+        }
         disabled={!canRedo}
         label="Redo"
         tooltip="Redo (Shift+Ctrl/Cmd+Z)"

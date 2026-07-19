@@ -1489,12 +1489,7 @@ function ChatViewContent(props: ChatViewProps) {
     void fileEditingSessions.reconcile(openFileRelativePaths);
   }, [fileEditingSessions, openFileRelativePaths]);
 
-  useEffect(
-    () => () => {
-      void fileEditingSessions.dispose();
-    },
-    [fileEditingSessions],
-  );
+  useEffect(() => fileEditingSessions.acquireOwnership(), [fileEditingSessions]);
   const [pendingFileSurfaceIdsByProject, setPendingFileSurfaceIdsByProject] = useState<
     ReadonlyMap<string, ReadonlySet<string>>
   >(() => new Map());
