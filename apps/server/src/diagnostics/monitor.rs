@@ -36,17 +36,6 @@ struct MonitorState {
     last_attempt: Option<Instant>,
 }
 
-impl From<&AttributedProcessSnapshot> for AttributedProcessSample {
-    fn from(snapshot: &AttributedProcessSnapshot) -> Self {
-        Self {
-            sampled_at_ms: snapshot.sampled_at_ms,
-            processes: snapshot.processes.clone(),
-            totals: snapshot.totals,
-            ui_coverage: snapshot.ui_coverage.clone(),
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct CurrentProcessDiagnostics {
     pub snapshot: Option<Arc<AttributedProcessSnapshot>>,
