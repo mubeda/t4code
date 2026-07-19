@@ -10,8 +10,9 @@ pub use attribution::{
     ResourceAttributor, UiCoverage,
 };
 pub use model::{
-    DescendantEntry, ProcessDiagnosticsResult, ProcessIdentity, ProcessResourceBucket,
-    ProcessResourceHistory, ProcessResourceSummary, ProcessRow, ProcessSample,
+    DescendantEntry, PROCESS_CLAIM_LABEL_MAX_SCALARS, PROCESS_COMMAND_MAX_SCALARS,
+    ProcessDiagnosticsResult, ProcessIdentity, ProcessResourceBucket, ProcessResourceHistory,
+    ProcessResourceSummary, ProcessRow, ProcessSample, bound_diagnostic_string,
     build_descendant_entries, build_process_tree_entries,
 };
 pub use monitor::{DiagnosticsMonitor, ProcessSampler, SamplingError, SamplingLease};
