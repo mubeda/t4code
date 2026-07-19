@@ -794,6 +794,25 @@ describe("rename entry", () => {
     expect(lease.release).toHaveBeenCalledOnce();
   });
 
+  it("contains rejected rename lease acquisition without running the command", async () => {
+    const onBeginPathMutation = vi.fn(async () => {
+      throw new Error("settlement exploded");
+    });
+    renderPanel(baseProps({ onBeginPathMutation }));
+
+    rowActionsFor("src/app.ts", "file").onRename();
+    (lastDialogRequest()["onSubmit"] as (name: string) => void)("renamed.ts");
+    await flushPromises();
+
+    expect(testState.commandCalls.some((call) => call.label === "renameEntry")).toBe(false);
+    expect(testState.toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Failed to rename "app.ts"',
+        description: "settlement exploded",
+      }),
+    );
+  });
+
   it("does nothing when the name is unchanged", async () => {
     renderPanel();
     rowActionsFor("src/app.ts", "file").onRename();
@@ -875,6 +894,26 @@ describe("delete entry", () => {
     );
   });
 
+  it("contains rejected delete lease acquisition without running the command", async () => {
+    setEntries([entry("src/app.ts", "file")]);
+    const onBeginPathMutation = vi.fn(async () => {
+      throw new Error("settlement exploded");
+    });
+    renderPanel(baseProps({ onBeginPathMutation }));
+
+    rowActionsFor("src/app.ts", "file").onDelete();
+    (lastDialogRequest()["onConfirm"] as () => void)();
+    await flushPromises();
+
+    expect(testState.commandCalls.some((call) => call.label === "deleteEntry")).toBe(false);
+    expect(testState.toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Failed to delete "app.ts"',
+        description: "settlement exploded",
+      }),
+    );
+  });
+
   it("uses folder wording for directories and reports failures", async () => {
     setEntries([entry("src", "directory")]);
     testState.commandResults["deleteEntry"] = { _tag: "Failure", error: new Error("busy") };
@@ -924,6 +963,24 @@ describe("duplicate entry", () => {
 
     expect(testState.commandCalls.some((call) => call.label === "duplicateEntry")).toBe(false);
     expect(onOpenFile).not.toHaveBeenCalled();
+  });
+
+  it("contains rejected duplicate lease acquisition without running the command", async () => {
+    const onBeginPathMutation = vi.fn(async () => {
+      throw new Error("settlement exploded");
+    });
+    renderPanel(baseProps({ onBeginPathMutation }));
+
+    rowActionsFor("src/app.ts", "file").onDuplicate();
+    await flushPromises();
+
+    expect(testState.commandCalls.some((call) => call.label === "duplicateEntry")).toBe(false);
+    expect(testState.toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Failed to duplicate "app.ts"',
+        description: "settlement exploded",
+      }),
+    );
   });
 
   it("reports duplicate failures", async () => {
