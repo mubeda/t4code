@@ -136,12 +136,7 @@ export class FileEditingSessionRegistry<
       ([path, session]) => !open.has(path) && !leasedSessions.has(session),
     );
     for (const [path] of removed) this.sessions.delete(path);
-    await Promise.all(
-      removed.map(async ([, session]) => {
-        await session.settle();
-        session.dispose();
-      }),
-    );
+    await Promise.all(removed.map(([, session]) => this.settleAndDisposeSession(session)));
   }
 
   async dispose(): Promise<void> {
@@ -154,13 +149,22 @@ export class FileEditingSessionRegistry<
       ([, session]) => !leasedSessions.has(session),
     );
     for (const [path] of sessions) this.sessions.delete(path);
-    await Promise.all(
-      sessions.map(async ([, session]) => {
-        await session.settle();
-        session.dispose();
-      }),
-    );
+    await Promise.all(sessions.map(([, session]) => this.settleAndDisposeSession(session)));
     await Promise.all(activeMutations.map((mutation) => mutation.completion));
+  }
+
+  private async settleAndDisposeSession(session: Session): Promise<void> {
+    try {
+      await session.settle();
+    } catch (error) {
+      this.reportSessionCleanupError(error);
+    } finally {
+      try {
+        session.dispose();
+      } catch (error) {
+        this.reportSessionCleanupError(error);
+      }
+    }
   }
 
   private remapMutation(mutation: ActivePathMutation<Session>, toRelativePath: string): void {
@@ -235,5 +239,9 @@ export class FileEditingSessionRegistry<
 
   private reportMutationCleanupError(error: unknown): void {
     console.error("[file-editing-session-registry] mutation cleanup failed", error);
+  }
+
+  private reportSessionCleanupError(error: unknown): void {
+    console.error("[file-editing-session-registry] session cleanup failed", error);
   }
 }

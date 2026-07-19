@@ -89,6 +89,33 @@ describe("FileEditingSessionRegistry", () => {
     expect(calls).toEqual(["settle", "dispose"]);
   });
 
+  it("disposes removed sessions and contains settle rejections during reconciliation", async () => {
+    const reportError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
+      const retained = registry.getOrCreate("a.ts", () => fakeSession("a.ts"));
+      const rejected = registry.getOrCreate("b.ts", () => fakeSession("b.ts"));
+      const removed = registry.getOrCreate("c.ts", () => fakeSession("c.ts"));
+      rejected.settle.mockRejectedValue(new Error("save failed"));
+
+      await expect(registry.reconcile(["a.ts"])).resolves.toBeUndefined();
+
+      expect(registry.get("a.ts")).toBe(retained);
+      expect(registry.get("b.ts")).toBeUndefined();
+      expect(registry.get("c.ts")).toBeUndefined();
+      expect(retained.settle).not.toHaveBeenCalled();
+      expect(retained.dispose).not.toHaveBeenCalled();
+      expect(rejected.dispose).toHaveBeenCalledOnce();
+      expect(removed.dispose).toHaveBeenCalledOnce();
+      expect(reportError).toHaveBeenCalledWith(
+        "[file-editing-session-registry] session cleanup failed",
+        expect.objectContaining({ message: "save failed" }),
+      );
+    } finally {
+      reportError.mockRestore();
+    }
+  });
+
   it("settles every session before disposing the registry", async () => {
     const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
     const first = registry.getOrCreate("a.ts", () => fakeSession("a.ts"));
@@ -113,6 +140,27 @@ describe("FileEditingSessionRegistry", () => {
     expect(second.dispose).toHaveBeenCalledOnce();
     expect(calls.indexOf("settle-a")).toBeLessThan(calls.indexOf("dispose-a"));
     expect(calls.indexOf("settle-b")).toBeLessThan(calls.indexOf("dispose-b"));
+  });
+
+  it("disposes every session and contains settle rejections during registry disposal", async () => {
+    const reportError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
+      const rejected = registry.getOrCreate("a.ts", () => fakeSession("a.ts"));
+      const settled = registry.getOrCreate("b.ts", () => fakeSession("b.ts"));
+      rejected.settle.mockRejectedValue(new Error("save failed"));
+
+      await expect(registry.dispose()).resolves.toBeUndefined();
+
+      expect(rejected.dispose).toHaveBeenCalledOnce();
+      expect(settled.dispose).toHaveBeenCalledOnce();
+      expect(reportError).toHaveBeenCalledWith(
+        "[file-editing-session-registry] session cleanup failed",
+        expect.objectContaining({ message: "save failed" }),
+      );
+    } finally {
+      reportError.mockRestore();
+    }
   });
 
   it("disposes a remap collision and retains the renamed source session", async () => {
