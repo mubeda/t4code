@@ -18,6 +18,7 @@ import {
   type ServerSettingsPatch,
 } from "@t4code/contracts";
 import {
+  ClientSettingsSchema,
   type ClientSettingsPatch,
   type ClientSettings,
   DEFAULT_CLIENT_SETTINGS,
@@ -25,12 +26,14 @@ import {
 } from "@t4code/contracts/settings";
 import { safeErrorLogAttributes } from "@t4code/client-runtime/errors";
 import { ensureLocalApi } from "~/localApi";
+import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import { primaryServerSettingsAtom, serverEnvironment } from "~/state/server";
 import { usePrimaryEnvironment } from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
 
 const CLIENT_SETTINGS_PERSISTENCE_ERROR_SCOPE = "[CLIENT_SETTINGS]";
+const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
 
 const clientSettingsListeners = new Set<() => void>();
 const clientSettingsHydrationListeners = new Set<() => void>();
@@ -104,7 +107,7 @@ async function hydrateClientSettings(): Promise<void> {
         return;
       }
       if (persistedSettings) {
-        replaceClientSettingsSnapshot({ ...DEFAULT_CLIENT_SETTINGS, ...persistedSettings });
+        replaceClientSettingsSnapshot(decodeClientSettings(persistedSettings));
       }
     } catch (error) {
       console.error(`${CLIENT_SETTINGS_PERSISTENCE_ERROR_SCOPE} hydrate failed`, {

@@ -3,8 +3,11 @@ import * as Schema from "effect/Schema";
 
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
+  BUNDLED_TERMINAL_FONT_PREFERENCE,
+  ClientSettingsPatch,
   ClientSettingsSchema,
   CodexSettings,
+  DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
   DEFAULT_UNIFIED_SETTINGS,
   ServerSettings,
@@ -14,6 +17,7 @@ import {
 } from "./settings.ts";
 
 const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
+const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
@@ -58,6 +62,55 @@ describe("ServerSettings terminal", () => {
   it("rejects non-boolean webglEnabled values", () => {
     expect(() => decodeServerSettings({ terminal: { webglEnabled: "false" } })).toThrow();
     expect(() => decodeServerSettingsPatch({ terminal: { webglEnabled: 1 } })).toThrow();
+  });
+});
+
+describe("ClientSettings terminal font", () => {
+  it("automatically defaults legacy settings to the bundled font", () => {
+    expect(decodeClientSettings({}).terminalFontPreference).toEqual(
+      BUNDLED_TERMINAL_FONT_PREFERENCE,
+    );
+    expect(DEFAULT_CLIENT_SETTINGS.terminalFontPreference).toEqual(
+      BUNDLED_TERMINAL_FONT_PREFERENCE,
+    );
+  });
+
+  it("decodes each supported preference", () => {
+    expect(
+      decodeClientSettings({ terminalFontPreference: { mode: "system" } })
+        .terminalFontPreference,
+    ).toEqual({ mode: "system" });
+    expect(
+      decodeClientSettings({
+        terminalFontPreference: {
+          mode: "custom",
+          family: "  Iosevka Nerd Font  ",
+        },
+      }).terminalFontPreference,
+    ).toEqual({ mode: "custom", family: "Iosevka Nerd Font" });
+  });
+
+  it.each([
+    { mode: "obsolete" },
+    { mode: "custom", family: "" },
+    { mode: "custom", family: "Font, monospace" },
+    { mode: "custom", family: "Font\u0000Name" },
+  ])("recovers malformed preferences to bundled: %o", (terminalFontPreference) => {
+    const decoded = decodeClientSettings({
+      wordWrap: false,
+      terminalFontPreference,
+    });
+
+    expect(decoded.wordWrap).toBe(false);
+    expect(decoded.terminalFontPreference).toEqual(BUNDLED_TERMINAL_FONT_PREFERENCE);
+  });
+
+  it("accepts a device-local terminal font patch", () => {
+    expect(
+      decodeClientSettingsPatch({
+        terminalFontPreference: { mode: "custom", family: "Maple Mono" },
+      }).terminalFontPreference,
+    ).toEqual({ mode: "custom", family: "Maple Mono" });
   });
 });
 
