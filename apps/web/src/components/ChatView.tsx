@@ -123,6 +123,7 @@ import {
   useRightPanelStore,
 } from "../rightPanelStore";
 import {
+  type CenterSurface,
   HOST_SURFACE_ID,
   selectThreadCenterPanelState,
   type OpenTerminalPanelOptions,
@@ -1338,6 +1339,70 @@ function ChatViewContent(props: ChatViewProps) {
     centerPanelByThreadKey,
     isPanel ? null : activeThreadRef,
   );
+  const cleanupCenterPanelSurfaces = useCallback(
+    (surfaces: readonly CenterSurface[]) => {
+      if (!activeThreadRef) return;
+      const terminalIds = new Set(
+        surfaces.flatMap((surface) => (surface.kind === "terminal" ? [surface.terminalId] : [])),
+      );
+
+      for (const terminalId of terminalIds) {
+        storeCloseTerminal(activeThreadRef, terminalId);
+        void (async () => {
+          const closeResult = await closeTerminalMutation({
+            environmentId: activeThreadRef.environmentId,
+            input: {
+              threadId: activeThreadRef.threadId,
+              terminalId,
+              deleteHistory: true,
+            },
+          });
+          if (closeResult._tag === "Success") {
+            releaseTerminalInputScheduler(
+              activeThreadRef.environmentId,
+              activeThreadRef.threadId,
+              terminalId,
+            );
+          }
+        })();
+      }
+    },
+    [activeThreadRef, closeTerminalMutation, storeCloseTerminal],
+  );
+  const closeCenterPanelSurface = useCallback(
+    (surface: CenterSurface) => {
+      if (!activeThreadRef) return;
+      cleanupCenterPanelSurfaces([surface]);
+      centerPanelActions.closeSurface(activeThreadRef, surface);
+    },
+    [activeThreadRef, centerPanelActions, cleanupCenterPanelSurfaces],
+  );
+  const closeOtherCenterPanelSurfaces = useCallback(
+    (surface: CenterSurface) => {
+      if (!activeThreadRef) return;
+      const keptIds = new Set([HOST_SURFACE_ID, surface.id]);
+      cleanupCenterPanelSurfaces(
+        centerPanelState.surfaces.filter((entry) => !keptIds.has(entry.id)),
+      );
+      centerPanelActions.closeOtherSurfaces(activeThreadRef, surface);
+    },
+    [activeThreadRef, centerPanelActions, centerPanelState.surfaces, cleanupCenterPanelSurfaces],
+  );
+  const closeCenterPanelSurfacesToRight = useCallback(
+    (surface: CenterSurface) => {
+      if (!activeThreadRef) return;
+      const surfaceIndex = centerPanelState.surfaces.findIndex((entry) => entry.id === surface.id);
+      if (surfaceIndex < 0) return;
+      cleanupCenterPanelSurfaces(centerPanelState.surfaces.slice(surfaceIndex + 1));
+      centerPanelActions.closeSurfacesToRight(activeThreadRef, surface);
+    },
+    [activeThreadRef, centerPanelActions, centerPanelState.surfaces, cleanupCenterPanelSurfaces],
+  );
+  const closeAllCenterPanelSurfaces = useCallback(() => {
+    if (!activeThreadRef) return;
+    cleanupCenterPanelSurfaces(centerPanelState.surfaces);
+    centerPanelActions.closeAllSurfaces(activeThreadRef);
+  }, [activeThreadRef, centerPanelActions, centerPanelState.surfaces, cleanupCenterPanelSurfaces]);
   const activeCenterSurface =
     centerPanelState.surfaces.find((surface) => surface.id === centerPanelState.activeSurfaceId) ??
     null;
@@ -5126,14 +5191,10 @@ function ChatViewContent(props: ChatViewProps) {
             onActivate={(surface) =>
               centerPanelActions.activateSurface(activeThreadRef, surface.id)
             }
-            onCloseSurface={(surface) => centerPanelActions.closeSurface(activeThreadRef, surface)}
-            onCloseOtherSurfaces={(surface) =>
-              centerPanelActions.closeOtherSurfaces(activeThreadRef, surface)
-            }
-            onCloseSurfacesToRight={(surface) =>
-              centerPanelActions.closeSurfacesToRight(activeThreadRef, surface)
-            }
-            onCloseAllSurfaces={() => centerPanelActions.closeAllSurfaces(activeThreadRef)}
+            onCloseSurface={closeCenterPanelSurface}
+            onCloseOtherSurfaces={closeOtherCenterPanelSurfaces}
+            onCloseSurfacesToRight={closeCenterPanelSurfacesToRight}
+            onCloseAllSurfaces={closeAllCenterPanelSurfaces}
           />
         )}
         {/* Error banner */}
@@ -5346,7 +5407,7 @@ function ChatViewContent(props: ChatViewProps) {
             keybindings={keybindings}
             focusRequestId={terminalFocusRequestId}
             onAddTerminalContext={addTerminalContextToDraft}
-            onClose={() => centerPanelActions.closeSurface(activeThreadRef, activeCenterSurface)}
+            onClose={() => closeCenterPanelSurface(activeCenterSurface)}
           />
         ) : null}
         {centerPanelEmpty ? (
