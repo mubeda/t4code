@@ -156,6 +156,19 @@ describe("cross-platform CI contract", () => {
 });
 
 describe("cross-platform release contract", () => {
+  it("installs the pinned Rust toolchain before parallel preflight typechecks", () => {
+    const { workflow } = readWorkflow(RELEASE_WORKFLOW_PATH);
+    const steps = requireJob(workflow, "preflight").steps ?? [];
+    const setupRustIndex = steps.findIndex((step) => step.name === "Setup Rust");
+    const typecheckIndex = steps.findIndex((step) => step.name === "Typecheck");
+
+    expect(setupRustIndex).toBeGreaterThan(-1);
+    expect(typecheckIndex).toBeGreaterThan(setupRustIndex);
+    expect(steps[setupRustIndex]?.uses).toBe(
+      "dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b",
+    );
+  });
+
   it("builds AppImage on Ubuntu 22.04 with the complete Linux prerequisites", () => {
     const { workflow } = readWorkflow(RELEASE_WORKFLOW_PATH);
     const build = requireJob(workflow, "build");
