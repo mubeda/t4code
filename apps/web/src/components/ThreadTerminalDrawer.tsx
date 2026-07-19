@@ -76,10 +76,7 @@ import { createTerminalOutputSink } from "./terminalOutputSink";
 import { loadTerminalWebglAddon } from "./terminalWebgl";
 import { useAtomCommand } from "../state/use-atom-command";
 import { usePrimarySettings } from "../hooks/useSettings";
-import {
-  ensureBundledTerminalFontLoaded,
-  resolveTerminalFontFamily,
-} from "../lib/terminalFont";
+import { ensureBundledTerminalFontLoaded, resolveTerminalFontFamily } from "../lib/terminalFont";
 
 const MIN_DRAWER_HEIGHT = 180;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
@@ -623,9 +620,7 @@ export function TerminalViewport({
   const [documentVisible, setDocumentVisible] = useState(isDocumentVisible);
   const shouldRender = visible && isDocumentVisible() && documentVisible;
   const webglEnabled = usePrimarySettings((settings) => settings.terminal.webglEnabled);
-  const terminalFontPreference = usePrimarySettings(
-    (settings) => settings.terminalFontPreference,
-  );
+  const terminalFontPreference = usePrimarySettings((settings) => settings.terminalFontPreference);
   const terminalFontFamily = useMemo(
     () => resolveTerminalFontFamily(terminalFontPreference),
     [terminalFontPreference],
@@ -1119,8 +1114,7 @@ export function TerminalViewport({
         return;
       }
 
-      const wasAtBottom =
-        terminal.buffer.active.viewportY >= terminal.buffer.active.baseY;
+      const wasAtBottom = terminal.buffer.active.viewportY >= terminal.buffer.active.baseY;
       terminal.clearTextureAtlas();
       fitTerminalSafely(fitAddon);
       if (wasAtBottom) {

@@ -145,9 +145,7 @@ function terminalFontPreferenceForMode(
     case "system":
       return { mode: "system" };
     case "custom":
-      return current.mode === "custom"
-        ? current
-        : { mode: "custom", family: "JetBrains Mono" };
+      return current.mode === "custom" ? current : { mode: "custom", family: "JetBrains Mono" };
     default:
       return null;
   }
@@ -1045,10 +1043,7 @@ export function GeneralSettingsPanel() {
             <Select
               value={terminalFontPreference.mode}
               onValueChange={(mode) => {
-                const nextPreference = terminalFontPreferenceForMode(
-                  terminalFontPreference,
-                  mode,
-                );
+                const nextPreference = terminalFontPreferenceForMode(terminalFontPreference, mode);
                 if (nextPreference !== null) {
                   updateSettings({ terminalFontPreference: nextPreference });
                 }

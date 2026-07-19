@@ -1,7 +1,4 @@
-import {
-  TerminalCustomFontFamily,
-  type TerminalFontPreference,
-} from "@t4code/contracts/settings";
+import { TerminalCustomFontFamily, type TerminalFontPreference } from "@t4code/contracts/settings";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -43,9 +40,7 @@ export function resolveTerminalFontFamily(preference: TerminalFontPreference): s
 
 export function isCustomTerminalFontAvailable(
   family: string,
-  fontSet: TerminalFontFaceSet | null = typeof document === "undefined"
-    ? null
-    : document.fonts,
+  fontSet: TerminalFontFaceSet | null = typeof document === "undefined" ? null : document.fonts,
 ): boolean | null {
   if (fontSet === null) return null;
   try {
@@ -61,10 +56,7 @@ export function ensureBundledTerminalFontLoaded(
 ): Promise<void> {
   if (bundledFontLoadPromise === null) {
     bundledFontLoadPromise = fontSet
-      .load(
-        `12px ${quoteFontFamily(TERMINAL_NERD_SYMBOLS_FONT_FAMILY)}`,
-        TERMINAL_FONT_GLYPH_PROBE,
-      )
+      .load(`12px ${quoteFontFamily(TERMINAL_NERD_SYMBOLS_FONT_FAMILY)}`, TERMINAL_FONT_GLYPH_PROBE)
       .then(() => undefined)
       .catch((cause: unknown) => {
         warn("[terminal] Bundled Nerd Font symbols failed to load; using text fallbacks.", cause);

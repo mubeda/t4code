@@ -97,7 +97,7 @@ Restore Defaults resets the preference to T4Code Nerd Font (bundled).
 type TerminalFontPreference =
   | { readonly mode: "bundled" }
   | { readonly mode: "system" }
-  | { readonly mode: "custom"; readonly family: string }
+  | { readonly mode: "custom"; readonly family: string };
 ```
 
 The custom family is trimmed, length-bounded, and rejects control characters
