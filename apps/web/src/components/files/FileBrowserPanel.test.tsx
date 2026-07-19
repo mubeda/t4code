@@ -287,7 +287,7 @@ function baseProps(overrides: Partial<PanelProps> = {}): PanelProps {
     threadRef,
     availableEditors: [] as ReadonlyArray<EditorId>,
     onOpenFile: vi.fn(),
-    onBeforePathMutation: vi.fn(async () => true),
+    onBeginPathMutation: vi.fn(async () => mutationLease()),
     ...overrides,
   };
 }
@@ -303,6 +303,22 @@ async function flushPromises(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+function mutationLease() {
+  return {
+    commitRename: vi.fn(),
+    commitDelete: vi.fn(),
+    release: vi.fn(),
+  };
 }
 
 /** Recover a dialog request pushed through `setDialogRequest`. */
@@ -674,11 +690,11 @@ describe("rename entry", () => {
       _tag: "Success",
       value: { relativePath: "src/renamed.ts" },
     };
-    const onBeforePathMutation = vi.fn(async () => true);
-    const onPathRenamed = vi.fn();
+    const lease = mutationLease();
+    const onBeginPathMutation = vi.fn(async () => lease);
     const refresh = vi.fn();
     testState.entriesQuery.refresh = refresh;
-    renderPanel(baseProps({ onBeforePathMutation, onPathRenamed }));
+    renderPanel(baseProps({ onBeginPathMutation }));
 
     rowActionsFor("src/app.ts", "file").onRename();
     const request = lastDialogRequest();
@@ -687,7 +703,7 @@ describe("rename entry", () => {
     (request["onSubmit"] as (name: string) => void)("renamed.ts");
     await flushPromises();
 
-    expect(onBeforePathMutation).toHaveBeenCalledWith("src/app.ts");
+    expect(onBeginPathMutation).toHaveBeenCalledWith("src/app.ts");
     const call = testState.commandCalls.find((entry) => entry.label === "renameEntry");
     expect(call?.input).toEqual({
       environmentId,
@@ -702,24 +718,80 @@ describe("rename entry", () => {
       "src/app.ts",
       "src/renamed.ts",
     );
-    expect(onPathRenamed).toHaveBeenCalledWith("src/app.ts", "src/renamed.ts");
-    expect(onPathRenamed.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(lease.commitRename).toHaveBeenCalledWith("src/renamed.ts");
+    expect(lease.commitRename.mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(testState.remapFileSurfaces).mock.invocationCallOrder[0]!,
     );
     expect(refresh).toHaveBeenCalled();
   });
 
   it("aborts rename when pending edits cannot settle", async () => {
-    const onBeforePathMutation = vi.fn(async () => false);
-    const onPathRenamed = vi.fn();
-    renderPanel(baseProps({ onBeforePathMutation, onPathRenamed }));
+    const onBeginPathMutation = vi.fn(async () => null);
+    renderPanel(baseProps({ onBeginPathMutation }));
 
     rowActionsFor("src/app.ts", "file").onRename();
     (lastDialogRequest()["onSubmit"] as (name: string) => void)("renamed.ts");
     await flushPromises();
 
     expect(testState.commandCalls.some((call) => call.label === "renameEntry")).toBe(false);
-    expect(onPathRenamed).not.toHaveBeenCalled();
+    expect(onBeginPathMutation).toHaveBeenCalledWith("src/app.ts");
+  });
+
+  it("holds a mutation lease until a delayed rename remaps surfaces", async () => {
+    const renameResult = deferred<{
+      _tag: "Success";
+      value: { relativePath: string };
+    }>();
+    testState.commandResults["renameEntry"] = renameResult.promise;
+    const lease = mutationLease();
+    const onBeginPathMutation = vi.fn(async () => lease);
+    renderPanel(
+      baseProps({
+        onBeginPathMutation,
+      }),
+    );
+
+    rowActionsFor("src/app.ts", "file").onRename();
+    (lastDialogRequest()["onSubmit"] as (name: string) => void)("renamed.ts");
+    await flushPromises();
+
+    expect(onBeginPathMutation).toHaveBeenCalledWith("src/app.ts");
+    expect(lease.release).not.toHaveBeenCalled();
+
+    renameResult.resolve({
+      _tag: "Success",
+      value: { relativePath: "src/renamed.ts" },
+    });
+    await flushPromises();
+
+    expect(lease.commitRename).toHaveBeenCalledWith("src/renamed.ts");
+    expect(lease.commitRename.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(testState.remapFileSurfaces).mock.invocationCallOrder[0]!,
+    );
+    expect(vi.mocked(testState.remapFileSurfaces).mock.invocationCallOrder[0]).toBeLessThan(
+      lease.release.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("releases a mutation lease unchanged when rename fails", async () => {
+    testState.commandResults["renameEntry"] = {
+      _tag: "Failure",
+      error: new Error("locked"),
+    };
+    const lease = mutationLease();
+    renderPanel(
+      baseProps({
+        onBeginPathMutation: vi.fn(async () => lease),
+      }),
+    );
+
+    rowActionsFor("src/app.ts", "file").onRename();
+    (lastDialogRequest()["onSubmit"] as (name: string) => void)("renamed.ts");
+    await flushPromises();
+
+    expect(lease.commitRename).not.toHaveBeenCalled();
+    expect(lease.commitDelete).not.toHaveBeenCalled();
+    expect(lease.release).toHaveBeenCalledOnce();
   });
 
   it("does nothing when the name is unchanged", async () => {
@@ -747,11 +819,11 @@ describe("delete entry", () => {
   it("deletes a file behind a confirm and closes its surfaces", async () => {
     setEntries([entry("src/app.ts", "file")]);
     testState.commandResults["deleteEntry"] = { _tag: "Success", value: {} };
-    const onBeforePathMutation = vi.fn(async () => true);
-    const onPathDeleted = vi.fn();
+    const lease = mutationLease();
+    const onBeginPathMutation = vi.fn(async () => lease);
     const refresh = vi.fn();
     testState.entriesQuery.refresh = refresh;
-    renderPanel(baseProps({ onBeforePathMutation, onPathDeleted }));
+    renderPanel(baseProps({ onBeginPathMutation }));
 
     rowActionsFor("src/app.ts", "file").onDelete();
     const request = lastDialogRequest();
@@ -761,9 +833,9 @@ describe("delete entry", () => {
     (request["onConfirm"] as () => void)();
     await flushPromises();
 
-    expect(onBeforePathMutation).toHaveBeenCalledWith("src/app.ts");
-    expect(onPathDeleted).toHaveBeenCalledWith("src/app.ts");
-    expect(onPathDeleted.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(onBeginPathMutation).toHaveBeenCalledWith("src/app.ts");
+    expect(lease.commitDelete).toHaveBeenCalledOnce();
+    expect(lease.commitDelete.mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(testState.closeFileSurfacesUnder).mock.invocationCallOrder[0]!,
     );
     expect(testState.closeFileSurfacesUnder).toHaveBeenCalledWith(threadRef, "src/app.ts");
@@ -772,16 +844,35 @@ describe("delete entry", () => {
 
   it("aborts delete when pending edits cannot settle", async () => {
     setEntries([entry("src/app.ts", "file")]);
-    const onBeforePathMutation = vi.fn(async () => false);
-    const onPathDeleted = vi.fn();
-    renderPanel(baseProps({ onBeforePathMutation, onPathDeleted }));
+    const onBeginPathMutation = vi.fn(async () => null);
+    renderPanel(baseProps({ onBeginPathMutation }));
 
     rowActionsFor("src/app.ts", "file").onDelete();
     (lastDialogRequest()["onConfirm"] as () => void)();
     await flushPromises();
 
     expect(testState.commandCalls.some((call) => call.label === "deleteEntry")).toBe(false);
-    expect(onPathDeleted).not.toHaveBeenCalled();
+    expect(onBeginPathMutation).toHaveBeenCalledWith("src/app.ts");
+  });
+
+  it("commits delete before releasing the mutation lease", async () => {
+    setEntries([entry("src/app.ts", "file")]);
+    testState.commandResults["deleteEntry"] = { _tag: "Success", value: {} };
+    const lease = mutationLease();
+    renderPanel(
+      baseProps({
+        onBeginPathMutation: vi.fn(async () => lease),
+      }),
+    );
+
+    rowActionsFor("src/app.ts", "file").onDelete();
+    (lastDialogRequest()["onConfirm"] as () => void)();
+    await flushPromises();
+
+    expect(lease.commitDelete).toHaveBeenCalledOnce();
+    expect(lease.commitDelete.mock.invocationCallOrder[0]).toBeLessThan(
+      lease.release.mock.invocationCallOrder[0]!,
+    );
   });
 
   it("uses folder wording for directories and reports failures", async () => {
@@ -813,20 +904,20 @@ describe("duplicate entry", () => {
       value: { relativePath: "src/app copy.ts" },
     };
     const onOpenFile = vi.fn();
-    const onBeforePathMutation = vi.fn(async () => true);
-    renderPanel(baseProps({ onOpenFile, onBeforePathMutation }));
+    const onBeginPathMutation = vi.fn(async () => mutationLease());
+    renderPanel(baseProps({ onOpenFile, onBeginPathMutation }));
 
     rowActionsFor("src/app.ts", "file").onDuplicate();
     await flushPromises();
 
-    expect(onBeforePathMutation).toHaveBeenCalledWith("src/app.ts");
+    expect(onBeginPathMutation).toHaveBeenCalledWith("src/app.ts");
     expect(onOpenFile).toHaveBeenCalledWith("src/app copy.ts");
   });
 
   it("aborts duplicate when pending edits cannot settle", async () => {
-    const onBeforePathMutation = vi.fn(async () => false);
+    const onBeginPathMutation = vi.fn(async () => null);
     const onOpenFile = vi.fn();
-    renderPanel(baseProps({ onBeforePathMutation, onOpenFile }));
+    renderPanel(baseProps({ onBeginPathMutation, onOpenFile }));
 
     rowActionsFor("src/app.ts", "file").onDuplicate();
     await flushPromises();

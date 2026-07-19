@@ -20,6 +20,15 @@ const pierre = vi.hoisted(() => {
 vi.mock("@pierre/diffs/editor", () => ({ Editor: pierre.Editor }));
 
 import { FileEditingSession } from "./fileEditingSession";
+import { FileEditingSessionRegistry } from "./fileEditingSessionRegistry";
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 describe("FileEditingSession", () => {
   beforeEach(() => {
@@ -117,5 +126,151 @@ describe("FileEditingSession", () => {
 
     expect(handler).toHaveBeenCalledOnce();
     expect(persist).toHaveBeenCalledWith("src/app.ts", "without handler");
+  });
+
+  it("holds edits during a delayed rename and saves them to the renamed path after release", async () => {
+    vi.useFakeTimers();
+    const persist = vi.fn(async () => AsyncResult.success(undefined));
+    const registry = new FileEditingSessionRegistry<FileEditingSession<never>>();
+    const session = registry.getOrCreate(
+      "src/old.ts",
+      () =>
+        new FileEditingSession({
+          cwd: "/repo",
+          relativePath: "src/old.ts",
+          debounceMs: 500,
+          persist,
+          onPendingChange: vi.fn(),
+          onConfirmed: vi.fn(),
+        }),
+    );
+    const editor = session.editor as unknown as InstanceType<typeof pierre.Editor>;
+    const command = deferred();
+    const lease = await registry.beginPathMutation("src/old.ts");
+    expect(lease).not.toBeNull();
+
+    const mutation = command.promise.then(() => {
+      lease!.commitRename("src/new.ts");
+      lease!.release();
+    });
+    (editor.options["onChange"] as (file: { contents: string }) => void)({
+      contents: "edited during rename",
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(persist).not.toHaveBeenCalled();
+
+    command.resolve();
+    await mutation;
+    await vi.advanceTimersByTimeAsync(499);
+    expect(persist).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(persist).toHaveBeenCalledOnce();
+    expect(persist).toHaveBeenCalledWith("src/new.ts", "edited during rename");
+  });
+
+  it("releases edits to the original path after a delayed rename fails", async () => {
+    vi.useFakeTimers();
+    const persist = vi.fn(async () => AsyncResult.success(undefined));
+    const registry = new FileEditingSessionRegistry<FileEditingSession<never>>();
+    const session = registry.getOrCreate(
+      "src/old.ts",
+      () =>
+        new FileEditingSession({
+          cwd: "/repo",
+          relativePath: "src/old.ts",
+          debounceMs: 500,
+          persist,
+          onPendingChange: vi.fn(),
+          onConfirmed: vi.fn(),
+        }),
+    );
+    const editor = session.editor as unknown as InstanceType<typeof pierre.Editor>;
+    const command = deferred();
+    const lease = await registry.beginPathMutation("src/old.ts");
+    expect(lease).not.toBeNull();
+
+    const mutation = command.promise.then(() => lease!.release());
+    (editor.options["onChange"] as (file: { contents: string }) => void)({
+      contents: "edited during failed rename",
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(persist).not.toHaveBeenCalled();
+
+    command.resolve();
+    await mutation;
+    await vi.advanceTimersByTimeAsync(500);
+    expect(persist).toHaveBeenCalledWith("src/old.ts", "edited during failed rename");
+  });
+
+  it("discards edits made during a delayed delete", async () => {
+    vi.useFakeTimers();
+    const persist = vi.fn(async () => AsyncResult.success(undefined));
+    const registry = new FileEditingSessionRegistry<FileEditingSession<never>>();
+    const session = registry.getOrCreate(
+      "src/app.ts",
+      () =>
+        new FileEditingSession({
+          cwd: "/repo",
+          relativePath: "src/app.ts",
+          debounceMs: 500,
+          persist,
+          onPendingChange: vi.fn(),
+          onConfirmed: vi.fn(),
+        }),
+    );
+    const editor = session.editor as unknown as InstanceType<typeof pierre.Editor>;
+    const command = deferred();
+    const lease = await registry.beginPathMutation("src/app.ts");
+    expect(lease).not.toBeNull();
+
+    const mutation = command.promise.then(() => {
+      lease!.commitDelete();
+      lease!.release();
+    });
+    (editor.options["onChange"] as (file: { contents: string }) => void)({
+      contents: "must be discarded",
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(persist).not.toHaveBeenCalled();
+
+    command.resolve();
+    await mutation;
+    await vi.runAllTimersAsync();
+    expect(persist).not.toHaveBeenCalled();
+    expect(registry.get("src/app.ts")).toBeUndefined();
+    expect(editor.cleanUp).toHaveBeenCalledOnce();
+  });
+
+  it("does not pause autosaves for sessions outside the mutation path", async () => {
+    vi.useFakeTimers();
+    const persist = vi.fn(async () => AsyncResult.success(undefined));
+    const registry = new FileEditingSessionRegistry<FileEditingSession<never>>();
+    const createSession = (relativePath: string) =>
+      new FileEditingSession<never>({
+        cwd: "/repo",
+        relativePath,
+        debounceMs: 500,
+        persist,
+        onPendingChange: vi.fn(),
+        onConfirmed: vi.fn(),
+      });
+    const affected = registry.getOrCreate("src/app.ts", () => createSession("src/app.ts"));
+    const unrelated = registry.getOrCreate("docs/readme.md", () => createSession("docs/readme.md"));
+    const lease = await registry.beginPathMutation("src");
+    expect(lease).not.toBeNull();
+
+    const affectedEditor = affected.editor as unknown as InstanceType<typeof pierre.Editor>;
+    const unrelatedEditor = unrelated.editor as unknown as InstanceType<typeof pierre.Editor>;
+    (affectedEditor.options["onChange"] as (file: { contents: string }) => void)({
+      contents: "affected",
+    });
+    (unrelatedEditor.options["onChange"] as (file: { contents: string }) => void)({
+      contents: "unrelated",
+    });
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(persist).toHaveBeenCalledOnce();
+    expect(persist).toHaveBeenCalledWith("docs/readme.md", "unrelated");
+    lease!.release();
   });
 });

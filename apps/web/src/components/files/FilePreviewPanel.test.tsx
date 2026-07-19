@@ -101,7 +101,7 @@ const testState = vi.hoisted(() => {
     },
     editingSessions: null as unknown as {
       getOrCreate: ReturnType<typeof vi.fn>;
-      preparePathMutation: ReturnType<typeof vi.fn>;
+      beginPathMutation: ReturnType<typeof vi.fn>;
       reset: () => void;
     },
     sessionCreations: [] as string[],
@@ -187,7 +187,7 @@ const testState = vi.hoisted(() => {
       state.session = session;
       return session;
     }),
-    preparePathMutation: vi.fn(async (relativePath: string) => {
+    beginPathMutation: vi.fn(async (relativePath: string) => {
       const results = await Promise.all(
         [...sessions.entries()]
           .filter(
@@ -195,7 +195,13 @@ const testState = vi.hoisted(() => {
           )
           .map(([, session]) => session.settle()),
       );
-      return results.every((result) => result !== "failed");
+      return results.every((result) => result !== "failed")
+        ? {
+            commitRename: vi.fn(),
+            commitDelete: vi.fn(),
+            release: vi.fn(),
+          }
+        : null;
     }),
   };
   state.editingSessions.reset = () => {
@@ -653,7 +659,7 @@ beforeEach(() => {
   };
   testState.editingSessions.reset();
   testState.editingSessions.getOrCreate.mockClear();
-  testState.editingSessions.preparePathMutation.mockClear();
+  testState.editingSessions.beginPathMutation.mockClear();
   testState.coordinators.length = 0;
   testState.pendingWork = false;
   testState.flushResult = "saved";
@@ -1557,26 +1563,32 @@ describe("effects wiring", () => {
     expect(surface.listeners.has("keydown")).toBe(false);
   });
 
-  it("settles exact and descendant sessions and propagates preparation failure", async () => {
+  it("begins exact and descendant mutation leases and propagates preparation failure", async () => {
     renderWithEffects();
     const exactCoordinator = testState.coordinators[testState.coordinators.length - 1]!;
     renderPanel(baseProps({ relativePath: "src/nested/child.ts" }));
     const descendantCoordinator = testState.coordinators[testState.coordinators.length - 1]!;
     const browser = ui.find("FileBrowserPanel");
-    const onBeforePathMutation = browser.onBeforePathMutation as (path: string) => Promise<boolean>;
+    const onBeginPathMutation = browser.onBeginPathMutation as (
+      path: string,
+    ) => Promise<{ release(): void } | null>;
 
-    await expect(onBeforePathMutation("src/app.ts")).resolves.toBe(true);
+    await expect(onBeginPathMutation("src/app.ts")).resolves.toEqual(
+      expect.objectContaining({ release: expect.any(Function) }),
+    );
     expect(exactCoordinator.settle).toHaveBeenCalledTimes(1);
     expect(descendantCoordinator.settle).not.toHaveBeenCalled();
 
     descendantCoordinator.settle.mockResolvedValueOnce("failed");
-    await expect(onBeforePathMutation("src")).resolves.toBe(false);
+    await expect(onBeginPathMutation("src")).resolves.toBeNull();
     expect(exactCoordinator.settle).toHaveBeenCalledTimes(2);
     expect(descendantCoordinator.settle).toHaveBeenCalledTimes(1);
 
-    await expect(onBeforePathMutation("docs/readme.md")).resolves.toBe(true);
+    await expect(onBeginPathMutation("docs/readme.md")).resolves.toEqual(
+      expect.objectContaining({ release: expect.any(Function) }),
+    );
     expect(exactCoordinator.settle).toHaveBeenCalledTimes(2);
     expect(descendantCoordinator.settle).toHaveBeenCalledTimes(1);
-    expect(testState.editingSessions.preparePathMutation).toHaveBeenCalledTimes(3);
+    expect(testState.editingSessions.beginPathMutation).toHaveBeenCalledTimes(3);
   });
 });
