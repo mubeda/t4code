@@ -34,8 +34,16 @@ vi.mock("../editorPreferences", () => ({
 }));
 
 vi.mock("../hooks/useSettings", () => ({
-  usePrimarySettings: (selector: (settings: { terminal: { webglEnabled: boolean } }) => unknown) =>
-    selector({ terminal: { webglEnabled: false } }),
+  usePrimarySettings: (
+    selector: (settings: {
+      terminal: { webglEnabled: boolean };
+      terminalFontPreference: { mode: "bundled" };
+    }) => unknown,
+  ) =>
+    selector({
+      terminal: { webglEnabled: false },
+      terminalFontPreference: { mode: "bundled" },
+    }),
 }));
 
 vi.mock("../state/server", () => ({

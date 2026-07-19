@@ -1,25 +1,8 @@
 /**
  * The `OpenRouterClient` module provides an Effect service for calling
  * OpenRouter's chat completions API. It wraps the generated OpenRouter HTTP
- * client with Effect-native constructors, layers, typed errors, and streaming
- * support.
- *
- * **Common tasks**
- *
- * - Build a client from explicit options with {@link make}
- * - Provide the client to an application with {@link layer} or {@link layerConfig}
- * - Create non-streaming chat completions with {@link Service.createChatCompletion}
- * - Create server-sent event chat completion streams with
- *   {@link Service.createChatCompletionStream}
- * - Customize authentication, base URL, OpenRouter ranking headers, or the
- *   underlying HTTP client through {@link Options}
- *
- * **Gotchas**
- *
- * - Streaming requests are sent directly to `/chat/completions` with `stream`
- *   and `stream_options.include_usage` enabled by this module.
- * - OpenRouter API failures, HTTP client failures, and schema decoding failures
- *   are mapped into `AiError` values for the exported service methods.
+ * client with Effect-native constructors, layers, authentication and optional
+ * site ranking headers, typed errors, and streaming support.
  *
  * @since 4.0.0
  */
@@ -122,7 +105,7 @@ export class OpenRouterClient extends Context.Service<
 /**
  * Configuration for creating an OpenRouter client.
  *
- * @category models
+ * @category options
  * @since 4.0.0
  */
 export type Options = {
@@ -159,8 +142,7 @@ export type Options = {
  *
  * **When to use**
  *
- * Use to construct the OpenRouter client service inside an effect when you need
- * the service value directly.
+ * Use when you need the OpenRouter client service value inside an effect.
  *
  * **Details**
  *
@@ -294,8 +276,8 @@ export const layer = (options: Options): Layer.Layer<OpenRouterClient, never, Ht
  *
  * **When to use**
  *
- * Use when OpenRouter client settings should be read from Effect `Config`
- * values while providing `OpenRouterClient` as a layer.
+ * Use when you need client settings for OpenRouter to be read from Effect
+ * `Config` values while providing `OpenRouterClient` as a layer.
  *
  * **Details**
  *

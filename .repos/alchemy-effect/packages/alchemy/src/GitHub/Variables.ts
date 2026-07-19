@@ -28,12 +28,12 @@ export interface VariablesProps {
  * Plural counterpart of {@link import("./Secrets.ts").Secrets}, for
  * non-sensitive values like region names, role ARNs, environment labels,
  * or feature flags.
- *
+ * @resource
  * @example
  * ```ts
  * yield* GitHub.Variables({
  *   owner: "alchemy-run",
- *   repository: "alchemy-effect",
+ *   repository: "alchemy",
  *   variables: {
  *     AWS_ROLE_ARN: role.roleArn,
  *     AWS_REGION: region,

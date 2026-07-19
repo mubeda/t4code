@@ -249,8 +249,8 @@ function providerLayer(
 }
 
 function cloudflareProviderLayer(
-  tunnelClient: Cloudflare.TunnelReadWriteClient,
-  dnsClient: Cloudflare.DnsReadWriteClient,
+  tunnelClient: Cloudflare.Tunnel.ReadWriteTunnelClient,
+  dnsClient: Cloudflare.DNS.ReadWriteDnsClient,
   allocations = makeAllocations(),
 ) {
   return ManagedEndpointProvider.layerCloudflareBindings(
@@ -612,7 +612,7 @@ describe("ManagedEndpointProvider", () => {
           tunnelCalls.push("delete");
           tunnel = null;
         }),
-    } as unknown as Cloudflare.TunnelReadWriteClient;
+    } as unknown as Cloudflare.Tunnel.ReadWriteTunnelClient;
     const dnsClient = {
       listDnsRecords: () =>
         Effect.sync(() => {
@@ -634,7 +634,7 @@ describe("ManagedEndpointProvider", () => {
           dnsCalls.push("delete-record");
           dnsRecords = [];
         }),
-    } as unknown as Cloudflare.DnsReadWriteClient;
+    } as unknown as Cloudflare.DNS.ReadWriteDnsClient;
     const allocations = makeAllocations();
 
     return Effect.gen(function* () {
@@ -661,7 +661,7 @@ describe("ManagedEndpointProvider", () => {
       putConfiguration: () => Effect.void,
       getToken: () => Effect.succeed("connector-token"),
       delete: () => Effect.void,
-    } as unknown as Cloudflare.TunnelReadWriteClient;
+    } as unknown as Cloudflare.Tunnel.ReadWriteTunnelClient;
     const dnsClient = {
       listDnsRecords: (request: { readonly search: string }) =>
         Effect.succeed({
@@ -681,7 +681,7 @@ describe("ManagedEndpointProvider", () => {
         Effect.sync(() => {
           deleted.push(id);
         }),
-    } as unknown as Cloudflare.DnsReadWriteClient;
+    } as unknown as Cloudflare.DNS.ReadWriteDnsClient;
 
     return Effect.gen(function* () {
       const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
@@ -704,7 +704,7 @@ describe("ManagedEndpointProvider", () => {
       putConfiguration: () => Effect.void,
       getToken: () => Effect.succeed("connector-token"),
       delete: () => Effect.void,
-    } as unknown as Cloudflare.TunnelReadWriteClient;
+    } as unknown as Cloudflare.Tunnel.ReadWriteTunnelClient;
     const dnsClient = {
       listDnsRecords: (request: { readonly search: string }) =>
         Effect.sync(() => ({
@@ -720,7 +720,7 @@ describe("ManagedEndpointProvider", () => {
         ),
       updateDnsRecord: () => Effect.void,
       deleteDnsRecord: () => Effect.void,
-    } as unknown as Cloudflare.DnsReadWriteClient;
+    } as unknown as Cloudflare.DNS.ReadWriteDnsClient;
 
     return Effect.gen(function* () {
       const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
@@ -862,14 +862,14 @@ describe("ManagedEndpointProvider", () => {
         putConfiguration: () => (failure === "put-configuration" ? fail() : Effect.void),
         getToken: () => (failure === "get-token" ? fail() : Effect.succeed("connector-token")),
         delete: () => (failure === "delete-tunnel" ? fail() : Effect.void),
-      } as unknown as Cloudflare.TunnelReadWriteClient;
+      } as unknown as Cloudflare.Tunnel.ReadWriteTunnelClient;
       const dnsClient = {
         listDnsRecords: () =>
           failure === "list-records" ? fail() : Effect.succeed({ result: [] }),
         createDnsRecord: () => Effect.succeed({ id: "dns-id" }),
         updateDnsRecord: () => (failure === "update-record" ? fail() : Effect.void),
         deleteDnsRecord: () => (failure === "delete-record" ? fail() : Effect.void),
-      } as unknown as Cloudflare.DnsReadWriteClient;
+      } as unknown as Cloudflare.DNS.ReadWriteDnsClient;
       return { tunnelClient, dnsClient };
     };
     const existingAllocation: ManagedEndpointAllocations.ManagedEndpointAllocation = {
@@ -975,13 +975,13 @@ describe("ManagedEndpointProvider", () => {
       putConfiguration: () => Effect.die("configuration must not run"),
       getToken: () => Effect.die("token must not run"),
       delete: () => Effect.fail(notFound),
-    } as unknown as Cloudflare.TunnelReadWriteClient;
+    } as unknown as Cloudflare.Tunnel.ReadWriteTunnelClient;
     const dnsClient = {
       listDnsRecords: () => Effect.succeed({ result: [] }),
       createDnsRecord: () => Effect.die("create must not run"),
       updateDnsRecord: () => Effect.die("update must not run"),
       deleteDnsRecord: () => Effect.fail(notFound),
-    } as unknown as Cloudflare.DnsReadWriteClient;
+    } as unknown as Cloudflare.DNS.ReadWriteDnsClient;
 
     return Effect.gen(function* () {
       const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;

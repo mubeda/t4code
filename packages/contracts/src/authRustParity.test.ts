@@ -264,8 +264,8 @@ const currentRoutes = (): ReadonlyArray<RouteManifest> => {
     onGroup() {},
     onEndpoint({ group, endpoint, successes, errors }) {
       if (group.identifier !== "auth") return;
-      routes.set(endpoint.name, {
-        name: endpoint.name,
+      routes.set(endpoint.identifier, {
+        name: endpoint.identifier,
         method: endpoint.method,
         path: endpoint.path,
         requestContentTypes: [...endpoint.payload.keys()].toSorted(),

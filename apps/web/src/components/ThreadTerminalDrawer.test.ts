@@ -6,6 +6,7 @@ import {
   getTerminalSelectionRect,
   maxDrawerHeight,
   normalizeComputedColor,
+  resolveTerminalDocumentVisibility,
   resolveTerminalSelectionActionPosition,
   runtimeEnvSignature,
   shouldHandleTerminalSelectionMouseUp,
@@ -59,6 +60,12 @@ describe("terminal drawer utilities", () => {
         ["B", "2"],
       ]),
     );
+  });
+
+  it("keeps production visibility semantics while allowing packaged WebKit automation", () => {
+    expect(resolveTerminalDocumentVisibility("visible", false)).toBe(true);
+    expect(resolveTerminalDocumentVisibility("hidden", false)).toBe(false);
+    expect(resolveTerminalDocumentVisibility("hidden", true)).toBe(true);
   });
 
   it("uses fallbacks for blank and transparent computed colors", () => {

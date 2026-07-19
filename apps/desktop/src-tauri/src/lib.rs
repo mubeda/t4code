@@ -58,7 +58,7 @@ macro_rules! bridge_command_names {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let shell_path_hydration = shell_environment::hydrate_process_path();
-    tauri::Builder::<bridge::DesktopRuntime>::new()
+    let builder = tauri::Builder::<bridge::DesktopRuntime>::new()
         .manage(backend::BackendSupervisor::new())
         .manage(context_menu::NativeContextMenuManager::new())
         .manage(ssh::SshEnvironmentManager::new())
@@ -66,7 +66,13 @@ pub fn run() {
         .manage(updates::DesktopUpdateManager::new())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build());
+    #[cfg(feature = "desktop-e2e")]
+    let builder = builder
+        .plugin(desktop_e2e_logging_plugin())
+        .plugin(tauri_plugin_wdio::init())
+        .plugin(tauri_plugin_wdio_webdriver::init());
+    builder
         .setup(move |app| {
             shell_path_hydration.record();
             window::configure_application_menu(app.handle())?;
@@ -86,7 +92,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(desktop_bridge_commands!(bridge_invoke_handler))
-        .build(tauri::generate_context!())
+        .build(desktop_context())
         .expect("error while building T4Code Tauri application")
         .run(|app_handle, event| {
             if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
@@ -108,6 +114,24 @@ pub fn run() {
                 }
             }
         });
+}
+
+fn desktop_context<R: tauri::Runtime>() -> tauri::Context<R> {
+    tauri::generate_context!()
+}
+
+#[cfg(feature = "desktop-e2e")]
+fn desktop_e2e_logging_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("desktop-e2e-logging")
+        .setup(|app, _api| {
+            let server_log = config::state_dir(app)
+                .map_err(std::io::Error::other)?
+                .join("logs")
+                .join("server.log");
+            t4code_server::logging::initialize(&server_log)?;
+            Ok(())
+        })
+        .build()
 }
 
 mod backend;
@@ -174,5 +198,16 @@ mod tests {
         registered.sort();
 
         assert_eq!(allowed, registered);
+    }
+
+    #[test]
+    fn desktop_bridge_permission_toml_round_trips_without_schema_drift() {
+        let source = include_str!("../permissions/desktop-bridge.toml");
+        let parsed: toml::Value = toml::from_str(source).expect("permission TOML should parse");
+        let encoded = toml::to_string(&parsed).expect("permission TOML should encode");
+        let reparsed: toml::Value =
+            toml::from_str(&encoded).expect("encoded permission TOML should parse");
+
+        assert_eq!(reparsed, parsed);
     }
 }

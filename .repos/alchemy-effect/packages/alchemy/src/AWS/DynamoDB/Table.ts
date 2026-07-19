@@ -8,14 +8,14 @@ import type * as lambda from "aws-lambda";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
+import * as Stream from "effect/Stream";
 
+import { Unowned } from "../../AdoptPolicy.ts";
 import { havePropsChanged, isResolved } from "../../Diff.ts";
 import type { Input } from "../../Input.ts";
 import { createPhysicalName } from "../../PhysicalName.ts";
 import * as Provider from "../../Provider.ts";
 import { Resource } from "../../Resource.ts";
-import type { Providers } from "../Providers.ts";
-import { Unowned } from "../../AdoptPolicy.ts";
 import {
   createInternalTags,
   createTagsList,
@@ -23,6 +23,7 @@ import {
   hasAlchemyTags,
 } from "../../Tags.ts";
 import type { AccountID } from "../Environment.ts";
+import type { Providers } from "../Providers.ts";
 import type { RegionID } from "../Region.ts";
 
 export type TableName = string;
@@ -112,7 +113,7 @@ export interface Table extends Resource<
  * `Table` owns the lifecycle of the physical table while the binding contract
  * allows runtime-specific integrations such as Lambda table event sources to
  * request stream configuration without forcing a circular input prop.
- *
+ * @resource
  * @section Creating Tables
  * @example Basic Table
  * ```typescript
@@ -173,8 +174,8 @@ export interface Table extends Resource<
  * @example Read and write items
  * ```typescript
  * // init
- * const getItem = yield* DynamoDB.GetItem.bind(table);
- * const putItem = yield* DynamoDB.PutItem.bind(table);
+ * const getItem = yield* AWS.DynamoDB.GetItem(table);
+ * const putItem = yield* AWS.DynamoDB.PutItem(table);
  *
  * return {
  *   fetch: Effect.gen(function* () {
@@ -198,9 +199,9 @@ export interface Table extends Resource<
  * @example Process table changes
  * ```typescript
  * // init
- * yield* DynamoDB.streams(table, {
- *   StreamViewType: "NEW_AND_OLD_IMAGES",
- * }).process(
+ * yield* DynamoDB.consumeTableChanges(
+ *   table,
+ *   { streamViewType: "NEW_AND_OLD_IMAGES" },
  *   Effect.fn(function* (record) {
  *     yield* Effect.log(`${record.eventName}: ${JSON.stringify(record.dynamodb)}`);
  *   }),
@@ -332,23 +333,34 @@ export const TableProvider = () =>
         error._tag === "InternalServerError" ||
         error._tag === "LimitExceededException" ||
         error._tag === "ResourceInUseException" ||
-        error._tag === "ResourceNotFoundException";
+        error._tag === "ResourceNotFoundException" ||
+        // Throttling: DynamoDB's control-plane API limits are low and the
+        // blanket SDK retry (10 attempts) is easily exhausted when the whole
+        // suite hammers create/update/describe concurrently. Give it the
+        // provider's much larger budget too.
+        error._tag === "ThrottlingException" ||
+        error._tag === "ProvisionedThroughputExceededException" ||
+        error._tag === "RequestLimitExceeded";
 
-      const waitForControlPlaneConvergence = Schedule.fixed("1 second").pipe(
-        Schedule.both(Schedule.recurs(120)),
-      );
+      const waitForControlPlaneConvergence = Schedule.max([
+        Schedule.fixed("1 second"),
+        Schedule.recurs(120),
+      ]);
 
-      const waitForTableActivationConvergence = Schedule.fixed(
-        "10 seconds",
-      ).pipe(Schedule.both(Schedule.recurs(180)));
+      const waitForTableActivationConvergence = Schedule.max([
+        Schedule.fixed("10 seconds"),
+        Schedule.recurs(180),
+      ]);
 
-      const waitForGlobalSecondaryIndexesConvergence = Schedule.fixed(
-        "10 seconds",
-      ).pipe(Schedule.both(Schedule.recurs(180)));
+      const waitForGlobalSecondaryIndexesConvergence = Schedule.max([
+        Schedule.fixed("10 seconds"),
+        Schedule.recurs(180),
+      ]);
 
-      const waitForDeletionConvergence = Schedule.fixed("1 second").pipe(
-        Schedule.both(Schedule.recurs(90)),
-      );
+      const waitForDeletionConvergence = Schedule.max([
+        Schedule.fixed("1 second"),
+        Schedule.recurs(90),
+      ]);
 
       const formatPollingElapsed = (elapsedSeconds: number) =>
         `${elapsedSeconds}s elapsed`;
@@ -378,9 +390,10 @@ export const TableProvider = () =>
           .pipe(
             Effect.retry({
               while: isRetryableControlPlaneError,
-              schedule: Schedule.exponential(100).pipe(
-                Schedule.both(Schedule.recurs(30)),
-              ),
+              schedule: Schedule.max([
+                Schedule.exponential(100),
+                Schedule.recurs(30),
+              ]),
             }),
           );
 
@@ -398,9 +411,10 @@ export const TableProvider = () =>
               while: (e) =>
                 e._tag === "ContinuousBackupsUnavailableException" ||
                 isRetryableControlPlaneError(e),
-              schedule: Schedule.exponential(250).pipe(
-                Schedule.both(Schedule.recurs(30)),
-              ),
+              schedule: Schedule.max([
+                Schedule.exponential(250),
+                Schedule.recurs(30),
+              ]),
             }),
           );
 
@@ -431,8 +445,8 @@ export const TableProvider = () =>
               error._tag === "TableNotActive" ||
               isRetryableControlPlaneError(error),
             schedule: waitForTableActivationConvergence.pipe(
-              Schedule.tapOutput(([, attempt]) => {
-                elapsedSeconds = (attempt + 1) * 10;
+              Schedule.tap(({ attempt }) => {
+                elapsedSeconds = attempt * 10;
                 return session.note(
                   `${progressMessage} (${formatPollingElapsed(elapsedSeconds)})`,
                 );
@@ -483,8 +497,8 @@ export const TableProvider = () =>
               error._tag === "TableIndexesNotStable" ||
               isRetryableControlPlaneError(error),
             schedule: waitForGlobalSecondaryIndexesConvergence.pipe(
-              Schedule.tapOutput(([, attempt]) => {
-                elapsedSeconds = (attempt + 1) * 10;
+              Schedule.tap(({ attempt }) => {
+                elapsedSeconds = attempt * 10;
                 return session.note(
                   `${progressMessage} (${formatPollingElapsed(elapsedSeconds)})`,
                 );
@@ -520,8 +534,8 @@ export const TableProvider = () =>
               error._tag === "TableStillDeleting" ||
               isRetryableControlPlaneError(error),
             schedule: waitForDeletionConvergence.pipe(
-              Schedule.tapOutput(([, attempt]) => {
-                elapsedSeconds = attempt + 1;
+              Schedule.tap(({ attempt }) => {
+                elapsedSeconds = attempt;
                 return session.note(
                   `${progressMessage} (${formatPollingElapsed(elapsedSeconds)})`,
                 );
@@ -620,8 +634,8 @@ export const TableProvider = () =>
                     return false;
                   },
                   schedule: waitForGlobalSecondaryIndexesConvergence.pipe(
-                    Schedule.tapOutput(([, attempt]) => {
-                      elapsedSeconds = (attempt + 1) * 10;
+                    Schedule.tap(({ attempt }) => {
+                      elapsedSeconds = attempt * 10;
                       return session.note(
                         `${progressMessage} (${formatPollingElapsed(elapsedSeconds)})`,
                       );
@@ -648,7 +662,12 @@ export const TableProvider = () =>
       // resource" signal). Only retry on transient control-plane errors.
       const isRetryableReadError = (error: { _tag?: string }) =>
         error._tag === "InternalServerError" ||
-        error._tag === "LimitExceededException";
+        error._tag === "LimitExceededException" ||
+        // See `isRetryableControlPlaneError`: read-path describes throttle too
+        // under full-suite concurrency, so ride them out generously.
+        error._tag === "ThrottlingException" ||
+        error._tag === "ProvisionedThroughputExceededException" ||
+        error._tag === "RequestLimitExceeded";
 
       const readTableState = (tableName: string) =>
         Effect.gen(function* () {
@@ -659,9 +678,10 @@ export const TableProvider = () =>
             .pipe(
               Effect.retry({
                 while: isRetryableReadError,
-                schedule: Schedule.exponential(250).pipe(
-                  Schedule.both(Schedule.recurs(30)),
-                ),
+                schedule: Schedule.max([
+                  Schedule.exponential(250),
+                  Schedule.recurs(30),
+                ]),
               }),
             );
           const table = response.Table;
@@ -680,9 +700,10 @@ export const TableProvider = () =>
                 .pipe(
                   Effect.retry({
                     while: isRetryableReadError,
-                    schedule: Schedule.exponential(250).pipe(
-                      Schedule.both(Schedule.recurs(30)),
-                    ),
+                    schedule: Schedule.max([
+                      Schedule.exponential(250),
+                      Schedule.recurs(30),
+                    ]),
                   }),
                 ),
               dynamodb
@@ -692,9 +713,10 @@ export const TableProvider = () =>
                 .pipe(
                   Effect.retry({
                     while: (e) => e._tag === "InternalServerError",
-                    schedule: Schedule.exponential(250).pipe(
-                      Schedule.both(Schedule.recurs(30)),
-                    ),
+                    schedule: Schedule.max([
+                      Schedule.exponential(250),
+                      Schedule.recurs(30),
+                    ]),
                   }),
                   Effect.catchTag("TableNotFoundException", () =>
                     Effect.succeed({ ContinuousBackupsDescription: undefined }),
@@ -707,9 +729,10 @@ export const TableProvider = () =>
                 .pipe(
                   Effect.retry({
                     while: isRetryableReadError,
-                    schedule: Schedule.exponential(250).pipe(
-                      Schedule.both(Schedule.recurs(30)),
-                    ),
+                    schedule: Schedule.max([
+                      Schedule.exponential(250),
+                      Schedule.recurs(30),
+                    ]),
                   }),
                   Effect.catchTag("ResourceNotFoundException", () =>
                     Effect.succeed({ TimeToLiveDescription: undefined }),
@@ -933,6 +956,49 @@ export const TableProvider = () =>
 
       return Table.Provider.of({
         stables: ["tableName", "tableId", "tableArn"],
+        // Enumerate every table in the ambient account/region. `listTables`
+        // returns only names, so each is hydrated to the full Attributes shape
+        // via the same multi-API read helper (`readTableState`) `read` uses.
+        list: () =>
+          Effect.gen(function* () {
+            const names = yield* dynamodb.listTables.items({}).pipe(
+              Stream.runCollect,
+              Effect.map((chunk) => Array.from(chunk)),
+            );
+            const states = yield* Effect.forEach(
+              names,
+              (tableName) =>
+                readTableState(tableName).pipe(
+                  // Hydrating every table fires four describe calls each.
+                  // Across a busy account this trips DynamoDB's read throttle,
+                  // and a table that isn't ACTIVE yet (a peer mid-create)
+                  // transiently rejects the continuous-backups/TTL describes
+                  // with ValidationException. Both are transient — retry to
+                  // converge so a table that *is* ours still hydrates fully.
+                  Effect.retry({
+                    while: (e) =>
+                      e._tag === "ThrottlingException" ||
+                      e._tag === "ValidationException",
+                    schedule: Schedule.max([
+                      Schedule.exponential(250).pipe(Schedule.jittered),
+                      Schedule.recurs(12),
+                    ]),
+                  }),
+                  // Last resort: if a foreign table never settles within the
+                  // retry budget (e.g. a peer is still mid-create/delete when
+                  // we give up), skip it rather than failing the whole
+                  // enumeration. Our own table is ACTIVE by the time list()
+                  // runs, so it always hydrates via the retry above.
+                  Effect.catchTag("ValidationException", () =>
+                    Effect.succeed(undefined),
+                  ),
+                ),
+              { concurrency: 8 },
+            );
+            return states
+              .filter((state) => state !== undefined)
+              .map((state) => toAttrs(state));
+          }),
         read: Effect.fn(function* ({ id, olds, output }) {
           const tableName =
             output?.tableName ??
@@ -959,7 +1025,7 @@ export const TableProvider = () =>
           ) {
             return { action: "replace" } as const;
           }
-          for (const [name, type] of Object.entries(olds.attributes)) {
+          for (const [name, type] of Object.entries(olds.attributes ?? {})) {
             if (news.attributes[name] !== type) {
               return { action: "replace" } as const;
             }
@@ -1318,9 +1384,9 @@ export const TableProvider = () =>
                     error._tag === "InternalServerError" ||
                     error._tag === "TimeoutError",
                   schedule: waitForDeletionConvergence.pipe(
-                    Schedule.tapOutput(([, attempt]) =>
+                    Schedule.tap(({ attempt }) =>
                       session.note(
-                        `DynamoDB Table provider: deleteTable transient failure for ${output.tableName} on attempt ${deleteAttempt} (${formatPollingElapsed(attempt + 1)})`,
+                        `DynamoDB Table provider: deleteTable transient failure for ${output.tableName} on attempt ${deleteAttempt} (${formatPollingElapsed(attempt)})`,
                       ),
                     ),
                   ),

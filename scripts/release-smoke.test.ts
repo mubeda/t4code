@@ -1,9 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
+import { HostProcessPlatform } from "@t4code/shared/hostProcess";
 import { assert, it } from "@effect/vitest";
+import { Effect } from "effect";
 import { vi } from "vite-plus/test";
 
 import {
@@ -155,6 +158,30 @@ it("includes every Rust release version file in the smoke workspace", () => {
     assert.include(releaseSmokeWorkspaceFiles as ReadonlyArray<string>, relativePath);
   }
 });
+
+it.effect("lists the legacy diagnostic archive with the platform archive tool", () =>
+  Effect.gen(function* () {
+    const archivePath = NodePath.resolve(
+      import.meta.dirname,
+      "../apps/server/tests/fixtures/diagnostic-bundle-v4.zip",
+    );
+    const platform = yield* HostProcessPlatform;
+    const [command, args] =
+      platform === "win32"
+        ? (["tar", ["-tf", archivePath]] as const)
+        : (["unzip", ["-t", archivePath]] as const);
+    const result = NodeChildProcess.spawnSync(command, args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stderr);
+    for (const entry of ["server.log", "server.trace.ndjson", "frontend.log"]) {
+      assert.include(result.stdout, entry);
+    }
+  }),
+);
 
 it("executes the release command plan and always removes its temporary workspace", () => {
   const source = makeFixtureRoot();

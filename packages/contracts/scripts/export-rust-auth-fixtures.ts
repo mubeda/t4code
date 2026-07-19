@@ -152,8 +152,8 @@ HttpApi.reflect(EnvironmentHttpApi, {
   onGroup() {},
   onEndpoint({ group, endpoint, successes, errors }) {
     if (group.identifier !== "auth") return;
-    reflectedRoutes.set(endpoint.name, {
-      name: endpoint.name,
+    reflectedRoutes.set(endpoint.identifier, {
+      name: endpoint.identifier,
       method: endpoint.method,
       path: endpoint.path,
       requestContentTypes: [...endpoint.payload.keys()].toSorted(),

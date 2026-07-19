@@ -1,33 +1,11 @@
 /**
- * High-level runtime for writing typed event-log events and replaying replicated
- * journal entries.
+ * Runtime for writing typed events to an event journal.
  *
- * This module connects event definitions, handler layers, an `EventJournal`, and
- * optional remote replicas. Applications define groups with `EventGroup`, build
- * an `EventLogSchema`, register handlers with `group`, and obtain a typed client
- * with `makeClient`; the `EventLog` service then encodes payloads, runs the
- * matching handler, and commits the entry only after the handler succeeds.
- *
- * **Mental model**
- *
- * Local writes are command-like: encode the payload, derive the primary key, run
- * the handler, then commit the journal entry. Remote replay is journal-like:
- * entries are decoded with the same schemas, conflict entries are supplied to
- * handlers, optional compaction can rewrite imported entries, and reactivity keys
- * are invalidated after successful handling.
- *
- * **Common tasks**
- *
- * Use `schema` to combine event groups, `layer` or `layerEventLog` to install
- * the runtime, `group` to register required handlers, `groupCompaction` to
- * collapse remote history before replay, and `groupReactivity` to invalidate
- * projections keyed by event primary key.
- *
- * **Gotchas**
- *
- * Remote synchronization depends on the current `Identity` and `CurrentStoreId`.
- * Keep both stable for replicas that should share a log, and provide handlers for
- * every event tag before writing through a client.
+ * `EventLog` combines event groups, handlers, a journal, local identity,
+ * optional remote replicas, and reactivity hooks. Writers send typed payloads
+ * through a client; the matching handler runs first, and the journal entry is
+ * committed only after the handler succeeds. This module also contains the
+ * layers and helpers needed to assemble that runtime.
  *
  * @since 4.0.0
  */
@@ -66,7 +44,7 @@ import type { EventLogRemote } from "./EventLogRemote.ts"
  * only when the handler succeeds, and exposes access to the underlying journal
  * entries and destroy operation.
  *
- * @category tags
+ * @category services
  * @since 4.0.0
  */
 export class EventLog extends Context.Service<EventLog, {
@@ -876,9 +854,10 @@ const make = Effect.gen(function*() {
         Effect.scoped,
         Effect.catchCause(Effect.logError),
         Effect.repeat(
-          Schedule.exponential(200, 1.5).pipe(
-            Schedule.either(Schedule.spaced({ seconds: 10 }))
-          )
+          Schedule.min([
+            Schedule.exponential(200, 1.5),
+            Schedule.spaced({ seconds: 10 })
+          ])
         ),
         Effect.annotateLogs({
           service: "EventLog",
@@ -978,9 +957,9 @@ export const layerEventLog: Layer.Layer<EventLog | Registry, never, EventJournal
  *
  * **When to use**
  *
- * Use when an application has an `EventLogSchema` and event-group handler layer
- * and wants one layer that installs the shared `EventLog` runtime and registers
- * the handlers for typed writes.
+ * Use when you need one layer that installs the shared `EventLog` runtime for
+ * an `EventLogSchema` and registers an event-group handler layer for typed
+ * writes.
  *
  * **Details**
  *

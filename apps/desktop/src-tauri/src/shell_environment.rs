@@ -1,4 +1,4 @@
-#[cfg(any(unix, test))]
+#[cfg(unix)]
 use std::{
     collections::HashSet,
     ffi::{OsStr, OsString},
@@ -38,6 +38,7 @@ const PATH_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(unix)]
 const PATH_PROBE_OUTPUT_LIMIT: usize = 256 * 1024;
 
+#[cfg(unix)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PathHydrationFailure {
     ShellUnavailable,
@@ -52,6 +53,7 @@ pub(crate) enum PathHydrationFailure {
     InvalidPath,
 }
 
+#[cfg(unix)]
 impl PathHydrationFailure {
     fn category(self) -> &'static str {
         match self {
@@ -71,17 +73,25 @@ impl PathHydrationFailure {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PathHydrationReport {
-    Applied { added_segments: usize },
-    Unchanged { reason: PathHydrationFailure },
+    #[cfg(unix)]
+    Applied {
+        added_segments: usize,
+    },
+    #[cfg(unix)]
+    Unchanged {
+        reason: PathHydrationFailure,
+    },
     Skipped,
 }
 
 impl PathHydrationReport {
     pub(crate) fn record(self) {
         match self {
+            #[cfg(unix)]
             Self::Applied { added_segments } => {
                 tracing::info!(added_segments, "hydrated desktop PATH from the login shell");
             }
+            #[cfg(unix)]
             Self::Unchanged { reason } => {
                 tracing::warn!(
                     reason = reason.category(),
@@ -129,7 +139,7 @@ enum PosixPlatform {
     Linux,
 }
 
-#[cfg(any(unix, test))]
+#[cfg(unix)]
 #[derive(Debug, Eq, PartialEq)]
 struct PreparedPath {
     value: OsString,
@@ -222,7 +232,7 @@ fn trim_ascii_whitespace(bytes: &[u8]) -> &[u8] {
     &bytes[start..end]
 }
 
-#[cfg(any(unix, test))]
+#[cfg(unix)]
 fn merge_path_values(
     shell_path: &OsStr,
     inherited_path: Option<&OsStr>,
@@ -499,22 +509,18 @@ fn hydrate_posix_path(platform: PosixPlatform) -> PathHydrationReport {
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
-    use std::ffi::{OsStr, OsString};
-    use std::path::{Path, PathBuf};
-    #[cfg(unix)]
     use std::{
+        ffi::{OsStr, OsString},
+        path::{Path, PathBuf},
         process::Command,
         time::{Duration, Instant},
     };
 
-    use super::{
-        DesktopPlatform, PathHydrationFailure, PlatformAction, PosixPlatform, merge_path_values,
-        platform_action,
-    };
+    use super::{DesktopPlatform, PlatformAction, PosixPlatform, platform_action};
     #[cfg(unix)]
     use super::{
-        parse_captured_path, probe_shell_path_with_command, probe_shell_path_with_command_and_pid,
-        select_shell,
+        PathHydrationFailure, merge_path_values, parse_captured_path,
+        probe_shell_path_with_command, probe_shell_path_with_command_and_pid, select_shell,
     };
 
     #[cfg(unix)]
@@ -567,6 +573,7 @@ __T4CODE_PATH_END__\nlogout";
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn merges_shell_path_first_preserving_spaces_and_unique_inherited_entries() {
         let shell = std::env::join_paths([
@@ -653,6 +660,7 @@ __T4CODE_PATH_END__\nlogout";
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn hydration_failure_categories_remain_distinct() {
         let failures = [
@@ -787,6 +795,7 @@ printf '__T4CODE_PATH_START__/user/bin:/usr/bin__T4CODE_PATH_END__'",
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn preparing_a_merged_path_does_not_mutate_the_process_environment() {
         let before = std::env::var_os("PATH");

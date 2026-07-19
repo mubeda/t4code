@@ -23,7 +23,10 @@
     "test:coverage": "vp run test:coverage:ts && vp run test:coverage:rust",
     "test:coverage:ts": "vp test --coverage",
     "test:coverage:rust": "node scripts/check-rust-coverage.ts",
+    "check:dependency-ledger": "node scripts/check-dependency-upgrade-ledger.ts",
     "test:desktop": "vp run --filter @t4code/desktop test",
+    "test:ui:desktop": "vp run --filter @t4code/desktop test:ui",
+    "test:ui:desktop:build": "vp run --filter @t4code/desktop test:ui:build",
     "fmt": "vp fmt",
     "fmt:check": "vp fmt --check",
     "build:contracts": "vp run --filter @t4code/contracts build",
@@ -41,18 +44,17 @@
     "sync:repos": "node scripts/sync-reference-repos.ts"
   },
   "devDependencies": {
-    "@babel/plugin-transform-react-jsx": "7.28.6",
     "@effect/tsgo": "catalog:",
-    "@oxlint/plugins": "^1.63.0",
+    "@oxlint/plugins": "^1.74.0",
     "@types/node": "catalog:",
-    "@typescript/native-preview": "catalog:",
-    "@vitest/coverage-v8": "4.1.9",
+    "@vitest/coverage-v8": "4.1.10",
+    "typescript": "catalog:",
     "vite-plus": "catalog:"
   },
   "engines": {
-    "node": "^24.13.1"
+    "node": "26.5.0"
   },
-  "packageManager": "pnpm@10.24.0",
+  "packageManager": "pnpm@11.15.0",
   "msw": {
     "workerDirectory": [
       "apps/web/public"

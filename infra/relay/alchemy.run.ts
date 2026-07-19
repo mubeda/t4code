@@ -10,7 +10,7 @@ import * as Planetscale from "alchemy/Planetscale";
 import * as RelayDb from "./src/db.ts";
 import { RelayObservability } from "./src/observability.ts";
 import { ManagedEndpointZone, RelayApiZone } from "./src/zone.ts";
-import Api from "./src/worker.ts";
+import ApiLive, { Api } from "./src/worker.ts";
 
 export default Alchemy.Stack(
   "T4CodeRelay",
@@ -26,8 +26,8 @@ export default Alchemy.Stack(
   Effect.gen(function* () {
     const db = yield* RelayDb.PlanetscaleDatabase;
     const hyperdrive = yield* RelayDb.RelayHyperdrive;
-    const managedEndpointZone = yield* ManagedEndpointZone.pipe(Effect.orDie);
-    const relayApiZone = yield* RelayApiZone.pipe(Effect.orDie);
+    const managedEndpointZone = yield* ManagedEndpointZone;
+    const relayApiZone = yield* RelayApiZone;
     const observability = yield* RelayObservability;
     const api = yield* Api;
 
@@ -43,5 +43,5 @@ export default Alchemy.Stack(
       clientTracingDataset: observability.traces.name,
       clientTracingToken: observability.clientIngestToken.token,
     };
-  }),
+  }).pipe(Effect.provide(ApiLive)),
 );

@@ -404,4 +404,40 @@ mod tests {
             std::fs::set_permissions(&protected_shadow, permissions).unwrap();
         }
     }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_junctions_create_resolve_delete_and_report_bounded_errors() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let target = temporary.path().join("target");
+        let link = temporary.path().join("link");
+        std::fs::create_dir(&target).expect("target directory");
+
+        create_symlink(&target, &link).expect("create junction");
+        assert!(junction::exists(&link).expect("inspect junction"));
+        assert_eq!(
+            junction::get_target(&link)
+                .expect("junction target")
+                .canonicalize()
+                .expect("canonical target"),
+            target.canonicalize().expect("canonical fixture")
+        );
+        junction::delete(&link).expect("delete junction");
+        assert!(link.exists());
+        assert!(junction::get_target(&link).is_err());
+        assert!(target.exists());
+
+        let missing_parent_link = temporary.path().join("missing").join("link");
+        let error = ensure_shared_link(&target, &missing_parent_link)
+            .await
+            .expect_err("missing parent should fail");
+        assert!(matches!(
+            error,
+            CodexHomeLayoutError::FileSystem {
+                operation: "symlink",
+                path,
+                ..
+            } if path == missing_parent_link
+        ));
+    }
 }

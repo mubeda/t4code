@@ -1340,7 +1340,7 @@ fn dpop_proof(
     issued_at: i64,
     access_token: Option<&str>,
 ) -> String {
-    let point = signing_key.verifying_key().to_encoded_point(false);
+    let point = signing_key.verifying_key().to_sec1_point(false);
     let header = json!({
         "typ": "dpop+jwt",
         "alg": "ES256",

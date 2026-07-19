@@ -134,7 +134,7 @@ export const purePlugin = (
           markSideEffectFreeOpt &&
           !isEntry &&
           isSideEffectFree(info.sideEffects);
-        const annotated = annotateModule(code, id);
+        const annotated = annotateModuleCached(code, id);
         if (annotated === null) {
           return markSideEffectFree ? { code, moduleSideEffects: false } : null;
         }
@@ -314,6 +314,11 @@ export async function resolvePackageInfo(
   let foundInfo: PackageInfo | null = null;
   // Hard ceiling to prevent runaway walks on weird ids.
   for (let i = 0; i < 64; i++) {
+    // Never walk above a `node_modules` boundary: the owning package of a
+    // `node_modules/<pkg>/...` id lives at or below `<pkg>`. Climbing past
+    // it can latch onto an unrelated package.json higher up (e.g. a stray
+    // one at the filesystem root) and poison the shared-ancestor cache.
+    if (path.basename(dir) === "node_modules") break;
     const cached = cache.get(dir);
     if (cached !== undefined) {
       cacheDescendants(cache, visited, dir, cached);
@@ -348,8 +353,16 @@ export async function resolvePackageInfo(
     dir = parent;
   }
   if (foundInfo !== null && foundRoot !== null) {
-    cacheDescendants(cache, visited, foundRoot, foundInfo);
-    return foundInfo;
+    // A nameless package.json (e.g. a nested `dist/package.json` holding
+    // only `{"type": "module"}`, or a stray file high up the tree) can't be
+    // matched against the configured patterns — prefer the path-derived
+    // `node_modules/<pkg>` name when one exists.
+    const info =
+      foundInfo.name === null && fastName !== null
+        ? { name: fastName, sideEffects: foundInfo.sideEffects }
+        : foundInfo;
+    cacheDescendants(cache, visited, foundRoot, info);
+    return info;
   }
   // No `package.json` found on disk. If we have a path-derived name
   // (from a `node_modules/<pkg>/...` segment), use it with no
@@ -419,6 +432,39 @@ interface AnnotatedModule {
   readonly code: string;
   readonly map: ReturnType<MagicString["generateMap"]>;
 }
+
+/**
+ * Process-wide memo of {@link annotateModule} results keyed by module id.
+ *
+ * Parsing with oxc + generating the sourcemap dominates bundling CPU (it
+ * showed up as ~60% of the main-thread profile of a test run), and the same
+ * modules — effect/alchemy dist files — are re-transformed for EVERY bundle
+ * built in the process. The single-process test runner builds dozens of
+ * worker bundles per run, so this cache eliminates all repeat parses. The
+ * stored `code` is compared on lookup, so a changed file (e.g. dev watch
+ * mode) never serves a stale result.
+ */
+const annotateCache = new Map<
+  string,
+  { readonly code: string; readonly result: AnnotatedModule | null }
+>();
+const ANNOTATE_CACHE_MAX = 10_000;
+
+const annotateModuleCached = (
+  code: string,
+  filename: string,
+): AnnotatedModule | null => {
+  const cached = annotateCache.get(filename);
+  if (cached !== undefined && cached.code === code) {
+    return cached.result;
+  }
+  const result = annotateModule(code, filename);
+  if (annotateCache.size >= ANNOTATE_CACHE_MAX) {
+    annotateCache.clear();
+  }
+  annotateCache.set(filename, { code, result });
+  return result;
+};
 
 /**
  * Parses `code` and inserts `/*#__PURE__*\/` before every top-level

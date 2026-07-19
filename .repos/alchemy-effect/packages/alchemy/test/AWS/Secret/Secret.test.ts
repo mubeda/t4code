@@ -1,8 +1,8 @@
 import * as AWS from "@/AWS";
 import * as Alchemy from "@/index.ts";
 import * as State from "@/State";
-import * as Test from "@/Test/Vitest";
-import { expect } from "@effect/vitest";
+import * as Test from "@/Test/Alchemy";
+import { expect } from "alchemy-test";
 import * as Effect from "effect/Effect";
 import { MinimumLogLevel } from "effect/References";
 import * as Schedule from "effect/Schedule";
@@ -55,9 +55,10 @@ afterAll.skipIf(!!process.env.NO_DESTROY)(destroy(Stack), { timeout: 60_000 });
 // well over a minute on a fresh deploy under parallel load. Budget a
 // generous retry window for the very first request, then reuse the
 // warm URL for subsequent calls.
-const readinessSchedule = Schedule.fixed("2 seconds").pipe(
-  Schedule.both(Schedule.recurs(20)),
-);
+const readinessSchedule = Schedule.max([
+  Schedule.fixed("2 seconds"),
+  Schedule.recurs(20),
+]);
 
 const getJson = (url: string) =>
   HttpClient.get(url).pipe(

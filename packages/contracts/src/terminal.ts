@@ -20,7 +20,8 @@ const TerminalEnvKeySchema = Schema.String.check(
   Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/),
 ).check(Schema.isMaxLength(128));
 const TerminalEnvValueSchema = Schema.String.check(Schema.isMaxLength(8_192));
-const TerminalEnvSchema = Schema.Record(TerminalEnvKeySchema, TerminalEnvValueSchema).check(
+const TerminalEnvSchema = Schema.Record(Schema.String, TerminalEnvValueSchema).check(
+  Schema.isPropertyNames(TerminalEnvKeySchema),
   Schema.isMaxProperties(128),
 );
 

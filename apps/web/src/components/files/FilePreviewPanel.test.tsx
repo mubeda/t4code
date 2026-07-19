@@ -200,7 +200,7 @@ vi.mock("@pierre/diffs/editor", () => ({
 }));
 
 vi.mock("@pierre/diffs/react", () => ({
-  EditorProvider: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+  EditProvider: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
   Virtualizer: ({ children, className }: { children?: React.ReactNode; className?: string }) => (
     <div className={className}>{children}</div>
   ),

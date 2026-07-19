@@ -1,7 +1,9 @@
 import * as AWS from "@/AWS";
-import * as Test from "@/Test/Vitest";
+import { Subscription } from "@/AWS/SNS";
+import * as Provider from "@/Provider";
+import * as Test from "@/Test/Alchemy";
 import * as SNS from "@distilled.cloud/aws/sns";
-import { expect } from "@effect/vitest";
+import { expect } from "alchemy-test";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
@@ -50,6 +52,47 @@ test.provider(
       );
       expect(attributes.Attributes?.Protocol).toBe("lambda");
       expect(attributes.Attributes?.TopicArn).toBe(deployed.topic.topicArn);
+
+      yield* stack.destroy();
+      yield* assertSubscriptionDeleted(deployed.subscription.subscriptionArn);
+    }),
+  { timeout: 180_000 },
+);
+
+// Canonical `list()` test (AWS account/region-scoped collection): deploy a
+// topic + queue + SQS subscription, resolve the provider from context via the
+// typed `findProvider`, call `list()`, and assert the deployed subscription
+// appears in the exhaustively-paginated result.
+test.provider(
+  "list enumerates the deployed subscription",
+  (stack) =>
+    Effect.gen(function* () {
+      yield* stack.destroy();
+
+      const deployed = yield* stack.deploy(
+        Effect.gen(function* () {
+          const topic = yield* AWS.SNS.Topic("ListTopic");
+          const queue = yield* AWS.SQS.Queue("ListQueue");
+          const subscription = yield* Subscription("ListSubscription", {
+            topicArn: topic.topicArn,
+            protocol: "sqs",
+            endpoint: queue.queueArn,
+            returnSubscriptionArn: true,
+          });
+          return { subscription };
+        }),
+      );
+
+      expect(deployed.subscription.subscriptionArn).toBeDefined();
+
+      const provider = yield* Provider.findProvider(Subscription);
+      const all = yield* provider.list();
+
+      expect(
+        all.some(
+          (s) => s.subscriptionArn === deployed.subscription.subscriptionArn,
+        ),
+      ).toBe(true);
 
       yield* stack.destroy();
       yield* assertSubscriptionDeleted(deployed.subscription.subscriptionArn);

@@ -1,7 +1,8 @@
 import * as AWS from "@/AWS";
-import * as Test from "@/Test/Vitest";
+import * as Provider from "@/Provider";
+import * as Test from "@/Test/Alchemy";
 import * as Lambda from "@distilled.cloud/aws/lambda";
-import { expect } from "@effect/vitest";
+import { expect } from "alchemy-test";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import { TestFunction, TestFunctionLive } from "./handler.ts";
@@ -43,6 +44,43 @@ test.provider(
   { timeout: 180_000 },
 );
 
+test.provider(
+  "list enumerates the deployed permission",
+  (stack) =>
+    Effect.gen(function* () {
+      yield* stack.destroy();
+
+      const deployed = yield* stack.deploy(
+        Effect.gen(function* () {
+          const fn = yield* TestFunction;
+          const permission = yield* AWS.Lambda.Permission("ListPermission", {
+            action: "lambda:InvokeFunction",
+            functionName: fn.functionName,
+            principal: "*",
+            invokedViaFunctionUrl: true,
+          });
+
+          return { fn, permission };
+        }).pipe(Effect.provide(TestFunctionLive)),
+      );
+
+      const provider = yield* Provider.findProvider(AWS.Lambda.Permission);
+      const all = yield* provider.list();
+
+      expect(
+        all.some(
+          (p) =>
+            p.statementId === deployed.permission.statementId &&
+            p.functionName === deployed.fn.functionName,
+        ),
+      ).toBe(true);
+    }).pipe(
+      Effect.tap(() => stack.destroy()),
+      Effect.onError(() => stack.destroy().pipe(Effect.ignore)),
+    ),
+  { timeout: 180_000 },
+);
+
 const getPolicyStatement = Effect.fn(function* (
   functionName: string,
   statementId: string,
@@ -70,9 +108,7 @@ const getPolicyStatement = Effect.fn(function* (
       }),
     ),
     Effect.retry({
-      schedule: Schedule.exponential(500).pipe(
-        Schedule.both(Schedule.recurs(10)),
-      ),
+      schedule: Schedule.max([Schedule.exponential(500), Schedule.recurs(10)]),
     }),
   );
 });

@@ -76,6 +76,7 @@ import { createTerminalOutputSink } from "./terminalOutputSink";
 import { loadTerminalWebglAddon } from "./terminalWebgl";
 import { useAtomCommand } from "../state/use-atom-command";
 import { usePrimarySettings } from "../hooks/useSettings";
+import { ensureBundledTerminalFontLoaded, resolveTerminalFontFamily } from "../lib/terminalFont";
 
 const MIN_DRAWER_HEIGHT = 180;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
@@ -360,8 +361,21 @@ export function runtimeEnvSignature(runtimeEnv: Record<string, string> | undefin
   );
 }
 
+export function resolveTerminalDocumentVisibility(
+  visibilityState: DocumentVisibilityState,
+  desktopUiAutomation: boolean,
+): boolean {
+  return desktopUiAutomation || visibilityState === "visible";
+}
+
 function isDocumentVisible(): boolean {
-  return typeof document === "undefined" || document.visibilityState === "visible";
+  return (
+    typeof document === "undefined" ||
+    resolveTerminalDocumentVisibility(
+      document.visibilityState,
+      import.meta.env.VITE_T4CODE_DESKTOP_E2E === "1",
+    )
+  );
 }
 
 export function normalizeComputedColor(value: string | null | undefined, fallback: string): string {
@@ -606,6 +620,12 @@ export function TerminalViewport({
   const [documentVisible, setDocumentVisible] = useState(isDocumentVisible);
   const shouldRender = visible && isDocumentVisible() && documentVisible;
   const webglEnabled = usePrimarySettings((settings) => settings.terminal.webglEnabled);
+  const terminalFontPreference = usePrimarySettings((settings) => settings.terminalFontPreference);
+  const terminalFontFamily = useMemo(
+    () => resolveTerminalFontFamily(terminalFontPreference),
+    [terminalFontPreference],
+  );
+  const readTerminalFontFamily = useEffectEvent(() => terminalFontFamily);
   const runtimeEnvKey = useMemo(() => runtimeEnvSignature(runtimeEnv), [runtimeEnv]);
   const recordWebglDiagnosticOnce = useCallback(() => {
     if (webglDiagnosticRecordedRef.current) return;
@@ -683,7 +703,7 @@ export function TerminalViewport({
     if (!visible) return;
 
     const updateDocumentVisibility = () => {
-      setDocumentVisible(document.visibilityState === "visible");
+      setDocumentVisible(isDocumentVisible());
     };
     updateDocumentVisibility();
     document.addEventListener("visibilitychange", updateDocumentVisibility);
@@ -708,8 +728,7 @@ export function TerminalViewport({
       lineHeight: 1,
       fontSize: 12,
       scrollback: 5_000,
-      fontFamily:
-        '"SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace',
+      fontFamily: readTerminalFontFamily(),
       theme: terminalThemeFromApp(mount),
     });
     terminal.loadAddon(fitAddon);
@@ -1075,6 +1094,40 @@ export function TerminalViewport({
     transcriptRuntime,
     worktreePath,
   ]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!shouldRender || terminal === null || fitAddon === null) return;
+
+    terminal.options.fontFamily = terminalFontFamily;
+    const rendererGeneration = resizeRendererGenerationRef.current;
+    let cancelled = false;
+
+    void ensureBundledTerminalFontLoaded().then(() => {
+      if (
+        cancelled ||
+        resizeRendererGenerationRef.current !== rendererGeneration ||
+        terminalRef.current !== terminal ||
+        fitAddonRef.current !== fitAddon
+      ) {
+        return;
+      }
+
+      const wasAtBottom = terminal.buffer.active.viewportY >= terminal.buffer.active.baseY;
+      terminal.clearTextureAtlas();
+      fitTerminalSafely(fitAddon);
+      if (wasAtBottom) {
+        terminal.scrollToBottom();
+      }
+      terminal.refresh(0, terminal.rows - 1);
+      requestTerminalResize(rendererGeneration, terminal.cols, terminal.rows);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [shouldRender, terminalFontFamily]);
 
   useEffect(() => {
     const terminal = terminalRef.current;

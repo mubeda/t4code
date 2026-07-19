@@ -168,6 +168,21 @@ describe("client settings hydration", () => {
     expect(useClientSettingsHydrated()).toBe(true);
   });
 
+  it("schema-recovers a malformed native terminal font without losing valid preferences", async () => {
+    h.persisted = {
+      wordWrap: false,
+      terminalFontPreference: { mode: "removed-preset" },
+    };
+
+    useClientSettings();
+    await flush();
+
+    expect(getClientSettings()).toMatchObject({
+      wordWrap: false,
+      terminalFontPreference: { mode: "bundled" },
+    });
+  });
+
   it("keeps defaults but still hydrates when persistence returns nothing", async () => {
     h.persisted = null;
     useClientSettingsHydrated();
@@ -333,5 +348,19 @@ describe("useUpdatePrimarySettings", () => {
     expect(h.persistServerSettings).not.toHaveBeenCalled();
     expect(h.setClientSettings).toHaveBeenCalledTimes(1);
     expect(getClientSettings()).toMatchObject({ wordWrap: false });
+  });
+
+  it("persists terminal font preferences locally without a server RPC", () => {
+    h.primaryEnv = { environmentId };
+
+    useUpdatePrimarySettings()({
+      terminalFontPreference: { mode: "system" },
+    } as never);
+
+    expect(h.persistServerSettings).not.toHaveBeenCalled();
+    expect(h.setClientSettings).toHaveBeenCalledTimes(1);
+    expect(getClientSettings()).toMatchObject({
+      terminalFontPreference: { mode: "system" },
+    });
   });
 });
