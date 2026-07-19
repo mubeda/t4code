@@ -224,4 +224,25 @@ describe("packaged desktop UI smoke contract", () => {
     expect(resolveStep?.run).toContain('find "$GITHUB_WORKSPACE/target/release/bundle/appimage"');
     expect(resolveStep?.run).toContain('echo "T4CODE_E2E_APP_PATH=$app_path"');
   });
+
+  it("uploads native packages and only bounded UI evidence", () => {
+    const { workflow } = readWorkflow(DESKTOP_UI_WORKFLOW_PATH);
+    const smoke = requireJob(workflow, "desktop_ui_smoke");
+    const packageStep = smoke.steps?.find(
+      (step) => step.name === "Upload packaged desktop application",
+    );
+    const evidenceStep = smoke.steps?.find(
+      (step) => step.name === "Upload desktop UI screenshots and logs",
+    );
+    const packagePaths = String(packageStep?.with?.path);
+    const evidencePaths = String(evidenceStep?.with?.path);
+
+    expect(packageStep?.if).toBe("always()");
+    expect(packagePaths).toContain("target/release/bundle/appimage/*.AppImage");
+    expect(packagePaths).toContain("target/release/bundle/nsis/*.exe");
+    expect(packagePaths).toContain("target/release/bundle/dmg/*.dmg");
+    expect(evidencePaths).toContain("/*.png");
+    expect(evidencePaths).toContain("/*.log");
+    expect(evidencePaths).not.toContain("/state/");
+  });
 });
