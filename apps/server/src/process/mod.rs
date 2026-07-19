@@ -12,7 +12,7 @@ pub use background::{
     configure_background_command, configure_background_std_command,
     configure_supervised_background_command_wrap,
 };
-pub(crate) use executable::locate_executable;
+pub(crate) use executable::{launch_executable_extensions, locate_executable, wrap_launch_program};
 pub use runner::{
     OutputMode, ProcessError, ProcessRunInput, ProcessRunOutput, ProcessRunner, TimeoutBehavior,
 };

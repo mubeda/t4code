@@ -12,7 +12,9 @@ use std::{
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tokio::sync::{broadcast, watch};
 
-use crate::process::{Platform, locate_executable};
+use crate::process::{
+    Platform, launch_executable_extensions, locate_executable, wrap_launch_program,
+};
 
 #[cfg(windows)]
 use crate::process::WindowsJob;
@@ -152,28 +154,35 @@ impl PtyBackend for PortablePtyBackend {
 }
 
 fn build_pty_command(input: &PtySpawnInput) -> Result<CommandBuilder, String> {
-    let Some(executable) = resolve_pty_executable(input) else {
+    build_pty_command_on(Platform::current(), input)
+}
+
+fn build_pty_command_on(
+    platform: Platform,
+    input: &PtySpawnInput,
+) -> Result<CommandBuilder, String> {
+    let Some(executable) =
+        resolve_pty_executable_on(platform, &input.executable, &input.cwd, &input.env)
+    else {
         return Err(format!(
             "terminal executable was not found: {}",
             input.executable
         ));
     };
-    let mut command = CommandBuilder::new(executable);
+    let command_processor = input
+        .env
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("ComSpec"))
+        .map(|(_, value)| OsStr::new(value));
+    let launch = wrap_launch_program(platform, &executable, command_processor);
+    let mut command = CommandBuilder::new(launch.program);
+    command.args(launch.prefix_args);
     command.args(&input.args);
     command.cwd(&input.cwd);
     for (key, value) in &input.env {
         command.env(key, value);
     }
     Ok(command)
-}
-
-fn resolve_pty_executable(input: &PtySpawnInput) -> Option<PathBuf> {
-    resolve_pty_executable_on(
-        Platform::current(),
-        &input.executable,
-        &input.cwd,
-        &input.env,
-    )
 }
 
 fn resolve_pty_executable_on(
@@ -188,31 +197,16 @@ fn resolve_pty_executable_on(
         .map(|(_, value)| value.clone())
         .or_else(|| env::var("PATH").ok());
 
-    let extensions = if platform == Platform::Windows {
-        let path_extensions = overrides
+    let path_extensions = if platform == Platform::Windows {
+        overrides
             .iter()
             .find(|(key, _)| key.eq_ignore_ascii_case("PATHEXT"))
             .map(|(_, value)| value.clone())
             .or_else(|| env::var("PATHEXT").ok())
-            .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_owned());
-        std::iter::once(String::new())
-            .chain(
-                path_extensions
-                    .split(';')
-                    .map(str::trim)
-                    .filter(|extension| !extension.is_empty())
-                    .map(|extension| {
-                        if extension.starts_with('.') {
-                            extension.to_owned()
-                        } else {
-                            format!(".{extension}")
-                        }
-                    }),
-            )
-            .collect::<Vec<_>>()
     } else {
-        vec![String::new()]
+        None
     };
+    let extensions = launch_executable_extensions(platform, path_extensions.as_deref());
 
     locate_executable(
         command,
@@ -458,7 +452,7 @@ mod tests {
                 .to_string_lossy()
                 .into_owned(),
         );
-        environment.insert("PATHEXT".to_owned(), ".com;.exe;.bat;.cmd".to_owned());
+        environment.insert("PATHEXT".to_owned(), ".COM;.EXE;.BAT;.CMD".to_owned());
 
         assert_eq!(
             resolve_pty_executable_on(Platform::Windows, "claude", directory.path(), &environment,),
@@ -468,6 +462,112 @@ mod tests {
             resolve_pty_executable_on(Platform::Unix, "claude", directory.path(), &environment,),
             None
         );
+    }
+
+    #[test]
+    fn windows_executable_discovery_includes_powershell_shims_when_pathext_omits_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("claude.ps1");
+        std::fs::write(&executable, b"fixture").unwrap();
+        let environment = BTreeMap::from([
+            (
+                "Path".to_owned(),
+                std::env::join_paths([directory.path()])
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            ("PATHEXT".to_owned(), ".COM;.EXE;.BAT;.CMD".to_owned()),
+        ]);
+
+        assert_eq!(
+            resolve_pty_executable_on(Platform::Windows, "claude", directory.path(), &environment),
+            Some(executable)
+        );
+    }
+
+    #[test]
+    fn windows_pty_launch_wraps_cmd_and_bat_case_insensitively() {
+        let directory = tempfile::tempdir().unwrap();
+        let command_processor = directory.path().join("custom-cmd.exe");
+        let arguments = vec![
+            "--flag".to_owned(),
+            "value with spaces".to_owned(),
+            "&literal".to_owned(),
+            String::new(),
+        ];
+
+        for extension in ["CmD", "bAt"] {
+            let executable = directory.path().join(format!("provider.{extension}"));
+            std::fs::write(&executable, b"fixture").unwrap();
+            let input = PtySpawnInput {
+                executable: executable.to_string_lossy().into_owned(),
+                args: arguments.clone(),
+                cwd: directory.path().to_path_buf(),
+                cols: 80,
+                rows: 24,
+                env: BTreeMap::from([(
+                    "ComSpec".to_owned(),
+                    command_processor.to_string_lossy().into_owned(),
+                )]),
+            };
+
+            let command = build_pty_command_on(Platform::Windows, &input).unwrap();
+            let expected = std::iter::once(command_processor.clone().into_os_string())
+                .chain(["/d", "/s", "/c"].map(std::ffi::OsString::from))
+                .chain(std::iter::once(executable.into_os_string()))
+                .chain(arguments.iter().map(std::ffi::OsString::from))
+                .collect::<Vec<_>>();
+            assert_eq!(command.get_argv(), &expected);
+        }
+    }
+
+    #[test]
+    fn windows_pty_launch_discovers_and_wraps_powershell_shims() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("provider.ps1");
+        std::fs::write(&executable, b"fixture").unwrap();
+        let arguments = vec![
+            "--flag".to_owned(),
+            "value with spaces".to_owned(),
+            "$literal".to_owned(),
+            String::new(),
+        ];
+        let input = PtySpawnInput {
+            executable: "provider".to_owned(),
+            args: arguments.clone(),
+            cwd: directory.path().to_path_buf(),
+            cols: 80,
+            rows: 24,
+            env: BTreeMap::from([
+                (
+                    "Path".to_owned(),
+                    std::env::join_paths([directory.path()])
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                ("PATHEXT".to_owned(), ".COM;.EXE;.BAT;.CMD".to_owned()),
+            ]),
+        };
+
+        let command = build_pty_command_on(Platform::Windows, &input).unwrap();
+        let expected = std::iter::once(std::ffi::OsString::from("powershell.exe"))
+            .chain(
+                [
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                ]
+                .map(std::ffi::OsString::from),
+            )
+            .chain(std::iter::once(executable.into_os_string()))
+            .chain(arguments.iter().map(std::ffi::OsString::from))
+            .collect::<Vec<_>>();
+        assert_eq!(command.get_argv(), &expected);
     }
 
     #[test]
@@ -486,7 +586,7 @@ mod tests {
             env: BTreeMap::new(),
         };
 
-        let command = build_pty_command(&input).unwrap();
+        let command = build_pty_command_on(Platform::Unix, &input).unwrap();
         assert_eq!(
             command.get_argv(),
             &[
@@ -552,6 +652,68 @@ mod tests {
             })
             .unwrap();
         assert!(process.pid() > 0);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn portable_backend_runs_windows_command_and_powershell_shims() {
+        async fn assert_shim_output(executable: &Path, arguments: &[String], marker: &str) {
+            let process = PortablePtyBackend
+                .spawn(&PtySpawnInput {
+                    executable: executable.to_string_lossy().into_owned(),
+                    args: arguments.to_vec(),
+                    cwd: executable.parent().unwrap().to_path_buf(),
+                    cols: 80,
+                    rows: 24,
+                    env: BTreeMap::new(),
+                })
+                .unwrap();
+            let mut output = process.subscribe_output();
+            let mut exit = process.subscribe_exit();
+            let text = tokio::time::timeout(Duration::from_secs(10), async {
+                let mut text = String::new();
+                while !text.contains(marker) {
+                    text.push_str(&output.recv().await.unwrap());
+                }
+                text
+            })
+            .await
+            .unwrap();
+            assert!(text.contains(marker));
+            tokio::time::timeout(Duration::from_secs(10), exit.changed())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                exit.borrow().as_ref().and_then(|event| event.exit_code),
+                Some(0)
+            );
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let arguments = ["value with spaces".to_owned(), "&literal".to_owned()];
+        for extension in ["cmd", "bat"] {
+            let executable = directory.path().join(format!("provider.{extension}"));
+            std::fs::write(
+                &executable,
+                format!("@echo off\r\nping -n 2 127.0.0.1 >nul\r\necho {extension}:%~1:%~2\r\n"),
+            )
+            .unwrap();
+            assert_shim_output(
+                &executable,
+                &arguments,
+                &format!("{extension}:value with spaces:&literal"),
+            )
+            .await;
+        }
+
+        let powershell = directory.path().join("provider.ps1");
+        std::fs::write(
+            &powershell,
+            "Start-Sleep -Milliseconds 250\nWrite-Output \"ps1:$($args[0]):$($args[1])\"\n",
+        )
+        .unwrap();
+        assert_shim_output(&powershell, &arguments, "ps1:value with spaces:&literal").await;
     }
 
     #[tokio::test]

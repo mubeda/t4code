@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
@@ -18,7 +18,10 @@ use crate::{
         load_snapshot,
     },
     persistence::{ProviderSessionRuntime, Repositories},
-    process::{configure_supervised_background_command_wrap, locate_executable},
+    process::{
+        Platform, configure_supervised_background_command_wrap, launch_executable_extensions,
+        locate_executable, wrap_launch_program,
+    },
     production::{
         connect_mcp::ConnectMcpService, operational_logs::ProviderOperationalLog,
         orchestration_effects::process_compatible_path,
@@ -1461,63 +1464,18 @@ pub(crate) fn resolve_provider_executable_in_path(
         return Some(path);
     }
     let cwd = std::env::current_dir().ok();
-    locate_executable(
-        input,
-        cwd.as_deref(),
-        search_path,
-        provider_executable_extensions(),
-    )
+    let extensions = launch_executable_extensions(Platform::current(), None);
+    locate_executable(input, cwd.as_deref(), search_path, &extensions)
 }
 
-#[cfg(windows)]
-const WINDOWS_PROVIDER_EXECUTABLE_EXTENSIONS: &[&str] = &["exe", "com", "cmd", "bat", "ps1"];
-
-#[cfg(windows)]
-fn provider_executable_extensions() -> &'static [&'static str] {
-    WINDOWS_PROVIDER_EXECUTABLE_EXTENSIONS
-}
-
-#[cfg(not(windows))]
-fn provider_executable_extensions() -> &'static [&'static str] {
-    &[""]
-}
-
-pub(crate) fn provider_launch_program(executable: &Path) -> (PathBuf, Vec<String>) {
-    let extension = executable
-        .extension()
-        .and_then(|extension| extension.to_str());
-    if cfg!(windows) && extension.is_some_and(|extension| extension.eq_ignore_ascii_case("ps1")) {
-        return (
-            PathBuf::from("powershell.exe"),
-            vec![
-                "-NoLogo".to_owned(),
-                "-NoProfile".to_owned(),
-                "-NonInteractive".to_owned(),
-                "-ExecutionPolicy".to_owned(),
-                "Bypass".to_owned(),
-                "-File".to_owned(),
-                executable.to_string_lossy().into_owned(),
-            ],
-        );
-    }
-    if cfg!(windows)
-        && extension.is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
-        })
-    {
-        return (
-            std::env::var_os("ComSpec")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("cmd.exe")),
-            vec![
-                "/d".to_owned(),
-                "/s".to_owned(),
-                "/c".to_owned(),
-                executable.to_string_lossy().into_owned(),
-            ],
-        );
-    }
-    (executable.to_path_buf(), Vec::new())
+pub(crate) fn provider_launch_program(executable: &Path) -> (PathBuf, Vec<OsString>) {
+    let command_processor = std::env::var_os("ComSpec");
+    let launch = wrap_launch_program(
+        Platform::current(),
+        executable,
+        command_processor.as_deref(),
+    );
+    (launch.program, launch.prefix_args)
 }
 
 async fn kill_child(child: &SharedChild) {
@@ -4141,6 +4099,7 @@ done
                 "-File",
                 "provider.ps1",
             ]
+            .map(std::ffi::OsString::from)
         );
 
         let (program, args) = super::provider_launch_program(std::path::Path::new("provider.cmd"));
@@ -4150,7 +4109,10 @@ done
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| std::path::PathBuf::from("cmd.exe"))
         );
-        assert_eq!(args, ["/d", "/s", "/c", "provider.cmd"]);
+        assert_eq!(
+            args,
+            ["/d", "/s", "/c", "provider.cmd"].map(std::ffi::OsString::from)
+        );
     }
 
     #[tokio::test]
@@ -4211,19 +4173,24 @@ done
     #[cfg(not(windows))]
     #[test]
     fn non_windows_executable_resolution_uses_exact_name() {
-        assert_eq!(super::provider_executable_extensions(), &[""]);
+        assert_eq!(
+            crate::process::launch_executable_extensions(crate::process::Platform::current(), None),
+            [""]
+        );
     }
 
     #[cfg(windows)]
     #[test]
     fn windows_executable_resolution_prefers_cmd_over_powershell_shims() {
-        let cmd_index = super::WINDOWS_PROVIDER_EXECUTABLE_EXTENSIONS
+        let extensions =
+            crate::process::launch_executable_extensions(crate::process::Platform::Windows, None);
+        let cmd_index = extensions
             .iter()
-            .position(|extension| *extension == "cmd")
+            .position(|extension| extension.eq_ignore_ascii_case(".cmd"))
             .expect("cmd extension");
-        let powershell_index = super::WINDOWS_PROVIDER_EXECUTABLE_EXTENSIONS
+        let powershell_index = extensions
             .iter()
-            .position(|extension| *extension == "ps1")
+            .position(|extension| extension.eq_ignore_ascii_case(".ps1"))
             .expect("PowerShell extension");
 
         assert!(cmd_index < powershell_index);

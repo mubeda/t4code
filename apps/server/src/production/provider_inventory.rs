@@ -828,7 +828,6 @@ async fn run_command(
     let (program, prefix_args) = provider_launch_program(executable);
     let process_args = prefix_args
         .into_iter()
-        .map(OsString::from)
         .chain(args.iter().map(OsString::from))
         .collect();
     let output = ProcessRunner
