@@ -69,55 +69,141 @@ const ui = vi.hoisted(() => {
   return registry;
 });
 
-const testState = vi.hoisted(() => ({
-  commands: {
-    writeFile: { label: "writeFile" },
-    openPreview: { label: "openPreview" },
-    createAssetUrl: { label: "createAssetUrl" },
-  },
-  writeFile: vi.fn<(input: unknown) => Promise<unknown>>(),
-  openPreview: vi.fn<(input: unknown) => Promise<unknown>>(),
-  createAssetUrl: vi.fn<(input: unknown) => Promise<unknown>>(),
-  openFileInPreview: vi.fn<(input: unknown) => Promise<{ _tag: string }>>(),
-  isBrowserPreviewFile: vi.fn<(path: string) => boolean>(),
-  isPreviewSupported: false,
-  fileQuery: { data: null, error: null, isPending: false, refresh: vi.fn() } as {
-    data: { relativePath: string; contents: string; byteLength: number; truncated: boolean } | null;
-    error: string | null;
-    isPending: boolean;
-    refresh: () => void;
-  },
-  getLocalStorageItem: vi.fn<(key: string) => unknown>(),
-  setLocalStorageItem: vi.fn<(key: string, value: unknown) => void>(),
-  primaryEnvironmentId: null as string | null,
-  environmentHttpBaseUrl: null as string | null,
-  wordWrap: true,
-  addReviewComment: vi.fn(),
-  removeReviewComment: vi.fn(),
-  setProjectFileQueryData: vi.fn(),
-  confirmProjectFileQueryData: vi.fn(),
-  getOptimisticProjectFileQueryData: vi.fn<() => { contents: string } | null>(),
-  installFileEditorDismissal: vi.fn<(input: unknown) => () => void>(),
-  toastAdd: vi.fn(),
-  coordinators: [] as Array<{
-    options: {
-      debounceMs: number;
-      persist: (contents: string) => Promise<unknown>;
-      onPendingChange: (pending: boolean) => void;
-      onConfirmed: (contents: string) => void;
-    };
-    change: ReturnType<typeof vi.fn>;
-    dispose: ReturnType<typeof vi.fn>;
-    flush: ReturnType<typeof vi.fn>;
-    hasPendingWork: ReturnType<typeof vi.fn>;
-  }>,
-  pendingWork: false,
-  flushResult: "saved" as string,
-  editors: [] as Array<{
-    options: { onChange: (file: { contents: string }, annotations: unknown) => void };
-    cleanUp: ReturnType<typeof vi.fn>;
-  }>,
-}));
+const testState = vi.hoisted(() => {
+  const state = {
+    sessionSnapshot: {
+      save: { phase: "clean", canSave: false, confirmedRevision: 0 },
+      canUndo: false,
+      canRedo: false,
+    },
+    session: null as null | {
+      relativePath: string;
+      cacheKey: string;
+      editor: {
+        options: {
+          onAttach?: () => void;
+          onChange: (file: { contents: string }, annotations?: unknown) => void;
+        };
+        canUndo: boolean;
+        canRedo: boolean;
+        undo: ReturnType<typeof vi.fn>;
+        redo: ReturnType<typeof vi.fn>;
+        cleanUp: ReturnType<typeof vi.fn>;
+      };
+      subscribe: (listener: () => void) => () => void;
+      getSnapshot: () => unknown;
+      flush: ReturnType<typeof vi.fn>;
+      undo: ReturnType<typeof vi.fn>;
+      redo: ReturnType<typeof vi.fn>;
+      setEditorChangeHandler: ReturnType<typeof vi.fn>;
+      changeOutsideEditor: ReturnType<typeof vi.fn>;
+    },
+    editingSessions: null as unknown as {
+      getOrCreate: ReturnType<typeof vi.fn>;
+      preparePathMutation: ReturnType<typeof vi.fn>;
+      reset: () => void;
+    },
+    sessionCreations: [] as string[],
+    commands: {
+      writeFile: { label: "writeFile" },
+      openPreview: { label: "openPreview" },
+      createAssetUrl: { label: "createAssetUrl" },
+    },
+    writeFile: vi.fn<(input: unknown) => Promise<unknown>>(),
+    openPreview: vi.fn<(input: unknown) => Promise<unknown>>(),
+    createAssetUrl: vi.fn<(input: unknown) => Promise<unknown>>(),
+    openFileInPreview: vi.fn<(input: unknown) => Promise<{ _tag: string }>>(),
+    isBrowserPreviewFile: vi.fn<(path: string) => boolean>(),
+    isPreviewSupported: false,
+    fileQuery: { data: null, error: null, isPending: false, refresh: vi.fn() } as {
+      data: {
+        relativePath: string;
+        contents: string;
+        byteLength: number;
+        truncated: boolean;
+      } | null;
+      error: string | null;
+      isPending: boolean;
+      refresh: () => void;
+    },
+    getLocalStorageItem: vi.fn<(key: string) => unknown>(),
+    setLocalStorageItem: vi.fn<(key: string, value: unknown) => void>(),
+    primaryEnvironmentId: null as string | null,
+    environmentHttpBaseUrl: null as string | null,
+    wordWrap: true,
+    addReviewComment: vi.fn(),
+    removeReviewComment: vi.fn(),
+    setProjectFileQueryData: vi.fn(),
+    confirmProjectFileQueryData: vi.fn(),
+    getOptimisticProjectFileQueryData: vi.fn<() => { contents: string } | null>(),
+    installFileEditorDismissal: vi.fn<(input: unknown) => () => void>(),
+    toastAdd: vi.fn(),
+    coordinators: [] as Array<{
+      options: {
+        debounceMs: number;
+        persist: (contents: string) => Promise<unknown>;
+        onPendingChange: (pending: boolean) => void;
+        onConfirmed: (contents: string) => void;
+      };
+      change: ReturnType<typeof vi.fn>;
+      dispose: ReturnType<typeof vi.fn>;
+      flush: ReturnType<typeof vi.fn>;
+      hasPendingWork: ReturnType<typeof vi.fn>;
+      settle: ReturnType<typeof vi.fn>;
+      subscribe: (listener: () => void) => () => void;
+      getSnapshot: () => unknown;
+    }>,
+    pendingWork: false,
+    flushResult: "saved" as string,
+    editors: [] as Array<{
+      options: {
+        onAttach?: () => void;
+        onChange: (file: { contents: string }, annotations?: unknown) => void;
+      };
+      canUndo: boolean;
+      canRedo: boolean;
+      undo: ReturnType<typeof vi.fn>;
+      redo: ReturnType<typeof vi.fn>;
+      cleanUp: ReturnType<typeof vi.fn>;
+    }>,
+  };
+  const sessions = new Map<string, NonNullable<typeof state.session>>();
+  state.editingSessions = {
+    getOrCreate: vi.fn((relativePath: string, create: () => any) => {
+      const existing = sessions.get(relativePath);
+      if (existing) {
+        state.session = existing;
+        return existing;
+      }
+      const session = create() as NonNullable<typeof state.session>;
+      state.sessionCreations.push(relativePath);
+      session.flush = vi.fn(session.flush.bind(session));
+      session.undo = vi.fn(session.undo.bind(session));
+      session.redo = vi.fn(session.redo.bind(session));
+      session.setEditorChangeHandler = vi.fn(session.setEditorChangeHandler.bind(session));
+      session.changeOutsideEditor = vi.fn(session.changeOutsideEditor.bind(session));
+      sessions.set(relativePath, session);
+      state.session = session;
+      return session;
+    }),
+    preparePathMutation: vi.fn(async (relativePath: string) => {
+      await Promise.all(
+        [...sessions.entries()]
+          .filter(
+            ([candidate]) => candidate === relativePath || candidate.startsWith(`${relativePath}/`),
+          )
+          .map(([, session]) => session.flush()),
+      );
+      return true;
+    }),
+  };
+  state.editingSessions.reset = () => {
+    sessions.clear();
+    state.session = null;
+    state.sessionCreations.length = 0;
+  };
+  return state;
+});
 
 const pierre = vi.hoisted(() => {
   class VirtualizedFile {
@@ -190,9 +276,19 @@ vi.mock("@pierre/diffs", () => ({
 
 vi.mock("@pierre/diffs/editor", () => ({
   Editor: class {
-    readonly options: { onChange: (file: { contents: string }, annotations: unknown) => void };
+    readonly options: {
+      onAttach?: () => void;
+      onChange: (file: { contents: string }, annotations?: unknown) => void;
+    };
+    canUndo = testState.sessionSnapshot.canUndo;
+    canRedo = testState.sessionSnapshot.canRedo;
+    readonly undo = vi.fn();
+    readonly redo = vi.fn();
     readonly cleanUp = vi.fn();
-    constructor(options: { onChange: (file: { contents: string }, annotations: unknown) => void }) {
+    constructor(options: {
+      onAttach?: () => void;
+      onChange: (file: { contents: string }, annotations?: unknown) => void;
+    }) {
       this.options = options;
       testState.editors.push(this);
     }
@@ -200,7 +296,13 @@ vi.mock("@pierre/diffs/editor", () => ({
 }));
 
 vi.mock("@pierre/diffs/react", () => ({
-  EditProvider: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+  EditProvider: ({
+    children,
+    ...props
+  }: { children?: React.ReactNode } & Record<string, unknown>) => {
+    ui.record("EditProvider", props);
+    return <div>{children}</div>;
+  },
   Virtualizer: ({ children, className }: { children?: React.ReactNode; className?: string }) => (
     <div className={className}>{children}</div>
   ),
@@ -347,6 +449,13 @@ vi.mock("./FileBrowserPanel", () => ({
   },
 }));
 
+vi.mock("./FileEditorToolbar", () => ({
+  FileEditorToolbar: (props: Record<string, unknown>) => {
+    ui.record("FileEditorToolbar", props);
+    return <div data-file-editor-toolbar />;
+  },
+}));
+
 vi.mock("./fileEditorDismissal", () => ({
   installFileEditorDismissal: (input: unknown) => testState.installFileEditorDismissal(input),
 }));
@@ -370,10 +479,19 @@ vi.mock("./fileSaveCoordinator", () => ({
       onPendingChange: (pending: boolean) => void;
       onConfirmed: (contents: string) => void;
     };
-    readonly change = vi.fn();
+    readonly listeners = new Set<() => void>();
+    readonly change = vi.fn(() => {
+      for (const listener of this.listeners) listener();
+    });
     readonly dispose = vi.fn();
     readonly flush = vi.fn(() => Promise.resolve(testState.flushResult));
     readonly hasPendingWork = vi.fn(() => testState.pendingWork);
+    readonly settle = vi.fn(() => Promise.resolve(testState.flushResult));
+    readonly subscribe = (listener: () => void) => {
+      this.listeners.add(listener);
+      return () => this.listeners.delete(listener);
+    };
+    readonly getSnapshot = () => testState.sessionSnapshot.save;
     constructor(options: {
       debounceMs: number;
       persist: (contents: string) => Promise<unknown>;
@@ -418,6 +536,7 @@ function baseProps(overrides: Partial<PanelProps> = {}): PanelProps {
     revealRequestId: 1,
     onOpenFile: vi.fn(),
     onPendingChange: vi.fn(),
+    editingSessions: testState.editingSessions,
     ...overrides,
   };
 }
@@ -526,6 +645,14 @@ beforeEach(() => {
   testState.getOptimisticProjectFileQueryData.mockReset().mockReturnValue(null);
   testState.installFileEditorDismissal.mockReset().mockReturnValue(vi.fn());
   testState.toastAdd.mockReset();
+  testState.sessionSnapshot = {
+    save: { phase: "clean", canSave: false, confirmedRevision: 0 },
+    canUndo: false,
+    canRedo: false,
+  };
+  testState.editingSessions.reset();
+  testState.editingSessions.getOrCreate.mockClear();
+  testState.editingSessions.preparePathMutation.mockClear();
   testState.coordinators.length = 0;
   testState.pendingWork = false;
   testState.flushResult = "saved";
@@ -558,6 +685,61 @@ describe("panel layout states", () => {
     const markup = renderPanel(baseProps());
     expect(markup).toContain("animate-spin");
   });
+
+  it("renders the dedicated toolbar below breadcrumbs for a selected file", () => {
+    setFileData("const value = 1;\n");
+    const markup = renderPanel(baseProps());
+    expect(markup.indexOf("data-file-breadcrumbs")).toBeLessThan(
+      markup.indexOf("data-file-editor-toolbar"),
+    );
+    expect(markup.indexOf("data-file-editor-toolbar")).toBeLessThan(
+      markup.indexOf('data-file="src/app.ts"'),
+    );
+  });
+
+  it("maps the active editing session snapshot into toolbar actions", () => {
+    setFileData("const value = 1;\n");
+    testState.sessionSnapshot = {
+      save: { phase: "pending", canSave: true, confirmedRevision: 0 },
+      canUndo: true,
+      canRedo: false,
+    };
+    renderPanel(baseProps());
+
+    const toolbar = ui.find("FileEditorToolbar");
+    expect(toolbar).toMatchObject({
+      savePhase: "pending",
+      canSave: true,
+      canUndo: true,
+      canRedo: false,
+    });
+    (toolbar.onSave as () => void)();
+    (toolbar.onUndo as () => void)();
+    expect(testState.session!.flush).toHaveBeenCalledOnce();
+    expect(testState.session!.undo).toHaveBeenCalledOnce();
+  });
+
+  it.each(["loading", "error", "truncated"] as const)(
+    "keeps unavailable controls visible for the %s state",
+    (state) => {
+      if (state === "error") {
+        testState.fileQuery = {
+          data: null,
+          error: "unavailable",
+          isPending: false,
+          refresh: vi.fn(),
+        };
+      } else if (state === "truncated") {
+        setFileData("partial", { truncated: true, byteLength: 2_000_000 });
+      }
+      renderPanel(baseProps());
+      expect(ui.find("FileEditorToolbar")).toMatchObject({
+        canSave: false,
+        canUndo: false,
+        canRedo: false,
+      });
+    },
+  );
 
   it("shows the error message when reading failed", () => {
     testState.fileQuery = {
@@ -617,13 +799,18 @@ describe("panel layout states", () => {
     expect(renderPanel(baseProps())).not.toContain("data-open-in-picker");
   });
 
-  it("shows the save indicator states", () => {
+  it("maps saving state into the dedicated toolbar", () => {
     setFileData("saved contents");
-    harness.seedState((initial) => initial === null, "saving");
-    expect(renderPanel(baseProps())).toContain("Saving…");
-
-    harness.seedState((initial) => initial === null, "saved");
-    expect(renderPanel(baseProps())).toContain(">Saved</span>");
+    testState.sessionSnapshot = {
+      save: { phase: "saving", canSave: false, confirmedRevision: 0 },
+      canUndo: false,
+      canRedo: false,
+    };
+    renderPanel(baseProps());
+    expect(ui.find("FileEditorToolbar")).toMatchObject({
+      savePhase: "saving",
+      canSave: false,
+    });
   });
 });
 
@@ -698,10 +885,20 @@ describe("markdown preview", () => {
   });
 
   it("renders markdown and applies task list toggles", async () => {
+    testState.sessionSnapshot = {
+      save: { phase: "pending", canSave: true, confirmedRevision: 0 },
+      canUndo: true,
+      canRedo: true,
+    };
     setFileData("- [ ] first\n- [x] second\n");
     const markup = renderPanel(baseProps({ relativePath: "README.md" }));
     expect(markup).toContain("data-chat-markdown");
     expect(markup).toContain('aria-label="Show markdown source"');
+    expect(ui.find("FileEditorToolbar")).toMatchObject({
+      canSave: true,
+      canUndo: false,
+      canRedo: false,
+    });
 
     const chatMarkdown = ui.find("ChatMarkdown");
     const onTaskListChange = chatMarkdown.onTaskListChange as (input: {
@@ -715,6 +912,9 @@ describe("markdown preview", () => {
       environmentId,
       "/workspace/demo",
       "README.md",
+      "- [x] first\n- [x] second\n",
+    );
+    expect(testState.session!.changeOutsideEditor).toHaveBeenCalledWith(
       "- [x] first\n- [x] second\n",
     );
     const coordinator = testState.coordinators[testState.coordinators.length - 1]!;
@@ -955,6 +1155,7 @@ describe("editable file surface", () => {
 
   it("queues editor changes without feeding them back through the query cache", () => {
     renderEditable();
+    harness.runEffects();
     const editor = testState.editors[0]!;
 
     editor.options.onChange({ contents: "updated" }, undefined);
@@ -984,6 +1185,31 @@ describe("editable file surface", () => {
       text: "note",
       contents: "updated",
     });
+  });
+
+  it("retains editor history when switching away from and back to a tab", () => {
+    setFileData("const a = 1;\n");
+    renderPanel(baseProps({ relativePath: "src/a.ts" }));
+    const sessionA = testState.session!;
+    const editorA = sessionA.editor;
+
+    setFileData("const b = 2;\n");
+    renderPanel(baseProps({ relativePath: "src/b.ts" }));
+    expect(testState.session).not.toBe(sessionA);
+
+    editorA.canUndo = true;
+    editorA.options.onAttach?.();
+
+    setFileData("const a = 1;\n");
+    renderPanel(baseProps({ relativePath: "src/a.ts" }));
+
+    expect(testState.sessionCreations.filter((path) => path === "src/a.ts")).toHaveLength(1);
+    expect(testState.session).toBe(sessionA);
+    expect(ui.find("EditProvider").editor).toBe(editorA);
+    const toolbar = ui.find("FileEditorToolbar");
+    expect(toolbar.canUndo).toBe(true);
+    (toolbar.onUndo as () => void)();
+    expect(editorA.undo).toHaveBeenCalledOnce();
   });
 
   it("wires the save coordinator to the write command and pending callbacks", async () => {
@@ -1207,7 +1433,6 @@ describe("editable file surface", () => {
   });
 
   it("passes a matching selection override through to the file", () => {
-    harness.seedState((initial) => initial === null, null); // saveIndicator
     harness.seedState((initial) => initial === null, {
       revealRequestId: 1,
       range: { start: 2, end: 4 },
@@ -1217,7 +1442,6 @@ describe("editable file surface", () => {
   });
 
   it("ignores selection overrides from a previous reveal request", () => {
-    harness.seedState((initial) => initial === null, null); // saveIndicator
     harness.seedState((initial) => initial === null, {
       revealRequestId: 0,
       range: { start: 2, end: 4 },
@@ -1261,19 +1485,20 @@ describe("effects wiring", () => {
     for (const cleanup of cleanups) cleanup();
   });
 
-  it("disposes the save coordinator and cleans up the editor on unmount", () => {
+  it("detaches surface handlers without disposing the retained session", () => {
     renderWithEffects();
     const cleanups = harness.runEffects();
     for (const cleanup of cleanups) cleanup();
     const coordinator = testState.coordinators[testState.coordinators.length - 1]!;
-    expect(coordinator.dispose).toHaveBeenCalled();
-    expect(testState.editors[0]!.cleanUp).toHaveBeenCalled();
+    expect(testState.session!.setEditorChangeHandler).toHaveBeenLastCalledWith(null);
+    expect(coordinator.dispose).not.toHaveBeenCalled();
+    expect(testState.editors[0]!.cleanUp).not.toHaveBeenCalled();
   });
 
   it("installs the editor dismissal handler on the surface", () => {
     renderWithEffects();
     const surface = fakeSurface();
-    harness.refs[2]!.current = surface.element;
+    harness.refs[1]!.current = surface.element;
     harness.runEffects();
     expect(testState.installFileEditorDismissal).toHaveBeenCalledTimes(1);
     const input = testState.installFileEditorDismissal.mock.calls[0]![0] as {
@@ -1288,76 +1513,47 @@ describe("effects wiring", () => {
     expect(harness.setStateCalls.length).toBeGreaterThan(0);
   });
 
-  it("saves explicitly on the mod+s chord and shows the indicator lifecycle", async () => {
-    vi.useFakeTimers();
-    try {
-      renderWithEffects();
-      const surface = fakeSurface();
-      harness.refs[2]!.current = surface.element;
-      testState.pendingWork = true;
-      const cleanups = harness.runEffects();
-      const handler = surface.listeners.get("keydown");
-      expect(handler).toBeDefined();
+  it("saves explicitly on the scoped mod+s chord", () => {
+    renderWithEffects();
+    const surface = fakeSurface();
+    harness.refs[1]!.current = surface.element;
+    const cleanups = harness.runEffects();
+    const handler = surface.listeners.get("keydown");
+    expect(handler).toBeDefined();
 
-      // Not the save chord.
-      const plain = {
-        key: "s",
-        metaKey: false,
-        ctrlKey: false,
-        altKey: false,
-        preventDefault: vi.fn(),
-      };
-      handler!(plain);
-      expect(plain.preventDefault).not.toHaveBeenCalled();
+    const plain = {
+      key: "s",
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      preventDefault: vi.fn(),
+    };
+    handler!(plain);
+    expect(plain.preventDefault).not.toHaveBeenCalled();
 
-      const withAlt = {
-        key: "s",
-        metaKey: false,
-        ctrlKey: true,
-        altKey: true,
-        preventDefault: vi.fn(),
-      };
-      handler!(withAlt);
-      expect(withAlt.preventDefault).not.toHaveBeenCalled();
+    const withAlt = {
+      key: "s",
+      metaKey: false,
+      ctrlKey: true,
+      altKey: true,
+      preventDefault: vi.fn(),
+    };
+    handler!(withAlt);
+    expect(withAlt.preventDefault).not.toHaveBeenCalled();
 
-      // Save chord with pending work → saving → saved → cleared after the delay.
-      harness.setStateCalls.length = 0;
-      const chord = {
-        key: "S",
-        metaKey: false,
-        ctrlKey: true,
-        altKey: false,
-        preventDefault: vi.fn(),
-      };
-      handler!(chord);
-      expect(chord.preventDefault).toHaveBeenCalled();
-      expect(harness.setStateCalls.some((call) => call.next === "saving")).toBe(true);
-      await flushPromises();
-      expect(harness.setStateCalls.some((call) => call.next === "saved")).toBe(true);
-      harness.setStateCalls.length = 0;
-      vi.advanceTimersByTime(1500);
-      expect(harness.setStateCalls.some((call) => call.next === null)).toBe(true);
+    const chord = {
+      key: "S",
+      metaKey: false,
+      ctrlKey: true,
+      altKey: false,
+      preventDefault: vi.fn(),
+    };
+    handler!(chord);
+    expect(chord.preventDefault).toHaveBeenCalled();
+    expect(testState.session!.flush).toHaveBeenCalledOnce();
 
-      // Failed flush clears the indicator immediately.
-      testState.pendingWork = false;
-      testState.flushResult = "failed";
-      harness.setStateCalls.length = 0;
-      handler!({ key: "s", metaKey: true, ctrlKey: false, altKey: false, preventDefault: vi.fn() });
-      expect(harness.setStateCalls.some((call) => call.next === "saved")).toBe(true);
-      await flushPromises();
-      expect(harness.setStateCalls.some((call) => call.next === null)).toBe(true);
-
-      // Cleanup cancels in-flight indicator updates.
-      testState.flushResult = "saved";
-      handler!({ key: "s", metaKey: true, ctrlKey: false, altKey: false, preventDefault: vi.fn() });
-      for (const cleanup of cleanups) cleanup();
-      harness.setStateCalls.length = 0;
-      await flushPromises();
-      expect(harness.setStateCalls.some((call) => call.next === "saved")).toBe(false);
-      expect(surface.listeners.has("keydown")).toBe(false);
-    } finally {
-      vi.useRealTimers();
-    }
+    for (const cleanup of cleanups) cleanup();
+    expect(surface.listeners.has("keydown")).toBe(false);
   });
 
   it("flushes pending saves before path mutations that affect the open file", async () => {
@@ -1376,9 +1572,10 @@ describe("effects wiring", () => {
     await onBeforePathMutation("docs/readme.md");
     expect(coordinator.flush).toHaveBeenCalledTimes(2);
 
-    // After the surface unregisters, mutations no longer flush.
+    // The registry retains the session after the active surface unmounts.
     for (const cleanup of cleanups) cleanup();
     await onBeforePathMutation("src/app.ts");
-    expect(coordinator.flush).toHaveBeenCalledTimes(2);
+    expect(coordinator.flush).toHaveBeenCalledTimes(3);
+    expect(testState.editingSessions.preparePathMutation).toHaveBeenCalledTimes(4);
   });
 });
