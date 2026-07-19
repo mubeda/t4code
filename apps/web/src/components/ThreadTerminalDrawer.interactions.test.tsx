@@ -12,6 +12,7 @@ import {
   type TerminalAttachStreamEvent,
   type TerminalSessionSnapshot,
 } from "@t4code/contracts";
+import type { TerminalFontPreference } from "@t4code/contracts/settings";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { act, type ReactElement } from "react";
@@ -25,6 +26,8 @@ interface FakeTerminalInstance {
   readonly open: ReturnType<typeof vi.fn>;
   readonly focus: ReturnType<typeof vi.fn>;
   readonly refresh: ReturnType<typeof vi.fn>;
+  readonly scrollToBottom: ReturnType<typeof vi.fn>;
+  readonly clearTextureAtlas: ReturnType<typeof vi.fn>;
   readonly dispose: ReturnType<typeof vi.fn>;
   readonly loadAddon: ReturnType<typeof vi.fn>;
   readonly clearSelection: ReturnType<typeof vi.fn>;
@@ -245,6 +248,7 @@ vi.mock("@xterm/xterm", () => ({
     readonly focus = vi.fn();
     readonly refresh = vi.fn();
     readonly scrollToBottom = vi.fn();
+    readonly clearTextureAtlas = vi.fn();
     readonly loadedAddons: Array<{ dispose?: () => void }> = [];
     readonly dispose = vi.fn(() => {
       this.disposed = true;
@@ -367,6 +371,8 @@ const testState = vi.hoisted(() => ({
   shellOpenExternal: vi.fn(),
   localApiAvailable: false,
   webglEnabled: false,
+  terminalFontPreference: { mode: "bundled" } as TerminalFontPreference,
+  fontLoad: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("@effect/atom-react", () => ({ useAtomValue: () => ({ availableEditors: ["vscode"] }) }));
@@ -391,9 +397,24 @@ vi.mock("../state/terminalSessions", () => ({
   },
 }));
 vi.mock("../hooks/useSettings", () => ({
-  usePrimarySettings: (selector: (settings: { terminal: { webglEnabled: boolean } }) => unknown) =>
-    selector({ terminal: { webglEnabled: testState.webglEnabled } }),
+  usePrimarySettings: (
+    selector: (settings: {
+      terminal: { webglEnabled: boolean };
+      terminalFontPreference: TerminalFontPreference;
+    }) => unknown,
+  ) =>
+    selector({
+      terminal: { webglEnabled: testState.webglEnabled },
+      terminalFontPreference: testState.terminalFontPreference,
+    }),
 }));
+vi.mock("../lib/terminalFont", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/terminalFont")>();
+  return {
+    ...actual,
+    ensureBundledTerminalFontLoaded: () => testState.fontLoad(),
+  };
+});
 vi.mock("../editorPreferences", () => ({
   useOpenInPreferredEditor: () => testState.openPath,
 }));
@@ -665,9 +686,11 @@ async function mountViewport(
     readonly autoFocus?: boolean;
     readonly focusRequestId?: number;
     readonly terminalId?: string;
+    readonly terminalFontPreference?: TerminalFontPreference;
   } = {},
 ) {
   testState.webglEnabled = options.webglEnabled ?? false;
+  testState.terminalFontPreference = options.terminalFontPreference ?? { mode: "bundled" };
   webglState.contextMode = options.webglContextMode ?? "present";
   if (options.deferWebglImport === true) {
     deferWebglImport();
@@ -750,6 +773,14 @@ async function mountViewport(
     async setWebglEnabled(webglEnabled: boolean) {
       testState.webglEnabled = webglEnabled;
       await rerender();
+    },
+    async setTerminalFontPreference(terminalFontPreference: TerminalFontPreference) {
+      testState.terminalFontPreference = terminalFontPreference;
+      await rerender();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
     },
     async setDocumentVisible(documentVisible: boolean) {
       Object.defineProperty(document, "visibilityState", {
@@ -882,6 +913,8 @@ beforeEach(() => {
   vi.mocked(openTerminalLinkInPreview).mockReset();
   testState.localApiAvailable = false;
   testState.webglEnabled = false;
+  testState.terminalFontPreference = { mode: "bundled" };
+  testState.fontLoad.mockReset().mockResolvedValue(undefined);
   observerInstances.length = 0;
   componentTimers.clear();
   componentTimerCallbacks.clear();
@@ -1009,6 +1042,45 @@ afterEach(async () => {
 });
 
 describe("TerminalViewport mounted lifecycle", () => {
+  it.each([false, true])(
+    "updates the font without recreating the terminal (WebGL: %s)",
+    async (webglEnabled) => {
+      const view = await mountViewport({ visible: true, webglEnabled });
+      const terminal = view.fakeTerminal!;
+      const fitAddon = xtermState.fitAddons[0]!;
+      await view.flushFrame();
+      await view.flushMountFit();
+
+      testState.resizeCommand.mockClear();
+      terminal.refresh.mockClear();
+      terminal.scrollToBottom.mockClear();
+      terminal.clearTextureAtlas.mockClear();
+      fitAddon.fit.mockClear();
+      testState.fontLoad.mockClear();
+      fitAddon.fit.mockImplementation(() => {
+        terminal.cols += 1;
+      });
+
+      await view.setTerminalFontPreference({ mode: "custom", family: "Maple Mono" });
+
+      expect(xtermState.terminals).toHaveLength(1);
+      expect(terminal.dispose).not.toHaveBeenCalled();
+      expect(view.detachRendererSpy).not.toHaveBeenCalled();
+      expect(terminal.options.fontFamily).toBe(
+        '"Maple Mono", "T4Code Symbols Nerd Font Mono", "JetBrains Mono", monospace',
+      );
+      expect(testState.fontLoad).toHaveBeenCalledOnce();
+      expect(terminal.clearTextureAtlas).toHaveBeenCalledOnce();
+      expect(fitAddon.fit).toHaveBeenCalledOnce();
+      expect(terminal.scrollToBottom).toHaveBeenCalledOnce();
+      expect(terminal.refresh).toHaveBeenCalledWith(0, terminal.rows - 1);
+      expect(testState.resizeCommand).toHaveBeenCalledWith({
+        environmentId: ENVIRONMENT_ID,
+        input: { threadId: THREAD_ID, terminalId: "term-1", cols: 81, rows: 24 },
+      });
+    },
+  );
+
   it("issues one resize for the initial geometry and skips unchanged fits from either path", async () => {
     const view = await mountViewport({ visible: true });
 
