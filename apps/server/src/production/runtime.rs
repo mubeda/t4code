@@ -149,7 +149,7 @@ impl ProductionRuntime {
             WorkspacePreviewRpcServices::new(workspace, preview, preview_automation.clone());
 
         let process_monitor = Arc::new(DiagnosticsMonitor::new(
-            process_sampler.clone(),
+            resource_sampler.clone(),
             Duration::from_secs(2),
         ));
         let provider_usage =

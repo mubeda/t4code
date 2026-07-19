@@ -866,8 +866,13 @@ fn registrar_source_contains_every_owned_rpc_name() {
 
 fn fixture_services() -> ServerTerminalServices {
     let sampler = Arc::new(diagnostics::NativeProcessSampler::default());
-    let monitor = Arc::new(diagnostics::DiagnosticsMonitor::new(
+    let resource_sampler = Arc::new(diagnostics::NativeResourceSampler::new(
         sampler.clone(),
+        diagnostics::ProcessAttributionRegistry::new(),
+        Arc::new(diagnostics::NotApplicableUiProcessObserver),
+    ));
+    let monitor = Arc::new(diagnostics::DiagnosticsMonitor::new(
+        resource_sampler,
         Duration::from_secs(60),
     ));
     let usage = provider_usage::ProviderUsageService::new(

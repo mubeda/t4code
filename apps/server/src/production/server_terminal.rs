@@ -9,8 +9,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     cloud::{RelayClientInstallEvent, RelayClientService, RelayClientStatus},
     diagnostics::{
-        DiagnosticsMonitor, NativeProcessSampler, ProcessResourceHistory, ProcessSampler,
-        ProcessSignal, SamplingLease, build_process_tree_entries,
+        AttributedProcessSnapshot, AttributionKind, CurrentProcessDiagnostics, DiagnosticsMonitor,
+        NativeProcessSampler, NativeResourceSampler, ProcessResourceHistory, ProcessSignal,
     },
     production::orchestration_effects::SetupScriptLaunch,
     provider_usage::{
@@ -41,8 +41,7 @@ pub trait ProductionServerControl: std::fmt::Debug + Send + Sync + 'static {
 pub struct ServerTerminalServices {
     terminal: TerminalManager,
     process_sampler: Arc<NativeProcessSampler>,
-    process_monitor: Arc<DiagnosticsMonitor<NativeProcessSampler>>,
-    _process_history_lease: Arc<SamplingLease>,
+    process_monitor: Arc<DiagnosticsMonitor<NativeResourceSampler>>,
     provider_usage: ProviderUsageService,
     relay: RelayClientService,
     control: Arc<dyn ProductionServerControl>,
@@ -53,17 +52,15 @@ impl ServerTerminalServices {
     pub fn new(
         terminal: TerminalManager,
         process_sampler: Arc<NativeProcessSampler>,
-        process_monitor: Arc<DiagnosticsMonitor<NativeProcessSampler>>,
+        process_monitor: Arc<DiagnosticsMonitor<NativeResourceSampler>>,
         provider_usage: ProviderUsageService,
         relay: RelayClientService,
         control: Arc<dyn ProductionServerControl>,
     ) -> Self {
-        let process_history_lease = Arc::new(process_monitor.retain_history());
         Self {
             terminal,
             process_sampler,
             process_monitor,
-            _process_history_lease: process_history_lease,
             provider_usage,
             relay,
             control,
@@ -71,7 +68,6 @@ impl ServerTerminalServices {
     }
 
     pub async fn shutdown(&self) {
-        self.process_monitor.shutdown();
         self.terminal.shutdown().await;
         let _ = self
             .process_sampler
@@ -152,55 +148,12 @@ fn register_control_rpcs(registry: &mut RpcRegistry, services: &ServerTerminalSe
 }
 
 fn register_diagnostics_rpcs(registry: &mut RpcRegistry, services: &ServerTerminalServices) {
-    let sampler = services.process_sampler.clone();
+    let monitor = services.process_monitor.clone();
     registry.register_unary(
         "server.getProcessDiagnostics",
         move |_request, _cancellation| {
-            let sampler = sampler.clone();
-            async move {
-                let read_at = OffsetDateTime::now_utc();
-                match sampler.sample().await {
-                    Ok(rows) => {
-                        let server_pid = std::process::id();
-                        let processes = build_process_tree_entries(&rows, server_pid);
-                        let total_rss_bytes =
-                            processes.iter().map(|row| row.rss_bytes).sum::<u64>();
-                        let total_cpu_percent = processes
-                            .iter()
-                            .map(|row| f64::from(row.cpu_percent))
-                            .sum::<f64>();
-                        Ok(json!({
-                            "serverPid": server_pid,
-                            "readAt": format_time(read_at),
-                            "processCount": processes.len(),
-                            "totalRssBytes": total_rss_bytes,
-                            "totalCpuPercent": total_cpu_percent,
-                            "processes": processes.into_iter().map(|row| json!({
-                                "pid": row.pid,
-                                "ppid": row.ppid,
-                                "pgid": effect_option(row.pgid),
-                                "status": row.status,
-                                "cpuPercent": row.cpu_percent,
-                                "rssBytes": row.rss_bytes,
-                                "elapsed": row.elapsed,
-                                "command": row.command,
-                                "depth": row.depth,
-                                "childPids": row.child_pids,
-                            })).collect::<Vec<_>>(),
-                            "error": effect_none(),
-                        }))
-                    }
-                    Err(error) => Ok(json!({
-                        "serverPid": std::process::id(),
-                        "readAt": format_time(read_at),
-                        "processCount": 0,
-                        "totalRssBytes": 0,
-                        "totalCpuPercent": 0.0,
-                        "processes": [],
-                        "error": effect_some(json!({ "message": error.to_string() })),
-                    })),
-                }
-            }
+            let monitor = monitor.clone();
+            async move { Ok(process_diagnostics_to_wire(monitor.sample_current().await)) }
         },
     );
 
@@ -655,6 +608,63 @@ fn provider_usage_window_to_wire(window: ProviderUsageWindow) -> Value {
     })
 }
 
+fn process_diagnostics_to_wire(current: CurrentProcessDiagnostics) -> Value {
+    let read_at_ms = current.snapshot.as_ref().map_or_else(
+        || OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000,
+        |snapshot| snapshot.sampled_at_ms,
+    );
+    let error = current.error.map_or_else(effect_none, |message| {
+        effect_some(json!({ "message": message }))
+    });
+    let Some(AttributedProcessSnapshot {
+        server_identity,
+        processes,
+        totals,
+        ..
+    }) = current.snapshot
+    else {
+        return json!({
+            "serverPid": std::process::id(),
+            "readAt": format_epoch_ms(read_at_ms),
+            "processCount": 0,
+            "totalRssBytes": 0,
+            "totalCpuPercent": 0.0,
+            "processes": [],
+            "error": error,
+        });
+    };
+    let server_pid = server_identity.pid;
+
+    json!({
+        "serverPid": server_pid,
+        "readAt": format_epoch_ms(read_at_ms),
+        "processCount": totals.combined.process_count,
+        "totalRssBytes": totals.combined.rss_bytes,
+        "totalCpuPercent": totals.combined.cpu_percent,
+        "processes": processes.into_iter().map(|process| {
+            let is_server = process.identity == server_identity;
+            let command = if process.label.trim().is_empty() {
+                process.process_key.clone()
+            } else {
+                process.label
+            };
+            json!({
+                "pid": process.identity.pid,
+                "ppid": if is_server { 0 } else { server_pid },
+                "pgid": effect_none(),
+                "status": "Unknown",
+                "cpuPercent": process.cpu_percent,
+                "rssBytes": process.rss_bytes,
+                "elapsed": "00:00:00",
+                "command": command,
+                "depth": usize::from(!is_server),
+                "childPids": [],
+            })
+        }).collect::<Vec<_>>(),
+        "error": error,
+    })
+}
+
 fn resource_history_to_wire(history: ProcessResourceHistory) -> Value {
     json!({
         "readAt": format_epoch_ms(history.read_at_ms),
@@ -662,15 +672,18 @@ fn resource_history_to_wire(history: ProcessResourceHistory) -> Value {
         "bucketMs": history.bucket_ms,
         "sampleIntervalMs": history.sample_interval_ms,
         "retainedSampleCount": history.retained_sample_count,
-        "totalCpuSecondsApprox": history.total_cpu_seconds_approx,
+        "totalCpuSecondsApprox": history.total_cpu_seconds_approx.combined,
         "buckets": history.buckets.into_iter().map(|bucket| json!({
             "startedAt": format_epoch_ms(bucket.started_at_ms), "endedAt": format_epoch_ms(bucket.ended_at_ms),
-            "avgCpuPercent": bucket.avg_cpu_percent, "maxCpuPercent": bucket.max_cpu_percent,
-            "maxRssBytes": bucket.max_rss_bytes, "maxProcessCount": bucket.max_process_count,
+            "avgCpuPercent": bucket.cpu_percent.average.combined,
+            "maxCpuPercent": bucket.cpu_percent.peak.combined,
+            "maxRssBytes": bucket.rss_bytes.peak.combined,
+            "maxProcessCount": bucket.max_process_count.combined,
         })).collect::<Vec<_>>(),
-        "topProcesses": history.top_processes.into_iter().map(|process| json!({
-            "processKey": process.process_key, "pid": process.pid, "ppid": process.ppid,
-            "command": process.command, "depth": process.depth, "isServerRoot": process.is_server_root,
+        "topProcesses": history.processes.into_iter().map(|process| json!({
+            "processKey": process.process_key, "pid": process.pid, "ppid": 0,
+            "command": if process.label.trim().is_empty() { "unknown" } else { &process.label },
+            "depth": 0, "isServerRoot": process.kind == AttributionKind::Server,
             "firstSeenAt": format_epoch_ms(process.first_seen_at_ms), "lastSeenAt": format_epoch_ms(process.last_seen_at_ms),
             "currentCpuPercent": process.current_cpu_percent, "avgCpuPercent": process.avg_cpu_percent,
             "maxCpuPercent": process.max_cpu_percent, "cpuSecondsApprox": process.cpu_seconds_approx,
@@ -760,9 +773,6 @@ fn effect_none() -> Value {
 fn effect_some(value: Value) -> Value {
     json!({ "_tag": "Some", "value": value })
 }
-fn effect_option<T: serde::Serialize>(value: Option<T>) -> Value {
-    value.map_or_else(effect_none, |value| effect_some(json!(value)))
-}
 
 fn format_time(value: OffsetDateTime) -> String {
     value
@@ -786,7 +796,11 @@ mod tests {
 
     use crate::{
         ServerConfig,
-        diagnostics::{ProcessResourceBucket, ProcessResourceSummary},
+        diagnostics::{
+            AttributionConfidence, AttributionKind, AttributionScope, BucketMetric,
+            NativeResourceSampler, NotApplicableUiProcessObserver, ProcessAttributionRegistry,
+            ProcessResourceBucket, ProcessResourceSummary, SplitMetric, UiCoverage,
+        },
         production::control::NativeServerControl,
         terminal::{PortablePtyBackend, TerminalManagerOptions},
     };
@@ -804,7 +818,6 @@ mod tests {
         assert!(decode_payload::<TerminalResizePayload>(&invalid).is_err());
         assert!(decode_payload::<TerminalSessionPayload>(&invalid).is_err());
         assert!(decode_payload::<TerminalWritePayload>(&invalid).is_err());
-        assert_eq!(effect_option::<u8>(None), effect_none());
         assert_eq!(format_epoch_ms(i128::MAX), "1970-01-01T00:00:00Z");
     }
 
@@ -820,8 +833,13 @@ mod tests {
             },
         );
         let sampler = Arc::new(NativeProcessSampler::default());
+        let resource_sampler = Arc::new(NativeResourceSampler::new(
+            sampler.clone(),
+            ProcessAttributionRegistry::new(),
+            Arc::new(NotApplicableUiProcessObserver),
+        ));
         let monitor = Arc::new(DiagnosticsMonitor::new(
-            Arc::clone(&sampler),
+            resource_sampler,
             Duration::from_secs(60),
         ));
         let usage = ProviderUsageService::new(Vec::new(), Arc::new(OffsetDateTime::now_utc));
@@ -938,22 +956,52 @@ mod tests {
             bucket_ms: 1_000,
             sample_interval_ms: 500,
             retained_sample_count: 2,
-            total_cpu_seconds_approx: 1.5,
+            total_cpu_seconds_approx: SplitMetric {
+                combined: 1.5,
+                core: 1.0,
+                external: 0.5,
+            },
+            ui_coverage: UiCoverage::default(),
             buckets: vec![ProcessResourceBucket {
                 started_at_ms: 0,
                 ended_at_ms: 1_000,
-                avg_cpu_percent: 5.0,
-                max_cpu_percent: 10.0,
-                max_rss_bytes: 1024,
-                max_process_count: 2,
+                cpu_percent: BucketMetric {
+                    average: SplitMetric {
+                        combined: 5.0,
+                        core: 3.0,
+                        external: 2.0,
+                    },
+                    peak: SplitMetric {
+                        combined: 10.0,
+                        core: 6.0,
+                        external: 4.0,
+                    },
+                },
+                rss_bytes: BucketMetric {
+                    average: SplitMetric {
+                        combined: 768,
+                        core: 512,
+                        external: 256,
+                    },
+                    peak: SplitMetric {
+                        combined: 1024,
+                        core: 640,
+                        external: 384,
+                    },
+                },
+                max_process_count: SplitMetric {
+                    combined: 2,
+                    core: 1,
+                    external: 1,
+                },
             }],
-            top_processes: vec![ProcessResourceSummary {
+            processes: vec![ProcessResourceSummary {
                 process_key: "1:server".to_owned(),
                 pid: 1,
-                ppid: 0,
-                command: "server".to_owned(),
-                depth: 0,
-                is_server_root: true,
+                scope: AttributionScope::Core,
+                kind: AttributionKind::Server,
+                label: "server".to_owned(),
+                confidence: AttributionConfidence::Exact,
                 first_seen_at_ms: 0,
                 last_seen_at_ms: 1_000,
                 current_cpu_percent: 2.0,
@@ -1008,8 +1056,6 @@ mod tests {
         );
         assert_eq!(effect_none()["_tag"], "None");
         assert_eq!(effect_some(json!(1))["value"], 1);
-        assert_eq!(effect_option(Some(2))["value"], 2);
-        assert_eq!(effect_option::<u8>(None)["_tag"], "None");
         assert_eq!(invalid_request("bad")["_tag"], "RpcRequestInvalid");
         assert_eq!(format_epoch_ms(i128::MAX), "1970-01-01T00:00:00Z");
         assert!(format_time(now).contains("1970-01-01"));
