@@ -5,12 +5,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { FileEditorToolbar } from "./FileEditorToolbar";
+import { TooltipProvider } from "../ui/tooltip";
 
 describe("FileEditorToolbar", () => {
   let container: HTMLDivElement;
   let root: Root;
 
   beforeEach(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -20,6 +22,7 @@ describe("FileEditorToolbar", () => {
     act(() => root.unmount());
     container.remove();
     vi.useRealTimers();
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
   });
 
   it("renders Save, Undo, Redo in order and invokes enabled actions", () => {
@@ -93,5 +96,77 @@ describe("FileEditorToolbar", () => {
     expect(container.textContent).toContain("Saved");
     act(() => vi.advanceTimersByTime(1_500));
     expect(container.textContent).not.toContain("Saved");
+  });
+
+  it("keeps native disabled buttons inside focusable hover tooltip triggers", async () => {
+    act(() => {
+      root.render(
+        <TooltipProvider delay={0}>
+          <FileEditorToolbar
+            savePhase="clean"
+            confirmedRevision={0}
+            canSave={false}
+            canUndo={false}
+            canRedo={false}
+            cleanStatus={null}
+            onSave={vi.fn()}
+            onUndo={vi.fn()}
+            onRedo={vi.fn()}
+          />
+        </TooltipProvider>,
+      );
+    });
+
+    const buttons = [...container.querySelectorAll("button")];
+    const saveTrigger = buttons[0]!.parentElement!;
+    const redoTrigger = buttons[2]!.parentElement!;
+    expect(buttons.every((button) => button.disabled)).toBe(true);
+    expect(saveTrigger.getAttribute("data-slot")).toBe("tooltip-trigger");
+    expect(saveTrigger.tabIndex).toBe(0);
+
+    await act(async () => {
+      redoTrigger.focus();
+      await Promise.resolve();
+    });
+    expect(document.body.querySelector('[data-slot="tooltip-popup"]')?.textContent).toContain(
+      "Redo (Shift+Ctrl/Cmd+Z)",
+    );
+
+    await act(async () => {
+      redoTrigger.blur();
+      saveTrigger.dispatchEvent(new PointerEvent("pointerenter", { pointerType: "mouse" }));
+      saveTrigger.dispatchEvent(new MouseEvent("mouseenter"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(
+      [...document.body.querySelectorAll('[data-slot="tooltip-popup"]')].some((popup) =>
+        popup.textContent?.includes("Save file (Ctrl/Cmd+S)"),
+      ),
+    ).toBe(true);
+  });
+
+  it("uses foreground classes for enabled actions and muted foreground for disabled actions", () => {
+    act(() => {
+      root.render(
+        <FileEditorToolbar
+          savePhase="pending"
+          confirmedRevision={0}
+          canSave
+          canUndo
+          canRedo={false}
+          cleanStatus={null}
+          onSave={vi.fn()}
+          onUndo={vi.fn()}
+          onRedo={vi.fn()}
+        />,
+      );
+    });
+
+    const [save, undo, redo] = [...container.querySelectorAll("button")];
+    expect(save!.className.split(/\s+/)).toContain("text-foreground");
+    expect(save!.className.split(/\s+/)).not.toContain("text-muted-foreground");
+    expect(undo!.className.split(/\s+/)).toContain("text-foreground");
+    expect(undo!.className.split(/\s+/)).not.toContain("text-muted-foreground");
+    expect(redo!.className.split(/\s+/)).toContain("text-muted-foreground");
   });
 });

@@ -1,5 +1,5 @@
 import type { FileSaveFlushResult, FileSaveSettleResult } from "./fileSaveCoordinator";
-import type { FilePathMutationLease } from "./filePathMutationLease";
+import type { FilePathMutationLease, FilePathMutationRequest } from "./filePathMutationLease";
 
 export interface ManagedFileEditingSession {
   relativePath: string;
@@ -25,7 +25,8 @@ function pathsOverlap(first: string, second: string): boolean {
 }
 
 interface ActivePathMutation<Session> {
-  readonly relativePath: string;
+  readonly request: FilePathMutationRequest;
+  readonly scopePaths: readonly string[];
   readonly sessions: Map<string, Session>;
   readonly pausedSessions: Set<Session>;
   readonly completion: Promise<void>;
@@ -35,10 +36,13 @@ interface ActivePathMutation<Session> {
 export class FileEditingSessionRegistry<
   Session extends ManagedFileEditingSession = ManagedFileEditingSession,
 > {
-  private readonly sessions = new Map<string, Session>();
+  private sessions = new Map<string, Session>();
   private readonly activePathMutations = new Set<ActivePathMutation<Session>>();
   private latestOpenRelativePaths: ReadonlySet<string> | null = null;
+  private ownerCount = 0;
+  private ownershipGeneration = 0;
   private disposed = false;
+  private disposePromise: Promise<void> | null = null;
 
   get(relativePath: string): Session | undefined {
     return this.sessions.get(relativePath);
@@ -50,7 +54,7 @@ export class FileEditingSessionRegistry<
     const session = create();
     this.sessions.set(relativePath, session);
     for (const mutation of this.activePathMutations) {
-      if (!isPathAtOrUnder(relativePath, mutation.relativePath)) continue;
+      if (!mutation.scopePaths.some((path) => isPathAtOrUnder(relativePath, path))) continue;
       session.pauseSaving();
       mutation.sessions.set(relativePath, session);
       mutation.pausedSessions.add(session);
@@ -58,10 +62,16 @@ export class FileEditingSessionRegistry<
     return session;
   }
 
-  async beginPathMutation(relativePath: string): Promise<FilePathMutationLease | null> {
+  async beginPathMutation(request: FilePathMutationRequest): Promise<FilePathMutationLease | null> {
+    const scopePaths =
+      request.kind === "rename"
+        ? [request.fromRelativePath, request.toRelativePath]
+        : [request.relativePath];
     if (
       [...this.activePathMutations].some((mutation) =>
-        pathsOverlap(mutation.relativePath, relativePath),
+        mutation.scopePaths.some((activePath) =>
+          scopePaths.some((scopePath) => pathsOverlap(activePath, scopePath)),
+        ),
       )
     ) {
       return null;
@@ -69,10 +79,11 @@ export class FileEditingSessionRegistry<
 
     let completeMutation!: () => void;
     const mutation: ActivePathMutation<Session> = {
-      relativePath,
+      request,
+      scopePaths,
       sessions: new Map(
         [...this.sessions.entries()].filter(([candidate]) =>
-          isPathAtOrUnder(candidate, relativePath),
+          scopePaths.some((scopePath) => isPathAtOrUnder(candidate, scopePath)),
         ),
       ),
       pausedSessions: new Set(),
@@ -139,7 +150,34 @@ export class FileEditingSessionRegistry<
     await Promise.all(removed.map(([, session]) => this.settleAndDisposeSession(session)));
   }
 
-  async dispose(): Promise<void> {
+  acquireOwnership(): () => void {
+    if (this.disposed) return () => {};
+    this.ownerCount += 1;
+    this.ownershipGeneration += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.ownerCount = Math.max(0, this.ownerCount - 1);
+      const generation = ++this.ownershipGeneration;
+      queueMicrotask(() => {
+        if (this.ownerCount !== 0 || this.ownershipGeneration !== generation || this.disposed) {
+          return;
+        }
+        void this.dispose().catch((error: unknown) => {
+          this.reportMutationCleanupError(error);
+        });
+      });
+    };
+  }
+
+  dispose(): Promise<void> {
+    if (this.disposePromise !== null) return this.disposePromise;
+    this.disposePromise = this.disposeInternal();
+    return this.disposePromise;
+  }
+
+  private async disposeInternal(): Promise<void> {
     this.disposed = true;
     const activeMutations = [...this.activePathMutations];
     const leasedSessions = new Set(
@@ -168,34 +206,64 @@ export class FileEditingSessionRegistry<
   }
 
   private remapMutation(mutation: ActivePathMutation<Session>, toRelativePath: string): void {
+    const fromRelativePath =
+      mutation.request.kind === "rename"
+        ? mutation.request.fromRelativePath
+        : mutation.request.relativePath;
+    const destinationRelativePath =
+      mutation.request.kind === "rename" ? mutation.request.toRelativePath : toRelativePath;
     if (this.latestOpenRelativePaths) {
       this.latestOpenRelativePaths = new Set(
         [...this.latestOpenRelativePaths].map((relativePath) =>
-          isPathAtOrUnder(relativePath, mutation.relativePath)
-            ? remapPath(relativePath, mutation.relativePath, toRelativePath)
+          isPathAtOrUnder(relativePath, fromRelativePath)
+            ? remapPath(relativePath, fromRelativePath, toRelativePath)
             : relativePath,
         ),
       );
     }
-    for (const candidate of mutation.sessions.keys()) this.sessions.delete(candidate);
+    const sourceEntries = [...mutation.sessions.entries()].filter(([candidate]) =>
+      isPathAtOrUnder(candidate, fromRelativePath),
+    );
+    const sourceSessions = new Set(sourceEntries.map(([, session]) => session));
+    const displacedEntries = [...mutation.sessions.entries()].filter(
+      ([candidate, session]) =>
+        isPathAtOrUnder(candidate, destinationRelativePath) && !sourceSessions.has(session),
+    );
+    for (const [, session] of displacedEntries) {
+      this.discardAndDisposeSession(session);
+      mutation.pausedSessions.delete(session);
+    }
+
+    const nextSessions = new Map(this.sessions);
+    for (const [candidate, session] of [...sourceEntries, ...displacedEntries]) {
+      if (nextSessions.get(candidate) === session) nextSessions.delete(candidate);
+    }
     const remapped = new Map<string, Session>();
-    for (const [candidate, session] of mutation.sessions) {
-      const nextPath = remapPath(candidate, mutation.relativePath, toRelativePath);
-      const collision = this.sessions.get(nextPath);
-      if (collision && collision !== session) collision.dispose();
+    for (const [candidate, session] of sourceEntries) {
+      const nextPath = remapPath(candidate, fromRelativePath, toRelativePath);
       session.rename(nextPath);
-      this.sessions.set(nextPath, session);
+      nextSessions.set(nextPath, session);
       remapped.set(nextPath, session);
     }
+    this.sessions = nextSessions;
     mutation.sessions.clear();
     for (const [path, session] of remapped) mutation.sessions.set(path, session);
   }
 
   private deleteMutation(mutation: ActivePathMutation<Session>): void {
-    for (const candidate of mutation.sessions.keys()) this.sessions.delete(candidate);
-    for (const session of mutation.sessions.values()) {
+    const relativePath =
+      mutation.request.kind === "rename"
+        ? mutation.request.fromRelativePath
+        : mutation.request.relativePath;
+    const deletedEntries = [...mutation.sessions.entries()].filter(([candidate]) =>
+      isPathAtOrUnder(candidate, relativePath),
+    );
+    for (const [candidate] of deletedEntries) this.sessions.delete(candidate);
+    for (const [, session] of deletedEntries) {
       this.discardAndDisposeSession(session);
+      mutation.pausedSessions.delete(session);
     }
+    mutation.sessions.clear();
   }
 
   private discardAndDisposeSession(session: Session): void {

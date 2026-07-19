@@ -187,22 +187,36 @@ const testState = vi.hoisted(() => {
       state.session = session;
       return session;
     }),
-    beginPathMutation: vi.fn(async (relativePath: string) => {
-      const results = await Promise.all(
-        [...sessions.entries()]
-          .filter(
-            ([candidate]) => candidate === relativePath || candidate.startsWith(`${relativePath}/`),
-          )
-          .map(([, session]) => session.settle()),
-      );
-      return results.every((result) => result !== "failed")
-        ? {
-            commitRename: vi.fn(),
-            commitDelete: vi.fn(),
-            release: vi.fn(),
-          }
-        : null;
-    }),
+    beginPathMutation: vi.fn(
+      async (request: {
+        kind: "rename" | "delete" | "duplicate";
+        fromRelativePath?: string;
+        toRelativePath?: string;
+        relativePath?: string;
+      }) => {
+        const scopePaths =
+          request.kind === "rename"
+            ? [request.fromRelativePath!, request.toRelativePath!]
+            : [request.relativePath!];
+        const results = await Promise.all(
+          [...sessions.entries()]
+            .filter(([candidate]) =>
+              scopePaths.some(
+                (relativePath) =>
+                  candidate === relativePath || candidate.startsWith(`${relativePath}/`),
+              ),
+            )
+            .map(([, session]) => session.settle()),
+        );
+        return results.every((result) => result !== "failed")
+          ? {
+              commitRename: vi.fn(),
+              commitDelete: vi.fn(),
+              release: vi.fn(),
+            }
+          : null;
+      },
+    ),
   };
   state.editingSessions.reset = () => {
     sessions.clear();
@@ -1569,24 +1583,27 @@ describe("effects wiring", () => {
     renderPanel(baseProps({ relativePath: "src/nested/child.ts" }));
     const descendantCoordinator = testState.coordinators[testState.coordinators.length - 1]!;
     const browser = ui.find("FileBrowserPanel");
-    const onBeginPathMutation = browser.onBeginPathMutation as (
-      path: string,
-    ) => Promise<{ release(): void } | null>;
+    const onBeginPathMutation = browser.onBeginPathMutation as (request: {
+      kind: "rename" | "delete" | "duplicate";
+      fromRelativePath?: string;
+      toRelativePath?: string;
+      relativePath?: string;
+    }) => Promise<{ release(): void } | null>;
 
-    await expect(onBeginPathMutation("src/app.ts")).resolves.toEqual(
-      expect.objectContaining({ release: expect.any(Function) }),
-    );
+    await expect(
+      onBeginPathMutation({ kind: "delete", relativePath: "src/app.ts" }),
+    ).resolves.toEqual(expect.objectContaining({ release: expect.any(Function) }));
     expect(exactCoordinator.settle).toHaveBeenCalledTimes(1);
     expect(descendantCoordinator.settle).not.toHaveBeenCalled();
 
     descendantCoordinator.settle.mockResolvedValueOnce("failed");
-    await expect(onBeginPathMutation("src")).resolves.toBeNull();
+    await expect(onBeginPathMutation({ kind: "delete", relativePath: "src" })).resolves.toBeNull();
     expect(exactCoordinator.settle).toHaveBeenCalledTimes(2);
     expect(descendantCoordinator.settle).toHaveBeenCalledTimes(1);
 
-    await expect(onBeginPathMutation("docs/readme.md")).resolves.toEqual(
-      expect.objectContaining({ release: expect.any(Function) }),
-    );
+    await expect(
+      onBeginPathMutation({ kind: "delete", relativePath: "docs/readme.md" }),
+    ).resolves.toEqual(expect.objectContaining({ release: expect.any(Function) }));
     expect(exactCoordinator.settle).toHaveBeenCalledTimes(2);
     expect(descendantCoordinator.settle).toHaveBeenCalledTimes(1);
     expect(testState.editingSessions.beginPathMutation).toHaveBeenCalledTimes(3);

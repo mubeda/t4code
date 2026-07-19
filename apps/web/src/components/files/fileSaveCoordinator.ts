@@ -48,15 +48,17 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
   };
 
   change(contents: string): void {
+    if (this.disposed) return;
     this.latestContents = contents;
     this.latestRevision += 1;
     this.lastChangeAt = Date.now();
     this.options.onPendingChange(true);
-    this.publish("pending");
+    this.publish(this.inFlight === null ? "pending" : "saving");
     if (!this.savingPaused) this.schedule(this.options.debounceMs);
   }
 
   dispose(): void {
+    if (this.disposed) return;
     this.disposed = true;
     this.clearTimer();
     // Only unsaved edits get a farewell write. An unconditional write here
@@ -73,13 +75,16 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
   }
 
   pauseSaving(): void {
+    if (this.savingPaused) return;
     this.savingPaused = true;
     this.clearTimer();
+    this.publish(this.inFlight === null ? this.snapshot.phase : "saving");
   }
 
   resumeSaving(): void {
     if (!this.savingPaused) return;
     this.savingPaused = false;
+    this.publish(this.inFlight === null ? this.snapshot.phase : "saving");
     if (this.latestRevision !== this.persistedRevision) {
       this.schedule(this.options.debounceMs);
     }
@@ -154,7 +159,10 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
     const inFlight = Promise.resolve().then(() => this.persistLatestOnce());
     this.inFlight = inFlight;
     return inFlight.finally(() => {
-      if (this.inFlight === inFlight) this.inFlight = null;
+      if (this.inFlight === inFlight) {
+        this.inFlight = null;
+        this.publish(this.snapshot.phase);
+      }
     });
   }
 
@@ -195,7 +203,10 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
   private publish(phase: FileSavePhase): void {
     const next: FileSaveSnapshot = {
       phase,
-      canSave: phase === "pending" || phase === "failed",
+      canSave:
+        this.latestRevision !== this.persistedRevision &&
+        this.inFlight === null &&
+        !this.savingPaused,
       confirmedRevision: this.persistedRevision,
     };
     if (

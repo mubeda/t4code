@@ -27,7 +27,7 @@ import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import FileEntryDialog, { type FileEntryDialogRequest } from "./FileEntryDialog";
-import type { FilePathMutationLease } from "./filePathMutationLease";
+import type { FilePathMutationLease, FilePathMutationRequest } from "./filePathMutationLease";
 import { isMarkdownPreviewFile } from "./filePreviewMode";
 import FileTreeContextMenu, { type FileTreeMenuActions } from "./FileTreeContextMenu";
 import {
@@ -52,7 +52,7 @@ interface FileBrowserPanelProps {
    * Acquires a per-path editing-session lease before rename/delete/duplicate
    * filesystem operations. Returning null prevents the mutation.
    */
-  onBeginPathMutation?: (relativePath: string) => Promise<FilePathMutationLease | null>;
+  onBeginPathMutation?: (request: FilePathMutationRequest) => Promise<FilePathMutationLease | null>;
 }
 
 const TREE_UNSAFE_CSS = `
@@ -253,7 +253,11 @@ export default function FileBrowserPanel({
           void (async () => {
             let lease: FilePathMutationLease | null | undefined;
             try {
-              lease = await onBeginPathMutation?.(relativePath);
+              lease = await onBeginPathMutation?.({
+                kind: "rename",
+                fromRelativePath: relativePath,
+                toRelativePath,
+              });
               if (onBeginPathMutation && !lease) return;
               const result = await renameEntry({
                 environmentId,
@@ -308,7 +312,7 @@ export default function FileBrowserPanel({
           void (async () => {
             let lease: FilePathMutationLease | null | undefined;
             try {
-              lease = await onBeginPathMutation?.(relativePath);
+              lease = await onBeginPathMutation?.({ kind: "delete", relativePath });
               if (onBeginPathMutation && !lease) return;
               const result = await deleteEntry({ environmentId, input: { cwd, relativePath } });
               if (result._tag === "Failure") {
@@ -346,7 +350,7 @@ export default function FileBrowserPanel({
       void (async () => {
         let lease: FilePathMutationLease | null | undefined;
         try {
-          lease = await onBeginPathMutation?.(relativePath);
+          lease = await onBeginPathMutation?.({ kind: "duplicate", relativePath });
           if (onBeginPathMutation && !lease) return;
           const result = await duplicateEntry({ environmentId, input: { cwd, relativePath } });
           if (result._tag === "Failure") {

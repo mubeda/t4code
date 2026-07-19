@@ -33,7 +33,11 @@ describe("FileEditingSessionRegistry", () => {
     const child = registry.getOrCreate("src/a.ts", () => fakeSession("src/a.ts"));
     const lookalike = registry.getOrCreate("srcfoo/b.ts", () => fakeSession("srcfoo/b.ts"));
 
-    const lease = await registry.beginPathMutation("src");
+    const lease = await registry.beginPathMutation({
+      kind: "rename",
+      fromRelativePath: "src",
+      toRelativePath: "lib",
+    });
     expect(lease).not.toBeNull();
     expect(child.settle).toHaveBeenCalledOnce();
     expect(child.pauseSaving).toHaveBeenCalledOnce();
@@ -48,7 +52,9 @@ describe("FileEditingSessionRegistry", () => {
     const session = registry.getOrCreate("src/a.ts", () => fakeSession("src/a.ts"));
     session.settle.mockResolvedValue("failed");
 
-    await expect(registry.beginPathMutation("src")).resolves.toBeNull();
+    await expect(
+      registry.beginPathMutation({ kind: "delete", relativePath: "src" }),
+    ).resolves.toBeNull();
     expect(session.pauseSaving).not.toHaveBeenCalled();
   });
 
@@ -56,13 +62,20 @@ describe("FileEditingSessionRegistry", () => {
     const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
     const session = registry.getOrCreate("src/nested/a.ts", () => fakeSession("src/nested/a.ts"));
 
-    const renameLease = await registry.beginPathMutation("src");
+    const renameLease = await registry.beginPathMutation({
+      kind: "rename",
+      fromRelativePath: "src",
+      toRelativePath: "lib",
+    });
     renameLease!.commitRename("lib");
     renameLease!.release();
     expect(session.rename).toHaveBeenCalledWith("lib/nested/a.ts");
     expect(registry.get("lib/nested/a.ts")).toBe(session);
 
-    const deleteLease = await registry.beginPathMutation("lib");
+    const deleteLease = await registry.beginPathMutation({
+      kind: "delete",
+      relativePath: "lib",
+    });
     deleteLease!.commitDelete();
     deleteLease!.release();
     expect(session.dispose).toHaveBeenCalledOnce();
@@ -83,7 +96,10 @@ describe("FileEditingSessionRegistry", () => {
       disposeRejected.dispose.mockImplementation(() => {
         throw new Error("dispose failed");
       });
-      const lease = await registry.beginPathMutation("src");
+      const lease = await registry.beginPathMutation({
+        kind: "delete",
+        relativePath: "src",
+      });
 
       expect(() => lease!.commitDelete()).not.toThrow();
       lease!.release();
@@ -107,7 +123,10 @@ describe("FileEditingSessionRegistry", () => {
         "[file-editing-session-registry] session cleanup failed",
         expect.objectContaining({ message: "dispose failed" }),
       );
-      const nextLease = await registry.beginPathMutation("src");
+      const nextLease = await registry.beginPathMutation({
+        kind: "delete",
+        relativePath: "src",
+      });
       expect(nextLease).not.toBeNull();
       nextLease!.release();
     } finally {
@@ -237,7 +256,11 @@ describe("FileEditingSessionRegistry", () => {
     const source = registry.getOrCreate("src/a.ts", () => fakeSession("src/a.ts"));
     const displaced = registry.getOrCreate("lib/a.ts", () => fakeSession("lib/a.ts"));
 
-    const lease = await registry.beginPathMutation("src");
+    const lease = await registry.beginPathMutation({
+      kind: "rename",
+      fromRelativePath: "src",
+      toRelativePath: "lib",
+    });
     lease!.commitRename("lib");
     lease!.release();
 
@@ -247,10 +270,50 @@ describe("FileEditingSessionRegistry", () => {
     expect(registry.get("lib/a.ts")).toBe(source);
   });
 
+  it("leases a rename destination and contains displaced-session cleanup failures", async () => {
+    const reportError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
+      const source = registry.getOrCreate("src/a.ts", () => fakeSession("src/a.ts"));
+      const displaced = registry.getOrCreate("lib/a.ts", () => fakeSession("lib/a.ts"));
+      displaced.dispose.mockImplementation(() => {
+        throw new Error("destination cleanup failed");
+      });
+
+      const lease = await registry.beginPathMutation({
+        kind: "rename",
+        fromRelativePath: "src",
+        toRelativePath: "lib",
+      });
+
+      expect(source.settle).toHaveBeenCalledOnce();
+      expect(displaced.settle).toHaveBeenCalledOnce();
+      expect(source.pauseSaving).toHaveBeenCalledOnce();
+      expect(displaced.pauseSaving).toHaveBeenCalledOnce();
+      expect(() => lease!.commitRename("lib")).not.toThrow();
+      lease!.release();
+
+      expect(displaced.discardPendingSave).toHaveBeenCalledOnce();
+      expect(displaced.dispose).toHaveBeenCalledOnce();
+      expect(displaced.resumeSaving).not.toHaveBeenCalled();
+      expect(source.rename).toHaveBeenCalledWith("lib/a.ts");
+      expect(registry.get("lib/a.ts")).toBe(source);
+      expect(reportError).toHaveBeenCalledWith(
+        "[file-editing-session-registry] session cleanup failed",
+        expect.objectContaining({ message: "destination cleanup failed" }),
+      );
+    } finally {
+      reportError.mockRestore();
+    }
+  });
+
   it("defers reconciliation teardown until an active mutation lease releases", async () => {
     const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
     const session = registry.getOrCreate("src/a.ts", () => fakeSession("src/a.ts"));
-    const lease = await registry.beginPathMutation("src/a.ts");
+    const lease = await registry.beginPathMutation({
+      kind: "delete",
+      relativePath: "src/a.ts",
+    });
     expect(lease).not.toBeNull();
 
     await registry.reconcile([]);
@@ -266,7 +329,11 @@ describe("FileEditingSessionRegistry", () => {
   it("waits to dispose a leased session until its rename outcome is known", async () => {
     const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
     const session = registry.getOrCreate("src/old.ts", () => fakeSession("src/old.ts"));
-    const lease = await registry.beginPathMutation("src/old.ts");
+    const lease = await registry.beginPathMutation({
+      kind: "rename",
+      fromRelativePath: "src/old.ts",
+      toRelativePath: "src/new.ts",
+    });
     expect(lease).not.toBeNull();
 
     let disposed = false;
@@ -290,7 +357,11 @@ describe("FileEditingSessionRegistry", () => {
     const session = registry.getOrCreate("src/old.ts", () => fakeSession("src/old.ts"));
     const lookalike = registry.getOrCreate("src/old.ts.bak", () => fakeSession("src/old.ts.bak"));
     await registry.reconcile(["src/old.ts", "src/old.ts.bak"]);
-    const lease = await registry.beginPathMutation("src/old.ts");
+    const lease = await registry.beginPathMutation({
+      kind: "rename",
+      fromRelativePath: "src/old.ts",
+      toRelativePath: "src/new.ts",
+    });
 
     lease!.commitRename("src/new.ts");
     lease!.release();
@@ -309,7 +380,10 @@ describe("FileEditingSessionRegistry", () => {
       const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
       const session = registry.getOrCreate("src/app.ts", () => fakeSession("src/app.ts"));
       session.settle.mockResolvedValueOnce("saved").mockRejectedValueOnce(new Error("save failed"));
-      const lease = await registry.beginPathMutation("src/app.ts");
+      const lease = await registry.beginPathMutation({
+        kind: "delete",
+        relativePath: "src/app.ts",
+      });
       let disposalCompleted = false;
       const disposal = registry.dispose().then(() => {
         disposalCompleted = true;

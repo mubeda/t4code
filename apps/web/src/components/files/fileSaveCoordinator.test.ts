@@ -207,6 +207,64 @@ describe("FileSaveCoordinator", () => {
     expect(onPendingChange.mock.calls.at(-1)).toEqual([false]);
   });
 
+  it("keeps Save disabled and the saving phase while a newer edit waits behind a write", async () => {
+    vi.useFakeTimers();
+    const firstWrite = deferred();
+    const coordinator = new FileSaveCoordinator({
+      debounceMs: 500,
+      persist: vi
+        .fn<(contents: string) => Promise<AtomCommandResult<void, never>>>()
+        .mockReturnValueOnce(firstWrite.promise)
+        .mockResolvedValueOnce(AsyncResult.success(undefined)),
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+    });
+
+    coordinator.change("first");
+    await vi.advanceTimersByTimeAsync(500);
+    coordinator.change("edited while saving");
+
+    expect(coordinator.getSnapshot()).toMatchObject({
+      phase: "saving",
+      canSave: false,
+    });
+
+    firstWrite.resolve(AsyncResult.success(undefined));
+    await vi.runAllTimersAsync();
+    expect(coordinator.getSnapshot()).toMatchObject({
+      phase: "clean",
+      canSave: false,
+    });
+  });
+
+  it("keeps pending edits unflushable while saving is paused for a mutation", () => {
+    const coordinator = new FileSaveCoordinator({
+      debounceMs: 500,
+      persist: vi.fn().mockResolvedValue(AsyncResult.success(undefined)),
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+    });
+
+    coordinator.change("before mutation");
+    coordinator.pauseSaving();
+    expect(coordinator.getSnapshot()).toMatchObject({
+      phase: "pending",
+      canSave: false,
+    });
+
+    coordinator.change("edited during mutation");
+    expect(coordinator.getSnapshot()).toMatchObject({
+      phase: "pending",
+      canSave: false,
+    });
+
+    coordinator.resumeSaving();
+    expect(coordinator.getSnapshot()).toMatchObject({
+      phase: "pending",
+      canSave: true,
+    });
+  });
+
   it("leaves the file pending when the latest write fails", async () => {
     vi.useFakeTimers();
     const onPendingChange = vi.fn();

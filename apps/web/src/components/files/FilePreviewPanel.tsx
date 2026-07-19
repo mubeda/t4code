@@ -662,11 +662,6 @@ export default function FilePreviewPanel({
     file,
     onPendingChange,
   });
-  const sessionSnapshot = useSyncExternalStore(
-    session?.subscribe ?? subscribeUnavailable,
-    session?.getSnapshot ?? readUnavailable,
-    session?.getSnapshot ?? readUnavailable,
-  );
   const [explorerOpen, setExplorerOpen] = useState(initialExplorerOpen);
   const [markdownSourceView, setMarkdownSourceView] = useState<{
     path: string | null;
@@ -677,6 +672,14 @@ export default function FilePreviewPanel({
   const renderMarkdownSource =
     isMarkdown && (markdownSourceView.path === relativePath || revealLine !== null);
   const renderMarkdown = isMarkdown && !renderMarkdownSource && !file.data?.truncated;
+  if (session && file.data && !file.data.truncated && !renderMarkdown) {
+    void session.editor;
+  }
+  const sessionSnapshot = useSyncExternalStore(
+    session?.subscribe ?? subscribeUnavailable,
+    session?.getSnapshot ?? readUnavailable,
+    session?.getSnapshot ?? readUnavailable,
+  );
   const canOpenInBrowser =
     relativePath !== null && isPreviewSupportedInRuntime() && isBrowserPreviewFile(relativePath);
   const absolutePath = relativePath ? resolvePathLinkTarget(relativePath, cwd) : null;
@@ -946,9 +949,7 @@ export default function FilePreviewPanel({
               threadRef={threadRef}
               availableEditors={availableEditors}
               onOpenFile={onOpenFile}
-              onBeginPathMutation={(mutationPath) =>
-                editingSessions.beginPathMutation(mutationPath)
-              }
+              onBeginPathMutation={(request) => editingSessions.beginPathMutation(request)}
             />
           </aside>
         ) : null}
