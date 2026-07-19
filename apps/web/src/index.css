@@ -1,5 +1,14 @@
 @import "tailwindcss";
 
+@font-face {
+  font-family: "T4Code Symbols Nerd Font Mono";
+  src: url("./assets/fonts/nerd-fonts-symbols/SymbolsNerdFontMono-Regular.woff2")
+    format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+}
+
 @custom-variant dark (&:is(.dark, .dark *));
 
 :root {
