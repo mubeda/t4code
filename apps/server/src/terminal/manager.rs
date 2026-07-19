@@ -516,6 +516,17 @@ impl TerminalManager {
                     }
                 };
 
+                let _lifecycle = activity_inner.lifecycle.lock().await;
+                let registered = {
+                    let sessions = activity_inner.sessions.read().await;
+                    let session = activity_session.lock().await;
+                    sessions
+                        .get(&(session.thread_id.clone(), session.terminal_id.clone()))
+                        .is_some_and(|current| Arc::ptr_eq(current, &activity_session))
+                };
+                if !registered {
+                    return;
+                }
                 let activity = {
                     let mut session = activity_session.lock().await;
                     if session.status != TerminalStatus::Running
@@ -1014,6 +1025,115 @@ mod tests {
             processes.push(process.clone());
             Ok(process)
         }
+    }
+
+    #[derive(Debug)]
+    struct ControllableSubprocessInspector {
+        started: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        inspection: SubprocessInspection,
+    }
+
+    impl TerminalSubprocessInspector for ControllableSubprocessInspector {
+        fn inspect(
+            &self,
+            _terminal_pid: u32,
+        ) -> Pin<Box<dyn Future<Output = Result<SubprocessInspection, String>> + Send + '_>>
+        {
+            Box::pin(async move {
+                self.started.notify_one();
+                self.release.notified().await;
+                Ok(self.inspection.clone())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn close_during_in_flight_subprocess_inspection_does_not_resurrect_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend::default());
+        let inspector = Arc::new(ControllableSubprocessInspector {
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            inspection: SubprocessInspection {
+                has_running_subprocess: true,
+                child_command_label: Some("codex".to_owned()),
+                process_ids: vec![1, 2],
+            },
+        });
+        let manager = TerminalManager::new(
+            backend,
+            TerminalManagerOptions {
+                subprocess_poll_interval: Duration::from_millis(1),
+                subprocess_inspector: Some(inspector.clone()),
+                ..TerminalManagerOptions::default()
+            },
+        );
+        let mut events = manager.subscribe_events();
+        let mut metadata = manager.subscribe_metadata().await;
+
+        manager
+            .open(TerminalOpenInput::new(
+                "thread-race",
+                "term-race",
+                root.path().to_path_buf(),
+                80,
+                24,
+            ))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), inspector.started.notified())
+            .await
+            .expect("subprocess inspection did not start");
+
+        manager.close("thread-race", Some("term-race")).await;
+
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
+                .await
+                .expect("closed event timeout")
+                .expect("terminal event sender");
+            if matches!(
+                event,
+                TerminalEvent::Closed {
+                    ref thread_id,
+                    ref terminal_id,
+                    ..
+                } if thread_id == "thread-race" && terminal_id == "term-race"
+            ) {
+                break;
+            }
+        }
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(2), metadata.recv())
+                .await
+                .expect("metadata remove timeout")
+                .expect("metadata event sender");
+            if matches!(
+                event,
+                TerminalMetadataEvent::Remove {
+                    ref thread_id,
+                    ref terminal_id,
+                } if thread_id == "thread-race" && terminal_id == "term-race"
+            ) {
+                break;
+            }
+        }
+
+        inspector.release.notify_one();
+
+        let (event_after_close, metadata_after_close) = tokio::join!(
+            tokio::time::timeout(Duration::from_millis(100), events.recv()),
+            tokio::time::timeout(Duration::from_millis(100), metadata.recv()),
+        );
+        assert!(
+            event_after_close.is_err(),
+            "terminal event emitted after close: {event_after_close:?}"
+        );
+        assert!(
+            metadata_after_close.is_err(),
+            "terminal metadata emitted after close: {metadata_after_close:?}"
+        );
     }
 
     #[tokio::test]
