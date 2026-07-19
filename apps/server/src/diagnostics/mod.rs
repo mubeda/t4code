@@ -12,12 +12,12 @@ pub use attribution::{
     ResourceAttributor,
 };
 pub use model::{
-    DescendantEntry, PROCESS_CLAIM_LABEL_MAX_SCALARS, PROCESS_COMMAND_MAX_SCALARS,
-    ProcessDiagnosticsResult, ProcessIdentity, ProcessResourceBucket, ProcessResourceHistory,
-    ProcessResourceSummary, ProcessRow, ProcessSample, bound_diagnostic_string,
-    build_descendant_entries, build_process_tree_entries,
+    AttributedProcessSample, BucketMetric, DescendantEntry, PROCESS_CLAIM_LABEL_MAX_SCALARS,
+    PROCESS_COMMAND_MAX_SCALARS, ProcessDiagnosticsResult, ProcessIdentity, ProcessResourceBucket,
+    ProcessResourceHistory, ProcessResourceSummary, ProcessRow, SplitMetric,
+    bound_diagnostic_string, build_descendant_entries, build_process_tree_entries,
 };
-pub use monitor::{DiagnosticsMonitor, ProcessSampler, SamplingError, SamplingLease};
+pub use monitor::{CurrentProcessDiagnostics, DiagnosticsMonitor, ProcessSampler, SamplingError};
 pub use native::{NativeProcessSampler, ProcessSignal, SignalError};
 pub use registry::{
     ProcessAttributionRegistry, ProcessRegistration, ProcessRegistrationMetadata,

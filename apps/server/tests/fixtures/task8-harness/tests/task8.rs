@@ -8,7 +8,8 @@ use std::{
 
 use t4code_task8_harness::{
     diagnostics::{
-        DiagnosticsMonitor, ProcessRow, ProcessSampler, SamplingError, build_descendant_entries,
+        AttributedProcessSnapshot, DiagnosticsMonitor, ProcessAttributionTotals, ProcessIdentity,
+        ProcessRow, ResourceSampler, SamplingError, UiCoverage, build_descendant_entries,
     },
     process::{
         OutputMode, Platform, ProcessRunInput, ProcessRunner, TimeoutBehavior,
@@ -556,33 +557,42 @@ struct CountingSampler {
     calls: Mutex<usize>,
 }
 
-impl ProcessSampler for CountingSampler {
+impl ResourceSampler for CountingSampler {
     fn sample(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<ProcessRow>, SamplingError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<AttributedProcessSnapshot, SamplingError>> + Send + '_>>
+    {
         Box::pin(async move {
             *self.calls.lock().expect("calls lock") += 1;
-            Ok(vec![ProcessRow::fixture(std::process::id(), 0, "server")])
+            Ok(AttributedProcessSnapshot {
+                sampled_at_ms: 1_000,
+                server_identity: ProcessIdentity {
+                    pid: std::process::id(),
+                    started_at: 1,
+                },
+                processes: Vec::new(),
+                totals: ProcessAttributionTotals::default(),
+                ui_coverage: UiCoverage::default(),
+            })
         })
     }
 }
 
 #[tokio::test(start_paused = true)]
-async fn diagnostics_sampling_only_runs_for_live_consumers() {
+async fn diagnostics_sampling_is_on_demand_and_has_no_background_timer() {
     let sampler = Arc::new(CountingSampler::default());
     let monitor = DiagnosticsMonitor::new(sampler.clone(), Duration::from_secs(5));
     tokio::time::advance(Duration::from_secs(20)).await;
     assert_eq!(*sampler.calls.lock().expect("calls lock"), 0);
 
-    let lease = monitor.subscribe();
-    tokio::task::yield_now().await;
+    let current = monitor.sample_current().await;
+    assert!(current.snapshot.is_some());
     assert_eq!(*sampler.calls.lock().expect("calls lock"), 1);
+    let history = monitor.read_history(60_000, 1_000).await;
+    assert_eq!(history.retained_sample_count, 1);
+    assert_eq!(*sampler.calls.lock().expect("calls lock"), 1);
+
     tokio::time::advance(Duration::from_secs(5)).await;
     tokio::task::yield_now().await;
-    assert_eq!(*sampler.calls.lock().expect("calls lock"), 2);
-
-    drop(lease);
-    tokio::time::advance(Duration::from_secs(20)).await;
-    assert_eq!(*sampler.calls.lock().expect("calls lock"), 2);
-    monitor.shutdown();
+    assert_eq!(*sampler.calls.lock().expect("calls lock"), 1);
 }
