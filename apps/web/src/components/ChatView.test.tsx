@@ -782,6 +782,7 @@ describe("ChatView", () => {
 
       const header = capturedProps<Record<string, unknown>>("chatHeader");
       expect(header["draftId"]).toBe(draftId);
+      expect(header["canCreatePanel"]).toBe(false);
     });
   });
 

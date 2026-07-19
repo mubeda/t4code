@@ -4,6 +4,7 @@ import {
   type TerminalLaunchCommand,
 } from "@t4code/contracts";
 
+import { decodeTerminalLaunchCommand } from "~/lib/terminalLaunchCommand";
 import type { ProviderInstanceEntry } from "~/providerInstances";
 
 interface ProviderTerminalDefinition {
@@ -38,7 +39,20 @@ export interface ProviderTerminalAction {
   readonly entry: ProviderInstanceEntry;
   readonly label: string;
   readonly command: TerminalLaunchCommand;
+  readonly disabledReason: null;
 }
+
+export interface DisabledProviderTerminalAction {
+  readonly entry: ProviderInstanceEntry;
+  readonly label: string;
+  readonly command: null;
+  readonly disabledReason: string;
+}
+
+export type ProviderTerminalActionItem = ProviderTerminalAction | DisabledProviderTerminalAction;
+
+const COMMAND_BOUNDS_REASON =
+  "Provider terminal command exceeds supported limits. Shorten the provider name or configured binary path.";
 
 function binaryPath(value: unknown): string | null {
   if (!value || typeof value !== "object") return null;
@@ -51,20 +65,30 @@ function binaryPath(value: unknown): string | null {
 export function resolveProviderTerminalAction(
   entry: ProviderInstanceEntry,
   settings: Pick<ServerSettings, "providerInstances" | "providers">,
-): ProviderTerminalAction | null {
+): ProviderTerminalActionItem | null {
   const definition = DEFINITIONS[entry.driverKind];
   if (!definition) return null;
   const instance = settings.providerInstances?.[entry.instanceId];
   const legacy = (settings.providers as Readonly<Record<string, unknown>>)[entry.driverKind];
   const executable = binaryPath(instance?.config) ?? binaryPath(legacy) ?? definition.executable;
   const label = `${entry.displayName} Terminal`;
+  const command = decodeTerminalLaunchCommand({
+    executable,
+    args: [...definition.args],
+    label,
+  });
+  if (command === null) {
+    return {
+      entry,
+      label,
+      command: null,
+      disabledReason: COMMAND_BOUNDS_REASON,
+    };
+  }
   return {
     entry,
     label,
-    command: {
-      executable,
-      args: [...definition.args],
-      label,
-    },
+    command,
+    disabledReason: null,
   };
 }

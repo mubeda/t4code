@@ -69,6 +69,11 @@ describe("CenterTerminalPanel", () => {
           threadId: ThreadId.make("thread-1"),
         }}
         surface={surface}
+        launchContext={{
+          cwd: "/repo/.t4code/worktrees/feature",
+          worktreePath: "/repo/.t4code/worktrees/feature",
+          runtimeEnv: { T4CODE_PROJECT_ROOT: "/repo" },
+        }}
         keybindings={{} as never}
         focusRequestId={1}
         onAddTerminalContext={vi.fn()}
@@ -87,5 +92,28 @@ describe("CenterTerminalPanel", () => {
     expect(
       (h.drawerProps!["terminalLabelsById"] as ReadonlyMap<string, string>).get("term-1"),
     ).toBe("Codex Terminal");
+  });
+
+  it("does not mount an attach layer without a resolved live-thread launch context", () => {
+    renderToStaticMarkup(
+      <CenterTerminalPanel
+        threadRef={{
+          environmentId: EnvironmentId.make("environment-1"),
+          threadId: ThreadId.make("thread-1"),
+        }}
+        surface={{
+          id: "terminal:term-1",
+          kind: "terminal",
+          terminalId: "term-1",
+        }}
+        launchContext={null}
+        keybindings={{} as never}
+        focusRequestId={1}
+        onAddTerminalContext={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(h.drawerProps).toBeNull();
   });
 });
