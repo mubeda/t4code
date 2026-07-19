@@ -117,10 +117,17 @@ vp run dist:desktop:dmg:arm64
 
 Test totals observed during final validation:
 
-- `vp test`: 476 test files and 6,272 tests passed.
+- `vp test`: 477 test files and 6,273 tests passed.
 - `vp run test`: all 9 package test scripts passed.
 - Desktop E2E support tests: 7 files and 22 tests passed.
 - Packaged desktop UI: all 3 specs passed.
+
+One earlier recursive package run observed a single HTTP 400 from the mock
+update server's byte-range test. The route does not emit that status and the
+failure did not reproduce: the focused test passed 20 consecutive runs, the
+complete scripts suite passed 10 consecutive runs, and the complete recursive
+package gate passed on retry. No product or assertion change was made for the
+non-reproducing test-environment transient.
 
 The first Node 26 packaged-UI run found a real interoperability regression:
 WebdriverIO supplied a manual `Content-Length` header across two Undici fetch
