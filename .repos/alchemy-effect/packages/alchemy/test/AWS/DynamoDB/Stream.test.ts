@@ -1,20 +1,22 @@
 import * as AWS from "@/AWS";
-import * as Test from "@/Test/Vitest";
+import * as Test from "@/Test/Alchemy";
 import * as DynamoDB from "@distilled.cloud/aws/dynamodb";
 import * as Lambda from "@distilled.cloud/aws/lambda";
 import * as SQS from "@distilled.cloud/aws/sqs";
-import { describe, expect } from "@effect/vitest";
+import { describe, expect } from "alchemy-test";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
+import * as Layer from "effect/Layer";
 import DynamoDBStreamFunctionLive, {
   DynamoDBStreamFunction,
   TableAndQueue,
+  TableAndQueueLive,
 } from "./stream-handler.ts";
 
 const { test } = Test.make({ providers: AWS.providers() });
 
-describe.sequential("AWS.DynamoDB.Stream", () => {
+describe.skipIf(!!process.env.FAST).sequential("AWS.DynamoDB.Stream", () => {
   test.provider(
     "processes real DynamoDB stream records through Lambda",
     (stack) =>
@@ -32,7 +34,11 @@ describe.sequential("AWS.DynamoDB.Stream", () => {
             const func = yield* DynamoDBStreamFunction;
 
             return { table, queue, streamFunction: func };
-          }).pipe(Effect.provide(DynamoDBStreamFunctionLive)),
+          }).pipe(
+            Effect.provide(
+              Layer.mergeAll(DynamoDBStreamFunctionLive, TableAndQueueLive),
+            ),
+          ),
         );
 
         const streamState = yield* waitForTableStreamSpecification(
@@ -106,9 +112,10 @@ const waitForEventSourceMappingEnabled = Effect.fn(function* (
     }),
     Effect.retry({
       while: (error) => error._tag === "EventSourceMappingNotReady",
-      schedule: Schedule.fixed("2 seconds").pipe(
-        Schedule.both(Schedule.recurs(20)),
-      ),
+      schedule: Schedule.max([
+        Schedule.fixed("2 seconds"),
+        Schedule.recurs(20),
+      ]),
     }),
   );
 });
@@ -139,9 +146,10 @@ const waitForTableStreamSpecification = Effect.fn(function* (
     }),
     Effect.retry({
       while: (error) => error._tag === "TableStreamConfigurationNotReady",
-      schedule: Schedule.fixed("2 seconds").pipe(
-        Schedule.both(Schedule.recurs(20)),
-      ),
+      schedule: Schedule.max([
+        Schedule.fixed("2 seconds"),
+        Schedule.recurs(20),
+      ]),
     }),
   );
 });
@@ -174,9 +182,10 @@ const waitForQueueMessage = Effect.fn(function* (queueUrl: string) {
     }),
     Effect.retry({
       while: (error) => error._tag === "StreamMessageNotReady",
-      schedule: Schedule.fixed("5 seconds").pipe(
-        Schedule.both(Schedule.recurs(72)), // 72 * (5s sleep + up to 20s poll) ~= 6min budget
-      ),
+      schedule: Schedule.max([
+        Schedule.fixed("5 seconds"),
+        Schedule.recurs(72),
+      ]),
     }),
   );
 });

@@ -5,13 +5,13 @@ use std::{
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     RpcRegistry, RpcRequest, RpcResult, RpcStreamChunk,
+    crypto::sha256_hex,
     mcp::preview_automation::{
         PreviewAutomationBroker, PreviewAutomationHost, PreviewAutomationOperation,
         PreviewAutomationResponse, PreviewAutomationStreamEvent,
@@ -600,7 +600,7 @@ fn normalize_review_result(mut value: Value) -> RpcResult {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        let hash = format!("{:x}", Sha256::digest(diff.as_bytes()));
+        let hash = sha256_hex(diff.as_bytes());
         *source = json!({
             "id": format!("source-{index}-{path}"),
             "kind": "working-tree",

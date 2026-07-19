@@ -187,10 +187,50 @@ pub enum SignalError {
     Read(String),
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn native_sampler_refreshes_repeatedly_and_keeps_the_current_process() {
+        let sampler = NativeProcessSampler::default();
+
+        for _ in 0..3 {
+            let rows = sampler.sample().await.expect("processes should sample");
+            let current = rows
+                .iter()
+                .find(|row| row.pid == std::process::id())
+                .expect("current test process should remain visible");
+            assert!(current.cpu_percent.is_finite());
+            assert!(current.cpu_core_percent.is_some_and(f32::is_finite));
+            assert!(current.rss_bytes > 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn native_sampler_reports_missing_and_terminated_processes() {
+        let sampler = NativeProcessSampler::default();
+        assert!(matches!(
+            signal_pid(&sampler.system, u32::MAX, ProcessSignal::Kill),
+            Err(SignalError::NotFound(u32::MAX))
+        ));
+
+        let mut child = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .arg("--list")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("short-lived child");
+        let pid = child.id();
+        child.wait().expect("child should exit");
+
+        assert!(matches!(
+            signal_pid(&sampler.system, pid, ProcessSignal::Kill),
+            Err(SignalError::NotFound(missing)) if missing == pid
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn native_sampler_excludes_linux_threads_from_process_rows() {
         let sampler = NativeProcessSampler::default();

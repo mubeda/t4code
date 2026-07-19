@@ -8,7 +8,7 @@ describe("referenceRepos", () => {
       {
         id: "effect-smol",
         prefix: ".repos/effect-smol",
-        repository: "https://github.com/Effect-TS/effect-smol.git",
+        repository: "https://github.com/Effect-TS/effect.git",
         latestRef: "main",
         versionSourcePath: "pnpm-workspace.yaml",
         packageVersionPath: ["catalog", "effect"],
@@ -22,7 +22,8 @@ describe("referenceRepos", () => {
         versionSourcePath: "infra/relay/package.json",
         packageVersionPath: ["dependencies", "alchemy"],
         versionTagPrefix: "v",
-        prunePaths: [".gitmodules", ".vendor/alchemy"],
+        packageSourceRefPrefix: "https://pkg.ing/alchemy/",
+        prunePaths: [".gitmodules", ".vendor/alchemy", "cloudflare-tools", "distilled"],
       },
     ]);
   });

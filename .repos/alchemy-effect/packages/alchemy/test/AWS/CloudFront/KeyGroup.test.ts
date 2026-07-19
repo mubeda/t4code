@@ -1,8 +1,9 @@
 import * as AWS from "@/AWS";
 import { KeyGroup, PublicKey } from "@/AWS/CloudFront";
-import * as Test from "@/Test/Vitest";
+import * as Provider from "@/Provider";
+import * as Test from "@/Test/Alchemy";
 import * as cloudfront from "@distilled.cloud/aws/cloudfront";
-import { describe, expect } from "@effect/vitest";
+import { describe, expect } from "alchemy-test";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 
@@ -100,6 +101,39 @@ describe("AWS.CloudFront.KeyGroup", () => {
       }),
     { timeout: 300_000 },
   );
+
+  test.provider.skipIf(!runLive)(
+    "list enumerates the deployed key group",
+    (stack) =>
+      Effect.gen(function* () {
+        yield* stack.destroy();
+
+        const deployed = yield* stack.deploy(
+          Effect.gen(function* () {
+            const primary = yield* PublicKey("PrimarySigningKey", {
+              encodedKey: PRIMARY_PUBLIC_KEY,
+              comment: "primary",
+            });
+            const group = yield* KeyGroup("ListKeyGroup", {
+              comment: "list",
+              items: [primary.publicKeyId],
+            });
+            return { group };
+          }),
+        );
+
+        const provider = yield* Provider.findProvider(KeyGroup);
+        const all = yield* provider.list();
+
+        expect(
+          all.some((g) => g.keyGroupId === deployed.group.keyGroupId),
+        ).toBe(true);
+
+        yield* stack.destroy();
+        yield* assertKeyGroupDeleted(deployed.group.keyGroupId);
+      }),
+    { timeout: 300_000 },
+  );
 });
 
 const assertKeyGroupDeleted = (id: string) =>
@@ -109,8 +143,9 @@ const assertKeyGroupDeleted = (id: string) =>
     Effect.retry({
       while: (error) =>
         error instanceof Error && error.message === "KeyGroupStillExists",
-      schedule: Schedule.fixed("5 seconds").pipe(
-        Schedule.both(Schedule.recurs(24)),
-      ),
+      schedule: Schedule.max([
+        Schedule.fixed("5 seconds"),
+        Schedule.recurs(24),
+      ]),
     }),
   );

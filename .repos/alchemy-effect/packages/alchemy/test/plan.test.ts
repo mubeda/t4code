@@ -1,9 +1,10 @@
-import { AdoptPolicy, Unowned } from "@/AdoptPolicy";
-import * as Construct from "@/Construct";
+import { adopt, AdoptPolicy, Unowned } from "@/AdoptPolicy";
 import { dedupeBindings } from "@/Diff";
 import type { Input, InputProps } from "@/Input";
+import * as Namespace from "@/Namespace.ts";
 import * as Output from "@/Output";
 import * as Plan from "@/Plan";
+import * as Provider from "@/Provider";
 import { UnsatisfiedResourceCycle } from "@/Plan";
 import type { ResourceBinding } from "@/Resource";
 import * as Stack from "@/Stack";
@@ -15,20 +16,25 @@ import {
   type ResourceState,
   type ResourceStatus,
 } from "@/State";
-import * as Test from "@/Test/Vitest";
-import { describe, expect } from "@effect/vitest";
+import * as Test from "@/Test/Alchemy";
+import { describe, expect } from "alchemy-test";
 import * as Cause from "effect/Cause";
+import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import {
+  AliasedWidget,
+  aliasedWidgetProvider,
   ArtifactProbe,
   BindingTarget,
   Bucket,
   Function,
+  KindStablesResource,
   NoPrecreateBindingTarget,
+  OverrideStablesResource,
   Queue,
   TestLayers,
   TestResource,
@@ -157,12 +163,10 @@ test(
         downstream: [],
       },
     });
-    const Site = Construct.fn(function* (
-      _id: string,
-      props: { value: string },
-    ) {
-      return yield* ArtifactProbe("Shared", { value: props.value });
-    });
+    const Site = (id: string, props: { value: string }) =>
+      Effect.gen(function* () {
+        return yield* ArtifactProbe("Shared", { value: props.value });
+      }).pipe(Namespace.push(id));
 
     const plan = yield* Effect.gen(function* () {
       const left = yield* Site("Left", { value: "left-v2" });
@@ -275,6 +279,46 @@ test(
         "empty object",
       ),
     });
+  }),
+);
+
+test(
+  "plan downstream resources when a stable kind shadows an output discriminator",
+  Effect.gen(function* () {
+    yield* seed({
+      Database: {
+        instanceId,
+        providerVersion: 0,
+        logicalId: "Database",
+        fqn: "Database",
+        namespace: undefined,
+        resourceType: "Test.KindStablesResource",
+        status: "created",
+        props: {
+          value: "v1",
+        },
+        attr: {
+          kind: "postgresql",
+          value: "v1",
+          upstreamKind: undefined,
+        },
+        bindings: [],
+        downstream: [],
+      },
+    });
+
+    const plan = yield* Effect.gen(function* () {
+      const database = yield* KindStablesResource("Database", {
+        value: "v2",
+      });
+      yield* KindStablesResource("Role", {
+        value: "role",
+        upstream: database,
+      });
+    }).pipe(makePlan);
+
+    expect(plan.resources.Database!.action).toBe("update");
+    expect(plan.resources.Role!.action).toBe("create");
   }),
 );
 
@@ -1121,21 +1165,22 @@ describe("construct namespaces", () => {
   test(
     "namespaced construct bindings resolve into the plan graph",
     Effect.gen(function* () {
-      const Site = Construct.fn(function* (_id: string, _props: {}) {
-        const bucket = yield* BindingTarget("Bucket", {
-          name: "bucket",
-        });
-        const distribution = yield* BindingTarget("Distribution", {
-          name: "distribution",
-        });
-        yield* bucket.bind("Policy", {
-          env: {
-            BUCKET: bucket.string,
-            DISTRIBUTION: distribution.string,
-          },
-        });
-        return { bucket, distribution };
-      });
+      const Site = (id: string, _props: {}) =>
+        Effect.gen(function* () {
+          const bucket = yield* BindingTarget("Bucket", {
+            name: "bucket",
+          });
+          const distribution = yield* BindingTarget("Distribution", {
+            name: "distribution",
+          });
+          yield* bucket.bind("Policy", {
+            env: {
+              BUCKET: bucket.string,
+              DISTRIBUTION: distribution.string,
+            },
+          });
+          return { bucket, distribution };
+        }).pipe(Namespace.push(id));
 
       const plan = yield* Effect.gen(function* () {
         yield* Site("MarketingSite", {});
@@ -1189,14 +1234,12 @@ describe("construct namespaces", () => {
   test(
     "same child logical ids in different constructs do not collide",
     Effect.gen(function* () {
-      const Site = Construct.fn(function* (
-        _id: string,
-        props: { name: string },
-      ) {
-        return yield* Bucket("Bucket", {
-          name: props.name,
-        });
-      });
+      const Site = (id: string, props: { name: string }) =>
+        Effect.gen(function* () {
+          return yield* Bucket("Bucket", {
+            name: props.name,
+          });
+        }).pipe(Namespace.push(id));
 
       const plan = yield* Effect.gen(function* () {
         yield* Site("MarketingSite", {
@@ -1233,27 +1276,28 @@ describe("construct namespaces", () => {
   test(
     "binding-only cycles inside a construct do not become downstream edges",
     Effect.gen(function* () {
-      const Site = Construct.fn(function* (_id: string, _props: {}) {
-        const A = yield* BindingTarget("A", {
-          string: "a-value",
-        });
-        const B = yield* BindingTarget("B", {
-          string: "b-value",
-        });
+      const Site = (id: string, _props: {}) =>
+        Effect.gen(function* () {
+          const A = yield* BindingTarget("A", {
+            string: "a-value",
+          });
+          const B = yield* BindingTarget("B", {
+            string: "b-value",
+          });
 
-        yield* A.bind("FromB", {
-          env: {
-            PEER: B.string,
-          },
-        });
-        yield* B.bind("FromA", {
-          env: {
-            PEER: A.string,
-          },
-        });
+          yield* A.bind("FromB", {
+            env: {
+              PEER: B.string,
+            },
+          });
+          yield* B.bind("FromA", {
+            env: {
+              PEER: A.string,
+            },
+          });
 
-        return { A, B };
-      });
+          return { A, B };
+        }).pipe(Namespace.push(id));
 
       const plan = yield* Effect.gen(function* () {
         yield* Site("MarketingSite", {});
@@ -2193,6 +2237,204 @@ describe("stable properties should not cause downstream changes", () => {
   );
 });
 
+describe("whole-resource refs resolve to the upstream's stable attributes", () => {
+  // Regression: when a resource is referenced *whole* (e.g. `object: A`)
+  // rather than via a single prop (`A.stableString`), and the upstream is
+  // being updated in place, `resolveResource` returns a `ResourceExpr`
+  // carrying only the stable attributes. Previously `resolveInput` handed
+  // that `ResourceExpr` to the downstream verbatim, so its `news` looked
+  // unresolved (`isResolved(news) === false`) and the stable values never
+  // reached the downstream `diff`. This forced the Neon `Branch` to manually
+  // extract `project.projectId` as a workaround. The engine must instead
+  // materialize the known stable attributes into a plain object so the
+  // stable values flow into the diff and the downstream can no-op.
+  const seedUpdatingUpstream = () =>
+    seed({
+      A: {
+        instanceId,
+        providerVersion: 0,
+        logicalId: "A",
+        fqn: "A",
+        namespace: undefined,
+        resourceType: "Test.TestResource",
+        status: "created",
+        props: {
+          string: "old-value",
+        },
+        attr: {
+          string: "old-value",
+          stableString: "A",
+          stableArray: ["A"],
+        },
+        downstream: [],
+        bindings: [],
+      },
+    });
+
+  test(
+    "the whole-resource ref resolves to the upstream's stable attributes (not an Expr)",
+    Effect.gen(function* () {
+      yield* seedUpdatingUpstream();
+
+      let A: TestResource;
+      const plan = yield* Effect.gen(function* () {
+        // A is updated in place: `string` changes, but `stableString` /
+        // `stableArray` are declared stable by its diff.
+        A = yield* TestResource("A", { string: "new-value" });
+        // B (created fresh) references the WHOLE upstream resource, not a
+        // single prop — so its plan node carries the resolved `props`.
+        yield* TestResource("B", { object: A as any });
+      }).pipe(makePlan);
+
+      expect(plan.resources.A!.action).toBe("update");
+
+      const bProps = (plan.resources.B as any).props as TestResourceProps;
+      // The whole-resource ref must resolve to a fully-resolved plain object
+      // of the upstream's stable attributes — NOT an unresolved Expr.
+      expect(Output.isExpr(bProps.object)).toBe(false);
+      expect(bProps.object).toEqual({
+        stableString: "A",
+        stableArray: ["A"],
+      });
+    }),
+  );
+
+  test(
+    "a whole-resource ref to an updating upstream does not drag the downstream into an update",
+    Effect.gen(function* () {
+      yield* seedUpdatingUpstream();
+      yield* seed({
+        B: {
+          instanceId,
+          providerVersion: 0,
+          logicalId: "B",
+          fqn: "B",
+          namespace: undefined,
+          resourceType: "Test.TestResource",
+          status: "created",
+          // B's prior props captured the upstream's stable attributes —
+          // exactly what a materialized whole-resource ref resolves to.
+          props: {
+            object: { stableString: "A", stableArray: ["A"] } as any,
+          },
+          attr: {
+            string: "B",
+            stableString: "B",
+            stableArray: ["B"],
+          },
+          downstream: [],
+          bindings: [],
+        },
+      });
+
+      let A: TestResource;
+      const plan = yield* Effect.gen(function* () {
+        A = yield* TestResource("A", { string: "new-value" });
+        yield* TestResource("B", { object: A as any });
+      }).pipe(makePlan);
+
+      expect(plan.resources.A!.action).toBe("update");
+      // Only stable attributes flow in and they are unchanged, so the
+      // downstream no-ops instead of being dragged into a needless update.
+      expect(plan.resources.B!.action).toBe("noop");
+    }),
+  );
+});
+
+describe("diff.stables overrides provider.stables", () => {
+  // `A` is an OverrideStablesResource: provider `stables` is
+  // ["providerStable", "sharedStable"], but its `diff` returns
+  // ["diffStable", "sharedStable"] on a `string` change. The two lists
+  // disagree, so this exercises the override (not merge) semantics.
+  const seedUpstreamAndDownstream = (downstreamOldString: string) =>
+    seed({
+      A: {
+        instanceId,
+        providerVersion: 0,
+        logicalId: "A",
+        fqn: "A",
+        namespace: undefined,
+        resourceType: "Test.OverrideStablesResource",
+        status: "created",
+        props: { string: "old" },
+        attr: {
+          string: "old",
+          providerStable: "provider-A",
+          diffStable: "diff-A",
+          sharedStable: "shared-A",
+        },
+        downstream: [],
+        bindings: [],
+      },
+      B: {
+        instanceId,
+        providerVersion: 0,
+        logicalId: "B",
+        fqn: "B",
+        namespace: undefined,
+        resourceType: "Test.TestResource",
+        status: "created",
+        props: { string: downstreamOldString },
+        attr: {
+          string: downstreamOldString,
+          stableString: "B",
+          stableArray: ["B"],
+        },
+        downstream: [],
+        bindings: [],
+      },
+    });
+
+  const subtest = (
+    description: string,
+    accessor: (A: OverrideStablesResource) => any,
+    downstreamOldString: string,
+    expectedBAction: "update" | "noop",
+  ) =>
+    test(
+      description,
+      Effect.gen(function* () {
+        yield* seedUpstreamAndDownstream(downstreamOldString);
+        const plan = yield* Effect.gen(function* () {
+          const A = yield* OverrideStablesResource("A", { string: "new" });
+          yield* TestResource("B", { string: accessor(A) });
+        }).pipe(makePlan);
+
+        // A always updates: its `string` prop changed.
+        expect(plan.resources.A!.action).toBe("update");
+        expect(plan.resources.B!.action).toBe(expectedBAction);
+      }),
+    );
+
+  // `providerStable` is in `provider.stables` but OMITTED from the
+  // `diff.stables` returned for this update. Because `diff.stables` now
+  // overrides `provider.stables`, it is treated as changed and the
+  // downstream re-plans (update). Under the old merge it would wrongly
+  // stay stable and the downstream would no-op.
+  subtest(
+    "provider-only stable omitted by diff is treated as changed downstream",
+    (A) => A.providerStable,
+    "provider-A",
+    "update",
+  );
+
+  // `diffStable` is only in `diff.stables` -> stays stable -> downstream no-op.
+  subtest(
+    "diff-only stable keeps downstream stable",
+    (A) => A.diffStable,
+    "diff-A",
+    "noop",
+  );
+
+  // `sharedStable` is in both lists -> stays stable -> downstream no-op.
+  subtest(
+    "shared stable keeps downstream stable",
+    (A) => A.sharedStable,
+    "shared-A",
+    "noop",
+  );
+});
+
 describe("unsatisfied cycle detection", () => {
   const extractCycleDefect = <A, E>(
     exit: Exit.Exit<A, E>,
@@ -2358,6 +2600,59 @@ describe("unresolved plan inputs in diff should conservatively update", () => {
 
       expect(plan.resources.A.action).toBe("create");
       expect(plan.resources.B.action).toBe("update");
+    }),
+  );
+});
+
+describe("Config props are resolved through plan", () => {
+  test(
+    "a Config prop is resolved to its concrete value in the plan",
+    Effect.gen(function* () {
+      const plan = yield* Effect.gen(function* () {
+        yield* TestResource("A", {
+          string: Config.succeed("resolved-config-value") as any,
+        });
+      }).pipe(makePlan);
+
+      const node: any = plan.resources.A!;
+      expect(node.action).toBe("create");
+      const props = node.props as TestResourceProps;
+      expect(Config.isConfig(props.string)).toBe(false);
+      expect(props.string).toBe("resolved-config-value");
+    }),
+  );
+
+  test(
+    "a Config resolving to a Redacted keeps it wrapped in the plan",
+    Effect.gen(function* () {
+      const plan = yield* Effect.gen(function* () {
+        yield* TestResource("A", {
+          string: "x",
+          redacted: Config.succeed(Redacted.make("hunter2")) as any,
+        });
+      }).pipe(makePlan);
+
+      const node: any = plan.resources.A!;
+      expect(node.action).toBe("create");
+      const props = node.props as TestResourceProps;
+      expect(Redacted.isRedacted(props.redacted)).toBe(true);
+      expect(Redacted.value(props.redacted!)).toBe("hunter2");
+    }),
+  );
+
+  test(
+    "a Config nested inside an object prop is resolved in the plan",
+    Effect.gen(function* () {
+      const plan = yield* Effect.gen(function* () {
+        yield* TestResource("A", {
+          object: { string: Config.succeed("nested") as any },
+        });
+      }).pipe(makePlan);
+
+      const node: any = plan.resources.A!;
+      expect(node.action).toBe("create");
+      const props = node.props as TestResourceProps;
+      expect(props.object).toEqual({ string: "nested" });
     }),
   );
 });
@@ -2596,14 +2891,20 @@ describe("engine-level adoption", () => {
       // can't detect from `props` alone.
       expect(plan.resources.Adopted!.action).toBe("update");
 
+      // Planning no longer persists the adopted state (issue #793): it rides
+      // on the plan node and is only committed to the store at apply time.
+      const node = plan.resources.Adopted!;
+      expect(node.state?.status).toBe("created");
+      expect((node.state as any)?.attr).toMatchObject({ string: "hello" });
+
       const state = yield* yield* State;
-      const persisted = yield* state.get({
-        stack: TEST_STACK,
-        stage: TEST_STAGE,
-        fqn: "Adopted",
-      });
-      expect(persisted?.status).toBe("created");
-      expect((persisted as any)?.attr).toMatchObject({ string: "hello" });
+      expect(
+        yield* state.get({
+          stack: TEST_STACK,
+          stage: TEST_STAGE,
+          fqn: "Adopted",
+        }),
+      ).toBeUndefined();
     }),
   );
 
@@ -2626,22 +2927,29 @@ describe("engine-level adoption", () => {
       // foreign-owned to subsequent deploys).
       expect(plan.resources.Adopted!.action).toBe("update");
 
-      const state = yield* yield* State;
-      const persisted = yield* state.get({
-        stack: TEST_STACK,
-        stage: TEST_STAGE,
-        fqn: "Adopted",
-      });
-      expect(persisted?.status).toBe("created");
+      // The adopted state rides on the plan node, not the store (issue #793).
+      const node = plan.resources.Adopted!;
+      expect(node.state?.status).toBe("created");
 
       // The Unowned brand must be fully scrubbed from anything that
-      // reaches the state store — both via the public `Unowned.is`
-      // check *and* via direct symbol inspection (in case someone
-      // accidentally uses `Symbol.for` rather than `Unowned.is`).
-      const persistedAttr = (persisted as any)?.attr as object;
-      expect(Unowned.is(persistedAttr)).toBe(false);
-      expect(Object.getOwnPropertySymbols(persistedAttr).length).toBe(0);
-      expect(JSON.stringify(persistedAttr)).not.toContain("Unowned");
+      // reaches the plan node (and, at apply, the state store) — both via
+      // the public `Unowned.is` check *and* via direct symbol inspection
+      // (in case someone accidentally uses `Symbol.for` rather than
+      // `Unowned.is`).
+      const adoptedAttr = (node.state as any)?.attr as object;
+      expect(Unowned.is(adoptedAttr)).toBe(false);
+      expect(Object.getOwnPropertySymbols(adoptedAttr).length).toBe(0);
+      expect(JSON.stringify(adoptedAttr)).not.toContain("Unowned");
+
+      // Planning wrote nothing to the store.
+      const state = yield* yield* State;
+      expect(
+        yield* state.get({
+          stack: TEST_STACK,
+          stage: TEST_STAGE,
+          fqn: "Adopted",
+        }),
+      ).toBeUndefined();
     }),
   );
 
@@ -2679,6 +2987,63 @@ describe("engine-level adoption", () => {
 
       expect(plan.resources.Fresh!.action).toBe("create");
       expect(plan.resources.Fresh!.state).toBeUndefined();
+    }),
+  );
+
+  test(
+    "Unowned read result + resource-scoped adopt(true) -> takeover even when the stack default is disabled",
+    Effect.gen(function* () {
+      const plan = yield* makeAdoptPlan(
+        Effect.gen(function* () {
+          yield* TestResource("Adopted", { string: "hello" }).pipe(adopt(true));
+        }),
+        {
+          // Stack/CLI default is OFF — only the per-resource scope opts in.
+          adopt: false,
+          readHook: () => Effect.succeed(Unowned(ownedAttrs)),
+        },
+      );
+
+      expect(plan.resources.Adopted!.action).toBe("update");
+
+      // Adopted state rides on the plan node; planning persists nothing
+      // (issue #793).
+      const node = plan.resources.Adopted!;
+      expect(node.state?.status).toBe("created");
+
+      const state = yield* yield* State;
+      expect(
+        yield* state.get({
+          stack: TEST_STACK,
+          stage: TEST_STAGE,
+          fqn: "Adopted",
+        }),
+      ).toBeUndefined();
+    }),
+  );
+
+  test(
+    "Unowned read result + resource-scoped adopt(false) -> OwnedBySomeoneElse even when the stack default is enabled",
+    Effect.gen(function* () {
+      const exit = yield* makeAdoptPlan(
+        Effect.gen(function* () {
+          yield* TestResource("Foreign", { string: "hello" }).pipe(
+            adopt(false),
+          );
+        }),
+        {
+          // Stack/CLI default is ON, but the resource opts out.
+          adopt: true,
+          readHook: () => Effect.succeed(Unowned(ownedAttrs)),
+        },
+      ).pipe(Effect.exit);
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) {
+        const reason = exit.cause.reasons.find(Cause.isFailReason);
+        expect((reason?.error as any)?._tag).toBe("OwnedBySomeoneElse");
+        expect((reason?.error as any)?.resourceType).toBe("Test.TestResource");
+      }
     }),
   );
 
@@ -2878,4 +3243,106 @@ describe("StackRefExpr resolution", () => {
       }
     }),
   );
+});
+
+describe("type aliases", () => {
+  // State rows persisted before a type rename carry the legacy name
+  // ("Test.Widget"). Provider lookup must fall back to the canonical type
+  // ("Test.Widgets.Widget") via the alias declared on the resource.
+  const legacyWidgetState = (fqn: string): ResourceState => ({
+    instanceId,
+    providerVersion: 0,
+    logicalId: fqn,
+    fqn,
+    namespace: undefined,
+    resourceType: "Test.Widget",
+    status: "created",
+    props: {
+      name: "widget",
+    },
+    attr: {
+      name: "widget",
+    },
+    bindings: [],
+    downstream: [],
+  });
+
+  test(
+    "orphan persisted under a legacy type name plans a delete via alias",
+    Effect.gen(function* () {
+      yield* seed({ LegacyOrphan: legacyWidgetState("LegacyOrphan") });
+      expect(
+        yield* makePlan(Effect.void).pipe(
+          Effect.provide(aliasedWidgetProvider()),
+        ),
+      ).toMatchObject({
+        deletions: {
+          LegacyOrphan: {
+            action: "delete",
+            resource: {
+              LogicalId: "LegacyOrphan",
+              Type: "Test.Widget",
+            },
+          },
+        },
+      });
+    }),
+  );
+
+  test(
+    "declared resource with legacy-typed state plans as a noop update",
+    Effect.gen(function* () {
+      yield* seed({ MyWidget: legacyWidgetState("MyWidget") });
+      const plan = yield* makePlan(
+        Effect.gen(function* () {
+          yield* AliasedWidget("MyWidget", { name: "widget" });
+        }),
+      ).pipe(Effect.provide(aliasedWidgetProvider()));
+      expect(plan).toMatchObject({
+        resources: {
+          MyWidget: {
+            action: "noop",
+            state: {
+              resourceType: "Test.Widget",
+            },
+          },
+        },
+      });
+      expect(Object.keys(plan.deletions)).toEqual([]);
+    }),
+  );
+
+  describe("via provider collection", () => {
+    class AliasPlanProviders extends Provider.ProviderCollection<AliasPlanProviders>()(
+      "Test.AliasPlanProviders",
+    ) {}
+
+    // The bare provider layer is consumed while building the collection and
+    // is NOT exported — lookup can only succeed through the collection.
+    const widgetCollection = () =>
+      Layer.effect(
+        AliasPlanProviders,
+        Provider.collection([AliasedWidget]),
+      ).pipe(Layer.provide(aliasedWidgetProvider()));
+
+    test(
+      "orphan persisted under a legacy type name plans a delete via alias",
+      Effect.gen(function* () {
+        yield* seed({ LegacyOrphan: legacyWidgetState("LegacyOrphan") });
+        expect(
+          yield* makePlan(Effect.void).pipe(Effect.provide(widgetCollection())),
+        ).toMatchObject({
+          deletions: {
+            LegacyOrphan: {
+              action: "delete",
+              resource: {
+                LogicalId: "LegacyOrphan",
+                Type: "Test.Widget",
+              },
+            },
+          },
+        });
+      }),
+    );
+  });
 });

@@ -1,7 +1,6 @@
 use std::{collections::VecDeque, future::Future, path::PathBuf, pin::Pin, sync::Arc};
 
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -149,9 +148,7 @@ async fn read_claude_user_id(home_directory: &std::path::Path) -> Option<String>
 }
 
 fn sha256_hex(value: &str) -> String {
-    let mut digest = Sha256::new();
-    digest.update(value.as_bytes());
-    format!("{:x}", digest.finalize())
+    crate::crypto::sha256_hex(value)
 }
 
 #[cfg(test)]

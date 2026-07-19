@@ -885,8 +885,8 @@ export const make = Effect.gen(function* () {
 export const layer = Layer.effect(ManagedEndpointProvider, make);
 
 export const layerCloudflareBindings = (
-  tunnelClient: Cloudflare.TunnelReadWriteClient,
-  dnsClient: Cloudflare.DnsReadWriteClient,
+  tunnelClient: Cloudflare.Tunnel.ReadWriteTunnelClient,
+  dnsClient: Cloudflare.DNS.ReadWriteDnsClient,
   alchemyRuntimeContext: Alchemy.BaseRuntimeContext,
 ) =>
   layer.pipe(

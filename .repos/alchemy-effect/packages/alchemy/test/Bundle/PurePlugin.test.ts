@@ -6,7 +6,7 @@ import {
   resolvePackageName,
 } from "@/Bundle/PurePlugin";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it } from "alchemy-test";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -472,9 +472,14 @@ describe("Bundle.build with purePlugin", () => {
         );
 
         // Symlink the package under node_modules so rolldown can find it.
+        // Windows requires elevation for "dir" symlinks; junctions don't.
         const nm = path.join(root, "node_modules");
         yield* fs.makeDirectory(nm, { recursive: true });
-        nodeFs.symlinkSync(pkgDir, path.join(nm, "fake-ws"), "dir");
+        nodeFs.symlinkSync(
+          pkgDir,
+          path.join(nm, "fake-ws"),
+          process.platform === "win32" ? "junction" : "dir",
+        );
 
         const entry = path.join(root, "entry.ts");
         yield* fs.writeFileString(

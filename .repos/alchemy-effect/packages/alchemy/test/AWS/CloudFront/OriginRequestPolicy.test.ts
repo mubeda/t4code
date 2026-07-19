@@ -1,8 +1,9 @@
 import * as AWS from "@/AWS";
 import { OriginRequestPolicy } from "@/AWS/CloudFront";
-import * as Test from "@/Test/Vitest";
+import * as Provider from "@/Provider";
+import * as Test from "@/Test/Alchemy";
 import * as cloudfront from "@distilled.cloud/aws/cloudfront";
-import { describe, expect } from "@effect/vitest";
+import { describe, expect } from "alchemy-test";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 
@@ -86,6 +87,38 @@ describe("AWS.CloudFront.OriginRequestPolicy", () => {
       }),
     300_000,
   );
+
+  test.provider.skipIf(!runLive)(
+    "list enumerates the deployed origin request policy",
+    (stack) =>
+      Effect.gen(function* () {
+        yield* stack.destroy();
+
+        const deployed = yield* stack.deploy(
+          Effect.gen(function* () {
+            return yield* OriginRequestPolicy("ListOriginRequest", {
+              comment: "list",
+              headersConfig: { HeaderBehavior: "none" },
+              cookiesConfig: { CookieBehavior: "none" },
+              queryStringsConfig: { QueryStringBehavior: "none" },
+            });
+          }),
+        );
+
+        const provider = yield* Provider.findProvider(OriginRequestPolicy);
+        const all = yield* provider.list();
+
+        expect(
+          all.some(
+            (p) => p.originRequestPolicyId === deployed.originRequestPolicyId,
+          ),
+        ).toBe(true);
+
+        yield* stack.destroy();
+        yield* assertOriginRequestPolicyDeleted(deployed.originRequestPolicyId);
+      }),
+    { timeout: 300_000 },
+  );
 });
 
 const assertOriginRequestPolicyDeleted = (id: string) =>
@@ -98,8 +131,9 @@ const assertOriginRequestPolicyDeleted = (id: string) =>
       while: (error) =>
         error instanceof Error &&
         error.message === "OriginRequestPolicyStillExists",
-      schedule: Schedule.fixed("5 seconds").pipe(
-        Schedule.both(Schedule.recurs(24)),
-      ),
+      schedule: Schedule.max([
+        Schedule.fixed("5 seconds"),
+        Schedule.recurs(24),
+      ]),
     }),
   );

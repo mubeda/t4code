@@ -1,3 +1,4 @@
+import * as Config from "effect/Config";
 import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -22,7 +23,15 @@ export const of = <R extends ResourceLike>(
   : RefExpr<R["Attributes"]> => {
   if (isRef(resource)) {
     const metadata = getRefMetadata(resource);
-    return new RefExpr(metadata.stack, metadata.stage, metadata.id) as any;
+    return new RefExpr(
+      metadata.stack,
+      metadata.stage,
+      metadata.id,
+      // Surface the target's resource type as a statically-known
+      // property so duck-typing classifiers (Worker env bindings)
+      // identify the ref exactly like a locally-declared resource.
+      metadata.type !== undefined ? { Type: metadata.type } : undefined,
+    ) as any;
   }
   return new ResourceExpr(resource) as any;
 };
@@ -71,6 +80,8 @@ export type ToOutput<A, Req = never> = [Extract<A, object>] extends [never]
     : ArrayExpr<Extract<A, any[]>, Req>;
 
 export const ExprSymbol = Symbol.for("alchemy/Expr");
+
+const exprKind = (node: any): unknown => node?.[ExprSymbol]?.kind ?? node?.kind;
 
 export const isExpr = (value: any): value is Expr<any> =>
   value &&
@@ -145,7 +156,7 @@ export type ArrayExpr<A extends any[], Req = any> = Output<A, Req> & {
 
 export const isResourceExpr = <Value = any, Req = any>(
   node: Expr<Value, Req> | any,
-): node is ResourceExpr<Value, Req> => node?.kind === "ResourceExpr";
+): node is ResourceExpr<Value, Req> => exprKind(node) === "ResourceExpr";
 
 export class ResourceExpr<Value, Req = never> extends BaseExpr<Value, Req> {
   readonly kind = "ResourceExpr";
@@ -163,7 +174,7 @@ export class ResourceExpr<Value, Req = never> extends BaseExpr<Value, Req> {
 
 export const isPropExpr = <A = any, Prop extends keyof A = keyof A, Req = any>(
   node: any,
-): node is PropExpr<A, Prop, Req> => node?.kind === "PropExpr";
+): node is PropExpr<A, Prop, Req> => exprKind(node) === "PropExpr";
 
 export class PropExpr<
   A = any,
@@ -186,7 +197,7 @@ export class PropExpr<
 export const literal = <A>(value: A) => new LiteralExpr(value);
 
 export const isLiteralExpr = <A = any>(node: any): node is LiteralExpr<A> =>
-  node?.kind === "LiteralExpr";
+  exprKind(node) === "LiteralExpr";
 
 export class LiteralExpr<A> extends BaseExpr<A, never> {
   readonly kind = "LiteralExpr";
@@ -217,7 +228,7 @@ export const map: {
 //Output.ApplyExpr<any, any, ResourceLike, any>
 export const isApplyExpr = <In = any, Out = any, Req = any>(
   node: Output<Out, Req>,
-): node is ApplyExpr<In, Out, Req> => node?.kind === "ApplyExpr";
+): node is ApplyExpr<In, Out, Req> => exprKind(node) === "ApplyExpr";
 
 export class ApplyExpr<A, B, Req = never> extends BaseExpr<B, Req> {
   readonly kind = "ApplyExpr";
@@ -259,7 +270,7 @@ export const flatMap: {
 
 export const isFlatMapExpr = <In = any, Out = any, Req = any, Req2 = any>(
   node: any,
-): node is FlatMapExpr<In, Out, Req, Req2> => node?.kind === "FlatMapExpr";
+): node is FlatMapExpr<In, Out, Req, Req2> => exprKind(node) === "FlatMapExpr";
 
 export class FlatMapExpr<A, B, Req = never, Req2 = never> extends BaseExpr<
   B,
@@ -280,7 +291,7 @@ export class FlatMapExpr<A, B, Req = never, Req2 = never> extends BaseExpr<
 
 export const isEffectExpr = <In = any, Out = any, Req = any, Req2 = any>(
   node: any,
-): node is EffectExpr<In, Out, Req, Req2> => node?.kind === "EffectExpr";
+): node is EffectExpr<In, Out, Req, Req2> => exprKind(node) === "EffectExpr";
 
 export class EffectExpr<A, B, Req = never, Req2 = never> extends BaseExpr<
   B,
@@ -301,7 +312,7 @@ export class EffectExpr<A, B, Req = never, Req2 = never> extends BaseExpr<
 
 export const isNamedExpr = <A = any, Req = any>(
   node: any,
-): node is NamedExpr<A, Req> => node?.kind === "NamedExpr";
+): node is NamedExpr<A, Req> => exprKind(node) === "NamedExpr";
 
 /**
  * Wraps another `Expr` and overrides its `toString()` / inspect output.
@@ -352,7 +363,7 @@ type Tuple<
 
 export const isAllExpr = <Outs extends Expr[] = Expr[]>(
   node: any,
-): node is AllExpr<Outs> => node?.kind === "AllExpr";
+): node is AllExpr<Outs> => exprKind(node) === "AllExpr";
 
 export class AllExpr<Outs extends Expr[]> extends BaseExpr<Outs> {
   readonly kind = "AllExpr";
@@ -366,7 +377,7 @@ export class AllExpr<Outs extends Expr[]> extends BaseExpr<Outs> {
 }
 
 export const isRefExpr = <A = any>(node: any): node is RefExpr<A> =>
-  node?.kind === "RefExpr";
+  exprKind(node) === "RefExpr";
 
 export class RefExpr<A> extends BaseExpr<A, never> {
   readonly kind = "RefExpr";
@@ -374,6 +385,12 @@ export class RefExpr<A> extends BaseExpr<A, never> {
     public readonly stack: string | undefined,
     public readonly stage: string | undefined,
     public readonly resourceId: string,
+    /**
+     * Statically-known properties of the ref's target (currently its
+     * resource `Type`), served as literals by the proxy instead of
+     * `PropExpr`s — mirrors {@link ResourceExpr}'s `stables`.
+     */
+    readonly stables?: Record<string, any>,
   ) {
     super();
     return proxy(this);
@@ -384,7 +401,7 @@ export class RefExpr<A> extends BaseExpr<A, never> {
 }
 
 export const isStackRefExpr = <A = any>(node: any): node is StackRefExpr<A> =>
-  node?.kind === "StackRefExpr";
+  exprKind(node) === "StackRefExpr";
 
 /**
  * A reference to the persisted output of a Stack at `(stack, stage)`.
@@ -499,7 +516,9 @@ function proxy(self: any): any {
           ? self
           : prop === inspect
             ? target[inspect]
-            : isResourceExpr(self) && self.stables && prop in self.stables
+            : (isResourceExpr(self) || isRefExpr(self)) &&
+                self.stables &&
+                prop in self.stables
               ? self.stables[prop as keyof typeof self.stables]
               : prop in self
                 ? typeof self[prop as keyof typeof self] === "function" &&
@@ -552,7 +571,7 @@ export const evaluate: <A, Req = never>(
   },
 ) => Effect.Effect<
   A,
-  InvalidReferenceError | MissingSourceError,
+  InvalidReferenceError | MissingSourceError | Config.ConfigError,
   State.State | Req
 > = (expr, upstream) =>
   Effect.gen(function* () {
@@ -642,9 +661,12 @@ export const evaluate: <A, Req = never>(
     }
     if (Array.isArray(expr)) {
       return yield* Effect.all(expr.map((item) => evaluate(item, upstream)));
-    } else if (Redacted.isRedacted(expr)) {
-      return expr;
-    } else if (Duration.isDuration(expr)) {
+    } else if (Config.isConfig(expr)) {
+      // Resolve Config against the deploy environment — see resolveInput in
+      // Plan.ts for rationale. `Config.redacted` resolves to a `Redacted`,
+      // which stays opaque via the branch below.
+      return yield* evaluate(yield* expr, upstream);
+    } else if (Duration.isDuration(expr) || Redacted.isRedacted(expr)) {
       // Opaque value — see resolveInput in Plan.ts for rationale.
       return expr;
     } else if (typeof expr === "object" && expr !== null) {

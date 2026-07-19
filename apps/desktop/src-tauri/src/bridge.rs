@@ -1108,7 +1108,7 @@ fn dialog_file_path_to_string(path: tauri_plugin_dialog::FilePath) -> Result<Str
 }
 
 #[tauri::command]
-pub fn desktop_bridge_pick_folder(
+pub async fn desktop_bridge_pick_folder(
     app: AppHandle<DesktopRuntime>,
     options: Option<Value>,
 ) -> Result<Option<String>, String> {
@@ -1352,10 +1352,23 @@ pub fn desktop_bridge_install_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::Future;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::mpsc;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn pick_folder_command_is_async() {
+        fn assert_async_command<Command, CommandFuture>(_: Command)
+        where
+            Command: Fn(AppHandle<DesktopRuntime>, Option<Value>) -> CommandFuture,
+            CommandFuture: Future<Output = Result<Option<String>, String>> + Send,
+        {
+        }
+
+        assert_async_command(desktop_bridge_pick_folder);
+    }
 
     #[test]
     fn diagnostic_archive_filename_accepts_only_plain_zip_names() {
@@ -2324,7 +2337,7 @@ mod tests {
 
         // Use the generated application context so IPC exercises the same command
         // permissions as the production desktop shell.
-        let mut context = tauri::generate_context!();
+        let mut context = crate::desktop_context();
         context.config_mut().identifier = format!("com.t4code.bridge-tests-{}", std::process::id());
         let app = mock_builder()
             .manage(BackendSupervisor::new())
@@ -2382,7 +2395,13 @@ mod tests {
                     cmd: cmd.to_owned(),
                     callback: tauri::ipc::CallbackFn(0),
                     error: tauri::ipc::CallbackFn(1),
-                    url: "http://tauri.localhost".parse().unwrap(),
+                    url: if cfg!(any(windows, target_os = "android")) {
+                        "http://tauri.localhost"
+                    } else {
+                        "tauri://localhost"
+                    }
+                    .parse()
+                    .unwrap(),
                     body: tauri::ipc::InvokeBody::Json(body),
                     headers: Default::default(),
                     invoke_key: INVOKE_KEY.to_owned(),

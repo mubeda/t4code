@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsgo --noEmit",
+    "check:dependency-ledger": "node check-dependency-upgrade-ledger.ts",
+    "typecheck": "tsc --noEmit",
     "test": "vp test run"
   },
   "dependencies": {
