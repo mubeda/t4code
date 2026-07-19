@@ -108,7 +108,7 @@ describe("cross-platform CI contract", () => {
 
     expect(commands).toMatch(/vp install --frozen-lockfile/);
     expect(commands).toMatch(/node --version/);
-    expect(commands).toMatch(/pnpm --version/);
+    expect(commands).toMatch(/vp --version/);
     expect(commands).toMatch(/rustc --version/);
     expect(commands).toMatch(/vp run --filter @t4code\/web build/);
     expect(commands).toMatch(/vp run --filter @t4code\/desktop test/);
