@@ -125,6 +125,7 @@ import {
 import {
   HOST_SURFACE_ID,
   selectThreadCenterPanelState,
+  type OpenTerminalPanelOptions,
   useCenterPanelStore,
 } from "../centerPanelStore";
 import { useCenterPanelActions } from "../centerPanelActions";
@@ -209,6 +210,7 @@ import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
 import { ChatHeader } from "./chat/ChatHeader";
+import { type ProviderTerminalAction } from "./chat/providerTerminalActions";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { NoActiveThreadState } from "./NoActiveThreadState";
@@ -1360,16 +1362,30 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [activeThread, activeThreadRef, centerPanelActions],
   );
-  const handleOpenTerminalPanel = useCallback(() => {
-    if (!activeThreadRef) return;
-    const centerTerminalIds = centerPanelState.surfaces.flatMap((surface) =>
-      surface.kind === "terminal" ? [surface.terminalId] : [],
-    );
-    centerPanelActions.openTerminalPanel(activeThreadRef, [
-      ...activeKnownTerminalIds,
-      ...centerTerminalIds,
-    ]);
-  }, [activeKnownTerminalIds, activeThreadRef, centerPanelActions, centerPanelState.surfaces]);
+  const openCenterTerminal = useCallback(
+    (options?: OpenTerminalPanelOptions) => {
+      if (!activeThreadRef) return;
+      const currentCenterPanelState = selectThreadCenterPanelState(
+        useCenterPanelStore.getState().byThreadKey,
+        activeThreadRef,
+      );
+      const centerTerminalIds = currentCenterPanelState.surfaces.flatMap((surface) =>
+        surface.kind === "terminal" ? [surface.terminalId] : [],
+      );
+      centerPanelActions.openTerminalPanel(
+        activeThreadRef,
+        [...activeKnownTerminalIds, ...centerTerminalIds],
+        options,
+      );
+    },
+    [activeKnownTerminalIds, activeThreadRef, centerPanelActions],
+  );
+  const handleOpenTerminalPanel = useCallback(() => openCenterTerminal(), [openCenterTerminal]);
+  const handleOpenProviderTerminalPanel = useCallback(
+    (action: ProviderTerminalAction) =>
+      openCenterTerminal({ label: action.label, command: action.command }),
+    [openCenterTerminal],
+  );
   const [timelineAnchor, setTimelineAnchor] = useState<{
     readonly threadKey: string | null;
     readonly messageId: MessageId | null;
@@ -5093,6 +5109,7 @@ function ChatViewContent(props: ChatViewProps) {
               canCreatePanel={activeThreadRef !== null}
               onCreateChatPanel={handleCreateChatPanel}
               onOpenTerminalPanel={handleOpenTerminalPanel}
+              onOpenProviderTerminalPanel={handleOpenProviderTerminalPanel}
               onRunProjectScript={runProjectScript}
               onAddProjectScript={saveProjectScript}
               onUpdateProjectScript={updateProjectScript}

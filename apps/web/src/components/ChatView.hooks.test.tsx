@@ -2097,6 +2097,34 @@ describe("ChatView project script handlers", () => {
     (header["onOpenTerminalPanel"] as () => void)();
     const centerState = useCenterPanelStore.getState().byThreadKey[threadKey];
     expect(centerState?.surfaces.some((surface) => surface.kind === "terminal")).toBe(true);
+
+    const providerTerminalAction = {
+      entry,
+      label: "Codex Terminal",
+      command: {
+        executable: "/opt/codex",
+        args: ["--dangerously-bypass-approvals-and-sandbox"],
+        label: "Codex Terminal",
+      },
+    };
+    (header["onOpenProviderTerminalPanel"] as (action: typeof providerTerminalAction) => void)(
+      providerTerminalAction,
+    );
+    const providerSurface = useCenterPanelStore
+      .getState()
+      .byThreadKey[threadKey]?.surfaces.find(
+        (surface) => surface.kind === "terminal" && surface.label === "Codex Terminal",
+      );
+    expect(providerSurface).toMatchObject({
+      kind: "terminal",
+      label: "Codex Terminal",
+      command: providerTerminalAction.command,
+    });
+    expect(
+      useCenterPanelStore
+        .getState()
+        .byThreadKey[threadKey]?.surfaces.filter((surface) => surface.kind === "terminal"),
+    ).toHaveLength(2);
   });
 
   it("creates a provider chat panel even when model discovery is temporarily empty", async () => {

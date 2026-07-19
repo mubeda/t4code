@@ -14,6 +14,17 @@ vi.mock("~/providerInstances", () => ({
 vi.mock("./ChatHeaderPanelMenu.logic", () => ({
   buildPanelMenuModel: () => harness.items,
 }));
+vi.mock("./providerTerminalActions", () => ({
+  resolveProviderTerminalAction: (entry: Record<string, unknown>) => ({
+    entry,
+    label: `${entry.displayName} Terminal`,
+    command: {
+      executable: String(entry.instanceId),
+      args: ["--provider-terminal"],
+      label: `${entry.displayName} Terminal`,
+    },
+  }),
+}));
 vi.mock("./ProviderInstanceIcon", () => ({
   ProviderInstanceIcon: () => <span data-provider-icon />,
 }));
@@ -75,6 +86,7 @@ function render(canCreatePanel: boolean) {
     canCreatePanel,
     onCreateChatPanel: vi.fn(),
     onOpenTerminalPanel: vi.fn(),
+    onOpenProviderTerminalPanel: vi.fn(),
     onAddCustomAction: vi.fn(),
   } as unknown as React.ComponentProps<typeof ChatHeaderPanelMenu>;
   return { markup: renderToStaticMarkup(<ChatHeaderPanelMenu {...props} />), props };
@@ -87,21 +99,33 @@ describe("ChatHeaderPanelMenu", () => {
 
     expect(markup).toContain("Codex");
     expect(markup).toContain("Open Terminal");
+    expect(markup).toContain("Codex Terminal");
     expect(markup).toContain("Add custom action");
+    expect(markup.indexOf("Open Terminal")).toBeLessThan(markup.indexOf("Codex Terminal"));
+    expect(markup.indexOf("Codex Terminal")).toBeLessThan(markup.indexOf("Add custom action"));
+    expect(markup.match(/<hr/g)).toHaveLength(3);
     expect(harness.tooltipReasons).toEqual([]);
     (harness.menuItems[0]!.onClick as () => void)();
     (harness.menuItems[1]!.onClick as () => void)();
     (harness.menuItems[2]!.onClick as () => void)();
+    (harness.menuItems[3]!.onClick as () => void)();
     expect(props.onCreateChatPanel).toHaveBeenCalledOnce();
     expect(props.onOpenTerminalPanel).toHaveBeenCalledOnce();
+    expect(props.onOpenProviderTerminalPanel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        label: "Codex Terminal",
+        command: expect.objectContaining({ executable: "codex" }),
+      }),
+    );
     expect(props.onAddCustomAction).toHaveBeenCalledOnce();
   });
 
   it("explains provider-specific and thread-level disabled states", () => {
     harness.items = [panelItem({ disabled: true, disabledReason: "Provider unavailable" })];
     render(true);
-    expect(harness.tooltipReasons).toContain("Provider unavailable");
+    expect(harness.tooltipReasons).toEqual(["Provider unavailable", "Provider unavailable"]);
     expect(harness.menuItems[0]).toMatchObject({ disabled: true });
+    expect(harness.menuItems[2]).toMatchObject({ disabled: true });
 
     harness.menuItems.length = 0;
     harness.tooltipReasons.length = 0;
@@ -110,8 +134,11 @@ describe("ChatHeaderPanelMenu", () => {
     expect(harness.tooltipReasons).toEqual([
       "Available once this thread has started.",
       "Available once this thread has started.",
+      "Available once this thread has started.",
     ]);
     expect(harness.menuItems[0]).toMatchObject({ disabled: true });
+    expect(harness.menuItems[1]).toMatchObject({ disabled: true });
+    expect(harness.menuItems[2]).toMatchObject({ disabled: true });
   });
 
   it("renders no provider divider when the provider list is empty", () => {
