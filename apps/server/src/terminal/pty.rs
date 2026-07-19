@@ -214,7 +214,12 @@ fn resolve_pty_executable_on(
         vec![String::new()]
     };
 
-    locate_executable(command, cwd, path.as_deref().map(OsStr::new), &extensions)
+    locate_executable(
+        command,
+        Some(cwd),
+        path.as_deref().map(OsStr::new),
+        &extensions,
+    )
 }
 
 fn read_output(reader: &mut dyn Read, sender: &broadcast::Sender<String>) {

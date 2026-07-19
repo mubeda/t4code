@@ -522,6 +522,31 @@ const TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH: usize = 8_192;
 const TERMINAL_LAUNCH_ARGUMENT_MAX_COUNT: usize = 64;
 const TERMINAL_LAUNCH_LABEL_MAX_LENGTH: usize = 128;
 
+fn is_ecmascript_trim_character(character: char) -> bool {
+    matches!(
+        character,
+        '\u{0009}'
+            | '\u{000a}'
+            | '\u{000b}'
+            | '\u{000c}'
+            | '\u{000d}'
+            | '\u{0020}'
+            | '\u{00a0}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200a}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202f}'
+            | '\u{205f}'
+            | '\u{3000}'
+            | '\u{feff}'
+    )
+}
+
+fn trim_ecmascript(value: &str) -> &str {
+    value.trim_matches(is_ecmascript_trim_character)
+}
+
 fn validate_terminal_launch_command(
     command: Option<TerminalLaunchCommand>,
 ) -> Result<Option<TerminalLaunchCommand>, Value> {
@@ -529,11 +554,11 @@ fn validate_terminal_launch_command(
         return Ok(None);
     };
 
-    command.executable = command.executable.trim().to_owned();
+    command.executable = trim_ecmascript(&command.executable).to_owned();
     if command.executable.is_empty() {
         return Err(invalid_request("command executable must not be empty"));
     }
-    if command.executable.chars().count() > TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH {
+    if command.executable.encode_utf16().count() > TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH {
         return Err(invalid_request("command executable is too long"));
     }
     if command.args.len() > TERMINAL_LAUNCH_ARGUMENT_MAX_COUNT {
@@ -542,16 +567,16 @@ fn validate_terminal_launch_command(
     if command
         .args
         .iter()
-        .any(|argument| argument.chars().count() > TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH)
+        .any(|argument| argument.encode_utf16().count() > TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH)
     {
         return Err(invalid_request("command argument is too long"));
     }
     if let Some(label) = command.label.as_mut() {
-        *label = label.trim().to_owned();
+        *label = trim_ecmascript(label).to_owned();
         if label.is_empty() {
             return Err(invalid_request("command label must not be empty"));
         }
-        if label.chars().count() > TERMINAL_LAUNCH_LABEL_MAX_LENGTH {
+        if label.encode_utf16().count() > TERMINAL_LAUNCH_LABEL_MAX_LENGTH {
             return Err(invalid_request("command label is too long"));
         }
     }
@@ -932,6 +957,82 @@ mod tests {
                 label: Some("Codex Terminal".to_owned()),
             })
         );
+    }
+
+    #[test]
+    fn terminal_payload_conversions_measure_command_bounds_in_utf16_code_units() {
+        let astral = "😀";
+        let at_boundary = json!({
+            "executable": astral.repeat(TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH / 2),
+            "args": [astral.repeat(TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH / 2)],
+            "label": astral.repeat(TERMINAL_LAUNCH_LABEL_MAX_LENGTH / 2),
+        });
+        assert!(
+            terminal_start_payload(at_boundary)
+                .into_open(false)
+                .is_ok(),
+            "astral strings at the UTF-16 contract limits must be accepted"
+        );
+
+        for command in [
+            json!({
+                "executable": astral.repeat(TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH / 2 + 1),
+                "args": [],
+            }),
+            json!({
+                "executable": "codex",
+                "args": [astral.repeat(TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH / 2 + 1)],
+            }),
+            json!({
+                "executable": "codex",
+                "args": [],
+                "label": astral.repeat(TERMINAL_LAUNCH_LABEL_MAX_LENGTH / 2 + 1),
+            }),
+        ] {
+            assert_invalid_terminal_launch_command(command);
+        }
+    }
+
+    #[test]
+    fn terminal_payload_conversions_use_ecmascript_trim_semantics() {
+        let command = json!({
+            "executable": "\u{feff}codex\u{feff}",
+            "args": ["\u{feff}--model\u{feff}"],
+            "label": "\u{feff}Codex Terminal\u{feff}",
+        });
+        let open = terminal_start_payload(command)
+            .into_open(false)
+            .expect("ECMAScript whitespace is trimmed from command names");
+        assert_eq!(
+            open.command,
+            Some(TerminalLaunchCommand {
+                executable: "codex".to_owned(),
+                args: vec!["\u{feff}--model\u{feff}".to_owned()],
+                label: Some("Codex Terminal".to_owned()),
+            })
+        );
+
+        let non_ecmascript_whitespace = json!({
+            "executable": "\u{85}codex\u{85}",
+            "args": [],
+            "label": "\u{85}Codex Terminal\u{85}",
+        });
+        let open = terminal_start_payload(non_ecmascript_whitespace)
+            .into_open(false)
+            .expect("non-ECMAScript whitespace is retained");
+        assert_eq!(
+            open.command,
+            Some(TerminalLaunchCommand {
+                executable: "\u{85}codex\u{85}".to_owned(),
+                args: Vec::new(),
+                label: Some("\u{85}Codex Terminal\u{85}".to_owned()),
+            })
+        );
+
+        assert_invalid_terminal_launch_command(json!({
+            "executable": "\u{feff}",
+            "args": [],
+        }));
     }
 
     #[test]

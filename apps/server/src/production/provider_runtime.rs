@@ -1460,8 +1460,13 @@ pub(crate) fn resolve_provider_executable_in_path(
     if path.is_file() {
         return Some(path);
     }
-    let cwd = std::env::current_dir().ok()?;
-    locate_executable(input, &cwd, search_path, provider_executable_extensions())
+    let cwd = std::env::current_dir().ok();
+    locate_executable(
+        input,
+        cwd.as_deref(),
+        search_path,
+        provider_executable_extensions(),
+    )
 }
 
 #[cfg(windows)]
@@ -4090,6 +4095,31 @@ done
             super::resolve_provider_executable_in_path(
                 &executable.to_string_lossy(),
                 Some(std::ffi::OsStr::new(""))
+            ),
+            Some(executable)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn provider_executable_resolution_finds_bare_command_when_cwd_is_inaccessible() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let directory = tempfile::TempDir::new().expect("provider fixture directory");
+        let executable = directory.path().join("provider-fixture");
+        std::fs::write(&executable, b"fixture").expect("write provider fixture");
+        let inaccessible_cwd = directory.path().join("removed-cwd");
+        std::fs::create_dir(&inaccessible_cwd).expect("create temporary current directory");
+        let _current_directory = CurrentDirectoryGuard::enter(&inaccessible_cwd);
+        std::fs::remove_dir(&inaccessible_cwd).expect("remove current directory");
+        assert!(
+            std::env::current_dir().is_err(),
+            "fixture must make the process cwd inaccessible"
+        );
+
+        assert_eq!(
+            super::resolve_provider_executable_in_path(
+                "provider-fixture",
+                Some(directory.path().as_os_str())
             ),
             Some(executable)
         );
