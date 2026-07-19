@@ -955,10 +955,6 @@ mod tests {
             ProcessAttributionRegistry, ProcessAttributionTotals, ProcessIdentity,
             ProcessResourceBucket, ProcessResourceSummary, ProcessResourceTotals, ProcessRow,
             ResourceSampler, SamplingError, SplitMetric, UiCoverage, UiCoverageStatus,
-            history::{
-                LegacyProcessResourceBucket, LegacyProcessResourceHistory,
-                LegacyProcessResourceSummary,
-            },
         },
         production::control::NativeServerControl,
         terminal::{PortablePtyBackend, TerminalManagerOptions},
@@ -1060,11 +1056,11 @@ mod tests {
             },
         };
 
-        for (status, expected_status) in [
-            (UiCoverageStatus::Available, "available"),
-            (UiCoverageStatus::Partial, "partial"),
-            (UiCoverageStatus::Unavailable, "unavailable"),
-            (UiCoverageStatus::NotApplicable, "notApplicable"),
+        for (status, expected_status, coverage_message) in [
+            (UiCoverageStatus::Available, "available", None),
+            (UiCoverageStatus::Partial, "partial", Some("界".repeat(500))),
+            (UiCoverageStatus::Unavailable, "unavailable", None),
+            (UiCoverageStatus::NotApplicable, "notApplicable", None),
         ] {
             let wire = process_diagnostics_to_wire(CurrentProcessDiagnostics {
                 snapshot: Some(Arc::new(AttributedProcessSnapshot {
@@ -1078,7 +1074,7 @@ mod tests {
                     totals,
                     ui_coverage: UiCoverage {
                         status,
-                        message: None,
+                        message: coverage_message,
                     },
                 })),
                 error: Some("é".repeat(500)),
@@ -1119,7 +1115,19 @@ mod tests {
                         .expect("external process count")
             );
             assert_eq!(wire["uiCoverage"]["status"], expected_status);
-            assert_eq!(wire["uiCoverage"]["message"]["_tag"], "None");
+            if status == UiCoverageStatus::Partial {
+                assert_eq!(wire["uiCoverage"]["message"]["_tag"], "Some");
+                assert_eq!(
+                    wire["uiCoverage"]["message"]["value"]
+                        .as_str()
+                        .expect("bounded Unicode coverage message")
+                        .chars()
+                        .count(),
+                    160
+                );
+            } else {
+                assert_eq!(wire["uiCoverage"]["message"]["_tag"], "None");
+            }
             assert!(
                 wire["error"]["value"]["message"]
                     .as_str()
@@ -1234,32 +1242,8 @@ mod tests {
                 sample_count: 1,
             }
         }
-        fn legacy_summary(
-            process_key: &str,
-            cpu_seconds_approx: f64,
-        ) -> LegacyProcessResourceSummary {
-            LegacyProcessResourceSummary {
-                process_key: process_key.to_owned(),
-                pid: 1,
-                ppid: 0,
-                command: process_key.to_owned(),
-                depth: 0,
-                is_server_root: false,
-                first_seen_at_ms: 0,
-                last_seen_at_ms: 2_000,
-                current_cpu_percent: 1.0,
-                avg_cpu_percent: 1.0,
-                max_cpu_percent: 1.0,
-                cpu_seconds_approx,
-                current_rss_bytes: 1,
-                max_rss_bytes: 1,
-                sample_count: 1,
-            }
-        }
-
         let wire = resource_history_to_wire(ProcessResourceHistory {
             read_at_ms: 2_000,
-            latest_sampled_at_ms: Some(2_000),
             window_ms: 60_000,
             bucket_ms: 1_000,
             sample_interval_ms: 500,
@@ -1274,16 +1258,6 @@ mod tests {
                 summary("active:a", 2_000, 4.0),
             ],
             error: None,
-            legacy: LegacyProcessResourceHistory {
-                retained_sample_count: 3,
-                total_cpu_seconds_approx: 10.0,
-                buckets: Vec::new(),
-                top_processes: vec![
-                    legacy_summary("active:a", 4.0),
-                    legacy_summary("active:b", 4.0),
-                    legacy_summary("active:z", 2.0),
-                ],
-            },
         });
 
         assert_eq!(
@@ -1761,7 +1735,6 @@ mod tests {
 
         let history = resource_history_to_wire(ProcessResourceHistory {
             read_at_ms: 0,
-            latest_sampled_at_ms: Some(1_000),
             window_ms: 60_000,
             bucket_ms: 1_000,
             sample_interval_ms: 500,
@@ -1826,35 +1799,6 @@ mod tests {
                 sample_count: 2,
             }],
             error: Some("sample failed".to_owned()),
-            legacy: LegacyProcessResourceHistory {
-                retained_sample_count: 2,
-                total_cpu_seconds_approx: 1.5,
-                buckets: vec![LegacyProcessResourceBucket {
-                    started_at_ms: 0,
-                    ended_at_ms: 1_000,
-                    avg_cpu_percent: 5.0,
-                    max_cpu_percent: 10.0,
-                    max_rss_bytes: 1024,
-                    max_process_count: 2,
-                }],
-                top_processes: vec![LegacyProcessResourceSummary {
-                    process_key: "1:server".to_owned(),
-                    pid: 1,
-                    ppid: 0,
-                    command: "server".to_owned(),
-                    depth: 0,
-                    is_server_root: true,
-                    first_seen_at_ms: 0,
-                    last_seen_at_ms: 1_000,
-                    current_cpu_percent: 2.0,
-                    avg_cpu_percent: 3.0,
-                    max_cpu_percent: 4.0,
-                    cpu_seconds_approx: 1.0,
-                    current_rss_bytes: 512,
-                    max_rss_bytes: 1024,
-                    sample_count: 2,
-                }],
-            },
         });
         assert_eq!(
             history["buckets"][0]["maxProcessCount"],

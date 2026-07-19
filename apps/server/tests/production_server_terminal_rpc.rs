@@ -537,7 +537,7 @@ async fn terminal_rpc_clear_resize_restart_exit_and_restart_if_not_running_round
             .and_then(|process| process["processKey"].as_str())
             .expect("restarted terminal process key");
 
-        assert_success(
+        let signal_result = success_value(
             request(
                 control,
                 "9",
@@ -550,13 +550,39 @@ async fn terminal_rpc_clear_resize_restart_exit_and_restart_if_not_running_round
             )
             .await,
         );
+        let signal_supported = signal_result["signaled"] == true;
+        assert_eq!(
+            signal_supported,
+            cfg!(any(target_os = "linux", windows)),
+            "only identity-bound platform signal implementations may report success"
+        );
+        if !signal_supported {
+            assert_success(
+                request(
+                    control,
+                    "10",
+                    "terminal.write",
+                    json!({
+                        "threadId": "thread-restart",
+                        "terminalId": "term-restart",
+                        "data": "exit\r\n",
+                    }),
+                )
+                .await,
+            );
+        }
+        let expected_exit_code = if signal_supported {
+            expected_killed_exit_code()
+        } else {
+            json!(0)
+        };
 
         let exited =
             next_terminal_event_and_ack(post_restart_attach_socket, "2", "exited", |value| {
                 value["type"] == "exited" && value["terminalId"] == "term-restart"
             })
             .await;
-        assert_eq!(exited["exitCode"], expected_killed_exit_code());
+        assert_eq!(exited["exitCode"], expected_exit_code);
         assert_eq!(exited["exitSignal"], expected_killed_exit_signal());
         let exited_metadata = next_matching_chunk_value(metadata, "1", |value| {
             value["type"] == "upsert"
@@ -565,10 +591,7 @@ async fn terminal_rpc_clear_resize_restart_exit_and_restart_if_not_running_round
         })
         .await;
         assert_eq!(exited_metadata["terminal"]["pid"], Value::Null);
-        assert_eq!(
-            exited_metadata["terminal"]["exitCode"],
-            expected_killed_exit_code()
-        );
+        assert_eq!(exited_metadata["terminal"]["exitCode"], expected_exit_code);
 
         failing_attach = Some(open_socket(handle.local_addr()).await);
         let failing_attach_socket = failing_attach.as_mut().expect("failing attach socket");

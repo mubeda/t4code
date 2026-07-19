@@ -1,7 +1,8 @@
 import type {
+  ServerProcessDiagnosticsEntry,
   ServerProcessDiagnosticsResult,
-  ServerProcessResourceHistoryResult,
   ServerProcessResourceHistorySummary,
+  ServerProcessResourceHistoryResult,
   ServerProviderUsageSnapshot,
 } from "@t4code/contracts";
 import * as DateTime from "effect/DateTime";
@@ -12,6 +13,7 @@ import {
   buildProviderUsageViewModel,
   buildResourceSummaryViewModel,
   buildResourceTopProcessViewModel,
+  selectCurrentTopProcesses,
 } from "./statusBarPresentation";
 
 const updatedAt = DateTime.makeUnsafe("2026-07-07T18:00:00.000Z");
@@ -108,36 +110,65 @@ describe("statusBarPresentation", () => {
 
   it("formats top process rows with per-process CPU instead of aggregate CPU", () => {
     const vm = buildResourceTopProcessViewModel({
-      processKey: "123:t4code server",
+      processKey: "123:100",
       pid: 123,
       ppid: 1,
+      pgid: Option.none(),
+      status: "Run",
+      cpuPercent: 1.2,
+      rssBytes: 10_000,
+      elapsed: "00:00:01",
       command: "t4code server",
       depth: 0,
+      childPids: [],
       scope: "core",
       kind: "server",
       label: "T4Code Server",
       confidence: "exact",
-      firstSeenAt: updatedAt,
-      lastSeenAt: updatedAt,
-      currentCpuPercent: 1.2,
-      avgCpuPercent: 1.2,
-      maxCpuPercent: 9.9,
-      cpuSecondsApprox: 0.06,
-      currentRssBytes: 10_000,
-      maxRssBytes: 10_000,
-      sampleCount: 1,
-    } satisfies ServerProcessResourceHistorySummary);
+    } satisfies ServerProcessDiagnosticsEntry);
 
     expect(vm.command).toBe("t4code server");
     expect(vm.detailLabel).toBe("1.2% · 123");
   });
 
-  it("derives summary and top rows from the same current history snapshot", () => {
+  it("orders temporary top rows from current live CPU with stable key ties", () => {
+    const process = (
+      pid: number,
+      processKey: string,
+      cpuPercent: number,
+    ): ServerProcessDiagnosticsEntry => ({
+      processKey,
+      pid,
+      ppid: 1,
+      pgid: Option.none(),
+      status: "Run",
+      cpuPercent,
+      rssBytes: 10_000,
+      elapsed: "00:00:01",
+      command: `process-${pid}`,
+      depth: 0,
+      childPids: [],
+      scope: "external",
+      kind: "provider",
+      label: `Process ${pid}`,
+      confidence: "exact",
+    });
+
+    expect(
+      selectCurrentTopProcesses([
+        process(1, "1:100", 1),
+        process(3, "3:100", 5),
+        process(2, "2:100", 5),
+      ]).map((entry) => entry.processKey),
+    ).toEqual(["2:100", "3:100", "1:100"]);
+  });
+
+  it("derives the compact summary strictly from current diagnostics", () => {
     const process = {
       processKey: "100:t4code.exe",
       pid: 100,
       ppid: 1,
-      command: "t4code.exe",
+      command: "exited-high-usage",
       depth: 0,
       scope: "core",
       kind: "server",
@@ -145,12 +176,12 @@ describe("statusBarPresentation", () => {
       confidence: "exact",
       firstSeenAt: updatedAt,
       lastSeenAt: updatedAt,
-      currentCpuPercent: 3.5,
-      avgCpuPercent: 2,
-      maxCpuPercent: 4,
-      cpuSecondsApprox: 1,
-      currentRssBytes: 52_428_800,
-      maxRssBytes: 52_428_800,
+      currentCpuPercent: 99,
+      avgCpuPercent: 99,
+      maxCpuPercent: 99,
+      cpuSecondsApprox: 100,
+      currentRssBytes: 999_999_999,
+      maxRssBytes: 999_999_999,
       sampleCount: 2,
     } satisfies ServerProcessResourceHistorySummary;
     const resourceHistory: ServerProcessResourceHistoryResult = {
@@ -159,7 +190,7 @@ describe("statusBarPresentation", () => {
       bucketMs: 10_000,
       sampleIntervalMs: 2_000,
       retainedSampleCount: 2,
-      cpuSecondsApprox: { combined: 1, core: 1, external: 0 },
+      cpuSecondsApprox: { combined: 100, core: 100, external: 0 },
       uiCoverage: { status: "notApplicable", message: Option.none() },
       buckets: [],
       processes: [process],
@@ -183,8 +214,8 @@ describe("statusBarPresentation", () => {
       terminalCount: 0,
     });
 
-    expect(vm.memoryLabel).toBe("50.0 MB");
-    expect(vm.cpuLabel).toBe("3.5%");
-    expect(vm.processCountLabel).toBe("1");
+    expect(vm.memoryLabel).toBe("0 B");
+    expect(vm.cpuLabel).toBe("0.0%");
+    expect(vm.processCountLabel).toBe("0");
   });
 });

@@ -1,7 +1,7 @@
 import type {
+  ServerProcessDiagnosticsEntry,
   ServerProcessDiagnosticsResult,
   ServerProcessResourceHistoryResult,
-  ServerProcessResourceHistorySummary,
   ServerProviderUsageSnapshot,
   ServerProviderUsageWindow,
 } from "@t4code/contracts";
@@ -82,21 +82,11 @@ export function buildResourceSummaryViewModel(input: {
   readonly resourceHistory: ServerProcessResourceHistoryResult | null;
   readonly terminalCount: number;
 }): ResourceSummaryViewModel {
-  const currentProcesses =
-    input.resourceHistory && input.resourceHistory.retainedSampleCount > 0
-      ? input.resourceHistory.processes
-      : null;
-  const totalRssBytes =
-    currentProcesses?.reduce((total, process) => total + process.currentRssBytes, 0) ??
-    input.diagnostics?.totals.combined.rssBytes;
-  const totalCpuPercent =
-    currentProcesses?.reduce((total, process) => total + process.currentCpuPercent, 0) ??
-    input.diagnostics?.totals.combined.cpuPercent;
-  const processCount = currentProcesses?.length ?? input.diagnostics?.totals.combined.processCount;
+  const totals = input.diagnostics?.totals.combined;
   return {
-    memoryLabel: totalRssBytes === undefined ? "--" : formatMemoryBytes(totalRssBytes),
-    cpuLabel: totalCpuPercent === undefined ? "--" : formatCpuPercent(totalCpuPercent),
-    processCountLabel: processCount === undefined ? "0" : String(processCount),
+    memoryLabel: totals === undefined ? "--" : formatMemoryBytes(totals.rssBytes),
+    cpuLabel: totals === undefined ? "--" : formatCpuPercent(totals.cpuPercent),
+    processCountLabel: totals === undefined ? "0" : String(totals.processCount),
     terminalCountLabel: String(Math.max(0, input.terminalCount)),
   };
 }
@@ -107,12 +97,21 @@ export interface ResourceTopProcessViewModel {
   readonly detailLabel: string;
 }
 
+export function selectCurrentTopProcesses(
+  processes: ReadonlyArray<ServerProcessDiagnosticsEntry>,
+): ReadonlyArray<ServerProcessDiagnosticsEntry> {
+  return processes.toSorted(
+    (left, right) =>
+      right.cpuPercent - left.cpuPercent || left.processKey.localeCompare(right.processKey),
+  );
+}
+
 export function buildResourceTopProcessViewModel(
-  process: ServerProcessResourceHistorySummary,
+  process: ServerProcessDiagnosticsEntry,
 ): ResourceTopProcessViewModel {
   return {
     processKey: process.processKey,
     command: process.command,
-    detailLabel: `${formatCpuPercent(process.currentCpuPercent)} · ${process.pid}`,
+    detailLabel: `${formatCpuPercent(process.cpuPercent)} · ${process.pid}`,
   };
 }
