@@ -1471,11 +1471,15 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const activeEnvironmentBootstrapComplete = activeEnvironmentShell.data?.snapshot._tag === "Some";
   const activeProjectKey = activeProject
-    ? `${activeProject.environmentId}:${activeProject.workspaceRoot}`
+    ? JSON.stringify([
+        activeProject.environmentId,
+        activeProject.id,
+        activeThread?.worktreePath ?? activeProject.workspaceRoot,
+      ])
     : null;
   const fileEditingSessions = useMemo(
     () => new FileEditingSessionRegistry<FileEditingSession<FileCommentAnnotationGroup>>(),
-    [activeProjectKey, activeThreadKey],
+    [activeProjectKey],
   );
   const openFileRelativePaths = useMemo(
     () =>

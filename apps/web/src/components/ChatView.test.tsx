@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Render-level tests for ChatView.
  *
@@ -9,9 +11,10 @@
  * realistic state. Handler props captured from mocked children are then
  * invoked to exercise the send/interrupt/approval command flows.
  */
+import { act, StrictMode, type ComponentProps, type ReactNode, type RefObject } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import type { ComponentProps, ReactNode, RefObject } from "react";
 import {
   ApprovalRequestId,
   EnvironmentId,
@@ -172,6 +175,18 @@ vi.mock("../hooks/useSettings", () => ({
 
 vi.mock("../assets/assetUrls", () => ({
   useAssetUrls: () => h.assetUrls,
+}));
+
+vi.mock("../hooks/useTheme", () => ({
+  useTheme: () => ({
+    theme: "system" as const,
+    resolvedTheme: "dark" as const,
+    setTheme: () => undefined,
+  }),
+}));
+
+vi.mock("~/hooks/useLocalStorage", () => ({
+  useLocalStorage: (_key: string, initialValue: unknown) => [initialValue, () => undefined],
 }));
 
 vi.mock("../previewStateStore", () => ({
@@ -362,7 +377,10 @@ vi.mock("./SourceControlPanel", () => ({
   default: () => <div data-mock="source-control-panel" />,
 }));
 vi.mock("./files/FilePreviewPanel", () => ({
-  default: () => <div data-mock="file-preview-panel" />,
+  default: (props: Record<string, unknown>) => {
+    h.captured["filePreviewPanel"] = props;
+    return <div data-mock="file-preview-panel" />;
+  },
 }));
 
 import ChatView from "./ChatView";
@@ -376,6 +394,7 @@ import { useDiffPanelStore } from "../diffPanelStore";
 import { newDraftId } from "../lib/utils";
 import type { ChatComposerHandle } from "./chat/ChatComposer";
 import type { ComposerBannerStackItem } from "./chat/ComposerBannerStack";
+import { FileEditingSessionRegistry } from "./files/fileEditingSessionRegistry";
 
 const environmentId = EnvironmentId.make("environment-local");
 const projectId = ProjectId.make("project-1");
@@ -510,6 +529,29 @@ function capturedProps<T>(name: string): T {
   return props as T;
 }
 
+function deferredResult<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+function fakeEditingSession(relativePath: string) {
+  return {
+    relativePath,
+    flush: vi.fn(async () => "saved" as const),
+    settle: vi.fn<() => Promise<"saved" | "failed">>(async () => "saved"),
+    pauseSaving: vi.fn(),
+    resumeSaving: vi.fn(),
+    discardPendingSave: vi.fn(),
+    rename: vi.fn(function rename(this: { relativePath: string }, next: string) {
+      this.relativePath = next;
+    }),
+    dispose: vi.fn(),
+  };
+}
+
 interface ResettableStore {
   getState: () => object;
   getInitialState: () => object;
@@ -588,6 +630,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
 });
 
 describe("ChatView", () => {
@@ -1265,6 +1308,210 @@ describe("ChatView handlers (captured from mocked children)", () => {
       "plan",
     );
   });
+});
+
+describe("ChatView file editing registry lifetime", () => {
+  function prepareDomTest(): void {
+    vi.unstubAllGlobals();
+    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  }
+
+  async function renderStrictChatView(
+    root: Root,
+    nextEnvironmentId: EnvironmentId,
+    nextThreadId: ThreadId,
+  ): Promise<FileEditingSessionRegistry<ReturnType<typeof fakeEditingSession>>> {
+    delete h.captured["filePreviewPanel"];
+    await act(async () => {
+      root.render(
+        <StrictMode>
+          <ChatView environmentId={nextEnvironmentId} threadId={nextThreadId} routeKind="server" />
+        </StrictMode>,
+      );
+      await vi.dynamicImportSettled();
+      await Promise.resolve();
+    });
+    return capturedProps<{
+      editingSessions: FileEditingSessionRegistry<ReturnType<typeof fakeEditingSession>>;
+    }>("filePreviewPanel").editingSessions;
+  }
+
+  function seedProjectAndThread(project: Project, thread: Thread, surface: "file" | "files"): void {
+    h.projectsByKey.set(`${project.environmentId}:${project.id}`, project);
+    h.allProjects = [...h.allProjects, project];
+    h.threadsByKey.set(`${thread.environmentId}:${thread.id}`, thread);
+    h.threadRefs = [...h.threadRefs, scopeThreadRef(thread.environmentId, thread.id)];
+    const nextThreadRef = scopeThreadRef(thread.environmentId, thread.id);
+    if (surface === "file") {
+      useRightPanelStore.getState().openFile(nextThreadRef, "src/app.ts");
+    } else {
+      useRightPanelStore.getState().open(nextThreadRef, "files");
+    }
+  }
+
+  it("reuses one registry across same-workspace project threads and replaces it for workspace, project, and environment changes", async () => {
+    prepareDomTest();
+    const secondThreadId = ThreadId.make("thread-2");
+    const worktreeThreadId = ThreadId.make("thread-worktree");
+    const secondProjectId = ProjectId.make("project-2");
+    const secondEnvironmentId = EnvironmentId.make("environment-remote");
+    const thirdThreadId = ThreadId.make("thread-3");
+    const fourthThreadId = ThreadId.make("thread-4");
+    const firstProject = makeProject();
+    const secondProject = makeProject({
+      id: secondProjectId,
+      title: "Other project",
+      workspaceRoot: firstProject.workspaceRoot,
+    });
+    const remoteProject = makeProject({
+      environmentId: secondEnvironmentId,
+      title: "Remote project",
+    });
+    const firstThread = makeThread();
+    const sameProjectThread = makeThread({ id: secondThreadId });
+    const worktreeThread = makeThread({
+      id: worktreeThreadId,
+      worktreePath: "X:/demo-worktree",
+    });
+    const otherProjectThread = makeThread({
+      id: thirdThreadId,
+      projectId: secondProjectId,
+    });
+    const remoteThread = makeThread({
+      id: fourthThreadId,
+      environmentId: secondEnvironmentId,
+    });
+    h.environments = [
+      makeEnvironmentPresentation(),
+      makeEnvironmentPresentation({ environmentId: secondEnvironmentId }),
+    ];
+    h.primaryEnvironment = h.environments[0]!;
+    seedProjectAndThread(firstProject, firstThread, "file");
+    seedProjectAndThread(firstProject, sameProjectThread, "file");
+    seedProjectAndThread(firstProject, worktreeThread, "file");
+    seedProjectAndThread(secondProject, otherProjectThread, "file");
+    seedProjectAndThread(remoteProject, remoteThread, "file");
+    seedGitStatus(true);
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      const firstRegistry = await renderStrictChatView(root, environmentId, threadId);
+      const firstDispose = vi.spyOn(firstRegistry, "dispose");
+
+      const sameProjectRegistry = await renderStrictChatView(root, environmentId, secondThreadId);
+      expect(sameProjectRegistry).toBe(firstRegistry);
+      expect(firstDispose).not.toHaveBeenCalled();
+
+      const worktreeRegistry = await renderStrictChatView(root, environmentId, worktreeThreadId);
+      await vi.waitFor(() => expect(firstDispose).toHaveBeenCalledOnce());
+      expect(worktreeRegistry).not.toBe(firstRegistry);
+      const worktreeDispose = vi.spyOn(worktreeRegistry, "dispose");
+
+      const otherProjectRegistry = await renderStrictChatView(root, environmentId, thirdThreadId);
+      await vi.waitFor(() => expect(worktreeDispose).toHaveBeenCalledOnce());
+      expect(otherProjectRegistry).not.toBe(worktreeRegistry);
+      const otherProjectDispose = vi.spyOn(otherProjectRegistry, "dispose");
+
+      const remoteRegistry = await renderStrictChatView(root, secondEnvironmentId, fourthThreadId);
+      await vi.waitFor(() => expect(otherProjectDispose).toHaveBeenCalledOnce());
+      expect(remoteRegistry).not.toBe(otherProjectRegistry);
+      const remoteDispose = vi.spyOn(remoteRegistry, "dispose");
+
+      await act(async () => root.unmount());
+      await vi.waitFor(() => expect(remoteDispose).toHaveBeenCalledOnce());
+      container.remove();
+    } finally {
+      if (container.isConnected) {
+        await act(async () => root.unmount());
+        container.remove();
+      }
+    }
+  });
+
+  it.each([
+    ["rename", "saved"],
+    ["rename", "failed"],
+    ["delete", "saved"],
+    ["delete", "failed"],
+  ] as const)(
+    "keeps the outgoing session in the shared registry for an incoming %s after a %s close",
+    async (operation, settleResult) => {
+      prepareDomTest();
+      const secondThreadId = ThreadId.make("thread-2");
+      const project = makeProject();
+      const firstThread = makeThread();
+      const secondThread = makeThread({ id: secondThreadId });
+      h.environments = [makeEnvironmentPresentation()];
+      h.primaryEnvironment = h.environments[0]!;
+      seedProjectAndThread(project, firstThread, "file");
+      seedProjectAndThread(project, secondThread, "files");
+      seedGitStatus(true);
+
+      const container = document.createElement("div");
+      document.body.append(container);
+      const root = createRoot(container);
+      try {
+        const outgoingRegistry = await renderStrictChatView(root, environmentId, threadId);
+        const session = outgoingRegistry.getOrCreate("src/app.ts", () =>
+          fakeEditingSession("src/app.ts"),
+        );
+        const settlement = deferredResult<"saved" | "failed">();
+        session.settle.mockReturnValueOnce(settlement.promise);
+
+        const incomingRegistry = await renderStrictChatView(root, environmentId, secondThreadId);
+        let acquisitionCompleted = false;
+        const acquisition = incomingRegistry
+          .beginPathMutation(
+            operation === "rename"
+              ? {
+                  kind: "rename",
+                  fromRelativePath: "src/app.ts",
+                  toRelativePath: "src/renamed.ts",
+                }
+              : { kind: "delete", relativePath: "src/app.ts" },
+          )
+          .then((lease) => {
+            acquisitionCompleted = true;
+            return lease;
+          });
+        await Promise.resolve();
+        const waitedForOutgoingClose = !acquisitionCompleted;
+
+        settlement.resolve(settleResult);
+        const lease = await acquisition;
+
+        expect(incomingRegistry).toBe(outgoingRegistry);
+        expect(waitedForOutgoingClose).toBe(true);
+        expect(session.settle).toHaveBeenCalledOnce();
+        if (settleResult === "failed") {
+          expect(lease).toBeNull();
+          expect(incomingRegistry.get("src/app.ts")).toBe(session);
+          expect(session.rename).not.toHaveBeenCalled();
+          expect(session.discardPendingSave).not.toHaveBeenCalled();
+          expect(session.dispose).not.toHaveBeenCalled();
+          return;
+        }
+
+        expect(lease).not.toBeNull();
+        if (operation === "rename") {
+          lease!.commitRename("src/renamed.ts");
+          expect(session.rename).toHaveBeenCalledWith("src/renamed.ts");
+        } else {
+          lease!.commitDelete();
+          expect(session.discardPendingSave).toHaveBeenCalledOnce();
+        }
+        lease!.release();
+        await vi.waitFor(() => expect(session.dispose).toHaveBeenCalledOnce());
+        expect(incomingRegistry.get("src/app.ts")).toBeUndefined();
+        expect(session.settle).toHaveBeenCalledOnce();
+      } finally {
+        await act(async () => root.unmount());
+        container.remove();
+      }
+    },
+  );
 });
 
 type _AssertRouteProps = ComponentProps<typeof ChatView>;
