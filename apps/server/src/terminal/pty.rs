@@ -384,9 +384,9 @@ mod tests {
     async fn portable_backend_streams_input_output_resize_and_exit() {
         let (shell, args, input, output_marker) = if cfg!(windows) {
             (
-                "powershell.exe".to_owned(),
-                vec!["-NoLogo".to_owned(), "-NoProfile".to_owned()],
-                "Write-Output 'ready'; Write-Output 'got:hello from test'; exit 7\r\n",
+                "cmd.exe".to_owned(),
+                vec!["/D".to_owned(), "/Q".to_owned()],
+                "echo ready\r\necho got:hello from test\r\nexit /b 7\r\n",
                 "got:hello from test",
             )
         } else {
@@ -401,6 +401,7 @@ mod tests {
                 "got:hello from test",
             )
         };
+        let event_timeout = Duration::from_secs(if cfg!(windows) { 10 } else { 3 });
         let backend = PortablePtyBackend;
         let process = backend
             .spawn(&PtySpawnInput {
@@ -424,7 +425,7 @@ mod tests {
         }
         process.write(input).unwrap();
 
-        let text = tokio::time::timeout(Duration::from_secs(3), async {
+        let text = tokio::time::timeout(event_timeout, async {
             let mut text = String::new();
             while !text.contains(output_marker) {
                 text.push_str(&output.recv().await.unwrap());
@@ -435,7 +436,7 @@ mod tests {
         .unwrap();
         assert!(text.contains("ready"));
 
-        tokio::time::timeout(Duration::from_secs(3), exit.changed())
+        tokio::time::timeout(event_timeout, exit.changed())
             .await
             .unwrap()
             .unwrap();

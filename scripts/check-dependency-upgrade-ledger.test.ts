@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  DEPENDENCY_AUDIT_IGNORED_DIRECTORIES,
   discoverDependencyInventory,
   type DependencyInventory,
   type DependencyLedger,
@@ -181,7 +182,6 @@ function completeLedger(inventory: DependencyInventory): DependencyLedger {
 }
 
 function findUnexpectedSourceReferences(root: string, dependency: string): Array<string> {
-  const ignoredDirectories = new Set([".git", ".repos", "node_modules", "target"]);
   const ignoredFiles = new Set([
     "docs/dependency-upgrades/2026-07-17-ledger.json",
     "docs/superpowers/plans/2026-07-17-direct-dependency-modernization.md",
@@ -204,7 +204,9 @@ function findUnexpectedSourceReferences(root: string, dependency: string): Array
   const references: Array<string> = [];
   const visit = (directory: string): void => {
     for (const entry of NodeFS.readdirSync(directory, { withFileTypes: true })) {
-      if (entry.isDirectory() && ignoredDirectories.has(entry.name)) continue;
+      if (entry.isDirectory() && DEPENDENCY_AUDIT_IGNORED_DIRECTORIES.has(entry.name)) {
+        continue;
+      }
       const absolutePath = NodePath.join(directory, entry.name);
       if (entry.isDirectory()) {
         visit(absolutePath);
@@ -241,6 +243,26 @@ describe("dependency upgrade ledger discovery", () => {
     expect(inventory.entries.some((entry) => entry.name === "@t4code/contracts")).toBe(false);
     expect(inventory.entries.find((entry) => entry.key === "js:catalog:effect")?.locations).toEqual(
       ["apps/web/package.json", "package.json", "pnpm-workspace.yaml"],
+    );
+  });
+
+  it("ignores local Superpowers snapshot dependencies", () => {
+    const root = createRepositoryFixture();
+    const snapshotDirectory = NodePath.join(root, ".superpowers/sdd/snapshots/example");
+    NodeFS.mkdirSync(snapshotDirectory, { recursive: true });
+    NodeFS.writeFileSync(
+      NodePath.join(snapshotDirectory, "package.json"),
+      JSON.stringify({
+        dependencies: {
+          "snapshot-only-dependency": "1.0.0",
+        },
+      }),
+    );
+
+    const inventory = discoverDependencyInventory(root);
+
+    expect(inventory.entries.some((entry) => entry.name === "snapshot-only-dependency")).toBe(
+      false,
     );
   });
 

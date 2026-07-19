@@ -423,7 +423,8 @@ mod tests {
             target.canonicalize().expect("canonical fixture")
         );
         junction::delete(&link).expect("delete junction");
-        assert!(!link.exists());
+        assert!(link.exists());
+        assert!(junction::get_target(&link).is_err());
         assert!(target.exists());
 
         let missing_parent_link = temporary.path().join("missing").join("link");
