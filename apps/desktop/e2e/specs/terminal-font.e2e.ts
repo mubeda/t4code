@@ -3,6 +3,7 @@ import * as NodePath from "node:path";
 
 import { desktopUiFixture } from "../support/test-project.ts";
 import { terminalOutputEventCount } from "../support/terminal-events.ts";
+import { sendTerminalText } from "../support/terminal-input.ts";
 import {
   ensureMainSidebarOpen,
   mockDesktopUiFolderPicker,
@@ -153,7 +154,7 @@ describe("packaged terminal font support", () => {
     await terminalScreen.click();
 
     const outputEventsBeforeInput = terminalOutputEventCount(preparedStateRoot);
-    await browser.keys(terminalGlyphProbe);
+    await sendTerminalText(terminalGlyphProbe);
     await waitForTerminalOutputToSettle(outputEventsBeforeInput);
 
     await browser.saveScreenshot(

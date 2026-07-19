@@ -1,8 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off - Packaged UI tests save native screenshots.
+import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import { desktopUiFixture } from "../support/test-project.ts";
 import { terminalOutputEventCount } from "../support/terminal-events.ts";
+import { sendTerminalCommand } from "../support/terminal-input.ts";
 import { ensureMainSidebarOpen, setDesktopUiWindowSize } from "../support/ui-state.ts";
 
 const artifactDirectory = process.env.T4CODE_E2E_ARTIFACT_DIR;
@@ -13,6 +15,15 @@ const stateRoot = process.env.T4CODE_HOME;
 if (!stateRoot) {
   throw new Error("T4CODE_HOME is required.");
 }
+const projectPath = process.env.T4CODE_E2E_PROJECT_PATH;
+if (!projectPath) {
+  throw new Error("T4CODE_E2E_PROJECT_PATH is required.");
+}
+
+const terminalInputMarkerPath = NodePath.join(
+  projectPath,
+  "terminal-input-smoke.txt",
+);
 
 describe("packaged project session and terminal", () => {
   it("streams a fixture response, reconnects, and exercises terminal lifecycle", async () => {
@@ -57,10 +68,22 @@ describe("packaged project session and terminal", () => {
       }),
     ).toBe(true);
     const outputEventsBeforeInput = terminalOutputEventCount(stateRoot);
-    await browser.keys(["echo T4CODE_TERMINAL_SMOKE", "Enter"]);
+    await sendTerminalCommand(
+      "echo T4CODE_TERMINAL_SMOKE > terminal-input-smoke.txt",
+    );
     await browser.waitUntil(() => terminalOutputEventCount(stateRoot) > outputEventsBeforeInput, {
       timeoutMsg: "The terminal did not produce output after WebDriver keyboard input.",
     });
+    await browser.waitUntil(
+      () =>
+        NodeFS.existsSync(terminalInputMarkerPath) &&
+        NodeFS.readFileSync(terminalInputMarkerPath, "utf8").trim() ===
+          "T4CODE_TERMINAL_SMOKE",
+      {
+        timeout: 5_000,
+        timeoutMsg: "The terminal command was not delivered exactly once to the fixture shell.",
+      },
+    );
 
     await setDesktopUiWindowSize(960, 640);
     await browser.saveScreenshot(
