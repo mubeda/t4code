@@ -102,6 +102,22 @@ describe("cross-platform CI contract", () => {
     expect(matrix.some((entry) => entry.platform === "win" && entry.arch === "arm64")).toBe(false);
   });
 
+  it("installs dependencies once in every CI job", () => {
+    const { workflow } = readWorkflow(CI_WORKFLOW_PATH);
+
+    for (const name of ["check", "test", "release_smoke"]) {
+      const setupStep = requireJob(workflow, name).steps?.find(
+        (step) => step.name === "Setup Vite+",
+      );
+      expect(setupStep?.with?.["run-install"]).toBe(true);
+    }
+
+    const nativeSetupStep = requireJob(workflow, "native_desktop").steps?.find(
+      (step) => step.name === "Setup Vite+",
+    );
+    expect(nativeSetupStep?.with?.["run-install"]).toBe(false);
+  });
+
   it("performs frozen install, version assertions, web build, Rust tests, and bundle build", () => {
     const { workflow } = readWorkflow(CI_WORKFLOW_PATH);
     const commands = allStepCommands(requireJob(workflow, "native_desktop"));
