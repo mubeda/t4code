@@ -8,6 +8,21 @@ export interface FileSaveCoordinatorOptions<A, E> {
 }
 
 export type FileSaveFlushResult = "saved" | "unchanged" | "saving" | "failed";
+export type FileSaveSettleResult = "saved" | "unchanged" | "failed";
+
+export type FileSavePhase = "clean" | "pending" | "saving" | "failed";
+
+export interface FileSaveSnapshot {
+  readonly phase: FileSavePhase;
+  readonly canSave: boolean;
+  readonly confirmedRevision: number;
+}
+
+const CLEAN_FILE_SAVE_SNAPSHOT: FileSaveSnapshot = {
+  phase: "clean",
+  canSave: false,
+  confirmedRevision: 0,
+};
 
 export class FileSaveCoordinator<A = unknown, E = unknown> {
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -15,16 +30,28 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
   private latestRevision = 0;
   private persistedRevision = 0;
   private lastChangeAt = 0;
-  private saving = false;
+  private inFlight: Promise<boolean> | null = null;
   private disposed = false;
+  private snapshot: FileSaveSnapshot = CLEAN_FILE_SAVE_SNAPSHOT;
+  private readonly listeners = new Set<() => void>();
 
   constructor(private readonly options: FileSaveCoordinatorOptions<A, E>) {}
+
+  readonly getSnapshot = (): FileSaveSnapshot => this.snapshot;
+
+  readonly subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  };
 
   change(contents: string): void {
     this.latestContents = contents;
     this.latestRevision += 1;
     this.lastChangeAt = Date.now();
     this.options.onPendingChange(true);
+    this.publish("pending");
     this.schedule(this.options.debounceMs);
   }
 
@@ -39,7 +66,7 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
 
   /** True while a debounced write is scheduled or an immediate write is in flight. */
   hasPendingWork(): boolean {
-    return this.timer !== null || this.saving;
+    return this.timer !== null || this.inFlight !== null;
   }
 
   /**
@@ -49,10 +76,29 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
    * (and its reschedule) settles the remaining edits on its own.
    */
   async flush(): Promise<FileSaveFlushResult> {
-    if (this.saving) return "saving";
+    if (this.inFlight !== null) return "saving";
     if (this.latestRevision === this.persistedRevision) return "unchanged";
     this.clearTimer();
     return (await this.persistLatest()) ? "saved" : "failed";
+  }
+
+  async settle(): Promise<FileSaveSettleResult> {
+    const hadUnsavedChanges = this.latestRevision !== this.persistedRevision;
+    this.clearTimer();
+
+    while (this.inFlight !== null) {
+      await this.inFlight;
+      this.clearTimer();
+    }
+
+    while (this.latestRevision !== this.persistedRevision) {
+      const succeeded = await this.persistLatest();
+      this.clearTimer();
+      if (!succeeded && this.latestRevision !== this.persistedRevision) return "failed";
+      while (this.inFlight !== null) await this.inFlight;
+    }
+
+    return hadUnsavedChanges ? "saved" : "unchanged";
   }
 
   private schedule(delay: number): void {
@@ -69,10 +115,20 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
     this.timer = null;
   }
 
-  private async persistLatest(): Promise<boolean> {
-    if (this.saving || this.latestRevision === this.persistedRevision) return false;
+  private persistLatest(): Promise<boolean> {
+    if (this.inFlight !== null || this.latestRevision === this.persistedRevision) {
+      return Promise.resolve(false);
+    }
 
-    this.saving = true;
+    const inFlight = this.persistLatestOnce();
+    this.inFlight = inFlight;
+    return inFlight.finally(() => {
+      if (this.inFlight === inFlight) this.inFlight = null;
+    });
+  }
+
+  private async persistLatestOnce(): Promise<boolean> {
+    this.publish("saving");
     const contents = this.latestContents;
     const revision = this.latestRevision;
     const result = await this.options.persist(contents);
@@ -82,20 +138,43 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
       this.options.onConfirmed(contents);
     }
 
-    this.saving = false;
     if (revision === this.latestRevision) {
-      if (succeeded) this.options.onPendingChange(false);
+      if (succeeded) {
+        this.options.onPendingChange(false);
+        this.publish("clean");
+      } else {
+        this.publish("failed");
+      }
       return succeeded;
     }
+
+    this.publish("pending");
 
     const remainingDebounce = Math.max(
       0,
       this.options.debounceMs - (Date.now() - this.lastChangeAt),
     );
     if (this.disposed) {
-      return this.persistLatest();
+      return this.persistLatestOnce();
     }
     this.schedule(remainingDebounce);
     return succeeded;
+  }
+
+  private publish(phase: FileSavePhase): void {
+    const next: FileSaveSnapshot = {
+      phase,
+      canSave: phase === "pending" || phase === "failed",
+      confirmedRevision: this.persistedRevision,
+    };
+    if (
+      next.phase === this.snapshot.phase &&
+      next.canSave === this.snapshot.canSave &&
+      next.confirmedRevision === this.snapshot.confirmedRevision
+    ) {
+      return;
+    }
+    this.snapshot = next;
+    for (const listener of this.listeners) listener();
   }
 }
