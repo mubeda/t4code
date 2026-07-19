@@ -253,6 +253,9 @@ import {
   resolveServerConfigVersionMismatch,
 } from "../versionSkew";
 import { useAssetUrls } from "../assets/assetUrls";
+import type { FileCommentAnnotationGroup } from "./files/fileCommentAnnotations";
+import type { FileEditingSession } from "./files/fileEditingSession";
+import { FileEditingSessionRegistry } from "./files/fileEditingSessionRegistry";
 
 const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
@@ -1468,8 +1471,29 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const activeEnvironmentBootstrapComplete = activeEnvironmentShell.data?.snapshot._tag === "Some";
   const activeProjectKey = activeProject
-    ? `${activeProject.environmentId}:${activeProject.workspaceRoot}`
+    ? JSON.stringify([
+        activeProject.environmentId,
+        activeProject.id,
+        activeThread?.worktreePath ?? activeProject.workspaceRoot,
+      ])
     : null;
+  const fileEditingSessions = useMemo(
+    () => new FileEditingSessionRegistry<FileEditingSession<FileCommentAnnotationGroup>>(),
+    [activeProjectKey],
+  );
+  const openFileRelativePaths = useMemo(
+    () =>
+      rightPanelState.surfaces.flatMap((surface) =>
+        surface.kind === "file" ? [surface.relativePath] : [],
+      ),
+    [rightPanelState.surfaces],
+  );
+
+  useEffect(() => {
+    void fileEditingSessions.reconcile(openFileRelativePaths);
+  }, [fileEditingSessions, openFileRelativePaths]);
+
+  useEffect(() => fileEditingSessions.acquireOwnership(), [fileEditingSessions]);
   const [pendingFileSurfaceIdsByProject, setPendingFileSurfaceIdsByProject] = useState<
     ReadonlyMap<string, ReadonlySet<string>>
   >(() => new Map());
@@ -2182,6 +2206,17 @@ function ChatViewContent(props: ChatViewProps) {
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
   const activeWorkspaceRoot = activeThreadWorktreePath ?? activeProjectCwd ?? undefined;
+  const filePreviewViewKey =
+    activeProject && activeWorkspaceRoot
+      ? JSON.stringify([
+          activeProject.environmentId,
+          activeWorkspaceRoot,
+          typeof composerDraftTarget === "string" ? "draft" : "thread",
+          typeof composerDraftTarget === "string"
+            ? composerDraftTarget
+            : scopedThreadKey(composerDraftTarget),
+        ])
+      : null;
   const activeTerminalLaunchContext =
     terminalUiLaunchContext?.threadId === activeThreadId ? terminalUiLaunchContext : null;
   // Default true while loading to avoid toolbar flicker.
@@ -5031,7 +5066,7 @@ function ChatViewContent(props: ChatViewProps) {
       activeWorkspaceRoot ? (
       <Suspense fallback={null}>
         <FilePreviewPanel
-          key={`${activeProject.environmentId}:${activeWorkspaceRoot}`}
+          key={filePreviewViewKey}
           environmentId={activeProject.environmentId}
           cwd={activeWorkspaceRoot}
           projectName={activeProject.title}
@@ -5046,6 +5081,7 @@ function ChatViewContent(props: ChatViewProps) {
           revealRequestId={activeFileSurface?.revealRequestId ?? 0}
           onOpenFile={openFileSurface}
           onPendingChange={handleFilePendingChange}
+          editingSessions={fileEditingSessions}
         />
       </Suspense>
     ) : null
