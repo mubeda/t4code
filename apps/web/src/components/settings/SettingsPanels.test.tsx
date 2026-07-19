@@ -483,6 +483,7 @@ function makeServerProvider(overrides: {
 function changedSettings(): UnifiedSettings {
   return {
     ...DEFAULT_UNIFIED_SETTINGS,
+    terminalFontPreference: { mode: "custom", family: "Iosevka" },
     timestampFormat: "24-hour",
     sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount + 3,
     wordWrap: !DEFAULT_UNIFIED_SETTINGS.wordWrap,
@@ -536,6 +537,44 @@ beforeEach(() => {
 });
 
 describe("GeneralSettingsPanel", () => {
+  it("changes the device-local terminal font preset", () => {
+    render(<GeneralSettingsPanel />);
+
+    const fontPreset = control("select", "bundled");
+    invoke(fontPreset, "onValueChange", "system");
+    expect(h.updateSettings).toHaveBeenCalledWith({
+      terminalFontPreference: { mode: "system" },
+    });
+
+    invoke(fontPreset, "onValueChange", "custom");
+    expect(h.updateSettings).toHaveBeenCalledWith({
+      terminalFontPreference: { mode: "custom", family: "JetBrains Mono" },
+    });
+  });
+
+  it("validates custom terminal fonts and reports device availability", () => {
+    const check = vi.fn(() => false);
+    vi.stubGlobal("document", { fonts: { check } });
+    h.settings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      terminalFontPreference: { mode: "custom", family: "Missing Mono" },
+    };
+
+    const markup = render(<GeneralSettingsPanel />);
+
+    expect(markup).toContain("This font is not available on this device.");
+    expect(check).toHaveBeenCalledWith('12px "Missing Mono"');
+
+    const customFont = control("draft-input", "Custom terminal font family");
+    invoke(customFont, "onCommit", "  Maple Mono  ");
+    expect(h.updateSettings).toHaveBeenCalledWith({
+      terminalFontPreference: { mode: "custom", family: "Maple Mono" },
+    });
+
+    invoke(customFont, "onCommit", "Maple Mono, monospace");
+    expect(h.updateSettings).toHaveBeenCalledTimes(1);
+  });
+
   it("renders a WebGL renderer toggle bound to terminal.webglEnabled", () => {
     h.settings = {
       ...DEFAULT_UNIFIED_SETTINGS,
@@ -704,7 +743,11 @@ describe("GeneralSettingsPanel", () => {
     invoke(control("button", "Reset archive confirmation to default"), "onClick");
     invoke(control("button", "Reset delete confirmation to default"), "onClick");
     invoke(control("button", "Reset text generation model to default"), "onClick");
-    expect(h.updateSettings).toHaveBeenCalledTimes(12);
+    invoke(control("button", "Reset terminal font to default"), "onClick");
+    expect(h.updateSettings).toHaveBeenCalledTimes(13);
+    expect(h.updateSettings).toHaveBeenCalledWith({
+      terminalFontPreference: DEFAULT_UNIFIED_SETTINGS.terminalFontPreference,
+    });
 
     invoke(
       control("switch", "Start new worktrees from origin by default"),
@@ -907,6 +950,7 @@ describe("useSettingsRestore", () => {
       "Diff whitespace changes",
       "Auto-open task panel",
       "Assistant output",
+      "Terminal font",
       "WebGL renderer",
       "Automatic Git fetch interval",
       "New thread mode",
@@ -936,6 +980,7 @@ describe("useSettingsRestore", () => {
         timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
         wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
         confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
+        terminalFontPreference: DEFAULT_UNIFIED_SETTINGS.terminalFontPreference,
         terminal: {
           webglEnabled: DEFAULT_UNIFIED_SETTINGS.terminal.webglEnabled,
         },
