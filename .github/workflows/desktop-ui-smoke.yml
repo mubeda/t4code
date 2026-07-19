@@ -39,7 +39,6 @@ jobs:
     env:
       T4CODE_E2E_PLATFORM: ${{ matrix.platform }}
       T4CODE_E2E_BUNDLE: ${{ matrix.bundle }}
-      T4CODE_E2E_ARTIFACT_DIR: ${{ runner.temp }}/t4code-desktop-ui-artifacts
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -122,6 +121,8 @@ jobs:
 
       - name: Run packaged desktop UI smoke
         shell: bash
+        env:
+          T4CODE_E2E_ARTIFACT_DIR: ${{ runner.temp }}/t4code-desktop-ui-artifacts
         run: |
           if [[ "$T4CODE_E2E_PLATFORM" == "linux" ]]; then
             xvfb-run --auto-servernum vp run test:ui:desktop
