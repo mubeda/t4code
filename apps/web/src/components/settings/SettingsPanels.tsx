@@ -1025,7 +1025,7 @@ export function GeneralSettingsPanel() {
       <SettingsSection title="Terminal">
         <SettingsRow
           title="Terminal font"
-          description="Use bundled Nerd Font symbols for prompt, file, and developer-tool icons."
+          description="Bundled Nerd Font symbols prevent broken prompt icons. This preference is stored only on this device."
           resetAction={
             !terminalFontPreferencesEqual(
               terminalFontPreference,
@@ -1054,7 +1054,7 @@ export function GeneralSettingsPanel() {
                 }
               }}
             >
-              <SelectTrigger className="w-full sm:w-48" aria-label="Terminal font preset">
+              <SelectTrigger className="w-full sm:w-48" aria-label="Terminal font">
                 <SelectValue>
                   {TERMINAL_FONT_OPTIONS.find(
                     (option) => option.value === terminalFontPreference.mode,
