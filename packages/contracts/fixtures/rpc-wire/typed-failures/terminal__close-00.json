@@ -7,7 +7,7 @@
       {
         "_tag": "Fail",
         "error": {
-          "_tag": "TerminalSessionLookupError",
+          "_tag": "TerminalNotRunningError",
           "threadId": "length",
           "terminalId": "W"
         }

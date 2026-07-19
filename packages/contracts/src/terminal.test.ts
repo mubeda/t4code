@@ -25,6 +25,7 @@ import {
   TerminalRestartInput,
   TerminalSessionSnapshot,
   TerminalSessionLookupError,
+  TerminalSpawnError,
   TerminalThreadInput,
   TerminalWriteError,
   TerminalWriteInput,
@@ -574,10 +575,36 @@ describe("terminal boundary schemas", () => {
 });
 
 describe("terminal errors", () => {
+  it("decodes a bounded terminal spawn failure without exposing process details", () => {
+    expect(
+      decodeTerminalError({
+        _tag: "TerminalSpawnError",
+        reason: "Terminal process could not be started.",
+      }),
+    ).toMatchObject({
+      _tag: "TerminalSpawnError",
+      reason: "Terminal process could not be started.",
+    });
+  });
+
+  it("rejects terminal spawn reasons beyond the wire bound", () => {
+    const invalid = {
+      _tag: "TerminalSpawnError",
+      reason: "x".repeat(513),
+    };
+    const expected = {
+      rootTag: "AnyOf" as const,
+      paths: [["reason"]],
+      containsTag: "InvalidValue" as const,
+    };
+    expectDecodeFailure(TerminalError, invalid, expected);
+  });
+
   const errors = [
     new TerminalCwdNotFoundError({ cwd: "/missing" }),
     new TerminalCwdNotDirectoryError({ cwd: "/file.txt" }),
     new TerminalCwdStatError({ cwd: "/denied", cause: "permission denied" }),
+    new TerminalSpawnError({ reason: "Terminal process could not be started." }),
     new TerminalHistoryError({
       operation: "migrate",
       threadId: "thread-1",
@@ -606,6 +633,7 @@ describe("terminal errors", () => {
       "Terminal cwd does not exist: /missing",
       "Terminal cwd is not a directory: /file.txt",
       "Failed to access terminal cwd: /denied",
+      "Terminal process could not be started.",
       "Failed to migrate terminal history for thread: thread-1, terminal: term-1",
       "Unknown terminal thread: thread-1, terminal: term-9",
       "Terminal is not running for thread: thread-1, terminal: term-2",
