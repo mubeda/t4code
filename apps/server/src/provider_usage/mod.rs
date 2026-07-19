@@ -323,10 +323,7 @@ async fn fetch_codex_usage() -> Result<ProviderUsageSnapshot, ProviderUsageFetch
     let now = OffsetDateTime::now_utc();
     let codex_home = match std::env::var_os("CODEX_HOME") {
         Some(home) => Some(PathBuf::from(home)),
-        None => match dirs::home_dir() {
-            Some(home) => Some(home.join(".codex")),
-            None => None,
-        },
+        None => dirs::home_dir().map(|home| home.join(".codex")),
     };
     if !codex_home
         .as_ref()
