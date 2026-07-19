@@ -1,6 +1,8 @@
 use std::{
     collections::BTreeMap,
-    env, fmt,
+    env,
+    ffi::OsStr,
+    fmt,
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc},
@@ -10,7 +12,7 @@ use std::{
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tokio::sync::{broadcast, watch};
 
-use crate::process::Platform;
+use crate::process::{Platform, locate_executable};
 
 #[cfg(windows)]
 use crate::process::WindowsJob;
@@ -49,12 +51,7 @@ pub struct PortablePtyBackend;
 
 impl PtyBackend for PortablePtyBackend {
     fn spawn(&self, input: &PtySpawnInput) -> Result<Arc<dyn PtyProcess>, String> {
-        if !executable_is_discoverable(&input.executable, &input.cwd, &input.env) {
-            return Err(format!(
-                "terminal executable was not found: {}",
-                input.executable
-            ));
-        }
+        let command = build_pty_command(input)?;
         let pair = match native_pty_system().openpty(PtySize {
             rows: input.rows,
             cols: input.cols,
@@ -64,12 +61,6 @@ impl PtyBackend for PortablePtyBackend {
             Ok(pair) => pair,
             Err(error) => return Err(error.to_string()),
         };
-        let mut command = CommandBuilder::new(&input.executable);
-        command.args(&input.args);
-        command.cwd(&input.cwd);
-        for (key, value) in &input.env {
-            command.env(key, value);
-        }
 
         let mut child = match pair.slave.spawn_command(command) {
             Ok(child) => child,
@@ -160,36 +151,42 @@ impl PtyBackend for PortablePtyBackend {
     }
 }
 
-fn executable_is_discoverable(
-    command: &str,
-    cwd: &Path,
-    overrides: &BTreeMap<String, String>,
-) -> bool {
-    executable_is_discoverable_on(Platform::current(), command, cwd, overrides)
+fn build_pty_command(input: &PtySpawnInput) -> Result<CommandBuilder, String> {
+    let Some(executable) = resolve_pty_executable(input) else {
+        return Err(format!(
+            "terminal executable was not found: {}",
+            input.executable
+        ));
+    };
+    let mut command = CommandBuilder::new(executable);
+    command.args(&input.args);
+    command.cwd(&input.cwd);
+    for (key, value) in &input.env {
+        command.env(key, value);
+    }
+    Ok(command)
 }
 
-fn executable_is_discoverable_on(
+fn resolve_pty_executable(input: &PtySpawnInput) -> Option<PathBuf> {
+    resolve_pty_executable_on(
+        Platform::current(),
+        &input.executable,
+        &input.cwd,
+        &input.env,
+    )
+}
+
+fn resolve_pty_executable_on(
     platform: Platform,
     command: &str,
     cwd: &Path,
     overrides: &BTreeMap<String, String>,
-) -> bool {
-    let command_path = Path::new(command);
-    if command_path.is_absolute() {
-        return command_path.is_file();
-    }
-    if command_path.components().count() > 1 {
-        return cwd.join(command_path).is_file();
-    }
-
+) -> Option<PathBuf> {
     let path = overrides
         .iter()
         .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
         .map(|(_, value)| value.clone())
         .or_else(|| env::var("PATH").ok());
-    let Some(path) = path else {
-        return false;
-    };
 
     let extensions = if platform == Platform::Windows {
         let path_extensions = overrides
@@ -217,13 +214,7 @@ fn executable_is_discoverable_on(
         vec![String::new()]
     };
 
-    env::split_paths(&path).any(|directory| {
-        extensions.iter().any(|extension| {
-            directory
-                .join(format!("{}{extension}", command_path.to_string_lossy()))
-                .is_file()
-        })
-    })
+    locate_executable(command, cwd, path.as_deref().map(OsStr::new), &extensions)
 }
 
 fn read_output(reader: &mut dyn Read, sender: &broadcast::Sender<String>) {
@@ -400,19 +391,27 @@ mod tests {
             .expect("test executable file name");
         let directory = executable.parent().expect("test executable directory");
         let overrides = BTreeMap::new();
-        assert!(executable_is_discoverable(
-            executable.to_str().expect("test executable path"),
-            directory,
-            &overrides
-        ));
-        assert!(!executable_is_discoverable(
-            executable
-                .with_file_name("definitely-missing-t4code-shell")
-                .to_str()
-                .expect("missing executable path"),
-            directory,
-            &overrides
-        ));
+        assert_eq!(
+            resolve_pty_executable_on(
+                Platform::current(),
+                executable.to_str().expect("test executable path"),
+                directory,
+                &overrides,
+            ),
+            Some(executable.clone())
+        );
+        assert_eq!(
+            resolve_pty_executable_on(
+                Platform::current(),
+                executable
+                    .with_file_name("definitely-missing-t4code-shell")
+                    .to_str()
+                    .expect("missing executable path"),
+                directory,
+                &overrides,
+            ),
+            None
+        );
 
         let mut isolated = BTreeMap::new();
         isolated.insert(
@@ -422,7 +421,10 @@ mod tests {
                 .to_string_lossy()
                 .into_owned(),
         );
-        assert!(executable_is_discoverable(command, directory, &isolated));
+        assert_eq!(
+            resolve_pty_executable_on(Platform::current(), command, directory, &isolated),
+            Some(executable.clone())
+        );
         isolated.insert(
             "PATH".to_owned(),
             executable
@@ -432,17 +434,17 @@ mod tests {
                 .to_string_lossy()
                 .into_owned(),
         );
-        assert!(!executable_is_discoverable(
-            "t4code-shell",
-            directory,
-            &isolated
-        ));
+        assert_eq!(
+            resolve_pty_executable_on(Platform::current(), "t4code-shell", directory, &isolated,),
+            None
+        );
     }
 
     #[test]
     fn executable_discovery_honors_windows_pathext_for_bare_commands() {
         let directory = tempfile::tempdir().unwrap();
-        std::fs::write(directory.path().join("claude.exe"), b"fixture").unwrap();
+        let executable = directory.path().join("claude.exe");
+        std::fs::write(&executable, b"fixture").unwrap();
         let mut environment = BTreeMap::new();
         environment.insert(
             "Path".to_owned(),
@@ -453,18 +455,75 @@ mod tests {
         );
         environment.insert("PATHEXT".to_owned(), ".com;.exe;.bat;.cmd".to_owned());
 
-        assert!(executable_is_discoverable_on(
-            Platform::Windows,
-            "claude",
-            directory.path(),
-            &environment,
-        ));
-        assert!(!executable_is_discoverable_on(
-            Platform::Unix,
-            "claude",
-            directory.path(),
-            &environment,
-        ));
+        assert_eq!(
+            resolve_pty_executable_on(Platform::Windows, "claude", directory.path(), &environment,),
+            Some(executable)
+        );
+        assert_eq!(
+            resolve_pty_executable_on(Platform::Unix, "claude", directory.path(), &environment,),
+            None
+        );
+    }
+
+    #[test]
+    fn pty_launch_resolves_a_multi_component_executable_to_the_exact_cwd_path() {
+        let cwd = tempfile::tempdir().unwrap();
+        let bin = cwd.path().join("tools");
+        std::fs::create_dir(&bin).unwrap();
+        let executable = bin.join("provider-fixture");
+        std::fs::write(&executable, b"fixture").unwrap();
+        let input = PtySpawnInput {
+            executable: "tools/provider-fixture".to_owned(),
+            args: vec!["--direct".to_owned()],
+            cwd: cwd.path().to_path_buf(),
+            cols: 80,
+            rows: 24,
+            env: BTreeMap::new(),
+        };
+
+        let command = build_pty_command(&input).unwrap();
+        assert_eq!(
+            command.get_argv(),
+            &[
+                executable.into_os_string(),
+                std::ffi::OsString::from("--direct"),
+            ]
+        );
+    }
+
+    #[test]
+    fn executable_resolution_anchors_relative_path_entries_to_the_terminal_cwd() {
+        let cwd = tempfile::tempdir().unwrap();
+        let bin = cwd.path().join("relative-bin");
+        std::fs::create_dir(&bin).unwrap();
+        let executable = bin.join("provider-fixture");
+        std::fs::write(&executable, b"fixture").unwrap();
+        let mut environment = BTreeMap::new();
+        environment.insert("PATH".to_owned(), "relative-bin".to_owned());
+
+        assert_eq!(
+            resolve_pty_executable_on(Platform::Unix, "provider-fixture", cwd.path(), &environment,),
+            Some(executable)
+        );
+    }
+
+    #[test]
+    fn platform_resolution_rejects_missing_candidates() {
+        let directory = tempfile::tempdir().unwrap();
+        let environment = BTreeMap::from([(
+            "PATH".to_owned(),
+            directory.path().to_string_lossy().into_owned(),
+        )]);
+
+        assert_eq!(
+            resolve_pty_executable_on(
+                Platform::Windows,
+                "missing-provider",
+                directory.path(),
+                &environment,
+            ),
+            None
+        );
     }
 
     #[cfg(unix)]
