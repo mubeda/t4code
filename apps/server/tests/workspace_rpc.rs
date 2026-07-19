@@ -195,8 +195,20 @@ async fn cancelled_index_refresh_does_not_replace_the_previous_snapshot() {
 #[tokio::test]
 async fn watcher_coalesces_bursts_and_stops_when_subscription_is_cancelled() {
     let root = TempDir::new().expect("root");
+    write(root.path(), "baseline.txt", b"baseline").await;
     let watcher = WorkspaceWatcher::new(Duration::from_millis(20), Duration::from_millis(50), 2);
     let mut subscription = watcher.watch(root.path().to_path_buf());
+
+    let baseline = tokio::time::timeout(Duration::from_secs(2), subscription.recv())
+        .await
+        .expect("baseline timeout")
+        .expect("baseline event");
+    assert!(
+        baseline
+            .changed_paths
+            .iter()
+            .any(|path| path.ends_with("baseline.txt"))
+    );
 
     for sequence in 0..8 {
         write(root.path(), "burst.txt", sequence.to_string().as_bytes()).await;
