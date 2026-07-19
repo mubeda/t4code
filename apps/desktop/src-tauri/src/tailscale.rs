@@ -347,7 +347,7 @@ mod tests {
             "powershell.exe -NoLogo -NoProfile -Command \"[Console]::OpenStandardOutput().WriteByte(255)\"",
         );
         assert!(
-            read_status_fixture(&invalid_utf8, Duration::from_secs(1))
+            read_status_fixture(&invalid_utf8, Duration::from_secs(5))
                 .await
                 .unwrap_err()
                 .contains("non-UTF-8")

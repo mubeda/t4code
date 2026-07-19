@@ -4012,7 +4012,9 @@ done
     fn executable_resolution_uses_supplied_search_path_without_global_environment() {
         let system = tempfile::TempDir::new().unwrap();
         let user = tempfile::TempDir::new().unwrap();
-        let executable = user.path().join("codex");
+        let executable = user
+            .path()
+            .join(if cfg!(windows) { "codex.exe" } else { "codex" });
         std::fs::write(&executable, b"fixture").unwrap();
         let minimal = std::env::join_paths([system.path()]).unwrap();
         let hydrated = std::env::join_paths([user.path(), system.path()]).unwrap();
