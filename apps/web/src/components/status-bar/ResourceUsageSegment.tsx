@@ -73,7 +73,7 @@ export function ResourceUsageSegment({
               <CpuIcon className="size-3" />
               <span>Top processes</span>
             </div>
-            {(resourceHistory?.topProcesses ?? []).slice(0, 5).map((process) => {
+            {(resourceHistory?.processes ?? []).slice(0, 5).map((process) => {
               const processView = buildResourceTopProcessViewModel(process);
               return (
                 <div
@@ -85,7 +85,7 @@ export function ResourceUsageSegment({
                 </div>
               );
             })}
-            {resourceHistory && resourceHistory.topProcesses.length === 0 ? (
+            {resourceHistory && resourceHistory.processes.length === 0 ? (
               <div className="text-muted-foreground">No process samples yet.</div>
             ) : null}
           </div>

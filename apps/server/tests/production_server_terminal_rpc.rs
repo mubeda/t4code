@@ -527,14 +527,24 @@ async fn terminal_rpc_clear_resize_restart_exit_and_restart_if_not_running_round
             restarted_snapshot[0]["snapshot"]["pid"].as_u64(),
             Some(restarted_pid)
         );
+        let diagnostics =
+            success_value(request(control, "8", "server.getProcessDiagnostics", json!({})).await);
+        let restarted_process_key = diagnostics["processes"]
+            .as_array()
+            .expect("diagnostic processes")
+            .iter()
+            .find(|process| process["pid"].as_u64() == Some(restarted_pid))
+            .and_then(|process| process["processKey"].as_str())
+            .expect("restarted terminal process key");
 
         assert_success(
             request(
                 control,
-                "8",
+                "9",
                 "server.signalProcess",
                 json!({
                     "pid": restarted_pid,
+                    "processKey": restarted_process_key,
                     "signal": "SIGKILL",
                 }),
             )
@@ -672,7 +682,11 @@ async fn server_terminal_auxiliary_rpcs_surface_runtime_state_validation_and_int
             diagnostics["serverPid"].as_u64(),
             Some(u64::from(std::process::id()))
         );
-        assert!(diagnostics["processCount"].as_u64().is_some());
+        assert!(
+            diagnostics["totals"]["combined"]["processCount"]
+                .as_u64()
+                .is_some()
+        );
 
         let history = success_value(
             request(
@@ -775,6 +789,7 @@ async fn server_terminal_auxiliary_rpcs_surface_runtime_state_validation_and_int
                 "server.signalProcess",
                 json!({
                     "pid": std::process::id(),
+                    "processKey": format!("{}:0", std::process::id()),
                     "signal": "SIGHUP",
                 }),
             )
@@ -788,6 +803,7 @@ async fn server_terminal_auxiliary_rpcs_surface_runtime_state_validation_and_int
                 "server.signalProcess",
                 json!({
                     "pid": u32::MAX,
+                    "processKey": format!("{}:999", u32::MAX),
                     "signal": "SIGINT",
                 }),
             )
@@ -795,6 +811,27 @@ async fn server_terminal_auxiliary_rpcs_surface_runtime_state_validation_and_int
         );
         assert_eq!(not_signaled["signaled"], false);
         assert_eq!(not_signaled["pid"], u32::MAX);
+        let server_process_key = diagnostics["processes"]
+            .as_array()
+            .expect("diagnostic processes")
+            .iter()
+            .find(|process| process["pid"].as_u64() == Some(u64::from(std::process::id())))
+            .and_then(|process| process["processKey"].as_str())
+            .expect("server process key");
+        let core_not_signaled = success_value(
+            request(
+                control,
+                "9",
+                "server.signalProcess",
+                json!({
+                    "pid": std::process::id(),
+                    "processKey": server_process_key,
+                    "signal": "SIGINT",
+                }),
+            )
+            .await,
+        );
+        assert_eq!(core_not_signaled["signaled"], false);
     })
     .catch_unwind()
     .await;
@@ -872,7 +909,7 @@ fn fixture_services() -> ServerTerminalServices {
         Arc::new(diagnostics::NotApplicableUiProcessObserver),
     ));
     let monitor = Arc::new(diagnostics::DiagnosticsMonitor::new(
-        resource_sampler,
+        resource_sampler.clone(),
         Duration::from_secs(60),
     ));
     let usage = provider_usage::ProviderUsageService::new(
@@ -904,6 +941,7 @@ fn fixture_services() -> ServerTerminalServices {
             },
         ),
         sampler,
+        resource_sampler,
         monitor,
         usage,
         relay,

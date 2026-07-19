@@ -365,7 +365,7 @@ function ProcessSignalActions({
   process: ServerProcessDiagnosticsEntry;
   isSignaling: boolean;
   supportsInterrupt: boolean;
-  onSignal: (pid: number, signal: ServerProcessSignal) => void;
+  onSignal: (pid: number, processKey: string, signal: ServerProcessSignal) => void;
 }) {
   return (
     <div className="flex items-center justify-end gap-1.5">
@@ -377,7 +377,7 @@ function ProcessSignalActions({
                 type="button"
                 disabled={isSignaling}
                 className="text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50"
-                onClick={() => onSignal(process.pid, "SIGINT")}
+                onClick={() => onSignal(process.pid, process.processKey, "SIGINT")}
               >
                 INT
               </button>
@@ -393,7 +393,7 @@ function ProcessSignalActions({
               type="button"
               disabled={isSignaling}
               className="text-[11px] font-medium text-destructive underline-offset-2 hover:underline disabled:pointer-events-none disabled:opacity-50"
-              onClick={() => onSignal(process.pid, "SIGKILL")}
+              onClick={() => onSignal(process.pid, process.processKey, "SIGKILL")}
             >
               KILL
             </button>
@@ -415,7 +415,7 @@ function ProcessDiagnosticsTable({
   processes: ReadonlyArray<ServerProcessDiagnosticsEntry>;
   signalingPid: number | null;
   supportsInterrupt: boolean;
-  onSignal: (pid: number, signal: ServerProcessSignal) => void;
+  onSignal: (pid: number, processKey: string, signal: ServerProcessSignal) => void;
   emptyLabel?: string;
 }) {
   const [collapsedPids, setCollapsedPids] = useState<ReadonlySet<number>>(() => new Set());
@@ -568,13 +568,13 @@ function ResourceHistoryProcessNameCell({
     <div
       className="grid min-w-0 grid-cols-[1.25rem_0.375rem_minmax(0,1fr)] items-center gap-2"
       style={{ paddingLeft: `${Math.min(visualDepth, 6) * 10}px` }}
-      aria-label={`${process.isServerRoot ? "Root" : "Child"} process ${name}`}
+      aria-label={`${process.kind === "server" ? "Root" : "Child"} process ${name}`}
     >
       <span className="size-5 shrink-0" aria-hidden="true" />
       <span
         className={cn(
           "size-1.5 shrink-0 rounded-full",
-          process.isServerRoot ? "bg-amber-500/90" : "bg-emerald-500/80",
+          process.kind === "server" ? "bg-amber-500/90" : "bg-emerald-500/80",
         )}
       />
       <Tooltip>
@@ -597,18 +597,22 @@ function ProcessResourceHistoryChart({
 }: {
   buckets: ReadonlyArray<{
     readonly startedAt: DateTime.Utc;
-    readonly avgCpuPercent: number;
-    readonly maxCpuPercent: number;
+    readonly cpuPercent: {
+      readonly average: { readonly combined: number };
+      readonly peak: { readonly combined: number };
+    };
   }>;
 }) {
-  const maxCpuPercent = Math.max(1, ...buckets.map((bucket) => bucket.maxCpuPercent));
+  const maxCpuPercent = Math.max(1, ...buckets.map((bucket) => bucket.cpuPercent.peak.combined));
 
   return (
     <div className="border-t border-border/60 px-4 py-3 sm:px-5">
       <div className="flex h-28 items-end gap-1 overflow-hidden rounded-sm bg-muted/10 p-2">
         {buckets.map((bucket) => {
-          const peakHeight = Math.max(2, (bucket.maxCpuPercent / maxCpuPercent) * 100);
-          const averageHeight = Math.max(2, (bucket.avgCpuPercent / maxCpuPercent) * 100);
+          const peakCpuPercent = bucket.cpuPercent.peak.combined;
+          const averageCpuPercent = bucket.cpuPercent.average.combined;
+          const peakHeight = Math.max(2, (peakCpuPercent / maxCpuPercent) * 100);
+          const averageHeight = Math.max(2, (averageCpuPercent / maxCpuPercent) * 100);
           return (
             <Tooltip key={DateTime.formatIso(bucket.startedAt)}>
               <TooltipTrigger
@@ -616,7 +620,7 @@ function ProcessResourceHistoryChart({
                   <div className="flex h-full min-w-1 flex-1 items-end">
                     <div
                       className="relative h-full w-full"
-                      aria-label={`Average CPU ${bucket.avgCpuPercent.toFixed(1)}%, peak CPU ${bucket.maxCpuPercent.toFixed(1)}%`}
+                      aria-label={`Average CPU ${averageCpuPercent.toFixed(1)}%, peak CPU ${peakCpuPercent.toFixed(1)}%`}
                     >
                       <div
                         className="absolute inset-x-0 bottom-0 rounded-t-sm bg-foreground/15 transition-colors"
@@ -631,7 +635,7 @@ function ProcessResourceHistoryChart({
                 }
               />
               <TooltipPopup side="top">
-                Avg {bucket.avgCpuPercent.toFixed(1)}%, peak {bucket.maxCpuPercent.toFixed(1)}%
+                Avg {averageCpuPercent.toFixed(1)}%, peak {peakCpuPercent.toFixed(1)}%
               </TooltipPopup>
             </Tooltip>
           );
@@ -675,7 +679,7 @@ function ProcessResourceHistoryTable({
   emptyLabel: string;
 }) {
   const shallowestChildDepth = processes.reduce<number | null>((minDepth, process) => {
-    if (process.isServerRoot) return minDepth;
+    if (process.kind === "server") return minDepth;
     return minDepth === null ? process.depth : Math.min(minDepth, process.depth);
   }, null);
 
@@ -723,7 +727,7 @@ function ProcessResourceHistoryTable({
                 <ResourceHistoryProcessNameCell
                   process={process}
                   visualDepth={
-                    process.isServerRoot || shallowestChildDepth === null
+                    process.kind === "server" || shallowestChildDepth === null
                       ? 0
                       : Math.max(1, process.depth - shallowestChildDepth + 1)
                   }
@@ -908,7 +912,7 @@ export function DiagnosticsSettingsPanel() {
   const isInitialLoading = isPending && data === null;
   const isProcessInitialLoading = isProcessPending && processData === null;
   const signalProcess = useCallback(
-    (pid: number, signal: ServerProcessSignal) => {
+    (pid: number, processKey: string, signal: ServerProcessSignal) => {
       if (
         signal === "SIGKILL" &&
         !window.confirm(`Send SIGKILL to process ${pid}? This cannot be handled by the process.`)
@@ -923,7 +927,7 @@ export function DiagnosticsSettingsPanel() {
       void (async () => {
         const result = await signalServerProcess({
           environmentId,
-          input: { pid, signal },
+          input: { pid, processKey, signal },
         });
         setSignalingPid(null);
         if (result._tag !== "Success") {
@@ -1019,16 +1023,16 @@ export function DiagnosticsSettingsPanel() {
         <StatsGrid>
           <StatBlock
             label="Child Processes"
-            value={processData ? formatCount(processData.processCount) : "..."}
+            value={processData ? formatCount(processData.totals.combined.processCount) : "..."}
           />
           <StatBlock
             label="CPU"
-            value={processData ? `${processData.totalCpuPercent.toFixed(1)}%` : "..."}
+            value={processData ? `${processData.totals.combined.cpuPercent.toFixed(1)}%` : "..."}
             tooltip="Total CPU across live child processes of the current server process. The desktop shell and other parent processes are not included."
           />
           <StatBlock
             label="Memory"
-            value={processData ? formatBytes(processData.totalRssBytes) : "..."}
+            value={processData ? formatBytes(processData.totals.combined.rssBytes) : "..."}
             tooltip="Total resident memory across live child processes of the current server process. The desktop shell and other parent processes are not included."
           />
           <StatBlock
@@ -1085,7 +1089,7 @@ export function DiagnosticsSettingsPanel() {
         <StatsGrid>
           <StatBlock
             label="CPU Time"
-            value={resourceData ? formatCpuTime(resourceData.totalCpuSecondsApprox) : "..."}
+            value={resourceData ? formatCpuTime(resourceData.cpuSecondsApprox.combined) : "..."}
             tooltip="Approximate active CPU time for the T4 server root process and its descendants during the selected window. It grows only while sampled processes use CPU and older samples leave as the window moves."
           />
           <StatBlock
@@ -1099,7 +1103,7 @@ export function DiagnosticsSettingsPanel() {
           />
           <StatBlock
             label="Processes"
-            value={resourceData ? formatCount(resourceData.topProcesses.length) : "..."}
+            value={resourceData ? formatCount(resourceData.processes.length) : "..."}
           />
         </StatsGrid>
         {processResourceError || resourceError ? (
@@ -1120,7 +1124,7 @@ export function DiagnosticsSettingsPanel() {
         ) : null}
         <ProcessResourceHistoryChart buckets={resourceData?.buckets ?? []} />
         <ProcessResourceHistoryTable
-          processes={resourceData?.topProcesses ?? []}
+          processes={resourceData?.processes ?? []}
           emptyLabel={
             isResourcePending && resourceData === null
               ? "Collecting process resource samples..."

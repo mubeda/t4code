@@ -7,7 +7,7 @@ use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, Signal, System, Update
 use thiserror::Error;
 
 use super::{
-    PROCESS_COMMAND_MAX_SCALARS, ProcessRow, ProcessSampler, SamplingError,
+    PROCESS_COMMAND_MAX_SCALARS, ProcessIdentity, ProcessRow, ProcessSampler, SamplingError,
     bound_diagnostic_string, build_descendant_entries,
 };
 
@@ -48,26 +48,12 @@ impl NativeProcessSampler {
         })
     }
 
-    pub async fn signal_descendant(
+    pub(super) fn signal_process(
         &self,
-        server_pid: u32,
-        target_pid: u32,
+        expected_identity: ProcessIdentity,
         signal: ProcessSignal,
     ) -> Result<(), SignalError> {
-        if server_pid == target_pid {
-            return Err(SignalError::ServerProcess);
-        }
-        let rows = self
-            .sample()
-            .await
-            .map_err(|error| SignalError::Read(error.to_string()))?;
-        if !build_descendant_entries(&rows, server_pid)
-            .iter()
-            .any(|entry| entry.pid == target_pid)
-        {
-            return Err(SignalError::NotDescendant(target_pid));
-        }
-        signal_pid(&self.system, target_pid, signal)
+        signal_process_identity(&self.system, expected_identity, signal)
     }
 
     pub async fn cleanup_descendants(&self, root_pid: u32) -> Result<Vec<u32>, SignalError> {
@@ -156,6 +142,33 @@ fn signal_pid(
     }
 }
 
+fn signal_process_identity(
+    system: &Arc<Mutex<System>>,
+    expected_identity: ProcessIdentity,
+    signal: ProcessSignal,
+) -> Result<(), SignalError> {
+    let mut system = system
+        .lock()
+        .map_err(|error| SignalError::Read(error.to_string()))?;
+    let pid = Pid::from_u32(expected_identity.pid);
+    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+    let process = system
+        .process(pid)
+        .ok_or(SignalError::NotFound(expected_identity.pid))?;
+    if process.start_time() != expected_identity.started_at {
+        return Err(SignalError::StaleIdentity(expected_identity.pid));
+    }
+    let signal = match signal {
+        ProcessSignal::Interrupt => Signal::Interrupt,
+        ProcessSignal::Kill => Signal::Kill,
+    };
+    match process.kill_with(signal) {
+        Some(true) => Ok(()),
+        Some(false) => Err(SignalError::Rejected(expected_identity.pid)),
+        None => Err(SignalError::Unsupported),
+    }
+}
+
 fn command_string(parts: &[impl AsRef<OsStr>], fallback: &OsStr) -> String {
     let joined = parts
         .iter()
@@ -190,6 +203,10 @@ pub enum SignalError {
     ServerProcess,
     #[error("process {0} is not a live descendant of the server")]
     NotDescendant(u32),
+    #[error("process {0} is not eligible for signaling")]
+    NotEligible(u32),
+    #[error("process {0} no longer has the expected identity")]
+    StaleIdentity(u32),
     #[error("process {0} no longer exists")]
     NotFound(u32),
     #[error("the operating system does not support this signal")]

@@ -322,6 +322,11 @@ function entry(
     command: "/usr/bin/codex run",
     depth: 0,
     childPids: [],
+    processKey: "100:100",
+    scope: "external",
+    kind: "provider",
+    label: "Codex",
+    confidence: "exact",
     ...overrides,
   } as ServerProcessDiagnosticsEntry;
 }
@@ -332,9 +337,12 @@ function processData(
   return {
     serverPid: 4242,
     readAt: T0,
-    processCount: 3,
-    totalRssBytes: 5_000_000,
-    totalCpuPercent: 12.5,
+    totals: {
+      combined: { processCount: 3, rssBytes: 5_000_000, cpuPercent: 12.5 },
+      core: { processCount: 1, rssBytes: 1_000_000, cpuPercent: 2.5 },
+      external: { processCount: 2, rssBytes: 4_000_000, cpuPercent: 10 },
+    },
+    uiCoverage: { status: "notApplicable", message: Option.none() },
     processes: [
       entry({ pid: 100, depth: 0, childPids: [101], command: "/usr/bin/codex run" }),
       entry({ pid: 101, depth: 1, childPids: [], command: "node worker.js", rssBytes: 500 }),
@@ -361,7 +369,10 @@ function summary(
     ppid: 1,
     command: "t4 server",
     depth: 0,
-    isServerRoot: true,
+    scope: "core",
+    kind: "server",
+    label: "T4Code Server",
+    confidence: "exact",
     firstSeenAt: T0,
     lastSeenAt: T0,
     currentCpuPercent: 2,
@@ -384,31 +395,44 @@ function resourceData(
     bucketMs: 60_000,
     sampleIntervalMs: 2_000,
     retainedSampleCount: 120,
-    totalCpuSecondsApprox: 75,
+    cpuSecondsApprox: { combined: 75, core: 65, external: 10 },
+    uiCoverage: { status: "notApplicable", message: Option.none() },
     buckets: [
       {
         startedAt: T0,
         endedAt: T1,
-        avgCpuPercent: 10,
-        maxCpuPercent: 40,
-        maxRssBytes: 1000,
-        maxProcessCount: 2,
+        cpuPercent: {
+          average: { combined: 10, core: 6, external: 4 },
+          peak: { combined: 40, core: 25, external: 15 },
+        },
+        rssBytes: {
+          average: { combined: 800, core: 500, external: 300 },
+          peak: { combined: 1000, core: 600, external: 400 },
+        },
+        maxProcessCount: { combined: 2, core: 1, external: 1 },
       },
       {
         startedAt: T1,
         endedAt: T1,
-        avgCpuPercent: 5,
-        maxCpuPercent: 20,
-        maxRssBytes: 800,
-        maxProcessCount: 1,
+        cpuPercent: {
+          average: { combined: 5, core: 3, external: 2 },
+          peak: { combined: 20, core: 12, external: 8 },
+        },
+        rssBytes: {
+          average: { combined: 600, core: 400, external: 200 },
+          peak: { combined: 800, core: 500, external: 300 },
+        },
+        maxProcessCount: { combined: 1, core: 1, external: 0 },
       },
     ],
-    topProcesses: [
-      summary({ processKey: "root", pid: 100, isServerRoot: true, depth: 0, cpuSecondsApprox: 65 }),
+    processes: [
+      summary({ processKey: "root", pid: 100, kind: "server", depth: 0, cpuSecondsApprox: 65 }),
       summary({
         processKey: "child",
         pid: 101,
-        isServerRoot: false,
+        scope: "external",
+        kind: "provider",
+        confidence: "inherited",
         depth: 2,
         command: "node child.js",
         cpuSecondsApprox: 0.5,
@@ -416,7 +440,9 @@ function resourceData(
       summary({
         processKey: "hours",
         pid: 102,
-        isServerRoot: false,
+        scope: "external",
+        kind: "helper",
+        confidence: "inherited",
         depth: 2,
         command: "this-is-a-really-long-process-name-that-clearly-exceeds-forty-two-characters",
         cpuSecondsApprox: 7_200,
@@ -606,7 +632,7 @@ describe("DiagnosticsSettingsPanel rendering", () => {
       refresh: vi.fn(),
     };
     h.resourceQuery = {
-      data: resourceData({ topProcesses: [] }),
+      data: resourceData({ processes: [] }),
       error: null,
       isPending: false,
       refresh: vi.fn(),
@@ -741,7 +767,9 @@ describe("DiagnosticsSettingsPanel process signals", () => {
     clickSignal("INT");
     await flush();
     expect(h.signalCalls).toHaveLength(1);
-    expect(h.signalCalls[0]).toMatchObject({ input: { signal: "SIGINT" } });
+    expect(h.signalCalls[0]).toMatchObject({
+      input: { processKey: "100:100", signal: "SIGINT" },
+    });
     expect(h.processQuery.refresh).toHaveBeenCalled();
     expect(h.toasts).toHaveLength(0);
   });
@@ -803,7 +831,9 @@ describe("DiagnosticsSettingsPanel process signals", () => {
     clickSignal("KILL");
     await flush();
     expect(h.signalCalls).toHaveLength(1);
-    expect(h.signalCalls[0]).toMatchObject({ input: { signal: "SIGKILL" } });
+    expect(h.signalCalls[0]).toMatchObject({
+      input: { processKey: "100:100", signal: "SIGKILL" },
+    });
   });
 
   it("aborts SIGKILL when the confirmation is dismissed", async () => {

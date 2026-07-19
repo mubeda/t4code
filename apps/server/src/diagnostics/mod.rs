@@ -18,8 +18,9 @@ pub use history::{
 };
 pub use model::{
     DescendantEntry, PROCESS_CLAIM_LABEL_MAX_SCALARS, PROCESS_COMMAND_MAX_SCALARS,
-    ProcessDiagnosticsResult, ProcessIdentity, ProcessRow, bound_diagnostic_string,
-    build_descendant_entries, build_process_tree_entries,
+    ProcessDiagnosticsResult, ProcessIdentity, ProcessRow, ProcessTreeMetadata,
+    bound_diagnostic_string, build_descendant_entries, build_process_tree_entries,
+    process_tree_metadata,
 };
 pub use monitor::{CurrentProcessDiagnostics, DiagnosticsMonitor, ProcessSampler, SamplingError};
 pub use native::{NativeProcessSampler, ProcessSignal, SignalError};
