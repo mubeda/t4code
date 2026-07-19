@@ -5,6 +5,7 @@ const harness = vi.hoisted(() => ({
   items: [] as Array<Record<string, unknown>>,
   menuItems: [] as Array<Record<string, unknown>>,
   tooltipReasons: [] as string[],
+  providerTerminalActionsAvailable: true,
 }));
 
 vi.mock("~/providerInstances", () => ({
@@ -15,15 +16,18 @@ vi.mock("./ChatHeaderPanelMenu.logic", () => ({
   buildPanelMenuModel: () => harness.items,
 }));
 vi.mock("./providerTerminalActions", () => ({
-  resolveProviderTerminalAction: (entry: Record<string, unknown>) => ({
-    entry,
-    label: `${entry.displayName} Terminal`,
-    command: {
-      executable: String(entry.instanceId),
-      args: ["--provider-terminal"],
-      label: `${entry.displayName} Terminal`,
-    },
-  }),
+  resolveProviderTerminalAction: (entry: Record<string, unknown>) =>
+    harness.providerTerminalActionsAvailable
+      ? {
+          entry,
+          label: `${entry.displayName} Terminal`,
+          command: {
+            executable: String(entry.instanceId),
+            args: ["--provider-terminal"],
+            label: `${entry.displayName} Terminal`,
+          },
+        }
+      : null,
 }));
 vi.mock("./ProviderInstanceIcon", () => ({
   ProviderInstanceIcon: () => <span data-provider-icon />,
@@ -63,6 +67,7 @@ beforeEach(() => {
   harness.items = [];
   harness.menuItems.length = 0;
   harness.tooltipReasons.length = 0;
+  harness.providerTerminalActionsAvailable = true;
 });
 
 function panelItem(overrides: Record<string, unknown> = {}) {
@@ -144,5 +149,29 @@ describe("ChatHeaderPanelMenu", () => {
   it("renders no provider divider when the provider list is empty", () => {
     const { markup } = render(true);
     expect(markup.match(/<hr/g)).toHaveLength(1);
+  });
+
+  it("keeps a visible chat provider without a registered terminal action in the chat section", () => {
+    harness.items = [
+      panelItem({
+        entry: {
+          instanceId: "fork",
+          driverKind: "forkDriver",
+          displayName: "Fork",
+          accentColor: null,
+        },
+      }),
+    ];
+    harness.providerTerminalActionsAvailable = false;
+
+    const { markup, props } = render(true);
+
+    expect(markup).toContain("Fork");
+    expect(markup).not.toContain("Fork Terminal");
+    expect(markup.match(/<hr/g)).toHaveLength(2);
+    expect(harness.menuItems).toHaveLength(3);
+    (harness.menuItems[0]!.onClick as () => void)();
+    expect(props.onCreateChatPanel).toHaveBeenCalledOnce();
+    expect(props.onOpenProviderTerminalPanel).not.toHaveBeenCalled();
   });
 });
