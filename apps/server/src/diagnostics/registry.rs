@@ -540,7 +540,7 @@ mod tests {
                 started_at: 10,
             },
             &claims,
-            UiCoverage::Unavailable,
+            UiCoverage::default(),
         );
         drop(state_guard);
 

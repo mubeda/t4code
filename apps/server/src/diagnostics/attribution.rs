@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use super::{
-    PROCESS_CLAIM_LABEL_MAX_SCALARS, ProcessIdentity, ProcessRow, bound_diagnostic_string,
+    PROCESS_CLAIM_LABEL_MAX_SCALARS, ProcessIdentity, ProcessRow, UiCoverage,
+    bound_diagnostic_string,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,14 +34,6 @@ pub struct ProcessClaim {
     pub scope: AttributionScope,
     pub kind: AttributionKind,
     pub label: String,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum UiCoverage {
-    Available,
-    Partial,
-    #[default]
-    Unavailable,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -364,7 +357,7 @@ mod tests {
                     "external/provider",
                 ),
             ],
-            UiCoverage::Unavailable,
+            UiCoverage::default(),
         );
 
         let cases = [
@@ -453,7 +446,7 @@ mod tests {
                     "external/provider",
                 ),
             ],
-            UiCoverage::Unavailable,
+            UiCoverage::default(),
         );
 
         assert_eq!(attribution.processes.len(), 4);
@@ -493,7 +486,7 @@ mod tests {
                 AttributionKind::Ui,
                 "core/ui",
             )],
-            UiCoverage::Unavailable,
+            UiCoverage::default(),
         );
 
         assert!(
@@ -524,7 +517,7 @@ mod tests {
                 AttributionKind::Ui,
                 &label,
             )],
-            UiCoverage::Unavailable,
+            UiCoverage::default(),
         );
         let process = attribution
             .processes
@@ -561,7 +554,7 @@ mod tests {
                     "external/provider",
                 ),
             ],
-            UiCoverage::Unavailable,
+            UiCoverage::default(),
         );
 
         assert!(
@@ -606,7 +599,7 @@ mod tests {
             &rows,
             identity(1, 10),
             &registry.bind_and_snapshot(&rows, now),
-            UiCoverage::Unavailable,
+            UiCoverage::default(),
         );
 
         let process = attribution
@@ -648,7 +641,7 @@ mod tests {
                     "external/provider",
                 ),
             ],
-            UiCoverage::Unavailable,
+            UiCoverage::default(),
         );
 
         assert_eq!(

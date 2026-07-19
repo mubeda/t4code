@@ -12,6 +12,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use t4code_server::diagnostics::UnavailableDesktopUiProcessObserver;
 use t4code_server::process::{configure_background_command, configure_background_std_command};
 use t4code_server::{
     DESKTOP_SHUTDOWN_PATH as SERVER_BACKEND_SHUTDOWN_PATH,
@@ -704,9 +705,12 @@ async fn start_managed_backend(
     match &plan.target {
         BackendLaunchTarget::InProcess { base_dir } => {
             let server_config = server_config_for_launch(base_dir.clone(), &plan.config);
-            let handle = ServerRuntime::start(server_config)
-                .await
-                .map_err(|error| format!("Could not start in-process desktop backend: {error}"))?;
+            let handle = ServerRuntime::start_with_ui_process_observer(
+                server_config,
+                Arc::new(UnavailableDesktopUiProcessObserver),
+            )
+            .await
+            .map_err(|error| format!("Could not start in-process desktop backend: {error}"))?;
 
             let mut config = plan.config.clone();
             config.port = handle.local_addr().port();
