@@ -14,6 +14,7 @@ const DESKTOP_UI_WORKFLOW_PATH = NodePath.join(
 );
 
 interface WorkflowStep {
+  readonly env?: Record<string, string>;
   readonly if?: string;
   readonly name?: string;
   readonly run?: string;
@@ -22,6 +23,7 @@ interface WorkflowStep {
 }
 
 interface WorkflowJob {
+  readonly env?: Record<string, string>;
   readonly "runs-on"?: string;
   readonly strategy?: {
     readonly "fail-fast"?: boolean;
@@ -201,5 +203,16 @@ describe("packaged desktop UI smoke contract", () => {
     expect(commands).not.toMatch(/bundle\/macos.*\.app/);
     expect(commands).toMatch(/always\(\)/);
     expect(commands).toMatch(/actions\/upload-artifact/);
+  });
+
+  it("resolves runner temporary paths only where the runner context is available", () => {
+    const { workflow } = readWorkflow(DESKTOP_UI_WORKFLOW_PATH);
+    const smoke = requireJob(workflow, "desktop_ui_smoke");
+    const runStep = smoke.steps?.find((step) => step.name === "Run packaged desktop UI smoke");
+
+    expect(JSON.stringify(smoke.env ?? {})).not.toContain("runner.temp");
+    expect(runStep?.env?.T4CODE_E2E_ARTIFACT_DIR).toBe(
+      "${{ runner.temp }}/t4code-desktop-ui-artifacts",
+    );
   });
 });
