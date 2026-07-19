@@ -7,6 +7,7 @@ import {
   ClientSettingsPatch,
   ClientSettingsSchema,
   CodexSettings,
+  CursorSettings,
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
   DEFAULT_UNIFIED_SETTINGS,
@@ -22,6 +23,7 @@ const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeCodexSettings = Schema.decodeUnknownSync(CodexSettings);
+const decodeCursorSettings = Schema.decodeUnknownSync(CursorSettings);
 
 describe("ServerSettings terminal", () => {
   it("defaults webglEnabled to true for legacy configs", () => {
@@ -289,6 +291,11 @@ describe("ServerSettingsPatch string normalization", () => {
 describe("provider settings schema helpers", () => {
   it("uses the binary fallback when a persisted path is empty", () => {
     expect(decodeCodexSettings({ binaryPath: "" }).binaryPath).toBe("codex");
+  });
+
+  it("uses cursor-agent as the Cursor binary fallback", () => {
+    expect(decodeCursorSettings({}).binaryPath).toBe("cursor-agent");
+    expect(decodeCursorSettings({ binaryPath: "" }).binaryPath).toBe("cursor-agent");
   });
 
   it("omits ordering metadata when no order is configured", () => {
