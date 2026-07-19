@@ -1027,7 +1027,17 @@ fn spawn_event_pump(
             tokio::select! {
                 () = cancellation.cancelled() => return,
                 event = driver.next_event() => {
-                    let Some(event) = event else { return; };
+                    let Some(event) = event else {
+                        if let Err(error) = driver.shutdown().await {
+                            tracing::debug!(
+                                %error,
+                                provider = %launch.provider,
+                                thread_id = %launch.thread_id,
+                                "failed to shut down provider after its event stream ended"
+                            );
+                        }
+                        return;
+                    };
                     if let Some(log) = &operational_log {
                         let _ = log.record(&event);
                     }

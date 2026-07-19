@@ -98,6 +98,8 @@ impl Default for TerminalManagerOptions {
 
 #[derive(Debug, Error)]
 pub enum TerminalError {
+    #[error("terminal manager is shut down")]
+    Shutdown,
     #[error("terminal cwd does not exist: {0}")]
     CwdNotFound(String),
     #[error("terminal cwd is not a directory: {0}")]
@@ -262,6 +264,9 @@ impl TerminalManager {
         input: TerminalOpenInput,
     ) -> Result<TerminalSessionSnapshot, TerminalError> {
         let _lifecycle = self.inner.lifecycle.lock().await;
+        if self.inner.cancellation.is_cancelled() {
+            return Err(TerminalError::Shutdown);
+        }
         self.start(input, false).await
     }
 
@@ -270,6 +275,9 @@ impl TerminalManager {
         input: TerminalRestartInput,
     ) -> Result<TerminalSessionSnapshot, TerminalError> {
         let _lifecycle = self.inner.lifecycle.lock().await;
+        if self.inner.cancellation.is_cancelled() {
+            return Err(TerminalError::Shutdown);
+        }
         self.close_sessions(&input.thread_id, Some(&input.terminal_id))
             .await;
         self.start(input, true).await
@@ -772,6 +780,8 @@ impl TerminalManager {
     }
 
     pub async fn shutdown(&self) {
+        let _lifecycle = self.inner.lifecycle.lock().await;
+        self.inner.cancellation.cancel();
         let keys = self
             .inner
             .sessions
@@ -781,9 +791,8 @@ impl TerminalManager {
             .cloned()
             .collect::<Vec<_>>();
         for (thread_id, terminal_id) in keys {
-            self.close(&thread_id, Some(&terminal_id)).await;
+            self.close_sessions(&thread_id, Some(&terminal_id)).await;
         }
-        self.inner.cancellation.cancel();
     }
 
     async fn require_session(
@@ -1132,6 +1141,74 @@ mod tests {
         assert_eq!(terminal_claims(&registry, &[shutdown_pid]).len(), 1);
         manager.shutdown().await;
         assert!(terminal_claims(&registry, &[shutdown_pid]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn concurrent_open_waits_for_shutdown_and_cannot_spawn_a_session() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend::default());
+        let registry = ProcessAttributionRegistry::new();
+        let manager = attributed_manager(backend.clone(), registry.clone());
+        let lifecycle = manager.inner.lifecycle.lock().await;
+
+        let (shutdown_started_tx, shutdown_started_rx) = tokio::sync::oneshot::channel();
+        let shutdown_manager = manager.clone();
+        let shutdown = tokio::spawn(async move {
+            shutdown_started_tx.send(()).unwrap();
+            shutdown_manager.shutdown().await;
+        });
+        shutdown_started_rx.await.unwrap();
+        let (open_started_tx, open_started_rx) = tokio::sync::oneshot::channel();
+        let open_manager = manager.clone();
+        let cwd = root.path().to_path_buf();
+        let open = tokio::spawn(async move {
+            open_started_tx.send(()).unwrap();
+            open_manager
+                .open(TerminalOpenInput::new(
+                    "thread-shutdown-race",
+                    "term-shutdown-race",
+                    cwd,
+                    80,
+                    24,
+                ))
+                .await
+        });
+        open_started_rx.await.unwrap();
+        drop(lifecycle);
+
+        shutdown.await.unwrap();
+        assert!(matches!(open.await.unwrap(), Err(TerminalError::Shutdown)));
+        assert!(backend.processes.lock().unwrap().is_empty());
+        assert!(manager.inner.sessions.read().await.is_empty());
+        assert!(terminal_claims(&registry, &[1]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn open_and_restart_fail_without_spawning_after_shutdown() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend::default());
+        let registry = ProcessAttributionRegistry::new();
+        let manager = attributed_manager(backend.clone(), registry.clone());
+        let input = TerminalOpenInput::new(
+            "thread-after-shutdown",
+            "term-after-shutdown",
+            root.path().to_path_buf(),
+            80,
+            24,
+        );
+        manager.shutdown().await;
+
+        assert!(matches!(
+            manager.open(input.clone()).await,
+            Err(TerminalError::Shutdown)
+        ));
+        assert!(matches!(
+            manager.restart(input).await,
+            Err(TerminalError::Shutdown)
+        ));
+        assert!(backend.processes.lock().unwrap().is_empty());
+        assert!(manager.inner.sessions.read().await.is_empty());
+        assert!(terminal_claims(&registry, &[1]).is_empty());
     }
 
     #[tokio::test]
