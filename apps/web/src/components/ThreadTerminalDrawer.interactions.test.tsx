@@ -1066,9 +1066,7 @@ describe("TerminalViewport mounted lifecycle", () => {
       expect(xtermState.terminals).toHaveLength(1);
       expect(terminal.dispose).not.toHaveBeenCalled();
       expect(view.detachRendererSpy).not.toHaveBeenCalled();
-      expect(terminal.options.fontFamily).toBe(
-        '"Maple Mono", "T4Code Symbols Nerd Font Mono", "JetBrains Mono", monospace',
-      );
+      expect(terminal.options.fontFamily).toBe('"Maple Mono", monospace');
       expect(testState.fontLoad).toHaveBeenCalledOnce();
       expect(terminal.clearTextureAtlas).toHaveBeenCalledOnce();
       expect(fitAddon.fit).toHaveBeenCalledOnce();

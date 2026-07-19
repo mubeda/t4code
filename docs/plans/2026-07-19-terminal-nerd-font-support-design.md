@@ -5,14 +5,15 @@
 
 ## Summary
 
-T4Code will make terminal icon rendering deterministic by bundling the monospaced
-Nerd Fonts symbols font and composing it with the existing bundled JetBrains
-Mono font. The composed font stack becomes the automatic default for new and
-existing installations.
+T4Code will make terminal icon rendering deterministic by bundling the complete
+monospaced JetBrains Mono Nerd Font. One font therefore owns ordinary text,
+Powerline separators, Nerd Font icons, and their advance widths. This font
+becomes the automatic default for new and existing installations.
 
 The terminal font preference is device-local. Users can select the bundled
 default, the operating system monospace font, or one custom font family. Every
-selection retains the bundled Nerd symbols font as a fallback.
+selection uses one primary terminal font rather than mixing fonts with
+incompatible cell metrics.
 
 ## Problem
 
@@ -35,7 +36,8 @@ installations.
 ## Goals
 
 - Render Powerline and Nerd Font glyphs in every packaged T4Code build.
-- Preserve the existing JetBrains Mono terminal typography.
+- Preserve the existing JetBrains Mono terminal typography through its patched
+  Nerd Font build.
 - Make the corrected font stack the automatic default for existing users.
 - Support a system monospace preset and one custom device-local font family.
 - Apply font changes to active terminals without replacing the terminal
@@ -50,7 +52,7 @@ installations.
 - Enumerating all fonts installed on the operating system.
 - Synchronizing a font selection between devices or remote environments.
 - Adding terminal font size, line-height, weight, or ligature controls.
-- Bundling a complete patched JetBrainsMono Nerd Font family.
+- Bundling every weight and style of JetBrains Mono Nerd Font.
 - Changing shell prompts or asking users to install fonts manually.
 
 ## Existing Settings Audit
@@ -80,11 +82,11 @@ The existing General → Terminal section gains a **Terminal font** row with:
 Selecting Custom reveals a single font-family input. The input accepts one
 family name, not an arbitrary CSS stack. A best-effort availability check can
 show a non-blocking warning when the family is not available on the current
-device. The terminal still works because the bundled fallbacks remain active.
+device. The terminal still works through the browser's monospace fallback.
 
 Supporting text explains that:
 
-- Nerd Font symbols are bundled.
+- A complete monospaced Nerd Font is bundled.
 - The preference is stored only on this device.
 
 Restore Defaults resets the preference to T4Code Nerd Font (bundled).
@@ -117,34 +119,35 @@ server settings patch path.
 A single shared resolver maps the preference to the xterm font-family string.
 No component constructs its own stack.
 
-The bundled family registered for the symbols asset uses a T4Code-specific
-name, such as `T4Code Symbols Nerd Font Mono`, so it cannot accidentally bind
-to a different system-installed version.
+The bundled family uses a T4Code-specific name,
+`T4Code JetBrainsMono Nerd Font Mono`, so it cannot accidentally bind to a
+different system-installed version.
 
 Resolved stacks have this shape:
 
 ```text
 Bundled:
-  "JetBrains Mono", "T4Code Symbols Nerd Font Mono", monospace
+  "T4Code JetBrainsMono Nerd Font Mono", monospace
 
 System:
-  ui-monospace, "T4Code Symbols Nerd Font Mono", monospace
+  ui-monospace, monospace
 
 Custom:
-  "<escaped custom family>", "T4Code Symbols Nerd Font Mono",
-  "JetBrains Mono", monospace
+  "<escaped custom family>", monospace
 ```
 
-The monospaced symbols variant is required because terminal renderers assume
-each glyph fits the terminal cell grid.
+The bundled font contains both text and icons with the same one-cell advance.
+Mixing a text font with a symbols-only fallback is deliberately avoided:
+fallback glyphs can have a wider advance than the primary font's xterm cell,
+causing the glyph to spill beneath the cursor in the following cell.
 
 ## Asset and Licensing
 
-The repository will pin `Symbols Nerd Font Mono` from the stable Nerd Fonts
-v3.4.0 release:
+The repository will pin `JetBrains Mono Nerd Font Mono` from the stable Nerd
+Fonts v3.4.0 release:
 
 - <https://github.com/ryanoasis/nerd-fonts/releases/tag/v3.4.0>
-- <https://github.com/ryanoasis/nerd-fonts/tree/v3.4.0/patched-fonts/NerdFontsSymbolsOnly>
+- <https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/JetBrainsMono.tar.xz>
 
 The optimized WOFF2 asset is stored with its upstream license, source URL,
 version, and checksums. Builds never download an unpinned `latest` font.
@@ -168,8 +171,8 @@ not reconnect the shell, replace the xterm instance, or discard scrollback.
 
 WebGL and fallback renderers use the same resolved stack and update path.
 
-If the symbols asset fails to load, T4Code logs one structured diagnostic
-warning and leaves the terminal usable with ordinary monospace fallbacks. It
+If the bundled font fails to load, T4Code logs one structured diagnostic
+warning and leaves the terminal usable with an ordinary monospace fallback. It
 does not crash or enter a retry loop.
 
 ## Testing Strategy
@@ -183,13 +186,16 @@ Implementation follows red–green–refactor.
 - The preference remains in the client settings patch path.
 - Every preset produces the expected ordered stack.
 - Custom family names are normalized, validated, quoted, and escaped.
-- Bundled symbol and ordinary-text fallbacks cannot be omitted.
+- The bundled preset resolves to one complete Nerd Font rather than a mixed
+  metrics stack.
 
 ### Asset tests
 
 - Parse the bundled font character map.
 - Assert representative Powerline, Nerd Font private-use, and
   supplementary-plane glyphs are present.
+- Assert ordinary text and representative icon glyphs have identical advance
+  widths so the cursor cannot overlap a preceding icon.
 - Assert the pinned asset provenance and license are included.
 
 ### Settings tests

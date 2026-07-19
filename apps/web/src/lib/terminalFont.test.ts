@@ -6,31 +6,27 @@ import {
   isCustomTerminalFontAvailable,
   normalizeCustomTerminalFontFamily,
   resolveTerminalFontFamily,
-  TERMINAL_NERD_SYMBOLS_FONT_FAMILY,
+  TERMINAL_NERD_FONT_FAMILY,
 } from "./terminalFont";
 
 describe("resolveTerminalFontFamily", () => {
-  it("uses bundled JetBrains Mono with the Nerd symbols fallback by default", () => {
+  it("uses the bundled monospaced Nerd Font by default", () => {
     expect(resolveTerminalFontFamily({ mode: "bundled" })).toBe(
-      '"JetBrains Mono", "T4Code Symbols Nerd Font Mono", monospace',
+      '"T4Code JetBrainsMono Nerd Font Mono", monospace',
     );
   });
 
-  it("uses the system monospace generic before the bundled symbols", () => {
-    expect(resolveTerminalFontFamily({ mode: "system" })).toBe(
-      'ui-monospace, "T4Code Symbols Nerd Font Mono", monospace',
-    );
+  it("does not mix the system font with a differently sized icon fallback", () => {
+    expect(resolveTerminalFontFamily({ mode: "system" })).toBe("ui-monospace, monospace");
   });
 
-  it("quotes a custom family and keeps deterministic fallbacks", () => {
+  it("quotes a custom family without mixing incompatible glyph metrics", () => {
     expect(
       resolveTerminalFontFamily({
         mode: "custom",
         family: 'Operator "Mono" \\ Local',
       }),
-    ).toBe(
-      '"Operator \\"Mono\\" \\\\ Local", "T4Code Symbols Nerd Font Mono", "JetBrains Mono", monospace',
-    );
+    ).toBe('"Operator \\"Mono\\" \\\\ Local", monospace');
   });
 
   it("normalizes valid custom families and rejects invalid CSS stacks", () => {
@@ -70,7 +66,7 @@ describe("bundled font loading", () => {
 
     expect(load).toHaveBeenCalledTimes(1);
     expect(load).toHaveBeenCalledWith(
-      `12px "${TERMINAL_NERD_SYMBOLS_FONT_FAMILY}"`,
+      `12px "${TERMINAL_NERD_FONT_FAMILY}"`,
       "\ue0b0\uf115\u{f0001}",
     );
   });

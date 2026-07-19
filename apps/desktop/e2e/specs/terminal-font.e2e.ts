@@ -93,12 +93,12 @@ describe("packaged terminal font support", () => {
 
     const fontProbe = await browser.executeAsync((probe, done) => {
       void document.fonts
-        .load('12px "T4Code Symbols Nerd Font Mono"', probe)
+        .load('12px "T4Code JetBrainsMono Nerd Font Mono"', probe)
         .then(() => {
           done({
-            loaded: document.fonts.check('12px "T4Code Symbols Nerd Font Mono"', probe),
+            loaded: document.fonts.check('12px "T4Code JetBrainsMono Nerd Font Mono"', probe),
             familyRegistered: [...document.fonts].some(
-              (face) => face.family === "T4Code Symbols Nerd Font Mono",
+              (face) => face.family === "T4Code JetBrainsMono Nerd Font Mono",
             ),
           });
         })
