@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     future::Future,
     pin::Pin,
     sync::Arc,
@@ -11,7 +11,8 @@ use time::OffsetDateTime;
 use super::{
     AttributedProcess, AttributionKind, AttributionScope, NativeProcessSampler,
     ProcessAttributionRegistry, ProcessAttributionTotals, ProcessClaim, ProcessIdentity,
-    ProcessRow, ResourceAttributor, SamplingError, bound_diagnostic_string,
+    ProcessRow, ProcessSignal, ResourceAttributor, SamplingError, SignalError,
+    bound_diagnostic_string,
 };
 
 const UI_OBSERVATION_TIMEOUT: Duration = Duration::from_millis(250);
@@ -104,6 +105,12 @@ pub(crate) trait NativeProcessRowSource: std::fmt::Debug + Send + Sync + 'static
     fn collect_rows(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ProcessRow>, SamplingError>> + Send + '_>>;
+
+    fn signal_process(
+        &self,
+        expected_identity: ProcessIdentity,
+        signal: ProcessSignal,
+    ) -> Result<(), SignalError>;
 }
 
 impl NativeProcessRowSource for NativeProcessSampler {
@@ -111,6 +118,14 @@ impl NativeProcessRowSource for NativeProcessSampler {
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ProcessRow>, SamplingError>> + Send + '_>> {
         NativeProcessSampler::collect_rows(self)
+    }
+
+    fn signal_process(
+        &self,
+        expected_identity: ProcessIdentity,
+        signal: ProcessSignal,
+    ) -> Result<(), SignalError> {
+        NativeProcessSampler::signal_process(self, expected_identity, signal)
     }
 }
 
@@ -141,6 +156,51 @@ impl NativeResourceSampler {
             registry,
             ui_observer,
         }
+    }
+
+    pub async fn signal_external_descendant(
+        &self,
+        expected_identity: ProcessIdentity,
+        signal: ProcessSignal,
+    ) -> Result<(), SignalError> {
+        let observation = observe_ui_processes(self.ui_observer.clone());
+        let rows = self.native.collect_rows();
+        let (observation, rows) = tokio::join!(observation, rows);
+        let rows = rows.map_err(|error| SignalError::Read(error.to_string()))?;
+        let server_identity = rows
+            .iter()
+            .find(|row| row.pid == std::process::id())
+            .map(|row| ProcessIdentity {
+                pid: row.pid,
+                started_at: row.started_at,
+            })
+            .ok_or_else(|| {
+                SignalError::Read("current server process is absent from native rows".to_owned())
+            })?;
+        let mut claims = self.registry.bind_and_snapshot(&rows, Instant::now());
+        append_ui_claims(&mut claims, &rows, &observation.identities);
+        let attribution =
+            ResourceAttributor::attribute(&rows, server_identity, &claims, observation.coverage);
+        let Some(target_row) = rows.iter().find(|row| row.pid == expected_identity.pid) else {
+            return Err(SignalError::NotFound(expected_identity.pid));
+        };
+        if target_row.started_at != expected_identity.started_at {
+            return Err(SignalError::StaleIdentity(expected_identity.pid));
+        }
+        if expected_identity == server_identity {
+            return Err(SignalError::NotEligible(expected_identity.pid));
+        }
+        if !has_current_server_ancestry(&rows, server_identity, expected_identity) {
+            return Err(SignalError::NotDescendant(expected_identity.pid));
+        }
+        let eligible = attribution.processes.iter().any(|process| {
+            process.identity == expected_identity && process.scope == AttributionScope::External
+        });
+        if !eligible {
+            return Err(SignalError::NotEligible(expected_identity.pid));
+        }
+
+        self.native.signal_process(expected_identity, signal)
     }
 }
 
@@ -251,6 +311,42 @@ fn append_ui_claims(
     );
 }
 
+fn has_current_server_ancestry(
+    rows: &[ProcessRow],
+    server_identity: ProcessIdentity,
+    target_identity: ProcessIdentity,
+) -> bool {
+    let rows_by_pid = rows
+        .iter()
+        .map(|row| (row.pid, row))
+        .collect::<HashMap<_, _>>();
+    let mut current = target_identity;
+    let mut visited = HashSet::new();
+    while visited.insert(current) {
+        let Some(row) = rows_by_pid.get(&current.pid) else {
+            return false;
+        };
+        if row.started_at != current.started_at {
+            return false;
+        }
+        let Some(parent) = rows_by_pid.get(&row.ppid) else {
+            return false;
+        };
+        let parent_identity = ProcessIdentity {
+            pid: parent.pid,
+            started_at: parent.started_at,
+        };
+        if parent_identity.started_at > current.started_at {
+            return false;
+        }
+        if parent_identity == server_identity {
+            return true;
+        }
+        current = parent_identity;
+    }
+    false
+}
+
 fn unavailable_coverage(message: &str) -> UiCoverage {
     UiCoverage {
         status: UiCoverageStatus::Unavailable,
@@ -267,8 +363,8 @@ mod tests {
         future::Future,
         pin::Pin,
         sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
+            Arc, Mutex,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
         },
         time::{Duration, Instant},
     };
@@ -279,13 +375,16 @@ mod tests {
     };
     use crate::diagnostics::{
         AttributionConfidence, AttributionKind, AttributionScope, ProcessAttributionRegistry,
-        ProcessIdentity, ProcessRow, SamplingError,
+        ProcessIdentity, ProcessRegistrationMetadata, ProcessRow, ProcessSignal,
+        RegistrationSource, SamplingError, SignalError,
     };
 
     #[derive(Debug)]
     struct FakeNativeProcessRowSource {
         rows: Vec<ProcessRow>,
         samples: AtomicUsize,
+        signals: Mutex<Vec<(ProcessIdentity, ProcessSignal)>>,
+        signal_supported: AtomicBool,
     }
 
     impl FakeNativeProcessRowSource {
@@ -293,6 +392,8 @@ mod tests {
             Self {
                 rows,
                 samples: AtomicUsize::new(0),
+                signals: Mutex::new(Vec::new()),
+                signal_supported: AtomicBool::new(true),
             }
         }
     }
@@ -306,6 +407,21 @@ mod tests {
                 self.samples.fetch_add(1, Ordering::SeqCst);
                 Ok(self.rows.clone())
             })
+        }
+
+        fn signal_process(
+            &self,
+            expected_identity: ProcessIdentity,
+            signal: ProcessSignal,
+        ) -> Result<(), SignalError> {
+            if !self.signal_supported.load(Ordering::SeqCst) {
+                return Err(SignalError::Unsupported);
+            }
+            self.signals
+                .lock()
+                .expect("signals")
+                .push((expected_identity, signal));
+            Ok(())
         }
     }
 
@@ -362,10 +478,18 @@ mod tests {
         rows: Vec<ProcessRow>,
         observation: FakeObservation,
     ) -> (NativeResourceSampler, Arc<FakeNativeProcessRowSource>) {
+        sampler_with_registry(rows, observation, ProcessAttributionRegistry::new())
+    }
+
+    fn sampler_with_registry(
+        rows: Vec<ProcessRow>,
+        observation: FakeObservation,
+        registry: ProcessAttributionRegistry,
+    ) -> (NativeResourceSampler, Arc<FakeNativeProcessRowSource>) {
         let native = Arc::new(FakeNativeProcessRowSource::new(rows));
         let sampler = NativeResourceSampler::with_native_process_source(
             native.clone(),
-            ProcessAttributionRegistry::new(),
+            registry,
             observer(observation),
         );
         (sampler, native)
@@ -568,5 +692,171 @@ mod tests {
             .expect("second sample should succeed");
 
         assert_eq!(native.samples.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn signal_revalidation_requires_current_external_identity_and_server_ancestry() {
+        let server_pid = std::process::id();
+        let target_pid = server_pid + 1;
+        let server_identity = identity(server_pid, 100);
+        let target_identity = identity(target_pid, 200);
+        let external_registry = ProcessAttributionRegistry::new();
+        let _registration = external_registry
+            .register_pid(
+                target_pid,
+                ProcessRegistrationMetadata {
+                    scope: AttributionScope::External,
+                    kind: AttributionKind::Provider,
+                    label: "Codex".to_owned(),
+                    source: RegistrationSource::Provider,
+                },
+            )
+            .expect("external registration");
+        let (external_sampler, external_native) = sampler_with_registry(
+            vec![
+                row(server_pid, 1, server_identity.started_at),
+                row(target_pid, server_pid, target_identity.started_at),
+            ],
+            FakeObservation::Return(DesktopUiObservation {
+                identities: Vec::new(),
+                coverage: UiCoverage {
+                    status: UiCoverageStatus::NotApplicable,
+                    message: None,
+                },
+            }),
+            external_registry,
+        );
+
+        external_sampler
+            .signal_external_descendant(target_identity, ProcessSignal::Interrupt)
+            .await
+            .expect("exact external descendant should be signaled");
+
+        assert_eq!(external_native.samples.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *external_native.signals.lock().expect("signals"),
+            [(target_identity, ProcessSignal::Interrupt)]
+        );
+
+        let (core_root_sampler, _) = sampler(
+            vec![row(server_pid, 1, server_identity.started_at)],
+            FakeObservation::Return(DesktopUiObservation {
+                identities: Vec::new(),
+                coverage: UiCoverage {
+                    status: UiCoverageStatus::NotApplicable,
+                    message: None,
+                },
+            }),
+        );
+        assert!(matches!(
+            core_root_sampler
+                .signal_external_descendant(server_identity, ProcessSignal::Kill)
+                .await,
+            Err(SignalError::NotEligible(pid)) if pid == server_pid
+        ));
+
+        let (core_ui_sampler, _) = sampler(
+            vec![
+                row(server_pid, 1, server_identity.started_at),
+                row(target_pid, server_pid, target_identity.started_at),
+            ],
+            FakeObservation::Return(DesktopUiObservation {
+                identities: vec![target_identity],
+                coverage: UiCoverage {
+                    status: UiCoverageStatus::Available,
+                    message: None,
+                },
+            }),
+        );
+        assert!(matches!(
+            core_ui_sampler
+                .signal_external_descendant(target_identity, ProcessSignal::Kill)
+                .await,
+            Err(SignalError::NotEligible(pid)) if pid == target_pid
+        ));
+
+        let stale_registry = ProcessAttributionRegistry::new();
+        let _stale_registration = stale_registry
+            .register_pid(
+                target_pid,
+                ProcessRegistrationMetadata {
+                    scope: AttributionScope::External,
+                    kind: AttributionKind::Provider,
+                    label: "Codex".to_owned(),
+                    source: RegistrationSource::Provider,
+                },
+            )
+            .expect("stale registration");
+        let (stale_sampler, stale_native) = sampler_with_registry(
+            vec![
+                row(server_pid, 1, server_identity.started_at),
+                row(target_pid, server_pid, target_identity.started_at + 1),
+            ],
+            FakeObservation::Return(DesktopUiObservation {
+                identities: Vec::new(),
+                coverage: UiCoverage {
+                    status: UiCoverageStatus::NotApplicable,
+                    message: None,
+                },
+            }),
+            stale_registry,
+        );
+        assert!(matches!(
+            stale_sampler
+                .signal_external_descendant(target_identity, ProcessSignal::Kill)
+                .await,
+            Err(SignalError::StaleIdentity(pid)) if pid == target_pid
+        ));
+        assert_eq!(stale_native.samples.load(Ordering::SeqCst), 1);
+
+        let reparented_registry = ProcessAttributionRegistry::new();
+        let _reparented_registration = reparented_registry
+            .register_pid(
+                target_pid,
+                ProcessRegistrationMetadata {
+                    scope: AttributionScope::External,
+                    kind: AttributionKind::Provider,
+                    label: "Codex".to_owned(),
+                    source: RegistrationSource::Provider,
+                },
+            )
+            .expect("reparented registration");
+        let (reparented_sampler, _) = sampler_with_registry(
+            vec![
+                row(server_pid, 1, server_identity.started_at),
+                row(target_pid, 1, target_identity.started_at),
+            ],
+            FakeObservation::Return(DesktopUiObservation {
+                identities: Vec::new(),
+                coverage: UiCoverage {
+                    status: UiCoverageStatus::NotApplicable,
+                    message: None,
+                },
+            }),
+            reparented_registry,
+        );
+        assert!(matches!(
+            reparented_sampler
+                .signal_external_descendant(target_identity, ProcessSignal::Kill)
+                .await,
+            Err(SignalError::NotDescendant(pid)) if pid == target_pid
+        ));
+
+        assert!(matches!(
+            external_sampler
+                .signal_external_descendant(identity(u32::MAX, 999), ProcessSignal::Kill)
+                .await,
+            Err(SignalError::NotFound(pid)) if pid == u32::MAX
+        ));
+
+        external_native
+            .signal_supported
+            .store(false, Ordering::SeqCst);
+        assert!(matches!(
+            external_sampler
+                .signal_external_descendant(target_identity, ProcessSignal::Kill)
+                .await,
+            Err(SignalError::Unsupported)
+        ));
     }
 }

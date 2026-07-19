@@ -56,6 +56,117 @@ impl ProcessRow {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProcessTreeMetadata {
+    pub ppid: u32,
+    pub pgid: Option<i32>,
+    pub status: String,
+    pub elapsed: String,
+    pub command: String,
+    pub depth: usize,
+    pub child_pids: Vec<u32>,
+}
+
+#[must_use]
+pub fn process_tree_metadata(
+    rows: &[ProcessRow],
+    identities: impl IntoIterator<Item = ProcessIdentity>,
+) -> HashMap<ProcessIdentity, ProcessTreeMetadata> {
+    let included = identities.into_iter().collect::<HashSet<_>>();
+    let rows_by_identity = rows
+        .iter()
+        .map(|row| {
+            (
+                ProcessIdentity {
+                    pid: row.pid,
+                    started_at: row.started_at,
+                },
+                row,
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let identities_by_pid = included
+        .iter()
+        .copied()
+        .map(|identity| (identity.pid, identity))
+        .collect::<HashMap<_, _>>();
+    let mut children_by_identity = HashMap::<ProcessIdentity, Vec<u32>>::new();
+    for child in &included {
+        let Some(row) = rows_by_identity.get(child) else {
+            continue;
+        };
+        let Some(parent) = identities_by_pid.get(&row.ppid).copied() else {
+            continue;
+        };
+        if parent.started_at <= child.started_at {
+            children_by_identity
+                .entry(parent)
+                .or_default()
+                .push(child.pid);
+        }
+    }
+    for child_pids in children_by_identity.values_mut() {
+        child_pids.sort_unstable();
+    }
+    let mut depths = HashMap::new();
+
+    included
+        .iter()
+        .filter_map(|identity| {
+            let row = rows_by_identity.get(identity)?;
+            let depth = process_depth(
+                *identity,
+                &rows_by_identity,
+                &identities_by_pid,
+                &mut depths,
+                &mut HashSet::new(),
+            );
+            Some((
+                *identity,
+                ProcessTreeMetadata {
+                    ppid: row.ppid,
+                    pgid: row.pgid,
+                    status: row.status.clone(),
+                    elapsed: row.elapsed.clone(),
+                    command: row.command.clone(),
+                    depth,
+                    child_pids: children_by_identity
+                        .get(identity)
+                        .cloned()
+                        .unwrap_or_default(),
+                },
+            ))
+        })
+        .collect()
+}
+
+fn process_depth(
+    identity: ProcessIdentity,
+    rows_by_identity: &HashMap<ProcessIdentity, &ProcessRow>,
+    identities_by_pid: &HashMap<u32, ProcessIdentity>,
+    memo: &mut HashMap<ProcessIdentity, usize>,
+    visiting: &mut HashSet<ProcessIdentity>,
+) -> usize {
+    if let Some(depth) = memo.get(&identity) {
+        return *depth;
+    }
+    if !visiting.insert(identity) {
+        return 0;
+    }
+    let depth = rows_by_identity
+        .get(&identity)
+        .and_then(|row| identities_by_pid.get(&row.ppid))
+        .copied()
+        .filter(|parent| parent.started_at <= identity.started_at)
+        .map_or(0, |parent| {
+            process_depth(parent, rows_by_identity, identities_by_pid, memo, visiting)
+                .saturating_add(1)
+        });
+    visiting.remove(&identity);
+    memo.insert(identity, depth);
+    depth
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DescendantEntry {

@@ -64,9 +64,12 @@ const usage: ServerProviderUsageResult = {
 const diagnostics: ServerProcessDiagnosticsResult = {
   serverPid: 100,
   readAt,
-  processCount: 2,
-  totalRssBytes: 736_300_000,
-  totalCpuPercent: 4.2,
+  totals: {
+    combined: { processCount: 2, rssBytes: 736_300_000, cpuPercent: 4.2 },
+    core: { processCount: 1, rssBytes: 700_000_000, cpuPercent: 3.2 },
+    external: { processCount: 1, rssBytes: 36_300_000, cpuPercent: 1 },
+  },
+  uiCoverage: { status: "notApplicable", message: Option.none() },
   processes: [],
   error: Option.none(),
 };

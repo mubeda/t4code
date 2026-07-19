@@ -1,0 +1,58 @@
+{
+  "_tag": "Exit",
+  "requestId": "900719925474099312345",
+  "exit": {
+    "_tag": "Success",
+    "value": {
+      "serverPid": 1,
+      "readAt": "2026-01-01T00:00:00.000Z",
+      "totals": {
+        "combined": {
+          "cpuPercent": 3,
+          "rssBytes": 30,
+          "processCount": 2
+        },
+        "core": {
+          "cpuPercent": 1,
+          "rssBytes": 10,
+          "processCount": 1
+        },
+        "external": {
+          "cpuPercent": 2,
+          "rssBytes": 20,
+          "processCount": 1
+        }
+      },
+      "uiCoverage": {
+        "status": "notApplicable",
+        "message": {
+          "_tag": "None"
+        }
+      },
+      "processes": [
+        {
+          "pid": 42,
+          "ppid": 1,
+          "pgid": {
+            "_tag": "None"
+          },
+          "status": "Run",
+          "cpuPercent": 2,
+          "rssBytes": 20,
+          "elapsed": "00:00:01",
+          "command": "codex",
+          "depth": 0,
+          "childPids": [],
+          "processKey": "42:100",
+          "scope": "external",
+          "kind": "provider",
+          "label": "Codex",
+          "confidence": "exact"
+        }
+      ],
+      "error": {
+        "_tag": "None"
+      }
+    }
+  }
+}

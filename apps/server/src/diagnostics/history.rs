@@ -6,8 +6,8 @@ use std::{
 
 use super::{
     AttributedProcess, AttributedProcessSnapshot, AttributionConfidence, AttributionKind,
-    AttributionScope, ProcessAttributionTotals, ProcessIdentity, UiCoverage,
-    build_process_tree_entries,
+    AttributionScope, ProcessAttributionTotals, ProcessIdentity, ProcessTreeMetadata, UiCoverage,
+    build_process_tree_entries, process_tree_metadata,
 };
 
 const RETENTION: Duration = Duration::from_secs(60 * 60);
@@ -19,6 +19,7 @@ pub struct AttributedProcessSample {
     pub processes: Vec<AttributedProcess>,
     pub totals: ProcessAttributionTotals,
     pub ui_coverage: UiCoverage,
+    process_metadata: HashMap<ProcessIdentity, ProcessTreeMetadata>,
     legacy_processes: Vec<LegacyProcessSample>,
 }
 
@@ -48,6 +49,9 @@ pub struct ProcessResourceBucket {
 pub struct ProcessResourceSummary {
     pub process_key: String,
     pub pid: u32,
+    pub ppid: u32,
+    pub command: String,
+    pub depth: usize,
     pub scope: AttributionScope,
     pub kind: AttributionKind,
     pub label: String,
@@ -137,6 +141,10 @@ impl From<&AttributedProcessSnapshot> for AttributedProcessSample {
             processes: snapshot.processes.clone(),
             totals: snapshot.totals,
             ui_coverage: snapshot.ui_coverage.clone(),
+            process_metadata: process_tree_metadata(
+                &snapshot.native_rows,
+                snapshot.processes.iter().map(|process| process.identity),
+            ),
             legacy_processes: project_legacy_processes(snapshot),
         }
     }
@@ -371,7 +379,7 @@ fn summarize_processes(
 ) -> Vec<ProcessResourceSummary> {
     struct ProcessGroup<'a> {
         process_key: String,
-        samples: Vec<(i128, &'a AttributedProcess)>,
+        samples: Vec<(i128, &'a AttributedProcess, Option<&'a ProcessTreeMetadata>)>,
     }
 
     let mut group_indexes = HashMap::<String, usize>::new();
@@ -389,31 +397,39 @@ fn summarize_processes(
                 });
                 index
             };
-            groups[index].samples.push((sample.sampled_at_ms, process));
+            groups[index].samples.push((
+                sample.sampled_at_ms,
+                process,
+                sample.process_metadata.get(&process.identity),
+            ));
         }
     }
 
     groups
         .into_iter()
         .filter_map(|group| {
-            let (first_seen_at_ms, _) = group
+            let (first_seen_at_ms, _, _) = group
                 .samples
                 .iter()
-                .min_by_key(|(sampled_at_ms, _)| *sampled_at_ms)
+                .min_by_key(|(sampled_at_ms, _, _)| *sampled_at_ms)
                 .copied()?;
-            let (last_seen_at_ms, latest) = group
+            let (last_seen_at_ms, latest, latest_metadata) = group
                 .samples
                 .iter()
-                .max_by_key(|(sampled_at_ms, _)| *sampled_at_ms)
+                .max_by_key(|(sampled_at_ms, _, _)| *sampled_at_ms)
                 .copied()?;
             let cpu_total = group
                 .samples
                 .iter()
-                .map(|(_, process)| process.cpu_percent)
+                .map(|(_, process, _)| process.cpu_percent)
                 .sum::<f64>();
             Some(ProcessResourceSummary {
                 process_key: group.process_key,
                 pid: latest.identity.pid,
+                ppid: latest_metadata.map_or(0, |metadata| metadata.ppid),
+                command: latest_metadata
+                    .map_or_else(|| latest.label.clone(), |metadata| metadata.command.clone()),
+                depth: latest_metadata.map_or(0, |metadata| metadata.depth),
                 scope: latest.scope,
                 kind: latest.kind,
                 label: latest.label.clone(),
@@ -425,18 +441,18 @@ fn summarize_processes(
                 max_cpu_percent: group
                     .samples
                     .iter()
-                    .map(|(_, process)| process.cpu_percent)
+                    .map(|(_, process, _)| process.cpu_percent)
                     .fold(0.0, f64::max),
                 cpu_seconds_approx: group
                     .samples
                     .iter()
-                    .map(|(_, process)| process.cpu_percent / 100.0 * interval_seconds)
+                    .map(|(_, process, _)| process.cpu_percent / 100.0 * interval_seconds)
                     .sum(),
                 current_rss_bytes: latest.rss_bytes,
                 max_rss_bytes: group
                     .samples
                     .iter()
-                    .map(|(_, process)| process.rss_bytes)
+                    .map(|(_, process, _)| process.rss_bytes)
                     .max()
                     .unwrap_or(0),
                 sample_count: group.samples.len(),
@@ -597,7 +613,7 @@ fn process_count_metric(sample: &AttributedProcessSample) -> SplitMetric<usize> 
 mod tests {
     use crate::diagnostics::{
         AttributedProcess, AttributionConfidence, AttributionKind, AttributionScope,
-        ProcessAttributionTotals, ProcessIdentity, ProcessResourceTotals, UiCoverage,
+        ProcessAttributionTotals, ProcessIdentity, ProcessResourceTotals, ProcessRow, UiCoverage,
         UiCoverageStatus,
     };
 
@@ -678,6 +694,7 @@ mod tests {
                 status: coverage_status,
                 message: Some("fixture coverage".to_owned()),
             },
+            process_metadata: HashMap::new(),
             legacy_processes: Vec::new(),
         })
     }
@@ -688,6 +705,102 @@ mod tests {
             history_sample(2_000, 10.0, 2_000, 100.0, 100, UiCoverageStatus::Partial),
             history_sample(3_000, 30.0, 1_000, 20.0, 5_000, UiCoverageStatus::Partial),
         ]
+    }
+
+    #[test]
+    fn attributed_history_retains_native_metadata_for_independent_roots() {
+        let server_identity = ProcessIdentity {
+            pid: 10,
+            started_at: 100,
+        };
+        let provider_identity = ProcessIdentity {
+            pid: 20,
+            started_at: 200,
+        };
+        let child_identity = ProcessIdentity {
+            pid: 21,
+            started_at: 210,
+        };
+        let rows = [
+            {
+                let mut row = ProcessRow::fixture(10, 1, "t4code");
+                row.started_at = 100;
+                row
+            },
+            {
+                let mut row = ProcessRow::fixture(20, 1, "codex --model gpt");
+                row.started_at = 200;
+                row
+            },
+            {
+                let mut row = ProcessRow::fixture(21, 20, "provider helper");
+                row.started_at = 210;
+                row
+            },
+        ];
+        let process =
+            |identity: ProcessIdentity, confidence: AttributionConfidence| -> AttributedProcess {
+                AttributedProcess {
+                    identity,
+                    process_key: identity.key(),
+                    scope: AttributionScope::External,
+                    kind: AttributionKind::Provider,
+                    label: "Codex".to_owned(),
+                    confidence,
+                    cpu_percent: 1.0,
+                    rss_bytes: 10,
+                }
+            };
+        let snapshot = AttributedProcessSnapshot {
+            sampled_at_ms: 1_000,
+            server_identity,
+            native_rows: Arc::from(rows),
+            processes: vec![
+                process(provider_identity, AttributionConfidence::Exact),
+                process(child_identity, AttributionConfidence::Inherited),
+            ],
+            totals: ProcessAttributionTotals {
+                combined: ProcessResourceTotals {
+                    cpu_percent: 2.0,
+                    rss_bytes: 20,
+                    process_count: 2,
+                },
+                core: ProcessResourceTotals::default(),
+                external: ProcessResourceTotals {
+                    cpu_percent: 2.0,
+                    rss_bytes: 20,
+                    process_count: 2,
+                },
+            },
+            ui_coverage: UiCoverage::default(),
+        };
+        let retained = [Arc::new(AttributedProcessSample::from(&snapshot))];
+
+        let history = aggregate_history(
+            &retained,
+            None,
+            1_000,
+            1_000,
+            1_000,
+            Duration::from_millis(500),
+        );
+        let provider = history
+            .processes
+            .iter()
+            .find(|process| process.pid == 20)
+            .expect("provider summary");
+        let child = history
+            .processes
+            .iter()
+            .find(|process| process.pid == 21)
+            .expect("child summary");
+
+        assert_eq!(provider.ppid, 1);
+        assert_eq!(provider.command, "codex --model gpt");
+        assert_eq!(provider.depth, 0);
+        assert_eq!(child.ppid, 20);
+        assert_eq!(child.command, "provider helper");
+        assert_eq!(child.depth, 1);
     }
 
     fn assert_near(actual: f64, expected: f64) {
@@ -706,6 +819,7 @@ mod tests {
                     processes: Vec::new(),
                     totals: ProcessAttributionTotals::default(),
                     ui_coverage: UiCoverage::default(),
+                    process_metadata: HashMap::new(),
                     legacy_processes: Vec::new(),
                 })
             })
@@ -721,6 +835,7 @@ mod tests {
             processes: Vec::new(),
             totals: ProcessAttributionTotals::default(),
             ui_coverage: UiCoverage::default(),
+            process_metadata: HashMap::new(),
             legacy_processes: Vec::new(),
         }));
         trim_samples(&mut retained, RETENTION.as_millis() as i128 + 3);

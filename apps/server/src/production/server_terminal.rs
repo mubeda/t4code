@@ -9,8 +9,11 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     cloud::{RelayClientInstallEvent, RelayClientService, RelayClientStatus},
     diagnostics::{
+        AttributedProcess, AttributionConfidence, AttributionKind, AttributionScope, BucketMetric,
         CurrentProcessDiagnostics, DiagnosticsMonitor, NativeProcessSampler, NativeResourceSampler,
-        ProcessResourceHistory, ProcessSignal, build_process_tree_entries,
+        ProcessAttributionTotals, ProcessIdentity, ProcessResourceHistory, ProcessResourceTotals,
+        ProcessRow, ProcessSignal, SplitMetric, UiCoverage, UiCoverageStatus,
+        bound_diagnostic_string, process_tree_metadata,
     },
     production::orchestration_effects::SetupScriptLaunch,
     provider_usage::{
@@ -20,6 +23,8 @@ use crate::{
     rpc::{RpcRegistry, RpcResult, RpcStreamChunk},
     terminal::{TerminalAttachInput, TerminalManager, TerminalMetadataEvent, TerminalOpenInput},
 };
+
+const PROCESS_DIAGNOSTIC_MESSAGE_MAX_SCALARS: usize = 160;
 
 pub type JsonFuture = Pin<Box<dyn Future<Output = RpcResult> + Send + 'static>>;
 pub type JsonStream = mpsc::Receiver<RpcStreamChunk>;
@@ -41,6 +46,7 @@ pub trait ProductionServerControl: std::fmt::Debug + Send + Sync + 'static {
 pub struct ServerTerminalServices {
     terminal: TerminalManager,
     process_sampler: Arc<NativeProcessSampler>,
+    resource_sampler: Arc<NativeResourceSampler>,
     process_monitor: Arc<DiagnosticsMonitor<NativeResourceSampler>>,
     provider_usage: ProviderUsageService,
     relay: RelayClientService,
@@ -52,6 +58,7 @@ impl ServerTerminalServices {
     pub fn new(
         terminal: TerminalManager,
         process_sampler: Arc<NativeProcessSampler>,
+        resource_sampler: Arc<NativeResourceSampler>,
         process_monitor: Arc<DiagnosticsMonitor<NativeResourceSampler>>,
         provider_usage: ProviderUsageService,
         relay: RelayClientService,
@@ -60,6 +67,7 @@ impl ServerTerminalServices {
         Self {
             terminal,
             process_sampler,
+            resource_sampler,
             process_monitor,
             provider_usage,
             relay,
@@ -171,18 +179,15 @@ fn register_diagnostics_rpcs(registry: &mut RpcRegistry, services: &ServerTermin
         },
     );
 
-    let sampler = services.process_sampler.clone();
+    let sampler = services.resource_sampler.clone();
     registry.register_unary("server.signalProcess", move |request, _cancellation| {
         let sampler = sampler.clone();
         async move {
             let input: SignalProcessInput = decode_payload(&request.payload)?;
-            let signal = match input.signal.as_str() {
-                "SIGINT" => ProcessSignal::Interrupt,
-                "SIGKILL" => ProcessSignal::Kill,
-                _ => return Err(invalid_request("signal must be SIGINT or SIGKILL")),
-            };
+            let expected_identity = decode_process_identity(input.pid, &input.process_key)?;
+            let signal = decode_process_signal(&input.signal)?;
             match sampler
-                .signal_descendant(std::process::id(), input.pid, signal)
+                .signal_external_descendant(expected_identity, signal)
                 .await
             {
                 Ok(()) => Ok(json!({
@@ -195,7 +200,10 @@ fn register_diagnostics_rpcs(registry: &mut RpcRegistry, services: &ServerTermin
                     "pid": input.pid,
                     "signal": input.signal,
                     "signaled": false,
-                    "message": effect_some(Value::String(error.to_string())),
+                    "message": effect_some(Value::String(bound_diagnostic_string(
+                        &error.to_string(),
+                        PROCESS_DIAGNOSTIC_MESSAGE_MAX_SCALARS,
+                    ))),
                 })),
             }
         }
@@ -564,6 +572,8 @@ struct ResourceHistoryInput {
 #[derive(Deserialize)]
 struct SignalProcessInput {
     pid: u32,
+    #[serde(rename = "processKey")]
+    process_key: String,
     signal: String,
 }
 #[derive(Deserialize)]
@@ -573,6 +583,30 @@ struct RefreshProviderUsageInput {
 
 fn decode_payload<T: for<'de> Deserialize<'de>>(payload: &Value) -> Result<T, Value> {
     serde_json::from_value(payload.clone()).map_err(|error| invalid_request(&error.to_string()))
+}
+
+fn decode_process_identity(pid: u32, process_key: &str) -> Result<ProcessIdentity, Value> {
+    let (key_pid, started_at) = process_key
+        .split_once(':')
+        .ok_or_else(|| invalid_request("processKey must contain pid and start identity"))?;
+    let key_pid = key_pid
+        .parse::<u32>()
+        .map_err(|_| invalid_request("processKey contains an invalid pid"))?;
+    let started_at = started_at
+        .parse::<u64>()
+        .map_err(|_| invalid_request("processKey contains an invalid start identity"))?;
+    if key_pid != pid {
+        return Err(invalid_request("processKey pid does not match pid"));
+    }
+    Ok(ProcessIdentity { pid, started_at })
+}
+
+fn decode_process_signal(signal: &str) -> Result<ProcessSignal, Value> {
+    match signal {
+        "SIGINT" => Ok(ProcessSignal::Interrupt),
+        "SIGKILL" => Ok(ProcessSignal::Kill),
+        _ => Err(invalid_request("signal must be SIGINT or SIGKILL")),
+    }
 }
 
 fn provider_usage_to_wire(result: ProviderUsageResult) -> Value {
@@ -614,75 +648,60 @@ fn process_diagnostics_to_wire(current: CurrentProcessDiagnostics) -> Value {
         |snapshot| snapshot.sampled_at_ms,
     );
     let error = current.error.map_or_else(effect_none, |message| {
-        effect_some(json!({ "message": message }))
+        effect_some(json!({
+            "message": bound_diagnostic_string(
+                &message,
+                PROCESS_DIAGNOSTIC_MESSAGE_MAX_SCALARS,
+            ),
+        }))
     });
     let Some(snapshot) = current.snapshot else {
         return json!({
             "serverPid": std::process::id(),
             "readAt": format_epoch_ms(read_at_ms),
-            "processCount": 0,
-            "totalRssBytes": 0,
-            "totalCpuPercent": 0.0,
+            "totals": attribution_totals_to_wire(ProcessAttributionTotals::default()),
+            "uiCoverage": ui_coverage_to_wire(&UiCoverage::default()),
             "processes": [],
             "error": error,
         });
     };
     let server_pid = snapshot.server_identity.pid;
-    let processes = build_process_tree_entries(&snapshot.native_rows, server_pid);
-    let total_rss_bytes = processes
-        .iter()
-        .map(|process| process.rss_bytes)
-        .sum::<u64>();
-    let total_cpu_percent = processes
-        .iter()
-        .map(|process| f64::from(process.cpu_percent))
-        .sum::<f64>();
 
     json!({
         "serverPid": server_pid,
         "readAt": format_epoch_ms(read_at_ms),
-        "processCount": processes.len(),
-        "totalRssBytes": total_rss_bytes,
-        "totalCpuPercent": total_cpu_percent,
-        "processes": processes.into_iter().map(|process| {
-            json!({
-                "pid": process.pid,
-                "ppid": process.ppid,
-                "pgid": process.pgid.map_or_else(effect_none, |pgid| effect_some(json!(pgid))),
-                "status": process.status,
-                "cpuPercent": process.cpu_percent,
-                "rssBytes": process.rss_bytes,
-                "elapsed": process.elapsed,
-                "command": process.command,
-                "depth": process.depth,
-                "childPids": process.child_pids,
-            })
-        }).collect::<Vec<_>>(),
+        "totals": attribution_totals_to_wire(snapshot.totals),
+        "uiCoverage": ui_coverage_to_wire(&snapshot.ui_coverage),
+        "processes": attributed_processes_to_wire(&snapshot.processes, &snapshot.native_rows),
         "error": error,
     })
 }
 
 fn resource_history_to_wire(history: ProcessResourceHistory) -> Value {
-    let legacy = history.legacy;
-
     json!({
         "readAt": format_epoch_ms(history.read_at_ms),
         "windowMs": history.window_ms,
         "bucketMs": history.bucket_ms,
         "sampleIntervalMs": history.sample_interval_ms,
-        "retainedSampleCount": legacy.retained_sample_count,
-        "totalCpuSecondsApprox": legacy.total_cpu_seconds_approx,
-        "buckets": legacy.buckets.into_iter().map(|bucket| json!({
-            "startedAt": format_epoch_ms(bucket.started_at_ms), "endedAt": format_epoch_ms(bucket.ended_at_ms),
-            "avgCpuPercent": bucket.avg_cpu_percent,
-            "maxCpuPercent": bucket.max_cpu_percent,
-            "maxRssBytes": bucket.max_rss_bytes,
-            "maxProcessCount": bucket.max_process_count,
+        "retainedSampleCount": history.retained_sample_count,
+        "cpuSecondsApprox": split_f64_to_wire(history.total_cpu_seconds_approx),
+        "uiCoverage": ui_coverage_to_wire(&history.ui_coverage),
+        "buckets": history.buckets.into_iter().map(|bucket| json!({
+            "startedAt": format_epoch_ms(bucket.started_at_ms),
+            "endedAt": format_epoch_ms(bucket.ended_at_ms),
+            "cpuPercent": bucket_f64_to_wire(bucket.cpu_percent),
+            "rssBytes": bucket_u64_to_wire(bucket.rss_bytes),
+            "maxProcessCount": split_usize_to_wire(bucket.max_process_count),
         })).collect::<Vec<_>>(),
-        "topProcesses": legacy.top_processes.into_iter().map(|process| json!({
-            "processKey": process.process_key, "pid": process.pid, "ppid": process.ppid,
+        "processes": history.processes.into_iter().map(|process| json!({
+            "processKey": process.process_key, "pid": process.pid,
+            "ppid": process.ppid,
             "command": process.command,
-            "depth": process.depth, "isServerRoot": process.is_server_root,
+            "depth": process.depth,
+            "scope": attribution_scope_to_wire(process.scope),
+            "kind": attribution_kind_to_wire(process.kind),
+            "label": process.label,
+            "confidence": attribution_confidence_to_wire(process.confidence),
             "firstSeenAt": format_epoch_ms(process.first_seen_at_ms), "lastSeenAt": format_epoch_ms(process.last_seen_at_ms),
             "currentCpuPercent": process.current_cpu_percent, "avgCpuPercent": process.avg_cpu_percent,
             "maxCpuPercent": process.max_cpu_percent, "cpuSecondsApprox": process.cpu_seconds_approx,
@@ -690,8 +709,143 @@ fn resource_history_to_wire(history: ProcessResourceHistory) -> Value {
             "sampleCount": process.sample_count,
         })).collect::<Vec<_>>(),
         "error": history.error.map_or_else(effect_none, |message| effect_some(json!({
-            "failureTag": "ProcessDiagnosticsQueryFailedError", "message": message,
+            "failureTag": "ProcessDiagnosticsQueryFailedError",
+            "message": bound_diagnostic_string(
+                &message,
+                PROCESS_DIAGNOSTIC_MESSAGE_MAX_SCALARS,
+            ),
         }))),
+    })
+}
+
+fn attributed_processes_to_wire(
+    processes: &[AttributedProcess],
+    native_rows: &[ProcessRow],
+) -> Vec<Value> {
+    let metadata = process_tree_metadata(
+        native_rows,
+        processes.iter().map(|process| process.identity),
+    );
+
+    processes
+        .iter()
+        .filter_map(|process| {
+            let metadata = metadata.get(&process.identity)?;
+            Some(json!({
+                "pid": process.identity.pid,
+                "ppid": metadata.ppid,
+                "pgid": metadata.pgid.map_or_else(effect_none, |pgid| effect_some(json!(pgid))),
+                "status": metadata.status,
+                "cpuPercent": process.cpu_percent,
+                "rssBytes": process.rss_bytes,
+                "elapsed": metadata.elapsed,
+                "command": metadata.command,
+                "depth": metadata.depth,
+                "childPids": metadata.child_pids,
+                "processKey": process.process_key,
+                "scope": attribution_scope_to_wire(process.scope),
+                "kind": attribution_kind_to_wire(process.kind),
+                "label": process.label,
+                "confidence": attribution_confidence_to_wire(process.confidence),
+            }))
+        })
+        .collect()
+}
+
+fn attribution_totals_to_wire(totals: ProcessAttributionTotals) -> Value {
+    json!({
+        "combined": resource_totals_to_wire(totals.combined),
+        "core": resource_totals_to_wire(totals.core),
+        "external": resource_totals_to_wire(totals.external),
+    })
+}
+
+fn resource_totals_to_wire(totals: ProcessResourceTotals) -> Value {
+    json!({
+        "cpuPercent": totals.cpu_percent,
+        "rssBytes": totals.rss_bytes,
+        "processCount": totals.process_count,
+    })
+}
+
+fn attribution_scope_to_wire(scope: AttributionScope) -> &'static str {
+    match scope {
+        AttributionScope::Core => "core",
+        AttributionScope::External => "external",
+    }
+}
+
+fn attribution_kind_to_wire(kind: AttributionKind) -> &'static str {
+    match kind {
+        AttributionKind::Server => "server",
+        AttributionKind::Ui => "ui",
+        AttributionKind::Provider => "provider",
+        AttributionKind::Terminal => "terminal",
+        AttributionKind::Helper => "helper",
+        AttributionKind::Unknown => "unknown",
+    }
+}
+
+fn attribution_confidence_to_wire(confidence: AttributionConfidence) -> &'static str {
+    match confidence {
+        AttributionConfidence::Exact => "exact",
+        AttributionConfidence::Inherited => "inherited",
+        AttributionConfidence::Fallback => "fallback",
+    }
+}
+
+fn ui_coverage_to_wire(coverage: &UiCoverage) -> Value {
+    json!({
+        "status": match coverage.status {
+            UiCoverageStatus::Available => "available",
+            UiCoverageStatus::Partial => "partial",
+            UiCoverageStatus::Unavailable => "unavailable",
+            UiCoverageStatus::NotApplicable => "notApplicable",
+        },
+        "message": coverage.message.as_ref().map_or_else(effect_none, |message| {
+            effect_some(json!(bound_diagnostic_string(
+                message,
+                PROCESS_DIAGNOSTIC_MESSAGE_MAX_SCALARS,
+            )))
+        }),
+    })
+}
+
+fn split_f64_to_wire(metric: SplitMetric<f64>) -> Value {
+    json!({
+        "combined": metric.combined,
+        "core": metric.core,
+        "external": metric.external,
+    })
+}
+
+fn split_u64_to_wire(metric: SplitMetric<u64>) -> Value {
+    json!({
+        "combined": metric.combined,
+        "core": metric.core,
+        "external": metric.external,
+    })
+}
+
+fn split_usize_to_wire(metric: SplitMetric<usize>) -> Value {
+    json!({
+        "combined": metric.combined,
+        "core": metric.core,
+        "external": metric.external,
+    })
+}
+
+fn bucket_f64_to_wire(metric: BucketMetric<f64>) -> Value {
+    json!({
+        "average": split_f64_to_wire(metric.average),
+        "peak": split_f64_to_wire(metric.peak),
+    })
+}
+
+fn bucket_u64_to_wire(metric: BucketMetric<u64>) -> Value {
+    json!({
+        "average": split_u64_to_wire(metric.average),
+        "peak": split_u64_to_wire(metric.peak),
     })
 }
 
@@ -800,7 +954,7 @@ mod tests {
             AttributionScope, BucketMetric, NativeResourceSampler, NotApplicableUiProcessObserver,
             ProcessAttributionRegistry, ProcessAttributionTotals, ProcessIdentity,
             ProcessResourceBucket, ProcessResourceSummary, ProcessResourceTotals, ProcessRow,
-            ResourceSampler, SamplingError, SplitMetric, UiCoverage,
+            ResourceSampler, SamplingError, SplitMetric, UiCoverage, UiCoverageStatus,
             history::{
                 LegacyProcessResourceBucket, LegacyProcessResourceHistory,
                 LegacyProcessResourceSummary,
@@ -828,11 +982,222 @@ mod tests {
     }
 
     #[test]
+    fn attributed_current_wire_maps_every_variant_and_bounds_failures() {
+        let kinds = [
+            AttributionKind::Server,
+            AttributionKind::Ui,
+            AttributionKind::Provider,
+            AttributionKind::Terminal,
+            AttributionKind::Helper,
+            AttributionKind::Unknown,
+        ];
+        let scopes = [
+            AttributionScope::Core,
+            AttributionScope::External,
+            AttributionScope::External,
+            AttributionScope::External,
+            AttributionScope::External,
+            AttributionScope::External,
+        ];
+        let confidences = [
+            AttributionConfidence::Exact,
+            AttributionConfidence::Inherited,
+            AttributionConfidence::Fallback,
+            AttributionConfidence::Exact,
+            AttributionConfidence::Inherited,
+            AttributionConfidence::Fallback,
+        ];
+        let processes = kinds
+            .into_iter()
+            .zip(scopes)
+            .zip(confidences)
+            .enumerate()
+            .map(|(index, ((kind, scope), confidence))| {
+                let pid = u32::try_from(index).expect("fixture index") + 10;
+                let identity = ProcessIdentity {
+                    pid,
+                    started_at: u64::from(pid) * 10,
+                };
+                AttributedProcess {
+                    identity,
+                    process_key: identity.key(),
+                    scope,
+                    kind,
+                    label: format!("process-{pid}"),
+                    confidence,
+                    cpu_percent: f64::from(pid),
+                    rss_bytes: u64::from(pid) * 100,
+                }
+            })
+            .collect::<Vec<_>>();
+        let rows = processes
+            .iter()
+            .map(|process| {
+                let mut row = ProcessRow::fixture(
+                    process.identity.pid,
+                    if process.identity.pid == 10 { 1 } else { 10 },
+                    format!("command-{}", process.identity.pid),
+                );
+                row.started_at = process.identity.started_at;
+                row
+            })
+            .collect::<Vec<_>>();
+        let totals = ProcessAttributionTotals {
+            combined: ProcessResourceTotals {
+                cpu_percent: 75.0,
+                rss_bytes: 7_500,
+                process_count: 6,
+            },
+            core: ProcessResourceTotals {
+                cpu_percent: 10.0,
+                rss_bytes: 1_000,
+                process_count: 1,
+            },
+            external: ProcessResourceTotals {
+                cpu_percent: 65.0,
+                rss_bytes: 6_500,
+                process_count: 5,
+            },
+        };
+
+        for (status, expected_status) in [
+            (UiCoverageStatus::Available, "available"),
+            (UiCoverageStatus::Partial, "partial"),
+            (UiCoverageStatus::Unavailable, "unavailable"),
+            (UiCoverageStatus::NotApplicable, "notApplicable"),
+        ] {
+            let wire = process_diagnostics_to_wire(CurrentProcessDiagnostics {
+                snapshot: Some(Arc::new(AttributedProcessSnapshot {
+                    sampled_at_ms: 1_000,
+                    server_identity: ProcessIdentity {
+                        pid: 10,
+                        started_at: 100,
+                    },
+                    native_rows: rows.clone().into(),
+                    processes: processes.clone(),
+                    totals,
+                    ui_coverage: UiCoverage {
+                        status,
+                        message: None,
+                    },
+                })),
+                error: Some("é".repeat(500)),
+            });
+
+            assert_eq!(wire["totals"]["combined"]["cpuPercent"], 75.0);
+            assert_eq!(
+                wire["totals"]["combined"]["cpuPercent"]
+                    .as_f64()
+                    .expect("combined CPU percent"),
+                wire["totals"]["core"]["cpuPercent"]
+                    .as_f64()
+                    .expect("core CPU percent")
+                    + wire["totals"]["external"]["cpuPercent"]
+                        .as_f64()
+                        .expect("external CPU percent")
+            );
+            assert_eq!(
+                wire["totals"]["combined"]["rssBytes"]
+                    .as_u64()
+                    .expect("combined RSS"),
+                wire["totals"]["core"]["rssBytes"]
+                    .as_u64()
+                    .expect("core RSS")
+                    + wire["totals"]["external"]["rssBytes"]
+                        .as_u64()
+                        .expect("external RSS")
+            );
+            assert_eq!(
+                wire["totals"]["combined"]["processCount"]
+                    .as_u64()
+                    .expect("combined process count"),
+                wire["totals"]["core"]["processCount"]
+                    .as_u64()
+                    .expect("core process count")
+                    + wire["totals"]["external"]["processCount"]
+                        .as_u64()
+                        .expect("external process count")
+            );
+            assert_eq!(wire["uiCoverage"]["status"], expected_status);
+            assert_eq!(wire["uiCoverage"]["message"]["_tag"], "None");
+            assert!(
+                wire["error"]["value"]["message"]
+                    .as_str()
+                    .expect("bounded failure message")
+                    .chars()
+                    .count()
+                    <= 160
+            );
+            assert_eq!(
+                wire["processes"]
+                    .as_array()
+                    .expect("attributed processes")
+                    .iter()
+                    .map(|process| process["kind"].as_str().expect("kind"))
+                    .collect::<Vec<_>>(),
+                ["server", "ui", "provider", "terminal", "helper", "unknown"]
+            );
+            assert_eq!(
+                wire["processes"][0]["scope"].as_str().expect("scope"),
+                "core"
+            );
+            assert_eq!(
+                wire["processes"][1]["scope"].as_str().expect("scope"),
+                "external"
+            );
+            assert_eq!(
+                wire["processes"]
+                    .as_array()
+                    .expect("attributed processes")
+                    .iter()
+                    .map(|process| process["confidence"].as_str().expect("confidence"))
+                    .collect::<Vec<_>>(),
+                [
+                    "exact",
+                    "inherited",
+                    "fallback",
+                    "exact",
+                    "inherited",
+                    "fallback"
+                ]
+            );
+        }
+    }
+
+    #[test]
     fn typed_payload_decoders_reject_non_object_wire_values() {
         let invalid = json!("not-an-object");
         assert!(decode_payload::<RefreshProviderUsageInput>(&invalid).is_err());
         assert!(decode_payload::<ResourceHistoryInput>(&invalid).is_err());
         assert!(decode_payload::<SignalProcessInput>(&invalid).is_err());
+        assert!(
+            decode_payload::<SignalProcessInput>(&json!({
+                "pid": 42,
+                "signal": "SIGINT",
+            }))
+            .is_err()
+        );
+        let signal_input: SignalProcessInput = decode_payload(&json!({
+            "pid": 42,
+            "processKey": "42:100",
+            "signal": "SIGINT",
+        }))
+        .expect("identity-bound signal input");
+        assert_eq!(
+            decode_process_identity(signal_input.pid, &signal_input.process_key)
+                .expect("process identity"),
+            ProcessIdentity {
+                pid: 42,
+                started_at: 100,
+            }
+        );
+        assert!(decode_process_identity(42, "43:100").is_err());
+        assert!(decode_process_identity(42, "invalid").is_err());
+        assert!(matches!(
+            decode_process_signal(&signal_input.signal),
+            Ok(ProcessSignal::Interrupt)
+        ));
+        assert!(decode_process_signal("SIGHUP").is_err());
         assert!(decode_payload::<TerminalAttachPayload>(&invalid).is_err());
         assert!(decode_payload::<TerminalClosePayload>(&invalid).is_err());
         assert!(decode_payload::<TerminalResizePayload>(&invalid).is_err());
@@ -842,7 +1207,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_history_wire_uses_the_precomputed_active_cpu_ranking() {
+    fn attributed_history_wire_preserves_the_complete_process_order() {
         fn summary(
             process_key: &str,
             last_seen_at_ms: i128,
@@ -851,6 +1216,9 @@ mod tests {
             ProcessResourceSummary {
                 process_key: process_key.to_owned(),
                 pid: 1,
+                ppid: 0,
+                command: process_key.to_owned(),
+                depth: 0,
                 scope: AttributionScope::Core,
                 kind: AttributionKind::Provider,
                 label: process_key.to_owned(),
@@ -919,18 +1287,19 @@ mod tests {
         });
 
         assert_eq!(
-            wire["topProcesses"]
+            wire["processes"]
                 .as_array()
-                .expect("top processes")
+                .expect("processes")
                 .iter()
                 .map(|process| process["processKey"].as_str().expect("process key"))
                 .collect::<Vec<_>>(),
-            ["active:a", "active:b", "active:z"]
+            ["exited:high-cpu", "active:z", "active:b", "active:a"]
         );
+        assert_eq!(wire["retainedSampleCount"], 2);
     }
 
     #[tokio::test]
-    async fn legacy_history_wire_uses_only_the_native_server_tree_projection() {
+    async fn attributed_history_wire_includes_independent_claimed_roots() {
         let sampled_at_ms = OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000;
         let mut server = ProcessRow::fixture(10, 1, "/native/t4code --serve");
         server.started_at = 100;
@@ -1040,40 +1409,36 @@ mod tests {
         );
         let wire = resource_history_to_wire(history);
         let bucket = &wire["buckets"][0];
-        let top_processes = wire["topProcesses"].as_array().expect("top processes");
+        let processes = wire["processes"].as_array().expect("processes");
 
         assert!(
-            (wire["totalCpuSecondsApprox"]
+            (wire["cpuSecondsApprox"]["combined"]
                 .as_f64()
                 .expect("total CPU seconds")
-                - 0.3)
+                - 2.6)
                 .abs()
                 < 1e-9
         );
-        assert_eq!(wire["retainedSampleCount"], 2);
-        assert_eq!(bucket["avgCpuPercent"], 30.0);
-        assert_eq!(bucket["maxCpuPercent"], 30.0);
-        assert_eq!(bucket["maxRssBytes"], 300);
-        assert_eq!(bucket["maxProcessCount"], 2);
+        assert_eq!(wire["retainedSampleCount"], 1);
+        assert_eq!(bucket["cpuPercent"]["average"]["combined"], 130.0);
+        assert_eq!(bucket["cpuPercent"]["peak"]["combined"], 130.0);
+        assert_eq!(bucket["rssBytes"]["peak"]["combined"], 10_300);
+        assert_eq!(bucket["maxProcessCount"]["combined"], 3);
         assert_eq!(
-            top_processes
+            processes
                 .iter()
                 .map(|process| process["pid"].as_u64().expect("pid"))
                 .collect::<Vec<_>>(),
-            [11, 10]
+            [10, 11, 20]
         );
-        assert_eq!(top_processes[0]["ppid"], 10);
-        assert_eq!(top_processes[0]["command"], "/native/codex --model gpt");
-        assert_eq!(top_processes[0]["depth"], 1);
-        assert_eq!(top_processes[0]["isServerRoot"], false);
-        assert_eq!(top_processes[1]["ppid"], 1);
-        assert_eq!(top_processes[1]["command"], "/native/t4code --serve");
-        assert_eq!(top_processes[1]["depth"], 0);
-        assert_eq!(top_processes[1]["isServerRoot"], true);
+        assert_eq!(processes[0]["scope"], "core");
+        assert_eq!(processes[1]["label"], "attributed/child-label");
+        assert_eq!(processes[2]["scope"], "external");
+        assert_eq!(processes[2]["command"], "/native/claimed-provider");
     }
 
     #[test]
-    fn legacy_current_wire_reproduces_the_native_multilevel_server_tree() {
+    fn attributed_current_wire_reproduces_native_metadata() {
         let mut server = ProcessRow::fixture(10, 1, "/opt/t4code server");
         server.started_at = 100;
         server.pgid = Some(10);
@@ -1095,26 +1460,91 @@ mod tests {
         grandchild.cpu_percent = 3.5;
         grandchild.rss_bytes = 300;
         grandchild.elapsed = "00:00:05".to_owned();
+        let server_identity = ProcessIdentity {
+            pid: 10,
+            started_at: 100,
+        };
+        let child_identity = ProcessIdentity {
+            pid: 11,
+            started_at: 110,
+        };
+        let grandchild_identity = ProcessIdentity {
+            pid: 12,
+            started_at: 120,
+        };
 
         let wire = process_diagnostics_to_wire(CurrentProcessDiagnostics {
             snapshot: Some(Arc::new(AttributedProcessSnapshot {
                 sampled_at_ms: 1_000,
-                server_identity: ProcessIdentity {
-                    pid: 10,
-                    started_at: 100,
-                },
+                server_identity,
                 native_rows: Arc::from([server, child, grandchild]),
-                processes: Vec::new(),
-                totals: ProcessAttributionTotals::default(),
+                processes: [
+                    (
+                        &server_identity,
+                        AttributionKind::Server,
+                        AttributionConfidence::Exact,
+                    ),
+                    (
+                        &child_identity,
+                        AttributionKind::Unknown,
+                        AttributionConfidence::Fallback,
+                    ),
+                    (
+                        &grandchild_identity,
+                        AttributionKind::Unknown,
+                        AttributionConfidence::Fallback,
+                    ),
+                ]
+                .into_iter()
+                .map(|(identity, kind, confidence)| AttributedProcess {
+                    identity: *identity,
+                    process_key: identity.key(),
+                    scope: if kind == AttributionKind::Server {
+                        AttributionScope::Core
+                    } else {
+                        AttributionScope::External
+                    },
+                    kind,
+                    label: format!("process-{}", identity.pid),
+                    confidence,
+                    cpu_percent: match identity.pid {
+                        10 => 1.5,
+                        11 => 2.5,
+                        _ => 3.5,
+                    },
+                    rss_bytes: match identity.pid {
+                        10 => 100,
+                        11 => 200,
+                        _ => 300,
+                    },
+                })
+                .collect(),
+                totals: ProcessAttributionTotals {
+                    combined: ProcessResourceTotals {
+                        cpu_percent: 7.5,
+                        rss_bytes: 600,
+                        process_count: 3,
+                    },
+                    core: ProcessResourceTotals {
+                        cpu_percent: 1.5,
+                        rss_bytes: 100,
+                        process_count: 1,
+                    },
+                    external: ProcessResourceTotals {
+                        cpu_percent: 6.0,
+                        rss_bytes: 500,
+                        process_count: 2,
+                    },
+                },
                 ui_coverage: UiCoverage::default(),
             })),
             error: None,
         });
         let processes = wire["processes"].as_array().expect("processes");
 
-        assert_eq!(wire["processCount"], 3);
-        assert_eq!(wire["totalRssBytes"], 600);
-        assert_eq!(wire["totalCpuPercent"], 7.5);
+        assert_eq!(wire["totals"]["combined"]["processCount"], 3);
+        assert_eq!(wire["totals"]["combined"]["rssBytes"], 600);
+        assert_eq!(wire["totals"]["combined"]["cpuPercent"], 7.5);
         assert_eq!(
             processes
                 .iter()
@@ -1135,7 +1565,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_current_wire_excludes_independently_claimed_roots() {
+    fn attributed_current_wire_includes_independently_claimed_roots() {
         let server = ProcessRow::fixture(10, 1, "t4code");
         let server_child = ProcessRow::fixture(11, 10, "server child");
         let claimed_root = ProcessRow::fixture(20, 1, "claimed provider");
@@ -1163,7 +1593,19 @@ mod tests {
                     cpu_percent: 99.0,
                     rss_bytes: 9_999,
                 }],
-                totals: ProcessAttributionTotals::default(),
+                totals: ProcessAttributionTotals {
+                    combined: ProcessResourceTotals {
+                        cpu_percent: 99.0,
+                        rss_bytes: 9_999,
+                        process_count: 1,
+                    },
+                    core: ProcessResourceTotals::default(),
+                    external: ProcessResourceTotals {
+                        cpu_percent: 99.0,
+                        rss_bytes: 9_999,
+                        process_count: 1,
+                    },
+                },
                 ui_coverage: UiCoverage::default(),
             })),
             error: None,
@@ -1176,9 +1618,9 @@ mod tests {
                 .iter()
                 .map(|process| process["pid"].as_u64().expect("pid"))
                 .collect::<Vec<_>>(),
-            [10, 11]
+            [20]
         );
-        assert_eq!(wire["processCount"], 2);
+        assert_eq!(wire["totals"]["combined"]["processCount"], 1);
     }
 
     #[tokio::test]
@@ -1199,7 +1641,7 @@ mod tests {
             Arc::new(NotApplicableUiProcessObserver),
         ));
         let monitor = Arc::new(DiagnosticsMonitor::new(
-            resource_sampler,
+            resource_sampler.clone(),
             Duration::from_secs(60),
         ));
         let usage = ProviderUsageService::new(Vec::new(), Arc::new(OffsetDateTime::now_utc));
@@ -1223,8 +1665,15 @@ mod tests {
             NativeServerControl::new(ServerConfig::new(temp.path()), json!({"policy":"test"}))
                 .await,
         );
-        let services =
-            ServerTerminalServices::new(terminal, sampler, monitor, usage, relay, control);
+        let services = ServerTerminalServices::new(
+            terminal,
+            sampler,
+            resource_sampler,
+            monitor,
+            usage,
+            relay,
+            control,
+        );
 
         services
             .launch_setup_script(SetupScriptLaunch {
@@ -1359,6 +1808,9 @@ mod tests {
             processes: vec![ProcessResourceSummary {
                 process_key: "1:server".to_owned(),
                 pid: 1,
+                ppid: 0,
+                command: "server".to_owned(),
+                depth: 0,
                 scope: AttributionScope::Core,
                 kind: AttributionKind::Server,
                 label: "server".to_owned(),
@@ -1404,7 +1856,10 @@ mod tests {
                 }],
             },
         });
-        assert_eq!(history["buckets"][0]["maxProcessCount"], 2);
+        assert_eq!(
+            history["buckets"][0]["maxProcessCount"],
+            json!({ "combined": 2, "core": 1, "external": 1 })
+        );
         assert_eq!(history["error"]["_tag"], "Some");
 
         assert_eq!(

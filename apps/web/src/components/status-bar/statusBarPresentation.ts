@@ -84,15 +84,15 @@ export function buildResourceSummaryViewModel(input: {
 }): ResourceSummaryViewModel {
   const currentProcesses =
     input.resourceHistory && input.resourceHistory.retainedSampleCount > 0
-      ? input.resourceHistory.topProcesses
+      ? input.resourceHistory.processes
       : null;
   const totalRssBytes =
     currentProcesses?.reduce((total, process) => total + process.currentRssBytes, 0) ??
-    input.diagnostics?.totalRssBytes;
+    input.diagnostics?.totals.combined.rssBytes;
   const totalCpuPercent =
     currentProcesses?.reduce((total, process) => total + process.currentCpuPercent, 0) ??
-    input.diagnostics?.totalCpuPercent;
-  const processCount = currentProcesses?.length ?? input.diagnostics?.processCount;
+    input.diagnostics?.totals.combined.cpuPercent;
+  const processCount = currentProcesses?.length ?? input.diagnostics?.totals.combined.processCount;
   return {
     memoryLabel: totalRssBytes === undefined ? "--" : formatMemoryBytes(totalRssBytes),
     cpuLabel: totalCpuPercent === undefined ? "--" : formatCpuPercent(totalCpuPercent),

@@ -168,6 +168,7 @@ impl ProductionRuntime {
         let terminal_services = ServerTerminalServices::new(
             terminal_manager,
             process_sampler,
+            resource_sampler.clone(),
             process_monitor,
             provider_usage,
             relay,
