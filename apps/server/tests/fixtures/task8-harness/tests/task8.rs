@@ -117,9 +117,14 @@ fn windows_shell_resolution_prefers_powershell_then_absolute_fallbacks() {
             "cmd.exe",
         ]
     );
-    assert_eq!(candidates[1].args, ["-NoLogo"]);
-    assert_eq!(candidates[2].args, ["-NoLogo"]);
-    assert_eq!(candidates[3].args, ["-NoLogo"]);
+    for candidate in &candidates[1..=3] {
+        assert_eq!(
+            &candidate.args[..3],
+            ["-NoLogo", "-NoExit", "-EncodedCommand"]
+        );
+        assert_eq!(candidate.args.len(), 4);
+        assert!(!candidate.args[3].is_empty());
+    }
 }
 
 #[tokio::test]
