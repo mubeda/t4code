@@ -2,7 +2,7 @@ import { TerminalCustomFontFamily, type TerminalFontPreference } from "@t4code/c
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-export const TERMINAL_NERD_SYMBOLS_FONT_FAMILY = "T4Code Symbols Nerd Font Mono";
+export const TERMINAL_NERD_FONT_FAMILY = "T4Code JetBrainsMono Nerd Font Mono";
 export const TERMINAL_FONT_GLYPH_PROBE = "\ue0b0\uf115\u{f0001}";
 
 interface TerminalFontFaceSet {
@@ -27,14 +27,13 @@ function quoteFontFamily(family: string): string {
 }
 
 export function resolveTerminalFontFamily(preference: TerminalFontPreference): string {
-  const symbols = quoteFontFamily(TERMINAL_NERD_SYMBOLS_FONT_FAMILY);
   switch (preference.mode) {
     case "system":
-      return `ui-monospace, ${symbols}, monospace`;
+      return "ui-monospace, monospace";
     case "custom":
-      return `${quoteFontFamily(preference.family)}, ${symbols}, "JetBrains Mono", monospace`;
+      return `${quoteFontFamily(preference.family)}, monospace`;
     case "bundled":
-      return `"JetBrains Mono", ${symbols}, monospace`;
+      return `${quoteFontFamily(TERMINAL_NERD_FONT_FAMILY)}, monospace`;
   }
 }
 
@@ -56,10 +55,10 @@ export function ensureBundledTerminalFontLoaded(
 ): Promise<void> {
   if (bundledFontLoadPromise === null) {
     bundledFontLoadPromise = fontSet
-      .load(`12px ${quoteFontFamily(TERMINAL_NERD_SYMBOLS_FONT_FAMILY)}`, TERMINAL_FONT_GLYPH_PROBE)
+      .load(`12px ${quoteFontFamily(TERMINAL_NERD_FONT_FAMILY)}`, TERMINAL_FONT_GLYPH_PROBE)
       .then(() => undefined)
       .catch((cause: unknown) => {
-        warn("[terminal] Bundled Nerd Font symbols failed to load; using text fallbacks.", cause);
+        warn("[terminal] Bundled Nerd Font failed to load; using text fallbacks.", cause);
       });
   }
   return bundledFontLoadPromise;

@@ -1023,7 +1023,7 @@ export function GeneralSettingsPanel() {
       <SettingsSection title="Terminal">
         <SettingsRow
           title="Terminal font"
-          description="Bundled Nerd Font symbols prevent broken prompt icons. This preference is stored only on this device."
+          description="The bundled monospaced Nerd Font keeps prompt icons aligned with the cursor. This preference is stored only on this device."
           resetAction={
             !terminalFontPreferencesEqual(
               terminalFontPreference,
@@ -1069,7 +1069,7 @@ export function GeneralSettingsPanel() {
         {terminalFontPreference.mode === "custom" ? (
           <SettingsRow
             title="Custom font family"
-            description="Enter one installed font family name. T4Code keeps bundled symbol fallbacks."
+            description="Enter one installed font family name. Use a monospaced Nerd Font when your prompt includes icons."
             status={
               customTerminalFontAvailable === false
                 ? "This font is not available on this device."
