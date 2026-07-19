@@ -1176,13 +1176,13 @@
     {
       "key": "rust:workspace:futures-util",
       "name": "futures-util",
-      "current": "0.3.32",
-      "target": "0.3.32",
+      "current": "0.3.33",
+      "target": "0.3.33",
       "channel": "stable",
       "source": "https://crates.io/crates/futures-util",
-      "cohort": "rust-current",
+      "cohort": "final-rust-patches",
       "platforms": ["linux", "macos", "windows"],
-      "status": "current"
+      "status": "green"
     },
     {
       "key": "rust:workspace:getrandom",
@@ -1430,13 +1430,13 @@
     {
       "key": "rust:workspace:tauri-plugin-dialog",
       "name": "tauri-plugin-dialog",
-      "current": "2.7.1",
-      "target": "2.7.1",
+      "current": "2.7.2",
+      "target": "2.7.2",
       "channel": "stable",
       "source": "https://crates.io/crates/tauri-plugin-dialog",
-      "cohort": "rust-current",
+      "cohort": "final-rust-patches",
       "platforms": ["linux", "macos", "windows"],
-      "status": "current"
+      "status": "green"
     },
     {
       "key": "rust:workspace:tauri-plugin-opener",
@@ -1463,13 +1463,13 @@
     {
       "key": "rust:workspace:tauri-plugin-store",
       "name": "tauri-plugin-store",
-      "current": "2.4.3",
-      "target": "2.4.3",
+      "current": "2.4.4",
+      "target": "2.4.4",
       "channel": "stable",
       "source": "https://crates.io/crates/tauri-plugin-store",
-      "cohort": "rust-current",
+      "cohort": "final-rust-patches",
       "platforms": ["linux", "macos", "windows"],
-      "status": "current"
+      "status": "green"
     },
     {
       "key": "rust:workspace:tauri-plugin-updater",
