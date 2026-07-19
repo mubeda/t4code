@@ -7,9 +7,10 @@
       {
         "_tag": "Fail",
         "error": {
-          "_tag": "TerminalSessionLookupError",
-          "threadId": "\"",
-          "terminalId": "FM."
+          "_tag": "TerminalHistoryError",
+          "operation": "read",
+          "threadId": "<HFM.cD",
+          "terminalId": "M"
         }
       }
     ]

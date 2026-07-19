@@ -19,8 +19,8 @@ use crate::{
     },
     rpc::{RpcRegistry, RpcResult, RpcStreamChunk},
     terminal::{
-        TerminalAttachInput, TerminalLaunchCommand, TerminalManager, TerminalMetadataEvent,
-        TerminalOpenInput,
+        TerminalAttachInput, TerminalError, TerminalLaunchCommand, TerminalManager,
+        TerminalMetadataEvent, TerminalOpenInput,
     },
 };
 
@@ -798,34 +798,40 @@ fn terminal_metadata_to_wire(event: TerminalMetadataEvent) -> Value {
     serde_json::to_value(event).expect("terminal metadata event serializes")
 }
 
-fn terminal_error(error: impl ToString) -> Value {
-    let message = error.to_string();
-    if let Some(cwd) = message.strip_prefix("terminal cwd does not exist: ") {
-        return json!({ "_tag": "TerminalCwdNotFoundError", "cwd": cwd });
-    }
-    if let Some(cwd) = message.strip_prefix("terminal cwd is not a directory: ") {
-        return json!({ "_tag": "TerminalCwdNotDirectoryError", "cwd": cwd });
-    }
-    for (prefix, tag) in [
-        ("unknown terminal thread: ", "TerminalSessionLookupError"),
-        (
-            "terminal is not running for thread: ",
-            "TerminalNotRunningError",
-        ),
-    ] {
-        if let Some(details) = message.strip_prefix(prefix)
-            && let Some((thread_id, terminal_id)) = details.split_once(", terminal: ")
-        {
-            return json!({
-                "_tag": tag,
-                "threadId": thread_id,
-                "terminalId": terminal_id,
-            });
+fn terminal_error(error: TerminalError) -> Value {
+    match error {
+        TerminalError::CwdNotFound(cwd) => {
+            json!({ "_tag": "TerminalCwdNotFoundError", "cwd": cwd })
         }
+        TerminalError::CwdNotDirectory(cwd) => {
+            json!({ "_tag": "TerminalCwdNotDirectoryError", "cwd": cwd })
+        }
+        TerminalError::NotFound {
+            thread_id,
+            terminal_id,
+        } => json!({
+            "_tag": "TerminalSessionLookupError",
+            "threadId": thread_id,
+            "terminalId": terminal_id,
+        }),
+        TerminalError::NotRunning {
+            thread_id,
+            terminal_id,
+        } => json!({
+            "_tag": "TerminalNotRunningError",
+            "threadId": thread_id,
+            "terminalId": terminal_id,
+        }),
+        TerminalError::Spawn { .. } => json!({
+            "_tag": "TerminalSpawnError",
+            "reason": "Terminal process could not be started.",
+        }),
+        TerminalError::Io(message) => json!({
+            "_tag": "TerminalCwdStatError",
+            "cwd": "",
+            "cause": message,
+        }),
     }
-    json!({
-        "_tag": "TerminalCwdStatError", "cwd": "", "cause": message,
-    })
 }
 
 fn invalid_request(message: &str) -> Value {
@@ -904,6 +910,26 @@ mod tests {
             .into_attach()
             .expect_err("attach must reject invalid commands");
         assert_eq!(error["_tag"], "RpcRequestInvalid");
+    }
+
+    #[test]
+    fn terminal_spawn_errors_are_explicit_bounded_and_redacted() {
+        let error = terminal_error(TerminalError::Spawn {
+            attempted: vec!["/secret/provider".to_owned()],
+            message: "token=secret".to_owned(),
+        });
+
+        assert_eq!(
+            error,
+            json!({
+                "_tag": "TerminalSpawnError",
+                "reason": "Terminal process could not be started.",
+            })
+        );
+        let encoded = error.to_string();
+        assert!(!encoded.contains("/secret/provider"));
+        assert!(!encoded.contains("token=secret"));
+        assert!(error["reason"].as_str().unwrap().encode_utf16().count() <= 512);
     }
 
     #[test]
