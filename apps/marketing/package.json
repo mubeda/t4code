@@ -13,8 +13,8 @@
     "astro": "^7.1.1"
   },
   "devDependencies": {
-    "@astrojs/check": "^0.9.7",
+    "@astrojs/check": "^0.9.9",
     "@vercel/config": "^0.5.5",
-    "typescript": "catalog:"
+    "typescript": "6.0.3"
   }
 }

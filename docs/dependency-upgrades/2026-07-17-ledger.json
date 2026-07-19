@@ -310,13 +310,14 @@
     {
       "key": "js:apps/marketing:@astrojs/check",
       "name": "@astrojs/check",
-      "current": "^0.9.7",
-      "target": "^0.9.7",
+      "current": "^0.9.9",
+      "target": "0.9.9",
       "channel": "stable",
       "source": "https://www.npmjs.com/package/@astrojs/check",
-      "cohort": "javascript-current",
+      "cohort": "typescript-7",
       "platforms": ["linux", "macos", "windows"],
-      "status": "current"
+      "status": "green",
+      "notes": "Latest Astro checker retained on its supported TypeScript 6 API boundary while the repository compiler uses TypeScript 7."
     },
     {
       "key": "js:apps/marketing:@vercel/config",
@@ -849,13 +850,13 @@
     {
       "key": "js:catalog:@effect/tsgo",
       "name": "@effect/tsgo",
-      "current": "0.13.2",
+      "current": "0.24.1",
       "target": "0.24.1",
       "channel": "stable",
       "source": "https://www.npmjs.com/package/@effect/tsgo",
       "cohort": "stable-javascript-tooling",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending"
+      "status": "green"
     },
     {
       "key": "js:catalog:@effect/vitest",
@@ -927,12 +928,13 @@
       "key": "js:catalog:@typescript/native-preview",
       "name": "@typescript/native-preview",
       "current": "7.0.0-dev.20260707.2",
-      "target": "7.0.0-dev.20260707.2",
+      "target": "removed",
       "channel": "preview",
       "source": "https://www.npmjs.com/package/@typescript/native-preview",
       "cohort": "relay-preview",
       "platforms": ["linux", "macos", "windows"],
-      "status": "green"
+      "status": "removed",
+      "notes": "Replaced by stable typescript@7.0.2, whose native compiler is patched by @effect/tsgo."
     },
     {
       "key": "js:catalog:effect",
@@ -959,14 +961,14 @@
     {
       "key": "js:catalog:typescript",
       "name": "typescript",
-      "current": "~6.0.3",
+      "current": "6.0.3 | 7.0.2",
       "target": "7.0.2",
       "channel": "stable",
       "source": "https://www.npmjs.com/package/typescript",
       "cohort": "typescript-7",
       "platforms": ["linux", "macos", "windows"],
-      "status": "pending",
-      "notes": "Astro checker peer compatibility must be proven; do not hide a runtime incompatibility."
+      "status": "green",
+      "notes": "The workspace compiler is stable TypeScript 7.0.2 with @effect/tsgo 0.24.1. apps/marketing alone pins the latest TypeScript 6 release because @astrojs/check 0.9.9 explicitly supports only TypeScript 5/6 and its language server requires the legacy typescript.sys JS API removed from TypeScript 7."
     },
     {
       "key": "js:catalog:yaml",

@@ -52,6 +52,46 @@ describe("repository toolchain contract", () => {
     });
   });
 
+  it("uses stable TypeScript 7 through the patched Effect compiler", () => {
+    const rootPackage = readJson("package.json");
+    const rootScripts = rootPackage.scripts as Record<string, string>;
+    const rootDevDependencies = rootPackage.devDependencies as Record<string, string>;
+    const marketingPackage = readJson("apps/marketing/package.json");
+    const marketingDevDependencies = marketingPackage.devDependencies as Record<string, string>;
+    const workspace = parseYaml(readText("pnpm-workspace.yaml")) as Record<string, unknown>;
+    const catalog = workspace.catalog as Record<string, string>;
+    const peerDependencyRules = workspace.peerDependencyRules as Record<string, unknown>;
+
+    expect(catalog["@effect/tsgo"]).toBe("0.24.1");
+    expect(catalog.typescript).toBe("7.0.2");
+    expect(catalog).not.toHaveProperty("@typescript/native-preview");
+    expect(rootDevDependencies).not.toHaveProperty("@typescript/native-preview");
+    expect(rootDevDependencies.typescript).toBe("catalog:");
+    expect(marketingDevDependencies.typescript).toBe("6.0.3");
+    expect(rootScripts.prepare).toBe("effect-tsgo patch");
+    expect(peerDependencyRules.allowedVersions).toEqual({
+      "ws@7.5.11>utf-8-validate": "6.0.6",
+      vite: "*",
+    });
+
+    for (const packagePath of [
+      "apps/desktop/package.json",
+      "apps/web/package.json",
+      "infra/relay/package.json",
+      "oxlint-plugin-t4code/package.json",
+      "packages/client-runtime/package.json",
+      "packages/contracts/package.json",
+      "packages/shared/package.json",
+      "scripts/package.json",
+    ]) {
+      const packageJson = readJson(packagePath);
+      const scripts = packageJson.scripts as Record<string, string>;
+
+      expect(scripts.typecheck, packagePath).toContain("tsc");
+      expect(scripts.typecheck, packagePath).not.toContain("tsgo");
+    }
+  });
+
   it("pins Rust with formatting and lint components everywhere", () => {
     const rustToolchain = parseToml(readText("rust-toolchain.toml"));
     const cargo = parseToml(readText("Cargo.toml"));

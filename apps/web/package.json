@@ -7,7 +7,7 @@
     "dev": "vp dev",
     "build": "node ../../scripts/run-web-build-locked.mjs",
     "preview": "vp preview",
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "tsc --noEmit",
     "test": "vp test run --passWithNoTests --project unit"
   },
   "dependencies": {
