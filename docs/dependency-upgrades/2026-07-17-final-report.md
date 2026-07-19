@@ -2,15 +2,24 @@
 
 ## Result
 
-The direct dependency modernization is locally complete on macOS. Every
-declared direct JavaScript dependency, registry Rust crate, local Rust crate,
-GitHub Action, and toolchain pin is represented in the checked-in upgrade
-ledger. All compatible stable upgrades are applied, clean-install
-reproducibility is proven, the full local test and build gates pass, and the
-packaged desktop UI suite passes from a mounted DMG.
+The direct dependency modernization and the available native package matrix
+are complete. Every declared direct JavaScript dependency, registry Rust
+crate, local Rust crate, GitHub Action, and toolchain pin is represented in the
+checked-in upgrade ledger. All compatible stable upgrades are applied,
+clean-install reproducibility is proven, the full local test and build gates
+pass, and the packaged UI suite passes on Linux x64, Windows x64, macOS arm64,
+and macOS Intel.
 
-The Windows and Linux packaged UI matrix remains pending until the execution
-branch may be pushed and the GitHub Actions workflow may be run.
+The final packaged run is
+[GitHub Actions run 29671427032](https://github.com/mubeda/t4code/actions/runs/29671427032)
+at commit `37ea7c6adf65c0d17f95eacab6e3ad5947d1a167`. All four
+jobs passed and uploaded their native installer, three UI screenshots, and
+four bounded driver logs.
+
+This report does not infer results for client operating systems that were not
+available as runners. Windows 10/11 clean/offline WebView2 and an actual macOS
+11 runtime remain explicit evidence gaps; the tested Windows host was Windows
+Server 2025 and the tested macOS hosts were macOS 26.
 
 ## Synchronized Baseline
 
@@ -117,9 +126,9 @@ vp run dist:desktop:dmg:arm64
 
 Test totals observed during final validation:
 
-- `vp test`: 477 test files and 6,273 tests passed.
+- `vp test`: 477 test files and 6,278 tests passed.
 - `vp run test`: all 9 package test scripts passed.
-- Desktop E2E support tests: 7 files and 22 tests passed.
+- Desktop E2E support tests: 7 files and 24 tests passed.
 - Packaged desktop UI: all 3 specs passed.
 
 One earlier recursive package run observed a single HTTP 400 from the mock
@@ -137,21 +146,45 @@ removes only `Content-Length`, and lets the active fetch runtime calculate the
 header. The focused regression test, all E2E support tests, and the mounted-DMG
 suite pass.
 
-## Packaged macOS UI Validation
+## Packaged UI Validation
 
-The instrumented release DMG was mounted read-only and exercised through the
-same WebdriverIO/Tauri path used by CI. The suite passed:
+The native installers were built, installed or mounted, and exercised through
+the same WebdriverIO/Tauri path on every matrix leg. The suite passed:
 
 1. Add a Git project through **Browse folder** and verify persistence after an
    application restart.
 2. Create a project session, stream a deterministic provider response,
    reconnect, and exercise the terminal lifecycle.
 3. Exercise settings, the updater-disabled state, provider shims, native
-   connections, and platform opener capabilities.
+   connections, WSL capability-dependent rendering, and platform opener
+   capabilities.
 
-The retained screenshots were visually reviewed at the tested minimum window
-size. The retained driver logs contain no warning, error, Undici, or panic
-entries.
+The 12 retained screenshots were visually reviewed at the tested minimum
+window size. Each platform shows the imported fixture project, the streamed
+session and terminal state, and native settings. The 16 retained logs contain
+no log-level warning/error, `EPERM`, Undici failure, or panic entry. Expected
+WebDriver element-polling misses remain visible in per-spec traces.
+
+The final matrix results were:
+
+| Matrix leg  | Native package | UI result      | Duration |
+| ----------- | -------------- | -------------- | -------- |
+| Linux x64   | AppImage       | 3 specs passed | 9m 02s   |
+| Windows x64 | NSIS           | 3 specs passed | 20m 49s  |
+| macOS arm64 | DMG            | 3 specs passed | 8m 37s   |
+| macOS Intel | DMG            | 3 specs passed | 15m 55s  |
+
+The Windows run also validates the final teardown repair. WebdriverIO invokes
+configuration `onComplete` hooks before launcher-service `onComplete` hooks,
+so the Tauri service still owned test-state handles when the old cleanup ran.
+Cleanup now waits for launcher process exit, after service shutdown, and uses
+bounded recursive filesystem retries. The ordering and retry options have
+unit regressions, and the final Windows job exits successfully after all three
+specs.
+
+Every UI artifact contains only the expected top-level PNG and log files. No
+state directory, settings database, provider shim, or credential-bearing test
+fixture was uploaded.
 
 ## macOS Test Installer
 
@@ -168,19 +201,59 @@ entries.
 
 This is a local test installer, not a distributable signed/notarized release.
 
+## Final Native Artifacts
+
+All artifacts below originated from run 29671427032 and embed version 0.2.2.
+They are test artifacts, not signed public releases.
+
+| Matrix leg  | Filename                              | Size       | SHA-256                                                            | Architecture and signing state                          |
+| ----------- | ------------------------------------- | ---------- | ------------------------------------------------------------------ | ------------------------------------------------------- |
+| Linux x64   | `T4Code (Alpha)_0.2.2_amd64.AppImage` | 90,548,728 | `767b3be0c7e99257fa46e772abca8a1039904fd7545c75f23056d6dcaa07f726` | x86-64 AppImage; unsigned                               |
+| Windows x64 | `T4Code (Alpha)_0.2.2_x64-setup.exe`  | 9,865,733  | `339a058a769ea08af982ea2e39a87585f7cdba2da7f61aa7be168dfc6cbe38d9` | x64 NSIS payload; Authenticode security directory empty |
+| macOS arm64 | `T4Code (Alpha)_0.2.2_aarch64.dmg`    | 11,919,908 | `a53478e55e02fdfb1f9d78aca9dd851ce1767182126c9464199a96f49cad9173` | arm64 DMG; app has only an ad-hoc linker signature      |
+| macOS Intel | `T4Code (Alpha)_0.2.2_x64.dmg`        | 12,766,711 | `5ca048a8328c792c6dd9123b052207a906cd1ce7aed4d41c836b712cd240dd2b` | x86_64 DMG; app is unsigned                             |
+
+Both DMGs are read-only zlib-compressed UDIF images. Their application
+metadata reports version 0.2.2 and minimum macOS 11.0. The Windows job
+silently installed the NSIS artifact before exercising it. The Linux job
+executed the AppImage under Xvfb on Ubuntu 22.04.
+
+Updater UI remains intentionally unavailable. The Tauri updater configuration
+has an empty public key and no endpoints, the workflow publishes no updater
+manifest, and none of these artifacts is suitable for trusted public
+distribution without platform signing.
+
 ## Cross-Platform Compatibility Status
 
-Cross-platform source and test-harness compatibility is represented explicitly
-in the ledger and local type/test/build gates are green. The packaged macOS
-runtime is validated. Final runtime evidence for Windows and Linux requires
-the remote `desktop-ui-smoke.yml` matrix:
+The final native/UI workflow proves the upgraded dependency graph on its four
+supported build targets:
 
-| Platform    | Local/static evidence                    | Packaged UI evidence    |
-| ----------- | ---------------------------------------- | ----------------------- |
-| macOS arm64 | Passed                                   | Passed from mounted DMG |
-| Windows x64 | Passed in shared gates/config validation | Pending remote matrix   |
-| Linux x64   | Passed in shared gates/config validation | Pending remote matrix   |
+| Target                      | Evidence                                                                            | Result |
+| --------------------------- | ----------------------------------------------------------------------------------- | ------ |
+| Ubuntu 22.04 x64            | AppImage build and all packaged UI specs under Xvfb                                 | Passed |
+| Windows Server 2025 x64     | NSIS build, silent install, and all packaged UI specs                               | Passed |
+| macOS 26 arm64              | DMG mount and all packaged UI specs                                                 | Passed |
+| macOS 26 Intel              | DMG mount and all packaged UI specs                                                 | Passed |
+| Ubuntu 24.04 amd64 userland | Final AppImage payload initialized under Xvfb/DBus and remained live for 20 seconds | Passed |
+| Debian 12 amd64 userland    | Final AppImage payload initialized under Xvfb/DBus and remained live for 20 seconds | Passed |
 
-The modernization must not be called cross-platform complete until the remote
-Windows, macOS, and Linux jobs pass and their artifact evidence is recorded
-here.
+The Ubuntu 24.04 and Debian 12 checks used clean amd64 containers on an arm64
+macOS host. Docker Desktop could not execute the AppImage's static PIE loader
+stub through its emulator, so the exact SquashFS payload was extracted from
+the final AppImage and launched unchanged. Both probes initialized T4Code,
+started the embedded WebDriver on port 4445, hydrated the desktop shell
+environment, and stayed live for the complete bounded window. This is useful
+userland ABI/payload evidence, but it is not a substitute for a native
+x86_64-VM test of the AppImage loader itself.
+
+No disposable Windows 10/11 client VM or macOS 11 runner was available.
+Accordingly:
+
+- Windows 10/11 remain the documented support target, but clean/offline
+  WebView2 behavior was not executed in this run.
+- macOS 11 remains the declared and embedded minimum, but runtime launch was
+  tested only on macOS 26.
+- Windows ARM remains intentionally unsupported.
+
+These are validation-infrastructure gaps, not observed dependency
+regressions.
