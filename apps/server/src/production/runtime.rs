@@ -18,7 +18,9 @@ use crate::{
     auth::AuthService,
     crypto::sha256_hex,
     diagnostic_bundle::DiagnosticBundleService,
-    diagnostics::{DiagnosticsMonitor, NativeProcessSampler, TraceDiagnosticsStore},
+    diagnostics::{
+        DiagnosticsMonitor, NativeProcessSampler, ProcessAttributionRegistry, TraceDiagnosticsStore,
+    },
     git::GitRepository,
     mcp::preview_automation::PreviewAutomationBroker,
     observability::BrowserTraceCollector,
@@ -54,7 +56,7 @@ use crate::{
         ReviewSource,
     },
     rpc::RpcRegistry,
-    terminal::TerminalManager,
+    terminal::{PortablePtyBackend, TerminalManager, TerminalManagerOptions},
     workspace::{AssetContextResolver, WorkspaceRpc, WorkspaceRpcDependencies, WorkspaceService},
 };
 
@@ -96,7 +98,12 @@ impl ProductionRuntime {
         reconcile_abandoned_provider_sessions(&orchestration)
             .await
             .map_err(|error| error.to_string())?;
-        let terminal_manager = TerminalManager::default();
+        let process_attribution = ProcessAttributionRegistry::new();
+        let terminal_manager = TerminalManager::with_process_attribution(
+            Arc::new(PortablePtyBackend),
+            TerminalManagerOptions::default(),
+            process_attribution.clone(),
+        );
         let state_paths = StatePaths::from_config(config);
         let diagnostic_bundle = DiagnosticBundleService::new(&state_paths.logs_dir);
         let operational_logs = OperationalLogs::start(
@@ -107,8 +114,9 @@ impl ProductionRuntime {
         .await?;
         let provider_runtime = Arc::new(ProviderRuntimeSupervisor::start_with_operational_log(
             orchestration.clone(),
-            Arc::new(NativeProviderDriverFactory::new(
+            Arc::new(NativeProviderDriverFactory::with_process_attribution(
                 state_paths.attachments_dir.clone(),
+                process_attribution,
             )),
             SupervisorOptions::default(),
             operational_logs.provider(),

@@ -11,7 +11,11 @@ use super::{
     TerminalSessionSnapshot, TerminalStatus, TerminalSummary, history::TerminalHistory,
 };
 use crate::{
-    diagnostics::{NativeProcessSampler, ProcessSampler, build_descendant_entries},
+    diagnostics::{
+        AttributionKind, AttributionScope, NativeProcessSampler, ProcessAttributionRegistry,
+        ProcessRegistration, ProcessRegistrationMetadata, ProcessSampler, RegistrationSource,
+        build_descendant_entries,
+    },
     process::{Platform, ShellCandidate, resolve_shell_candidates},
 };
 
@@ -136,6 +140,7 @@ struct Session {
     cols: u16,
     rows: u16,
     process: Option<Arc<dyn PtyProcess>>,
+    attribution_registration: Option<ProcessRegistration>,
 }
 
 type SessionKey = (String, String);
@@ -197,6 +202,7 @@ impl Session {
 #[derive(Debug)]
 struct Inner {
     backend: Arc<dyn PtyBackend>,
+    attribution: ProcessAttributionRegistry,
     options: TerminalManagerOptions,
     inspector: Arc<dyn TerminalSubprocessInspector>,
     lifecycle: Mutex<()>,
@@ -222,6 +228,14 @@ impl Default for TerminalManager {
 
 impl TerminalManager {
     pub fn new(backend: Arc<dyn PtyBackend>, options: TerminalManagerOptions) -> Self {
+        Self::with_process_attribution(backend, options, ProcessAttributionRegistry::new())
+    }
+
+    pub fn with_process_attribution(
+        backend: Arc<dyn PtyBackend>,
+        options: TerminalManagerOptions,
+        attribution: ProcessAttributionRegistry,
+    ) -> Self {
         let (events, _) = broadcast::channel(options.event_capacity.max(16));
         let (metadata, _) = broadcast::channel(options.event_capacity.max(16));
         let inspector = options
@@ -231,6 +245,7 @@ impl TerminalManager {
         Self {
             inner: Arc::new(Inner {
                 backend,
+                attribution,
                 options,
                 inspector,
                 lifecycle: Mutex::new(()),
@@ -321,6 +336,16 @@ impl TerminalManager {
             attempted,
             message: last_error,
         })?;
+        let label = terminal_label(&input.terminal_id);
+        let attribution_registration = self.inner.attribution.register_pid(
+            process.pid(),
+            ProcessRegistrationMetadata {
+                scope: AttributionScope::External,
+                kind: AttributionKind::Terminal,
+                label: label.clone(),
+                source: RegistrationSource::Terminal,
+            },
+        );
         let history = TerminalHistory::new(self.inner.options.history_line_limit);
         debug_assert_eq!(
             history.line_limit(),
@@ -340,7 +365,7 @@ impl TerminalManager {
             history,
             exit_code: None,
             exit_signal: None,
-            label: terminal_label(&input.terminal_id),
+            label,
             has_running_subprocess: false,
             child_command_label: None,
             updated_at: now_iso(),
@@ -348,6 +373,7 @@ impl TerminalManager {
             cols: input.cols,
             rows: input.rows,
             process: Some(process.clone()),
+            attribution_registration,
         }));
         self.inner
             .sessions
@@ -439,6 +465,7 @@ impl TerminalManager {
                         let (event, summary) = {
                             let mut session = exit_session.lock().await;
                             session.status = TerminalStatus::Exited;
+                            session.attribution_registration.take();
                             session.pid = None;
                             session.process = None;
                             session.exit_code = exit_code;
@@ -703,6 +730,7 @@ impl TerminalManager {
             };
             let (process, sequence) = {
                 let mut session = session.lock().await;
+                session.attribution_registration.take();
                 (session.process.take(), session.advance())
             };
             if let Some(process) = process
@@ -906,6 +934,10 @@ fn now_iso() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostics::{
+        AttributionKind, AttributionScope, ProcessAttributionRegistry, ProcessRow,
+    };
+    use std::time::Instant;
 
     #[derive(Debug)]
     struct HistoryTestPty {
@@ -923,6 +955,15 @@ mod tests {
 
         fn emit(&self, data: &str) {
             self.output.send(data.to_owned()).expect("output receiver");
+        }
+
+        fn exit(&self, exit_code: i32) {
+            self.exit
+                .send(Some(PtyExit {
+                    exit_code: Some(exit_code),
+                    signal: None,
+                }))
+                .expect("exit receiver");
         }
     }
 
@@ -975,6 +1016,122 @@ mod tests {
             processes.push(process.clone());
             Ok(process)
         }
+    }
+
+    fn terminal_claims(
+        registry: &ProcessAttributionRegistry,
+        pids: &[u32],
+    ) -> Vec<crate::diagnostics::ProcessClaim> {
+        let rows = pids
+            .iter()
+            .map(|pid| ProcessRow::fixture(*pid, 0, "shell"))
+            .collect::<Vec<_>>();
+        registry.bind_and_snapshot(&rows, Instant::now())
+    }
+
+    fn attributed_manager(
+        backend: Arc<HistoryTestBackend>,
+        registry: ProcessAttributionRegistry,
+    ) -> TerminalManager {
+        TerminalManager::with_process_attribution(
+            backend,
+            TerminalManagerOptions {
+                subprocess_poll_interval: Duration::ZERO,
+                ..TerminalManagerOptions::default()
+            },
+            registry,
+        )
+    }
+
+    #[tokio::test]
+    async fn terminal_registration_tracks_start_and_exit() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend::default());
+        let registry = ProcessAttributionRegistry::new();
+        let manager = attributed_manager(backend.clone(), registry.clone());
+        let opened = manager
+            .open(TerminalOpenInput::new(
+                "thread-attributed",
+                "term-attributed",
+                root.path().to_path_buf(),
+                80,
+                24,
+            ))
+            .await
+            .unwrap();
+        let pid = opened.pid.expect("running terminal pid");
+        let claims = terminal_claims(&registry, &[pid]);
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].scope, AttributionScope::External);
+        assert_eq!(claims[0].kind, AttributionKind::Terminal);
+        assert_eq!(claims[0].label, opened.label);
+
+        let mut events = manager.subscribe_events();
+        backend.latest().exit(0);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if matches!(
+                    events.recv().await,
+                    Ok(TerminalEvent::Exited {
+                        thread_id,
+                        terminal_id,
+                        ..
+                    }) if thread_id == "thread-attributed" && terminal_id == "term-attributed"
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("terminal exit event");
+        assert!(terminal_claims(&registry, &[pid]).is_empty());
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn restart_close_and_shutdown_release_terminal_registrations() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend::default());
+        let registry = ProcessAttributionRegistry::new();
+        let manager = attributed_manager(backend.clone(), registry.clone());
+        let input = TerminalOpenInput::new(
+            "thread-lifecycle",
+            "term-lifecycle",
+            root.path().to_path_buf(),
+            80,
+            24,
+        );
+
+        let original_pid = manager
+            .open(input.clone())
+            .await
+            .unwrap()
+            .pid
+            .expect("original terminal pid");
+        let replacement_pid = manager
+            .restart(input.clone())
+            .await
+            .unwrap()
+            .pid
+            .expect("replacement terminal pid");
+        let claims = terminal_claims(&registry, &[original_pid, replacement_pid]);
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].identity.pid, replacement_pid);
+
+        manager
+            .close("thread-lifecycle", Some("term-lifecycle"))
+            .await;
+        assert!(terminal_claims(&registry, &[replacement_pid]).is_empty());
+
+        let shutdown_pid = manager
+            .open(input)
+            .await
+            .unwrap()
+            .pid
+            .expect("shutdown terminal pid");
+        assert_eq!(terminal_claims(&registry, &[shutdown_pid]).len(), 1);
+        manager.shutdown().await;
+        assert!(terminal_claims(&registry, &[shutdown_pid]).is_empty());
     }
 
     #[tokio::test]
