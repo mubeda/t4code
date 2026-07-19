@@ -62,6 +62,7 @@
     "@vitejs/plugin-react": "^6.0.3",
     "@wdio/tauri-plugin": "1.2.0",
     "babel-plugin-react-compiler": "1.0.0",
+    "fontkitten": "1.0.3",
     "happy-dom": "^20.10.6",
     "msw": "2.15.0",
     "tailwindcss": "^4.3.3",
