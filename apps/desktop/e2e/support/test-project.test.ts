@@ -7,8 +7,10 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import {
   archiveAndCleanupDesktopUiTestContext,
+  deferDesktopUiTestContextCleanupUntilExit,
   prepareDesktopUiTestContext,
   type DesktopUiDirectoryRemover,
+  type DesktopUiExitRegistrar,
   type DesktopUiTestContext,
 } from "./test-project.ts";
 
@@ -86,5 +88,28 @@ describe("archiveAndCleanupDesktopUiTestContext", () => {
       NodeFS.rmSync(runRoot, { recursive: true, force: true });
       NodeFS.rmSync(artifactDirectory, { recursive: true, force: true });
     }
+  });
+});
+
+describe("deferDesktopUiTestContextCleanupUntilExit", () => {
+  it("waits for launcher services to stop before cleaning the shared fixture", () => {
+    const context = {} as DesktopUiTestContext;
+    let exitListener: (() => void) | undefined;
+    let cleanedContext: DesktopUiTestContext | undefined;
+    const exitRegistrar: DesktopUiExitRegistrar = {
+      once: (event, listener) => {
+        expect(event).toBe("exit");
+        exitListener = listener;
+      },
+    };
+
+    deferDesktopUiTestContextCleanupUntilExit(context, exitRegistrar, (cleaned) => {
+      cleanedContext = cleaned;
+    });
+
+    expect(cleanedContext).toBeUndefined();
+    expect(exitListener).toBeTypeOf("function");
+    exitListener?.();
+    expect(cleanedContext).toBe(context);
   });
 });
