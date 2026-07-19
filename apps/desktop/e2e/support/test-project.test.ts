@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Desktop UI fixture tests inspect host temp files.
 import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
@@ -7,6 +8,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
   archiveAndCleanupDesktopUiTestContext,
   prepareDesktopUiTestContext,
+  type DesktopUiDirectoryRemover,
   type DesktopUiTestContext,
 } from "./test-project.ts";
 
@@ -48,5 +50,41 @@ describe.each([
     expect(settings.providers.grok?.enabled).toBe(false);
     expect(settings.providers.opencode?.enabled).toBe(false);
     expect(environment.T4CODE_E2E_SHIM_DIRECTORY).toBe(context.shimDirectory);
+  });
+});
+
+describe("archiveAndCleanupDesktopUiTestContext", () => {
+  it("configures retries for transient Windows locks while removing the run directory", () => {
+    const runRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t4code-cleanup-"));
+    const artifactDirectory = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t4code-cleanup-artifacts-"),
+    );
+    const context: DesktopUiTestContext = {
+      runRoot,
+      stateRoot: NodePath.join(runRoot, "missing-state"),
+      projectPath: NodePath.join(runRoot, "project"),
+      shimDirectory: NodePath.join(runRoot, "shims"),
+      artifactDirectory,
+    };
+    let removalOptions: Parameters<DesktopUiDirectoryRemover>[1] | undefined;
+    const removeDirectory: DesktopUiDirectoryRemover = (path, options) => {
+      removalOptions = options;
+      NodeFS.rmSync(path, options);
+    };
+
+    try {
+      archiveAndCleanupDesktopUiTestContext(context, removeDirectory);
+
+      expect(removalOptions).toEqual({
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 100,
+      });
+      expect(NodeFS.existsSync(runRoot)).toBe(false);
+    } finally {
+      NodeFS.rmSync(runRoot, { recursive: true, force: true });
+      NodeFS.rmSync(artifactDirectory, { recursive: true, force: true });
+    }
   });
 });

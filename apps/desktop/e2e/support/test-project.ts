@@ -15,6 +15,8 @@ export interface DesktopUiTestContext {
   readonly artifactDirectory: string;
 }
 
+export type DesktopUiDirectoryRemover = (path: string, options: NodeFS.RmDirOptions) => void;
+
 const codexFixtureSource = String.raw`
 import readline from "node:readline";
 
@@ -225,12 +227,20 @@ export function prepareDesktopUiTestContext(
   return { runRoot, stateRoot, projectPath, shimDirectory, artifactDirectory };
 }
 
-export function archiveAndCleanupDesktopUiTestContext(context: DesktopUiTestContext): void {
+export function archiveAndCleanupDesktopUiTestContext(
+  context: DesktopUiTestContext,
+  removeDirectory: DesktopUiDirectoryRemover = NodeFS.rmSync,
+): void {
   const archivedState = NodePath.join(context.artifactDirectory, "state");
   if (NodeFS.existsSync(context.stateRoot)) {
     NodeFS.cpSync(context.stateRoot, archivedState, { recursive: true, force: true });
   }
-  NodeFS.rmSync(context.runRoot, { recursive: true, force: true });
+  removeDirectory(context.runRoot, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 100,
+  });
 }
 
 export const desktopUiFixture = {
