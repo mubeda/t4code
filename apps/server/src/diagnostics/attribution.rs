@@ -81,11 +81,17 @@ impl ResourceAttributor {
         ui_coverage: UiCoverage,
     ) -> ProcessAttribution {
         let rows_by_identity = unique_rows(rows);
-        let rows_by_pid = rows_by_identity
-            .keys()
-            .map(|identity| (identity.pid, *identity))
+        let rows_by_pid = rows
+            .iter()
+            .map(|row| {
+                let identity = ProcessIdentity {
+                    pid: row.pid,
+                    started_at: row.started_at,
+                };
+                (identity.pid, identity)
+            })
             .collect::<HashMap<_, _>>();
-        let children_by_pid = child_index(&rows_by_identity);
+        let children_by_pid = child_index(rows, &rows_by_identity);
         let claims_by_identity = claims
             .iter()
             .filter(|claim| rows_by_identity.contains_key(&claim.identity))
@@ -98,9 +104,17 @@ impl ResourceAttributor {
         }
         let included = included_identities(&roots, &children_by_pid, &rows_by_identity);
         let mut owner_memo = HashMap::new();
-        let mut processes = included
-            .into_iter()
-            .filter_map(|identity| {
+        let mut emitted = HashSet::new();
+        let processes = rows
+            .iter()
+            .filter_map(|sampled_row| {
+                let identity = ProcessIdentity {
+                    pid: sampled_row.pid,
+                    started_at: sampled_row.started_at,
+                };
+                if !emitted.insert(identity) || !included.contains(&identity) {
+                    return None;
+                }
                 let row = rows_by_identity.get(&identity)?;
                 let (scope, kind, label, confidence) = if identity == server_identity {
                     (
@@ -152,7 +166,6 @@ impl ResourceAttributor {
                 })
             })
             .collect::<Vec<_>>();
-        processes.sort_by(|left, right| left.process_key.cmp(&right.process_key));
         let totals = aggregate_totals(&processes);
 
         ProcessAttribution {
@@ -178,14 +191,23 @@ fn unique_rows(rows: &[ProcessRow]) -> HashMap<ProcessIdentity, &ProcessRow> {
 }
 
 fn child_index(
+    rows: &[ProcessRow],
     rows_by_identity: &HashMap<ProcessIdentity, &ProcessRow>,
 ) -> HashMap<u32, Vec<ProcessIdentity>> {
     let mut children = HashMap::<u32, Vec<ProcessIdentity>>::new();
-    for (identity, row) in rows_by_identity {
-        children.entry(row.ppid).or_default().push(*identity);
-    }
-    for children in children.values_mut() {
-        children.sort_by_key(|identity| (identity.pid, identity.started_at));
+    let mut indexed = HashSet::new();
+    for sampled_row in rows {
+        let identity = ProcessIdentity {
+            pid: sampled_row.pid,
+            started_at: sampled_row.started_at,
+        };
+        if !indexed.insert(identity) {
+            continue;
+        }
+        let Some(row) = rows_by_identity.get(&identity) else {
+            continue;
+        };
+        children.entry(row.ppid).or_default().push(identity);
     }
     children
 }
@@ -667,6 +689,54 @@ mod tests {
                 rss_bytes: 1_500,
                 process_count: 5,
             }
+        );
+    }
+
+    #[test]
+    fn attributed_processes_preserve_input_row_order_without_comparison_sorting() {
+        let rows = [
+            row(90, 70, 900, 9.0, 900),
+            row(5, 0, 50, 5.0, 500),
+            row(50, 0, 500, 1.0, 100),
+            row(7, 50, 70, 2.0, 200),
+            row(70, 50, 700, 3.0, 300),
+            row(8, 7, 80, 4.0, 400),
+        ];
+        let attribution = ResourceAttributor::attribute(
+            &rows,
+            identity(50, 500),
+            &[
+                claim(
+                    7,
+                    70,
+                    AttributionScope::Core,
+                    AttributionKind::Ui,
+                    "core/ui",
+                ),
+                claim(
+                    70,
+                    700,
+                    AttributionScope::External,
+                    AttributionKind::Provider,
+                    "external/provider",
+                ),
+            ],
+            UiCoverage::default(),
+        );
+
+        assert_eq!(
+            attribution
+                .processes
+                .iter()
+                .map(|process| process.identity)
+                .collect::<Vec<_>>(),
+            [
+                identity(90, 900),
+                identity(50, 500),
+                identity(7, 70),
+                identity(70, 700),
+                identity(8, 80),
+            ]
         );
     }
 }
