@@ -89,11 +89,11 @@ export class FileEditingSessionRegistry<
         [...mutation.sessions.values()].map((session) => session.settle()),
       );
     } catch (error) {
-      await this.releaseMutation(mutation);
+      await this.releaseMutationAfterFailedAcquisition(mutation);
       throw error;
     }
     if (results.some((result) => result === "failed")) {
-      await this.releaseMutation(mutation);
+      await this.releaseMutationAfterFailedAcquisition(mutation);
       return null;
     }
 
@@ -119,7 +119,9 @@ export class FileEditingSessionRegistry<
       release: () => {
         if (released) return;
         released = true;
-        void this.releaseMutation(mutation, outcome !== "deleted");
+        void this.releaseMutation(mutation, outcome !== "deleted").catch((error: unknown) => {
+          this.reportMutationCleanupError(error);
+        });
       },
     };
   }
@@ -162,6 +164,15 @@ export class FileEditingSessionRegistry<
   }
 
   private remapMutation(mutation: ActivePathMutation<Session>, toRelativePath: string): void {
+    if (this.latestOpenRelativePaths) {
+      this.latestOpenRelativePaths = new Set(
+        [...this.latestOpenRelativePaths].map((relativePath) =>
+          isPathAtOrUnder(relativePath, mutation.relativePath)
+            ? remapPath(relativePath, mutation.relativePath, toRelativePath)
+            : relativePath,
+        ),
+      );
+    }
     for (const candidate of mutation.sessions.keys()) this.sessions.delete(candidate);
     const remapped = new Map<string, Session>();
     for (const [candidate, session] of mutation.sessions) {
@@ -189,23 +200,40 @@ export class FileEditingSessionRegistry<
     resumeSaving = true,
   ): Promise<void> {
     this.activePathMutations.delete(mutation);
-    if (resumeSaving) {
-      for (const session of mutation.pausedSessions) session.resumeSaving();
-    }
-
-    if (this.disposed) {
-      for (const candidate of mutation.sessions.keys()) this.sessions.delete(candidate);
+    try {
       if (resumeSaving) {
-        await Promise.all(
-          [...mutation.sessions.values()].map(async (session) => {
-            await session.settle();
-            session.dispose();
-          }),
-        );
+        for (const session of mutation.pausedSessions) session.resumeSaving();
       }
-    } else if (this.latestOpenRelativePaths) {
-      await this.reconcile([...this.latestOpenRelativePaths]);
+
+      if (this.disposed) {
+        for (const candidate of mutation.sessions.keys()) this.sessions.delete(candidate);
+        if (resumeSaving) {
+          await Promise.all(
+            [...mutation.sessions.values()].map(async (session) => {
+              await session.settle();
+              session.dispose();
+            }),
+          );
+        }
+      } else if (this.latestOpenRelativePaths) {
+        await this.reconcile([...this.latestOpenRelativePaths]);
+      }
+    } finally {
+      mutation.complete();
     }
-    mutation.complete();
+  }
+
+  private async releaseMutationAfterFailedAcquisition(
+    mutation: ActivePathMutation<Session>,
+  ): Promise<void> {
+    try {
+      await this.releaseMutation(mutation);
+    } catch (error) {
+      this.reportMutationCleanupError(error);
+    }
+  }
+
+  private reportMutationCleanupError(error: unknown): void {
+    console.error("[file-editing-session-registry] mutation cleanup failed", error);
   }
 }

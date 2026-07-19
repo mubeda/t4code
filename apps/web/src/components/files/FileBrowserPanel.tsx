@@ -251,9 +251,10 @@ export default function FileBrowserPanel({
           if (name === currentName) return;
           const toRelativePath = joinRelativePath(parentRelativePath(relativePath), name);
           void (async () => {
-            const lease = await onBeginPathMutation?.(relativePath);
-            if (onBeginPathMutation && !lease) return;
+            let lease: FilePathMutationLease | null | undefined;
             try {
+              lease = await onBeginPathMutation?.(relativePath);
+              if (onBeginPathMutation && !lease) return;
               const result = await renameEntry({
                 environmentId,
                 input: { cwd, fromRelativePath: relativePath, toRelativePath },
@@ -270,6 +271,8 @@ export default function FileBrowserPanel({
               lease?.commitRename(result.value.relativePath);
               remapFileSurfaces(threadRef, relativePath, result.value.relativePath);
               entriesQuery.refresh();
+            } catch (error) {
+              showMutationError(error, `Failed to rename "${currentName}"`);
             } finally {
               lease?.release();
             }
@@ -303,9 +306,10 @@ export default function FileBrowserPanel({
         destructive: true,
         onConfirm: () => {
           void (async () => {
-            const lease = await onBeginPathMutation?.(relativePath);
-            if (onBeginPathMutation && !lease) return;
+            let lease: FilePathMutationLease | null | undefined;
             try {
+              lease = await onBeginPathMutation?.(relativePath);
+              if (onBeginPathMutation && !lease) return;
               const result = await deleteEntry({ environmentId, input: { cwd, relativePath } });
               if (result._tag === "Failure") {
                 if (!isAtomCommandInterrupted(result)) {
@@ -316,6 +320,8 @@ export default function FileBrowserPanel({
               lease?.commitDelete();
               closeFileSurfacesUnder(threadRef, relativePath);
               entriesQuery.refresh();
+            } catch (error) {
+              showMutationError(error, `Failed to delete "${name}"`);
             } finally {
               lease?.release();
             }
@@ -338,9 +344,10 @@ export default function FileBrowserPanel({
   const duplicateEntryAt = useCallback(
     (relativePath: string) => {
       void (async () => {
-        const lease = await onBeginPathMutation?.(relativePath);
-        if (onBeginPathMutation && !lease) return;
+        let lease: FilePathMutationLease | null | undefined;
         try {
+          lease = await onBeginPathMutation?.(relativePath);
+          if (onBeginPathMutation && !lease) return;
           const result = await duplicateEntry({ environmentId, input: { cwd, relativePath } });
           if (result._tag === "Failure") {
             if (!isAtomCommandInterrupted(result)) {
@@ -353,6 +360,8 @@ export default function FileBrowserPanel({
           }
           entriesQuery.refresh();
           onOpenFile(result.value.relativePath);
+        } catch (error) {
+          showMutationError(error, `Failed to duplicate "${entryName(relativePath)}"`);
         } finally {
           lease?.release();
         }

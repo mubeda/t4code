@@ -167,4 +167,46 @@ describe("FileEditingSessionRegistry", () => {
     expect(session.resumeSaving).toHaveBeenCalledOnce();
     expect(session.dispose).toHaveBeenCalledOnce();
   });
+
+  it("remaps the reconciled open path before releasing a rename lease", async () => {
+    const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
+    const session = registry.getOrCreate("src/old.ts", () => fakeSession("src/old.ts"));
+    const lookalike = registry.getOrCreate("src/old.ts.bak", () => fakeSession("src/old.ts.bak"));
+    await registry.reconcile(["src/old.ts", "src/old.ts.bak"]);
+    const lease = await registry.beginPathMutation("src/old.ts");
+
+    lease!.commitRename("src/new.ts");
+    lease!.release();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(registry.get("src/new.ts")).toBe(session);
+    expect(registry.get("src/old.ts.bak")).toBe(lookalike);
+    expect(session.dispose).not.toHaveBeenCalled();
+    expect(lookalike.rename).not.toHaveBeenCalled();
+  });
+
+  it("always completes disposal and reports a rejected leased-session cleanup", async () => {
+    const reportError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
+      const session = registry.getOrCreate("src/app.ts", () => fakeSession("src/app.ts"));
+      session.settle.mockResolvedValueOnce("saved").mockRejectedValueOnce(new Error("save failed"));
+      const lease = await registry.beginPathMutation("src/app.ts");
+      let disposalCompleted = false;
+      const disposal = registry.dispose().then(() => {
+        disposalCompleted = true;
+      });
+
+      lease!.release();
+      await expect(disposal).resolves.toBeUndefined();
+      expect(disposalCompleted).toBe(true);
+      expect(reportError).toHaveBeenCalledWith(
+        "[file-editing-session-registry] mutation cleanup failed",
+        expect.objectContaining({ message: "save failed" }),
+      );
+    } finally {
+      reportError.mockRestore();
+    }
+  });
 });
