@@ -25,6 +25,24 @@ const TerminalEnvSchema = Schema.Record(Schema.String, TerminalEnvValueSchema).c
   Schema.isMaxProperties(128),
 );
 
+export const TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH = 4_096;
+export const TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH = 8_192;
+export const TERMINAL_LAUNCH_ARGUMENT_MAX_COUNT = 64;
+export const TERMINAL_LAUNCH_LABEL_MAX_LENGTH = 128;
+
+export const TerminalLaunchCommand = Schema.Struct({
+  executable: TrimmedNonEmptyStringSchema.check(
+    Schema.isMaxLength(TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH),
+  ),
+  args: Schema.Array(
+    Schema.String.check(Schema.isMaxLength(TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH)),
+  ).check(Schema.isMaxLength(TERMINAL_LAUNCH_ARGUMENT_MAX_COUNT)),
+  label: Schema.optional(
+    TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(TERMINAL_LAUNCH_LABEL_MAX_LENGTH)),
+  ),
+});
+export type TerminalLaunchCommand = typeof TerminalLaunchCommand.Type;
+
 export const TerminalThreadInput = Schema.Struct({
   threadId: TrimmedNonEmptyStringSchema,
 });
@@ -44,6 +62,7 @@ export const TerminalOpenInput = Schema.Struct({
   cols: Schema.optional(TerminalColsSchema),
   rows: Schema.optional(TerminalRowsSchema),
   env: Schema.optional(TerminalEnvSchema),
+  command: Schema.optional(TerminalLaunchCommand),
 });
 export type TerminalOpenInput = Schema.Codec.Encoded<typeof TerminalOpenInput>;
 
@@ -54,6 +73,7 @@ export const TerminalAttachInput = Schema.Struct({
   cols: Schema.optional(TerminalColsSchema),
   rows: Schema.optional(TerminalRowsSchema),
   env: Schema.optional(TerminalEnvSchema),
+  command: Schema.optional(TerminalLaunchCommand),
   restartIfNotRunning: Schema.optional(Schema.Boolean),
 });
 export type TerminalAttachInput = Schema.Codec.Encoded<typeof TerminalAttachInput>;
@@ -81,6 +101,7 @@ export const TerminalRestartInput = Schema.Struct({
   cols: TerminalColsSchema,
   rows: TerminalRowsSchema,
   env: Schema.optional(TerminalEnvSchema),
+  command: Schema.optional(TerminalLaunchCommand),
 });
 export type TerminalRestartInput = Schema.Codec.Encoded<typeof TerminalRestartInput>;
 
