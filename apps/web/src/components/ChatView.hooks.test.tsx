@@ -3555,8 +3555,9 @@ describe("ChatView banners and dialogs", () => {
     expect(
       useCenterPanelStore
         .getState()
-        .byThreadKey[threadKey]?.surfaces.some((surface) => surface.id === "terminal:terminal-panel") ??
-        false,
+        .byThreadKey[threadKey]?.surfaces.some(
+          (surface) => surface.id === "terminal:terminal-panel",
+        ) ?? false,
     ).toBe(false);
   });
 
@@ -3571,16 +3572,12 @@ describe("ChatView banners and dialogs", () => {
     const tabs = capturedProps("centerPanelTabs");
     const kept = useCenterPanelStore
       .getState()
-      .byThreadKey[threadKey]!.surfaces.find(
-        (surface) => surface.id === "terminal:terminal-kept",
-      )!;
+      .byThreadKey[threadKey]!.surfaces.find((surface) => surface.id === "terminal:terminal-kept")!;
     (tabs["onCloseOtherSurfaces"] as (surface: typeof kept) => void)(kept);
 
     expect(closedTerminalIds()).toEqual(["terminal-left", "terminal-right"]);
     expect(
-      useCenterPanelStore
-        .getState()
-        .byThreadKey[threadKey]?.surfaces.map((surface) => surface.id),
+      useCenterPanelStore.getState().byThreadKey[threadKey]?.surfaces.map((surface) => surface.id),
     ).toEqual([HOST_SURFACE_ID, "terminal:terminal-kept"]);
   });
 
@@ -3595,16 +3592,12 @@ describe("ChatView banners and dialogs", () => {
     const tabs = capturedProps("centerPanelTabs");
     const selected = useCenterPanelStore
       .getState()
-      .byThreadKey[threadKey]!.surfaces.find(
-        (surface) => surface.id === "terminal:terminal-left",
-      )!;
+      .byThreadKey[threadKey]!.surfaces.find((surface) => surface.id === "terminal:terminal-left")!;
     (tabs["onCloseSurfacesToRight"] as (surface: typeof selected) => void)(selected);
 
     expect(closedTerminalIds()).toEqual(["terminal-middle", "terminal-right"]);
     expect(
-      useCenterPanelStore
-        .getState()
-        .byThreadKey[threadKey]?.surfaces.map((surface) => surface.id),
+      useCenterPanelStore.getState().byThreadKey[threadKey]?.surfaces.map((surface) => surface.id),
     ).toEqual([HOST_SURFACE_ID, "terminal:terminal-left"]);
   });
 
