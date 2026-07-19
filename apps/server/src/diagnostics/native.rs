@@ -6,7 +6,10 @@ use std::{
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, Signal, System, UpdateKind};
 use thiserror::Error;
 
-use super::{ProcessRow, ProcessSampler, SamplingError, build_descendant_entries};
+use super::{
+    PROCESS_COMMAND_MAX_SCALARS, ProcessRow, ProcessSampler, SamplingError,
+    bound_diagnostic_string, build_descendant_entries,
+};
 
 #[derive(Debug)]
 pub struct NativeProcessSampler {
@@ -146,17 +149,18 @@ fn signal_pid(
 }
 
 fn command_string(parts: &[impl AsRef<OsStr>], fallback: &OsStr) -> String {
-    let command = parts
+    let joined = parts
         .iter()
         .map(|part| part.as_ref().to_string_lossy())
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-    if command.trim().is_empty() {
+    let command = if joined.trim().is_empty() {
         fallback.to_string_lossy().into_owned()
     } else {
-        command
-    }
+        joined
+    };
+    bound_diagnostic_string(&command, PROCESS_COMMAND_MAX_SCALARS)
 }
 
 fn format_elapsed(seconds: u64) -> String {
@@ -226,6 +230,12 @@ mod tests {
         };
 
         assert_ne!(first_identity.key(), second_identity.key());
+    }
+
+    #[test]
+    fn command_strings_are_bounded_without_breaking_utf8() {
+        let command = command_string(&["é".repeat(513)], OsStr::new("fallback"));
+        assert_eq!(command.chars().count(), 512);
     }
 
     #[tokio::test]

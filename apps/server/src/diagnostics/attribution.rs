@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use super::{ProcessIdentity, ProcessRow};
+use super::{
+    PROCESS_CLAIM_LABEL_MAX_SCALARS, ProcessIdentity, ProcessRow, bound_diagnostic_string,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttributionScope {
@@ -101,7 +103,7 @@ impl ResourceAttributor {
         if rows_by_identity.contains_key(&server_identity) {
             roots.push(server_identity);
         }
-        let included = included_identities(&roots, &children_by_pid);
+        let included = included_identities(&roots, &children_by_pid, &rows_by_identity);
         let mut owner_memo = HashMap::new();
         let mut processes = included
             .into_iter()
@@ -118,7 +120,7 @@ impl ResourceAttributor {
                     (
                         claim.scope,
                         claim.kind,
-                        claim.label.clone(),
+                        bound_diagnostic_string(&claim.label, PROCESS_CLAIM_LABEL_MAX_SCALARS),
                         AttributionConfidence::Exact,
                     )
                 } else if let Some(owner) = nearest_claim(
@@ -133,7 +135,7 @@ impl ResourceAttributor {
                     (
                         claim.scope,
                         claim.kind,
-                        claim.label.clone(),
+                        bound_diagnostic_string(&claim.label, PROCESS_CLAIM_LABEL_MAX_SCALARS),
                         AttributionConfidence::Inherited,
                     )
                 } else {
@@ -198,6 +200,7 @@ fn child_index(
 fn included_identities(
     roots: &[ProcessIdentity],
     children_by_pid: &HashMap<u32, Vec<ProcessIdentity>>,
+    rows_by_identity: &HashMap<ProcessIdentity, &ProcessRow>,
 ) -> HashSet<ProcessIdentity> {
     let mut included = HashSet::new();
     let mut stack = roots.to_vec();
@@ -206,7 +209,12 @@ fn included_identities(
             continue;
         }
         if let Some(children) = children_by_pid.get(&identity.pid) {
-            stack.extend(children);
+            stack.extend(
+                children
+                    .iter()
+                    .copied()
+                    .filter(|child| parent_edge_is_current(identity, *child, rows_by_identity)),
+            );
         }
     }
     included
@@ -233,6 +241,7 @@ fn nearest_claim(
             .get(&identity)
             .and_then(|row| rows_by_pid.get(&row.ppid))
             .copied()
+            .filter(|parent| parent_edge_is_current(*parent, identity, rows_by_identity))
             .and_then(|parent| {
                 nearest_claim(
                     parent,
@@ -247,6 +256,16 @@ fn nearest_claim(
     visiting.remove(&identity);
     memo.insert(identity, owner);
     owner
+}
+
+fn parent_edge_is_current(
+    parent: ProcessIdentity,
+    child: ProcessIdentity,
+    rows_by_identity: &HashMap<ProcessIdentity, &ProcessRow>,
+) -> bool {
+    rows_by_identity
+        .get(&child)
+        .is_some_and(|row| row.ppid == parent.pid && parent.started_at <= child.started_at)
 }
 
 fn aggregate_totals(processes: &[AttributedProcess]) -> ProcessAttributionTotals {
@@ -408,6 +427,7 @@ mod tests {
             row(2, 1, 20, 2.0, 200),
             row(3, 2, 30, 3.0, 300),
             row(3, 2, 30, 30.0, 3_000),
+            row(4, 3, 40, 4.0, 400),
         ];
         let attribution = ResourceAttributor::attribute(
             &rows,
@@ -431,7 +451,7 @@ mod tests {
             UiCoverage::Unavailable,
         );
 
-        assert_eq!(attribution.processes.len(), 3);
+        assert_eq!(attribution.processes.len(), 4);
         let provider = attribution
             .processes
             .iter()
@@ -439,6 +459,74 @@ mod tests {
             .expect("registered provider");
         assert_eq!(provider.kind, AttributionKind::Provider);
         assert_eq!(provider.confidence, AttributionConfidence::Exact);
+        let provider_descendant = attribution
+            .processes
+            .iter()
+            .find(|process| process.identity == identity(4, 40))
+            .expect("provider descendant");
+        assert_eq!(provider_descendant.kind, AttributionKind::Provider);
+        assert_eq!(
+            provider_descendant.confidence,
+            AttributionConfidence::Inherited
+        );
+    }
+
+    #[test]
+    fn ignores_reused_parent_pid_with_a_later_start_time() {
+        let rows = [
+            row(1, 0, 10, 1.0, 100),
+            row(42, 1, 30, 2.0, 200),
+            row(9, 42, 20, 3.0, 300),
+        ];
+        let attribution = ResourceAttributor::attribute(
+            &rows,
+            identity(1, 10),
+            &[claim(
+                42,
+                30,
+                AttributionScope::Core,
+                AttributionKind::Ui,
+                "core/ui",
+            )],
+            UiCoverage::Unavailable,
+        );
+
+        assert!(
+            attribution
+                .processes
+                .iter()
+                .any(|process| process.identity == identity(42, 30))
+        );
+        assert!(
+            attribution
+                .processes
+                .iter()
+                .all(|process| process.identity != identity(9, 20))
+        );
+    }
+
+    #[test]
+    fn bounds_claim_labels_by_unicode_scalar_value() {
+        let label = "é".repeat(81);
+        let rows = [row(1, 0, 10, 1.0, 100), row(2, 1, 20, 2.0, 200)];
+        let attribution = ResourceAttributor::attribute(
+            &rows,
+            identity(1, 10),
+            &[claim(
+                2,
+                20,
+                AttributionScope::Core,
+                AttributionKind::Ui,
+                &label,
+            )],
+            UiCoverage::Unavailable,
+        );
+        let process = attribution
+            .processes
+            .iter()
+            .find(|process| process.identity == identity(2, 20))
+            .unwrap();
+        assert_eq!(process.label.chars().count(), 80);
     }
 
     #[test]

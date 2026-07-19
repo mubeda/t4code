@@ -2,6 +2,14 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+pub const PROCESS_CLAIM_LABEL_MAX_SCALARS: usize = 80;
+pub const PROCESS_COMMAND_MAX_SCALARS: usize = 512;
+
+#[must_use]
+pub fn bound_diagnostic_string(value: &str, maximum_scalars: usize) -> String {
+    value.chars().take(maximum_scalars).collect()
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ProcessIdentity {
     pub pid: u32,
