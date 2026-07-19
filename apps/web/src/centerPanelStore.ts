@@ -18,9 +18,6 @@
  */
 import { scopedThreadKey } from "@t4code/client-runtime/environment";
 import {
-  TERMINAL_LAUNCH_ARGUMENT_MAX_COUNT,
-  TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH,
-  TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH,
   TERMINAL_LAUNCH_LABEL_MAX_LENGTH,
   type ScopedThreadRef,
   type TerminalLaunchCommand,
@@ -29,6 +26,7 @@ import {
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
+import { decodeTerminalLaunchCommand } from "./lib/terminalLaunchCommand";
 import { resolveStorage } from "./lib/storage";
 
 export const HOST_SURFACE_ID = "chat:host" as const;
@@ -110,36 +108,15 @@ function boundedTrimmed(value: unknown, maxLength: number): string | undefined {
 }
 
 function sanitizeCommand(value: unknown): TerminalLaunchCommand | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const candidate = value as Record<string, unknown>;
-  const executable = boundedTrimmed(candidate.executable, TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH);
-  const args = candidate.args;
-  if (!executable || !Array.isArray(args)) return undefined;
-  if (args.length > TERMINAL_LAUNCH_ARGUMENT_MAX_COUNT) return undefined;
-  if (
-    !args.every(
-      (argument) =>
-        typeof argument === "string" && argument.length <= TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH,
-    )
-  ) {
-    return undefined;
-  }
-  const label =
-    candidate.label === undefined
-      ? undefined
-      : boundedTrimmed(candidate.label, TERMINAL_LAUNCH_LABEL_MAX_LENGTH);
-  if (candidate.label !== undefined && !label) return undefined;
-  return {
-    executable,
-    args: [...args],
-    ...(label ? { label } : {}),
-  };
+  return decodeTerminalLaunchCommand(value) ?? undefined;
 }
 
-// Guarantee the host surface sits at index 0 exactly once and drop duplicate
-// ids. Runtime actions never move the host, but migrate() relies on this to
-// repair arbitrary persisted arrays.
-const normalizeSurfaces = (surfaces: readonly CenterSurface[]): CenterSurface[] => {
+// Keep the persisted host-presence bit while deduplicating surfaces. A missing
+// host is meaningful: users can close the host while sibling surfaces remain.
+const normalizeSurfaces = (
+  surfaces: readonly CenterSurface[],
+  hostWasPresent: boolean,
+): CenterSurface[] => {
   const seen = new Set<string>();
   const rest: CenterSurface[] = [];
   for (const surface of surfaces) {
@@ -148,7 +125,7 @@ const normalizeSurfaces = (surfaces: readonly CenterSurface[]): CenterSurface[] 
     seen.add(surface.id);
     rest.push(surface);
   }
-  return [HOST_SURFACE, ...rest];
+  return hostWasPresent ? [HOST_SURFACE, ...rest] : rest;
 };
 
 const isHostOnly = (state: ThreadCenterPanelState): boolean =>
@@ -233,17 +210,34 @@ export function migratePersistedCenterPanelState(persistedState: unknown): {
   for (const [threadKey, value] of Object.entries(raw)) {
     const threadState =
       value && typeof value === "object" ? (value as Record<string, unknown>) : null;
-    const rawSurfaces = Array.isArray(threadState?.surfaces) ? threadState.surfaces : [];
-    const surfaces = normalizeSurfaces(rawSurfaces.flatMap<CenterSurface>(sanitizeSurface));
+    if (!Array.isArray(threadState?.surfaces)) continue;
+    const rawSurfaces = threadState.surfaces;
+    const hostWasPresent = rawSurfaces.some(
+      (surface) =>
+        surface !== null &&
+        typeof surface === "object" &&
+        (surface as { kind?: unknown }).kind === "chat-host",
+    );
+    const surfaces = normalizeSurfaces(
+      rawSurfaces.flatMap<CenterSurface>(sanitizeSurface),
+      hostWasPresent,
+    );
     // Host-only entries are identical to EMPTY_THREAD_STATE — no need to persist.
-    if (surfaces.length === 1) continue;
-    const activeCandidate =
+    if (surfaces.length === 1 && surfaces[0]?.id === HOST_SURFACE_ID) continue;
+    if (surfaces.length === 0) {
+      if (threadState.activeSurfaceId === null) {
+        byThreadKey[threadKey] = { surfaces: [], activeSurfaceId: null };
+      }
+      continue;
+    }
+    const firstSurface = surfaces[0]!;
+    const activeCandidate: string =
       typeof threadState?.activeSurfaceId === "string"
         ? threadState.activeSurfaceId
-        : HOST_SURFACE_ID;
+        : firstSurface.id;
     const activeSurfaceId = surfaces.some((surface) => surface.id === activeCandidate)
       ? activeCandidate
-      : HOST_SURFACE_ID;
+      : firstSurface.id;
     byThreadKey[threadKey] = { surfaces, activeSurfaceId };
   }
   return { byThreadKey };

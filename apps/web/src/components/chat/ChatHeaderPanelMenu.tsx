@@ -113,14 +113,20 @@ export const ChatHeaderPanelMenu = memo(function ChatHeaderPanelMenu({
           <>
             <MenuSeparator />
             {providerTerminalItems.map(({ item, action }) => {
-              const disabled = item.disabled || !canCreatePanel;
-              const reason = canCreatePanel ? item.disabledReason : PANEL_UNAVAILABLE_REASON;
+              const disabled = item.disabled || !canCreatePanel || action.command === null;
+              const reason = !canCreatePanel
+                ? PANEL_UNAVAILABLE_REASON
+                : (item.disabledReason ?? action.disabledReason);
               const menuItem = (
                 <MenuItem
                   key={`terminal:${item.entry.instanceId}`}
                   className={disabled ? "data-disabled:pointer-events-auto" : undefined}
                   disabled={disabled}
-                  onClick={() => onOpenProviderTerminalPanel(action)}
+                  onClick={() => {
+                    if (action.command !== null) {
+                      onOpenProviderTerminalPanel(action);
+                    }
+                  }}
                 >
                   <ProviderInstanceIcon
                     driverKind={item.entry.driverKind}

@@ -237,6 +237,7 @@ import {
   deriveLockedProvider,
   readFileAsDataUrl,
   reconcileMountedTerminalThreadIds,
+  resolveCenterPanelLaunchContext,
   resolveSendEnvMode,
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
@@ -1408,49 +1409,6 @@ function ChatViewContent(props: ChatViewProps) {
     null;
   const centerHostHidden = !isPanel && activeCenterSurface?.id !== HOST_SURFACE_ID;
   const centerPanelEmpty = !isPanel && centerPanelState.surfaces.length === 0;
-  // Chat-header "+" panel menu → create a sibling chat panel / open a center
-  // terminal, both sharing the host thread's workspace. Guarded on a live host
-  // thread ref (drafts have no server thread to host siblings yet).
-  const handleCreateChatPanel = useCallback(
-    (entry: ProviderInstanceEntry) => {
-      if (!activeThread || !activeThreadRef) return;
-      const model = entry.models[0]?.slug;
-      void centerPanelActions.createChatPanel({
-        hostRef: activeThreadRef,
-        projectId: activeThread.projectId,
-        worktreePath: activeThread.worktreePath,
-        branch: activeThread.branch ?? null,
-        instanceId: entry.instanceId,
-        ...(model ? { model } : {}),
-        providerLabel: entry.displayName,
-      });
-    },
-    [activeThread, activeThreadRef, centerPanelActions],
-  );
-  const openCenterTerminal = useCallback(
-    (options?: OpenTerminalPanelOptions) => {
-      if (!activeThreadRef) return;
-      const currentCenterPanelState = selectThreadCenterPanelState(
-        useCenterPanelStore.getState().byThreadKey,
-        activeThreadRef,
-      );
-      const centerTerminalIds = currentCenterPanelState.surfaces.flatMap((surface) =>
-        surface.kind === "terminal" ? [surface.terminalId] : [],
-      );
-      centerPanelActions.openTerminalPanel(
-        activeThreadRef,
-        [...activeKnownTerminalIds, ...centerTerminalIds],
-        options,
-      );
-    },
-    [activeKnownTerminalIds, activeThreadRef, centerPanelActions],
-  );
-  const handleOpenTerminalPanel = useCallback(() => openCenterTerminal(), [openCenterTerminal]);
-  const handleOpenProviderTerminalPanel = useCallback(
-    (action: ProviderTerminalAction) =>
-      openCenterTerminal({ label: action.label, command: action.command }),
-    [openCenterTerminal],
-  );
   const [timelineAnchor, setTimelineAnchor] = useState<{
     readonly threadKey: string | null;
     readonly messageId: MessageId | null;
@@ -3720,6 +3678,71 @@ function ChatViewContent(props: ChatViewProps) {
   const envMode: DraftThreadEnvMode = canOverrideServerThreadEnvMode
     ? (pendingServerThreadEnvMode ?? draftThread?.envMode ?? derivedEnvMode)
     : derivedEnvMode;
+  const centerPanelLaunchContext = useMemo(
+    () =>
+      resolveCenterPanelLaunchContext({
+        hasServerThread: isServerThread,
+        envMode,
+        projectCwd: activeProjectCwd,
+        worktreePath: activeThreadWorktreePath,
+      }),
+    [activeProjectCwd, activeThreadWorktreePath, envMode, isServerThread],
+  );
+  const centerTerminalLaunchContext = useMemo(
+    () =>
+      centerPanelLaunchContext && activeProject
+        ? {
+            ...centerPanelLaunchContext,
+            runtimeEnv: projectScriptRuntimeEnv({
+              project: { cwd: activeProject.workspaceRoot },
+              worktreePath: centerPanelLaunchContext.worktreePath,
+            }),
+          }
+        : null,
+    [activeProject, centerPanelLaunchContext],
+  );
+  // Chat-header "+" panel menu → create a sibling chat panel / open a center
+  // terminal, both sharing the live host thread's resolved effective cwd.
+  const handleCreateChatPanel = useCallback(
+    (entry: ProviderInstanceEntry) => {
+      if (!activeThread || !activeThreadRef || !centerPanelLaunchContext) return;
+      const model = entry.models[0]?.slug;
+      void centerPanelActions.createChatPanel({
+        hostRef: activeThreadRef,
+        projectId: activeThread.projectId,
+        worktreePath: centerPanelLaunchContext.worktreePath,
+        branch: activeThread.branch ?? null,
+        instanceId: entry.instanceId,
+        ...(model ? { model } : {}),
+        providerLabel: entry.displayName,
+      });
+    },
+    [activeThread, activeThreadRef, centerPanelActions, centerPanelLaunchContext],
+  );
+  const openCenterTerminal = useCallback(
+    (options?: OpenTerminalPanelOptions) => {
+      if (!activeThreadRef || !centerPanelLaunchContext) return;
+      const currentCenterPanelState = selectThreadCenterPanelState(
+        useCenterPanelStore.getState().byThreadKey,
+        activeThreadRef,
+      );
+      const centerTerminalIds = currentCenterPanelState.surfaces.flatMap((surface) =>
+        surface.kind === "terminal" ? [surface.terminalId] : [],
+      );
+      centerPanelActions.openTerminalPanel(
+        activeThreadRef,
+        [...activeKnownTerminalIds, ...centerTerminalIds],
+        options,
+      );
+    },
+    [activeKnownTerminalIds, activeThreadRef, centerPanelActions, centerPanelLaunchContext],
+  );
+  const handleOpenTerminalPanel = useCallback(() => openCenterTerminal(), [openCenterTerminal]);
+  const handleOpenProviderTerminalPanel = useCallback(
+    (action: ProviderTerminalAction) =>
+      openCenterTerminal({ label: action.label, command: action.command }),
+    [openCenterTerminal],
+  );
   const activeThreadBranch =
     canOverrideServerThreadEnvMode && pendingServerThreadBranch !== undefined
       ? pendingServerThreadBranch
@@ -5171,7 +5194,7 @@ function ChatViewContent(props: ChatViewProps) {
               gitCwd={gitCwd}
               providerStatuses={providerStatuses as ServerProvider[]}
               settings={settings}
-              canCreatePanel={activeThreadRef !== null}
+              canCreatePanel={centerPanelLaunchContext !== null}
               onCreateChatPanel={handleCreateChatPanel}
               onOpenTerminalPanel={handleOpenTerminalPanel}
               onOpenProviderTerminalPanel={handleOpenProviderTerminalPanel}
@@ -5404,6 +5427,7 @@ function ChatViewContent(props: ChatViewProps) {
             key={activeCenterSurface.id}
             threadRef={activeThreadRef}
             surface={activeCenterSurface}
+            launchContext={centerTerminalLaunchContext}
             keybindings={keybindings}
             focusRequestId={terminalFocusRequestId}
             onAddTerminalContext={addTerminalContextToDraft}

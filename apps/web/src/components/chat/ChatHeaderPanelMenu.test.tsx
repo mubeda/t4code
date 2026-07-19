@@ -6,6 +6,7 @@ const harness = vi.hoisted(() => ({
   menuItems: [] as Array<Record<string, unknown>>,
   tooltipReasons: [] as string[],
   providerTerminalActionsAvailable: true,
+  providerTerminalActionDisabledReason: null as string | null,
 }));
 
 vi.mock("~/providerInstances", () => ({
@@ -21,11 +22,14 @@ vi.mock("./providerTerminalActions", () => ({
       ? {
           entry,
           label: `${entry.displayName} Terminal`,
-          command: {
-            executable: String(entry.instanceId),
-            args: ["--provider-terminal"],
-            label: `${entry.displayName} Terminal`,
-          },
+          command: harness.providerTerminalActionDisabledReason
+            ? null
+            : {
+                executable: String(entry.instanceId),
+                args: ["--provider-terminal"],
+                label: `${entry.displayName} Terminal`,
+              },
+          disabledReason: harness.providerTerminalActionDisabledReason,
         }
       : null,
 }));
@@ -68,6 +72,7 @@ beforeEach(() => {
   harness.menuItems.length = 0;
   harness.tooltipReasons.length = 0;
   harness.providerTerminalActionsAvailable = true;
+  harness.providerTerminalActionDisabledReason = null;
 });
 
 function panelItem(overrides: Record<string, unknown> = {}) {
@@ -172,6 +177,22 @@ describe("ChatHeaderPanelMenu", () => {
     expect(harness.menuItems).toHaveLength(3);
     (harness.menuItems[0]!.onClick as () => void)();
     expect(props.onCreateChatPanel).toHaveBeenCalledOnce();
+    expect(props.onOpenProviderTerminalPanel).not.toHaveBeenCalled();
+  });
+
+  it("keeps an invalid provider terminal action visible and explains why it is disabled", () => {
+    harness.items = [panelItem()];
+    harness.providerTerminalActionDisabledReason =
+      "Provider terminal command exceeds supported limits. Shorten the provider name or configured binary path.";
+
+    const { markup, props } = render(true);
+
+    expect(markup).toContain("Codex Terminal");
+    expect(harness.menuItems[2]).toMatchObject({ disabled: true });
+    expect(harness.tooltipReasons).toEqual([
+      "Provider terminal command exceeds supported limits. Shorten the provider name or configured binary path.",
+    ]);
+    (harness.menuItems[2]!.onClick as () => void)();
     expect(props.onOpenProviderTerminalPanel).not.toHaveBeenCalled();
   });
 });
