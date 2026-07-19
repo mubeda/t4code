@@ -57,7 +57,7 @@ impl ProvidersState {
             },
             cursor: ProviderBinarySettingsState {
                 enabled: false,
-                binary_path: "agent".to_owned(),
+                binary_path: "cursor-agent".to_owned(),
                 ..ProviderBinarySettingsState::default()
             },
             grok: ProviderBinarySettingsState {
@@ -418,7 +418,11 @@ fn apply_patch(
             providers.claude_agent,
             "claude",
         );
-        apply_provider_patch(&mut current.providers.cursor, providers.cursor, "agent");
+        apply_provider_patch(
+            &mut current.providers.cursor,
+            providers.cursor,
+            "cursor-agent",
+        );
         apply_provider_patch(&mut current.providers.grok, providers.grok, "grok");
         apply_provider_patch(
             &mut current.providers.opencode,
@@ -549,6 +553,11 @@ mod tests {
 
     #[tokio::test]
     async fn filesystem_and_patch_boundaries_cover_settings_failure_contracts() {
+        assert_eq!(
+            ProviderSettingsState::default().providers.cursor.binary_path,
+            "cursor-agent"
+        );
+
         let temporary = tempfile::tempdir().unwrap();
         let unreadable_settings = temporary.path().join("unreadable");
         fs::create_dir_all(unreadable_settings.join("settings.json"))
