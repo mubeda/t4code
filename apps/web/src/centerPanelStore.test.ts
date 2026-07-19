@@ -90,6 +90,25 @@ describe("centerPanelStore", () => {
         terminalId: "term-1",
       });
     });
+
+    it("persists provider label and structured command", () => {
+      const command = {
+        executable: "/opt/codex",
+        args: ["--dangerously-bypass-approvals-and-sandbox"],
+        label: "Codex Terminal",
+      };
+      store().openTerminalPanel(HOST, "term-1", {
+        label: "Codex Terminal",
+        command,
+      });
+      expect(stateOf().surfaces[1]).toEqual({
+        id: "terminal:term-1",
+        kind: "terminal",
+        terminalId: "term-1",
+        label: "Codex Terminal",
+        command,
+      });
+    });
   });
 
   describe("activateSurface", () => {
@@ -344,6 +363,52 @@ describe("centerPanelStore", () => {
       });
       expect(migrated.byThreadKey.malformed).toBeUndefined();
       expect(migrated.byThreadKey["environment-1:host-2"]).toBeUndefined();
+    });
+
+    it("preserves bounded launch metadata and drops malformed commands", () => {
+      const migrated = migratePersistedCenterPanelState({
+        byThreadKey: {
+          valid: {
+            activeSurfaceId: "terminal:term-1",
+            surfaces: [
+              {
+                kind: "terminal",
+                terminalId: "term-1",
+                label: " Codex Terminal ",
+                command: {
+                  executable: " /opt/codex ",
+                  args: ["--dangerously-bypass-approvals-and-sandbox"],
+                  label: " Codex Terminal ",
+                },
+              },
+            ],
+          },
+          invalid: {
+            activeSurfaceId: "terminal:term-2",
+            surfaces: [
+              {
+                kind: "terminal",
+                terminalId: "term-2",
+                command: { executable: " ", args: [] },
+              },
+            ],
+          },
+        },
+      });
+
+      expect(migrated.byThreadKey.valid?.surfaces[1]).toMatchObject({
+        label: "Codex Terminal",
+        command: {
+          executable: "/opt/codex",
+          args: ["--dangerously-bypass-approvals-and-sandbox"],
+          label: "Codex Terminal",
+        },
+      });
+      expect(migrated.byThreadKey.invalid?.surfaces[1]).toEqual({
+        id: "terminal:term-2",
+        kind: "terminal",
+        terminalId: "term-2",
+      });
     });
 
     it("returns null when an active surface id has no matching surface", () => {

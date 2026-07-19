@@ -17,7 +17,15 @@
  * Wave C task body) so exhaustive switches over the surface union stay clean.
  */
 import { scopedThreadKey } from "@t4code/client-runtime/environment";
-import type { ScopedThreadRef, ThreadId } from "@t4code/contracts";
+import {
+  TERMINAL_LAUNCH_ARGUMENT_MAX_COUNT,
+  TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH,
+  TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH,
+  TERMINAL_LAUNCH_LABEL_MAX_LENGTH,
+  type ScopedThreadRef,
+  type TerminalLaunchCommand,
+  type ThreadId,
+} from "@t4code/contracts";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
@@ -31,12 +39,23 @@ export type CenterPanelKind = (typeof CENTER_PANEL_KINDS)[number];
 export type CenterSurface =
   | { id: typeof HOST_SURFACE_ID; kind: "chat-host" }
   | { id: `chat:${string}`; kind: "chat"; threadId: ThreadId; providerLabel?: string }
-  | { id: `terminal:${string}`; kind: "terminal"; terminalId: string };
+  | {
+      id: `terminal:${string}`;
+      kind: "terminal";
+      terminalId: string;
+      label?: string;
+      command?: TerminalLaunchCommand;
+    };
+
+export interface OpenTerminalPanelOptions {
+  readonly label?: string;
+  readonly command?: TerminalLaunchCommand;
+}
 
 const HOST_SURFACE: CenterSurface = { id: HOST_SURFACE_ID, kind: "chat-host" };
 
 const CENTER_PANEL_STORAGE_KEY = "t4code:center-panel-state:v1";
-const CENTER_PANEL_STORAGE_VERSION = 1;
+const CENTER_PANEL_STORAGE_VERSION = 2;
 
 export interface ThreadCenterPanelState {
   activeSurfaceId: string | null;
@@ -46,7 +65,11 @@ export interface ThreadCenterPanelState {
 interface CenterPanelStoreState {
   byThreadKey: Record<string, ThreadCenterPanelState>;
   openChatPanel: (ref: ScopedThreadRef, threadId: ThreadId, providerLabel?: string) => void;
-  openTerminalPanel: (ref: ScopedThreadRef, terminalId: string) => void;
+  openTerminalPanel: (
+    ref: ScopedThreadRef,
+    terminalId: string,
+    options?: OpenTerminalPanelOptions,
+  ) => void;
   activateSurface: (ref: ScopedThreadRef, surfaceId: string) => void;
   closeSurface: (ref: ScopedThreadRef, surfaceId: string) => void;
   closeOtherSurfaces: (ref: ScopedThreadRef, surfaceId: string) => void;
@@ -69,11 +92,49 @@ const chatSurface = (threadId: ThreadId, providerLabel?: string): CenterSurface 
   ...(providerLabel !== undefined ? { providerLabel } : {}),
 });
 
-const terminalSurface = (terminalId: string): CenterSurface => ({
+const terminalSurface = (
+  terminalId: string,
+  options?: OpenTerminalPanelOptions,
+): CenterSurface => ({
   id: `terminal:${terminalId}`,
   kind: "terminal",
   terminalId,
+  ...(options?.label !== undefined ? { label: options.label } : {}),
+  ...(options?.command !== undefined ? { command: options.command } : {}),
 });
+
+function boundedTrimmed(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed.length <= maxLength ? trimmed : undefined;
+}
+
+function sanitizeCommand(value: unknown): TerminalLaunchCommand | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as Record<string, unknown>;
+  const executable = boundedTrimmed(candidate.executable, TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH);
+  const args = candidate.args;
+  if (!executable || !Array.isArray(args)) return undefined;
+  if (args.length > TERMINAL_LAUNCH_ARGUMENT_MAX_COUNT) return undefined;
+  if (
+    !args.every(
+      (argument) =>
+        typeof argument === "string" && argument.length <= TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH,
+    )
+  ) {
+    return undefined;
+  }
+  const label =
+    candidate.label === undefined
+      ? undefined
+      : boundedTrimmed(candidate.label, TERMINAL_LAUNCH_LABEL_MAX_LENGTH);
+  if (candidate.label !== undefined && !label) return undefined;
+  return {
+    executable,
+    args: [...args],
+    ...(label ? { label } : {}),
+  };
+}
 
 // Guarantee the host surface sits at index 0 exactly once and drop duplicate
 // ids. Runtime actions never move the host, but migrate() relies on this to
@@ -141,9 +202,17 @@ const sanitizeSurface = (surface: unknown): CenterSurface[] => {
     ];
   }
   if (kind === "terminal") {
-    const terminalId = (surface as { terminalId?: unknown }).terminalId;
+    const candidate = surface as Record<string, unknown>;
+    const terminalId = candidate.terminalId;
     if (typeof terminalId !== "string") return [];
-    return [terminalSurface(terminalId)];
+    const label = boundedTrimmed(candidate.label, TERMINAL_LAUNCH_LABEL_MAX_LENGTH);
+    const command = sanitizeCommand(candidate.command);
+    return [
+      terminalSurface(terminalId, {
+        ...(label ? { label } : {}),
+        ...(command ? { command } : {}),
+      }),
+    ];
   }
   return [];
 };
@@ -190,10 +259,10 @@ export const useCenterPanelStore = create<CenterPanelStoreState>()(
             upsertSurface(current, chatSurface(threadId, providerLabel)),
           ),
         })),
-      openTerminalPanel: (ref, terminalId) =>
+      openTerminalPanel: (ref, terminalId, options) =>
         set((state) => ({
           byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) =>
-            upsertSurface(current, terminalSurface(terminalId)),
+            upsertSurface(current, terminalSurface(terminalId, options)),
           ),
         })),
       activateSurface: (ref, surfaceId) =>
