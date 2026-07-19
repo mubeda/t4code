@@ -253,6 +253,9 @@ import {
   resolveServerConfigVersionMismatch,
 } from "../versionSkew";
 import { useAssetUrls } from "../assets/assetUrls";
+import type { FileCommentAnnotationGroup } from "./files/fileCommentAnnotations";
+import type { FileEditingSession } from "./files/fileEditingSession";
+import { FileEditingSessionRegistry } from "./files/fileEditingSessionRegistry";
 
 const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
@@ -1470,6 +1473,28 @@ function ChatViewContent(props: ChatViewProps) {
   const activeProjectKey = activeProject
     ? `${activeProject.environmentId}:${activeProject.workspaceRoot}`
     : null;
+  const fileEditingSessions = useMemo(
+    () => new FileEditingSessionRegistry<FileEditingSession<FileCommentAnnotationGroup>>(),
+    [activeProjectKey, activeThreadKey],
+  );
+  const openFileRelativePaths = useMemo(
+    () =>
+      rightPanelState.surfaces.flatMap((surface) =>
+        surface.kind === "file" ? [surface.relativePath] : [],
+      ),
+    [rightPanelState.surfaces],
+  );
+
+  useEffect(() => {
+    void fileEditingSessions.reconcile(openFileRelativePaths);
+  }, [fileEditingSessions, openFileRelativePaths]);
+
+  useEffect(
+    () => () => {
+      void fileEditingSessions.dispose();
+    },
+    [fileEditingSessions],
+  );
   const [pendingFileSurfaceIdsByProject, setPendingFileSurfaceIdsByProject] = useState<
     ReadonlyMap<string, ReadonlySet<string>>
   >(() => new Map());
@@ -5046,6 +5071,7 @@ function ChatViewContent(props: ChatViewProps) {
           revealRequestId={activeFileSurface?.revealRequestId ?? 0}
           onOpenFile={openFileSurface}
           onPendingChange={handleFilePendingChange}
+          editingSessions={fileEditingSessions}
         />
       </Suspense>
     ) : null

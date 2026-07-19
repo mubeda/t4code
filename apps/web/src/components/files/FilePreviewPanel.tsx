@@ -673,12 +673,6 @@ export default function FilePreviewPanel({
     revealRequestId: number | null;
   }>({ path: null, revealRequestId: null });
   const breadcrumbRef = useRef<HTMLDivElement>(null);
-  const handleBeforePathMutation = useCallback(
-    async (mutationPath: string) => {
-      await editingSessions.preparePathMutation(mutationPath);
-    },
-    [editingSessions],
-  );
   const isMarkdown = relativePath ? isMarkdownPreviewFile(relativePath) : false;
   const renderMarkdownSource =
     isMarkdown && (markdownSourceView.path === relativePath || revealLine !== null);
@@ -952,7 +946,11 @@ export default function FilePreviewPanel({
               threadRef={threadRef}
               availableEditors={availableEditors}
               onOpenFile={onOpenFile}
-              onBeforePathMutation={handleBeforePathMutation}
+              onBeforePathMutation={(mutationPath) =>
+                editingSessions.preparePathMutation(mutationPath)
+              }
+              onPathRenamed={(from, to) => editingSessions.remapUnder(from, to)}
+              onPathDeleted={(deletedPath) => editingSessions.removeUnder(deletedPath)}
             />
           </aside>
         ) : null}

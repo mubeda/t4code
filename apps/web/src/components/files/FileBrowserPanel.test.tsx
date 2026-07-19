@@ -287,7 +287,7 @@ function baseProps(overrides: Partial<PanelProps> = {}): PanelProps {
     threadRef,
     availableEditors: [] as ReadonlyArray<EditorId>,
     onOpenFile: vi.fn(),
-    onBeforePathMutation: vi.fn(async () => {}),
+    onBeforePathMutation: vi.fn(async () => true),
     ...overrides,
   };
 }
@@ -674,10 +674,11 @@ describe("rename entry", () => {
       _tag: "Success",
       value: { relativePath: "src/renamed.ts" },
     };
-    const onBeforePathMutation = vi.fn(async () => {});
+    const onBeforePathMutation = vi.fn(async () => true);
+    const onPathRenamed = vi.fn();
     const refresh = vi.fn();
     testState.entriesQuery.refresh = refresh;
-    renderPanel(baseProps({ onBeforePathMutation }));
+    renderPanel(baseProps({ onBeforePathMutation, onPathRenamed }));
 
     rowActionsFor("src/app.ts", "file").onRename();
     const request = lastDialogRequest();
@@ -701,7 +702,24 @@ describe("rename entry", () => {
       "src/app.ts",
       "src/renamed.ts",
     );
+    expect(onPathRenamed).toHaveBeenCalledWith("src/app.ts", "src/renamed.ts");
+    expect(onPathRenamed.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(testState.remapFileSurfaces).mock.invocationCallOrder[0]!,
+    );
     expect(refresh).toHaveBeenCalled();
+  });
+
+  it("aborts rename when pending edits cannot settle", async () => {
+    const onBeforePathMutation = vi.fn(async () => false);
+    const onPathRenamed = vi.fn();
+    renderPanel(baseProps({ onBeforePathMutation, onPathRenamed }));
+
+    rowActionsFor("src/app.ts", "file").onRename();
+    (lastDialogRequest()["onSubmit"] as (name: string) => void)("renamed.ts");
+    await flushPromises();
+
+    expect(testState.commandCalls.some((call) => call.label === "renameEntry")).toBe(false);
+    expect(onPathRenamed).not.toHaveBeenCalled();
   });
 
   it("does nothing when the name is unchanged", async () => {
@@ -729,10 +747,11 @@ describe("delete entry", () => {
   it("deletes a file behind a confirm and closes its surfaces", async () => {
     setEntries([entry("src/app.ts", "file")]);
     testState.commandResults["deleteEntry"] = { _tag: "Success", value: {} };
-    const onBeforePathMutation = vi.fn(async () => {});
+    const onBeforePathMutation = vi.fn(async () => true);
+    const onPathDeleted = vi.fn();
     const refresh = vi.fn();
     testState.entriesQuery.refresh = refresh;
-    renderPanel(baseProps({ onBeforePathMutation }));
+    renderPanel(baseProps({ onBeforePathMutation, onPathDeleted }));
 
     rowActionsFor("src/app.ts", "file").onDelete();
     const request = lastDialogRequest();
@@ -743,8 +762,26 @@ describe("delete entry", () => {
     await flushPromises();
 
     expect(onBeforePathMutation).toHaveBeenCalledWith("src/app.ts");
+    expect(onPathDeleted).toHaveBeenCalledWith("src/app.ts");
+    expect(onPathDeleted.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(testState.closeFileSurfacesUnder).mock.invocationCallOrder[0]!,
+    );
     expect(testState.closeFileSurfacesUnder).toHaveBeenCalledWith(threadRef, "src/app.ts");
     expect(refresh).toHaveBeenCalled();
+  });
+
+  it("aborts delete when pending edits cannot settle", async () => {
+    setEntries([entry("src/app.ts", "file")]);
+    const onBeforePathMutation = vi.fn(async () => false);
+    const onPathDeleted = vi.fn();
+    renderPanel(baseProps({ onBeforePathMutation, onPathDeleted }));
+
+    rowActionsFor("src/app.ts", "file").onDelete();
+    (lastDialogRequest()["onConfirm"] as () => void)();
+    await flushPromises();
+
+    expect(testState.commandCalls.some((call) => call.label === "deleteEntry")).toBe(false);
+    expect(onPathDeleted).not.toHaveBeenCalled();
   });
 
   it("uses folder wording for directories and reports failures", async () => {
@@ -776,7 +813,7 @@ describe("duplicate entry", () => {
       value: { relativePath: "src/app copy.ts" },
     };
     const onOpenFile = vi.fn();
-    const onBeforePathMutation = vi.fn(async () => {});
+    const onBeforePathMutation = vi.fn(async () => true);
     renderPanel(baseProps({ onOpenFile, onBeforePathMutation }));
 
     rowActionsFor("src/app.ts", "file").onDuplicate();
@@ -784,6 +821,18 @@ describe("duplicate entry", () => {
 
     expect(onBeforePathMutation).toHaveBeenCalledWith("src/app.ts");
     expect(onOpenFile).toHaveBeenCalledWith("src/app copy.ts");
+  });
+
+  it("aborts duplicate when pending edits cannot settle", async () => {
+    const onBeforePathMutation = vi.fn(async () => false);
+    const onOpenFile = vi.fn();
+    renderPanel(baseProps({ onBeforePathMutation, onOpenFile }));
+
+    rowActionsFor("src/app.ts", "file").onDuplicate();
+    await flushPromises();
+
+    expect(testState.commandCalls.some((call) => call.label === "duplicateEntry")).toBe(false);
+    expect(onOpenFile).not.toHaveBeenCalled();
   });
 
   it("reports duplicate failures", async () => {

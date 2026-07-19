@@ -93,6 +93,7 @@ const testState = vi.hoisted(() => {
       subscribe: (listener: () => void) => () => void;
       getSnapshot: () => unknown;
       flush: ReturnType<typeof vi.fn>;
+      settle: ReturnType<typeof vi.fn>;
       undo: ReturnType<typeof vi.fn>;
       redo: ReturnType<typeof vi.fn>;
       setEditorChangeHandler: ReturnType<typeof vi.fn>;
@@ -187,14 +188,14 @@ const testState = vi.hoisted(() => {
       return session;
     }),
     preparePathMutation: vi.fn(async (relativePath: string) => {
-      await Promise.all(
+      const results = await Promise.all(
         [...sessions.entries()]
           .filter(
             ([candidate]) => candidate === relativePath || candidate.startsWith(`${relativePath}/`),
           )
-          .map(([, session]) => session.flush()),
+          .map(([, session]) => session.settle()),
       );
-      return true;
+      return results.every((result) => result !== "failed");
     }),
   };
   state.editingSessions.reset = () => {
@@ -1556,26 +1557,26 @@ describe("effects wiring", () => {
     expect(surface.listeners.has("keydown")).toBe(false);
   });
 
-  it("flushes pending saves before path mutations that affect the open file", async () => {
+  it("settles exact and descendant sessions and propagates preparation failure", async () => {
     renderWithEffects();
-    const cleanups = harness.runEffects();
-    const coordinator = testState.coordinators[testState.coordinators.length - 1]!;
+    const exactCoordinator = testState.coordinators[testState.coordinators.length - 1]!;
+    renderPanel(baseProps({ relativePath: "src/nested/child.ts" }));
+    const descendantCoordinator = testState.coordinators[testState.coordinators.length - 1]!;
     const browser = ui.find("FileBrowserPanel");
-    const onBeforePathMutation = browser.onBeforePathMutation as (path: string) => Promise<void>;
+    const onBeforePathMutation = browser.onBeforePathMutation as (path: string) => Promise<boolean>;
 
-    await onBeforePathMutation("src/app.ts");
-    expect(coordinator.flush).toHaveBeenCalledTimes(1);
+    await expect(onBeforePathMutation("src/app.ts")).resolves.toBe(true);
+    expect(exactCoordinator.settle).toHaveBeenCalledTimes(1);
+    expect(descendantCoordinator.settle).not.toHaveBeenCalled();
 
-    await onBeforePathMutation("src");
-    expect(coordinator.flush).toHaveBeenCalledTimes(2);
+    descendantCoordinator.settle.mockResolvedValueOnce("failed");
+    await expect(onBeforePathMutation("src")).resolves.toBe(false);
+    expect(exactCoordinator.settle).toHaveBeenCalledTimes(2);
+    expect(descendantCoordinator.settle).toHaveBeenCalledTimes(1);
 
-    await onBeforePathMutation("docs/readme.md");
-    expect(coordinator.flush).toHaveBeenCalledTimes(2);
-
-    // The registry retains the session after the active surface unmounts.
-    for (const cleanup of cleanups) cleanup();
-    await onBeforePathMutation("src/app.ts");
-    expect(coordinator.flush).toHaveBeenCalledTimes(3);
-    expect(testState.editingSessions.preparePathMutation).toHaveBeenCalledTimes(4);
+    await expect(onBeforePathMutation("docs/readme.md")).resolves.toBe(true);
+    expect(exactCoordinator.settle).toHaveBeenCalledTimes(2);
+    expect(descendantCoordinator.settle).toHaveBeenCalledTimes(1);
+    expect(testState.editingSessions.preparePathMutation).toHaveBeenCalledTimes(3);
   });
 });
