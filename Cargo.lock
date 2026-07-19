@@ -4879,6 +4879,7 @@ dependencies = [
  "hmac",
  "httpdate",
  "junction",
+ "libc",
  "mime_guess",
  "open",
  "p256",

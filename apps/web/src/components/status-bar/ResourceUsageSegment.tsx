@@ -8,6 +8,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import {
   buildResourceSummaryViewModel,
   buildResourceTopProcessViewModel,
+  selectCurrentTopProcesses,
 } from "./statusBarPresentation";
 
 export function ResourceUsageSegment({
@@ -22,6 +23,7 @@ export function ResourceUsageSegment({
   iconOnly: boolean;
 }) {
   const summary = buildResourceSummaryViewModel({ diagnostics, resourceHistory, terminalCount });
+  const topProcesses = selectCurrentTopProcesses(diagnostics?.processes ?? []).slice(0, 5);
   const label = `T4Code native process resources, ${summary.memoryLabel}, ${summary.terminalCountLabel} terminals`;
   return (
     <Popover>
@@ -73,7 +75,7 @@ export function ResourceUsageSegment({
               <CpuIcon className="size-3" />
               <span>Top processes</span>
             </div>
-            {(resourceHistory?.processes ?? []).slice(0, 5).map((process) => {
+            {topProcesses.map((process) => {
               const processView = buildResourceTopProcessViewModel(process);
               return (
                 <div
@@ -85,7 +87,7 @@ export function ResourceUsageSegment({
                 </div>
               );
             })}
-            {resourceHistory && resourceHistory.processes.length === 0 ? (
+            {diagnostics && diagnostics.processes.length === 0 ? (
               <div className="text-muted-foreground">No process samples yet.</div>
             ) : null}
           </div>

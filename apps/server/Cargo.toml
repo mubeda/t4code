@@ -52,6 +52,9 @@ tempfile.workspace = true
 tokio-tungstenite.workspace = true
 tower.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 junction.workspace = true
 windows = { workspace = true, features = ["Win32_System_Threading"] }

@@ -385,6 +385,7 @@ mod tests {
         samples: AtomicUsize,
         signals: Mutex<Vec<(ProcessIdentity, ProcessSignal)>>,
         signal_supported: AtomicBool,
+        replacement_before_signal: Mutex<Option<ProcessIdentity>>,
     }
 
     impl FakeNativeProcessRowSource {
@@ -394,7 +395,15 @@ mod tests {
                 samples: AtomicUsize::new(0),
                 signals: Mutex::new(Vec::new()),
                 signal_supported: AtomicBool::new(true),
+                replacement_before_signal: Mutex::new(None),
             }
+        }
+
+        fn replace_identity_before_signal(&self, replacement: ProcessIdentity) {
+            *self
+                .replacement_before_signal
+                .lock()
+                .expect("replacement identity") = Some(replacement);
         }
     }
 
@@ -416,6 +425,15 @@ mod tests {
         ) -> Result<(), SignalError> {
             if !self.signal_supported.load(Ordering::SeqCst) {
                 return Err(SignalError::Unsupported);
+            }
+            if let Some(replacement) = self
+                .replacement_before_signal
+                .lock()
+                .expect("replacement identity")
+                .take()
+                && replacement != expected_identity
+            {
+                return Err(SignalError::StaleIdentity(expected_identity.pid));
             }
             self.signals
                 .lock()
@@ -858,5 +876,49 @@ mod tests {
                 .await,
             Err(SignalError::Unsupported)
         ));
+    }
+
+    #[tokio::test]
+    async fn signal_revalidation_rejects_replacement_after_attribution() {
+        let server_pid = std::process::id();
+        let target_pid = server_pid + 1;
+        let target_identity = identity(target_pid, 200);
+        let replacement_identity = identity(target_pid, 201);
+        let registry = ProcessAttributionRegistry::new();
+        let _registration = registry
+            .register_pid(
+                target_pid,
+                ProcessRegistrationMetadata {
+                    scope: AttributionScope::External,
+                    kind: AttributionKind::Provider,
+                    label: "Codex".to_owned(),
+                    source: RegistrationSource::Provider,
+                },
+            )
+            .expect("external registration");
+        let (sampler, native) = sampler_with_registry(
+            vec![
+                row(server_pid, 1, 100),
+                row(target_pid, server_pid, target_identity.started_at),
+            ],
+            FakeObservation::Return(DesktopUiObservation {
+                identities: Vec::new(),
+                coverage: UiCoverage {
+                    status: UiCoverageStatus::NotApplicable,
+                    message: None,
+                },
+            }),
+            registry,
+        );
+        native.replace_identity_before_signal(replacement_identity);
+
+        assert!(matches!(
+            sampler
+                .signal_external_descendant(target_identity, ProcessSignal::Kill)
+                .await,
+            Err(SignalError::StaleIdentity(pid)) if pid == target_pid
+        ));
+        assert_eq!(native.samples.load(Ordering::SeqCst), 1);
+        assert!(native.signals.lock().expect("signals").is_empty());
     }
 }
