@@ -3,6 +3,10 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   DEFAULT_TERMINAL_ID,
+  TERMINAL_LAUNCH_ARGUMENT_MAX_COUNT,
+  TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH,
+  TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH,
+  TERMINAL_LAUNCH_LABEL_MAX_LENGTH,
   TerminalAttachInput,
   TerminalAttachStreamEvent,
   TerminalClearInput,
@@ -13,6 +17,7 @@ import {
   TerminalError,
   TerminalEvent,
   TerminalHistoryError,
+  TerminalLaunchCommand,
   TerminalNotRunningError,
   TerminalOpenInput,
   TerminalResizeError,
@@ -151,6 +156,89 @@ describe("TerminalAttachInput", () => {
     });
 
     expect(parsed.restartIfNotRunning).toBe(true);
+  });
+});
+
+describe("TerminalLaunchCommand", () => {
+  const command = {
+    executable: "/Applications/Cursor Agent/cursor-agent",
+    args: ["--yolo"],
+    label: "Cursor Terminal",
+  };
+
+  it("round-trips on open, attach, and restart inputs", () => {
+    for (const [schema, input] of [
+      [
+        TerminalOpenInput,
+        {
+          threadId: "thread-1",
+          terminalId: "term-1",
+          cwd: "/tmp/project",
+          command,
+        },
+      ],
+      [
+        TerminalAttachInput,
+        {
+          threadId: "thread-1",
+          terminalId: "term-1",
+          cwd: "/tmp/project",
+          command,
+        },
+      ],
+      [
+        TerminalRestartInput,
+        {
+          threadId: "thread-1",
+          terminalId: "term-1",
+          cwd: "/tmp/project",
+          cols: 120,
+          rows: 30,
+          command,
+        },
+      ],
+    ] as const) {
+      expect(decodeSync(schema, input).command).toEqual(command);
+    }
+  });
+
+  it("keeps legacy shell payloads valid", () => {
+    expect(
+      decodeSync(TerminalOpenInput, {
+        threadId: "thread-1",
+        terminalId: "term-1",
+        cwd: "/tmp/project",
+      }).command,
+    ).toBeUndefined();
+  });
+
+  it("rejects invalid executable, argument, count, and label bounds", () => {
+    expect(() => decodeSync(TerminalLaunchCommand, { executable: " ", args: [] })).toThrow();
+    expect(() =>
+      decodeSync(TerminalLaunchCommand, {
+        executable: "x".repeat(TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH + 1),
+        args: [],
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeSync(TerminalLaunchCommand, {
+        executable: "codex",
+        args: ["x".repeat(TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH + 1)],
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeSync(TerminalLaunchCommand, {
+        executable: "codex",
+        args: Array.from({ length: TERMINAL_LAUNCH_ARGUMENT_MAX_COUNT + 1 }, () => "x"),
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeSync(TerminalLaunchCommand, {
+        executable: "codex",
+        args: [],
+        label: "x".repeat(TERMINAL_LAUNCH_LABEL_MAX_LENGTH + 1),
+      }),
+    ).toThrow();
   });
 });
 
