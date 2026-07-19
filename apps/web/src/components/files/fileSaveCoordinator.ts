@@ -31,6 +31,7 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
   private persistedRevision = 0;
   private lastChangeAt = 0;
   private inFlight: Promise<boolean> | null = null;
+  private savingPaused = false;
   private disposed = false;
   private snapshot: FileSaveSnapshot = CLEAN_FILE_SAVE_SNAPSHOT;
   private readonly listeners = new Set<() => void>();
@@ -52,7 +53,7 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
     this.lastChangeAt = Date.now();
     this.options.onPendingChange(true);
     this.publish("pending");
-    this.schedule(this.options.debounceMs);
+    if (!this.savingPaused) this.schedule(this.options.debounceMs);
   }
 
   dispose(): void {
@@ -61,12 +62,34 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
     // Only unsaved edits get a farewell write. An unconditional write here
     // resurrects the old path when the surface unmounts because the file was
     // just renamed or deleted out from under it.
-    if (this.latestRevision > this.persistedRevision) void this.persistLatest();
+    if (!this.savingPaused && this.latestRevision > this.persistedRevision) {
+      void this.persistLatest();
+    }
   }
 
   /** True while a debounced write is scheduled or an immediate write is in flight. */
   hasPendingWork(): boolean {
-    return this.timer !== null || this.inFlight !== null;
+    return this.latestRevision !== this.persistedRevision || this.inFlight !== null;
+  }
+
+  pauseSaving(): void {
+    this.savingPaused = true;
+    this.clearTimer();
+  }
+
+  resumeSaving(): void {
+    if (!this.savingPaused) return;
+    this.savingPaused = false;
+    if (this.latestRevision !== this.persistedRevision) {
+      this.schedule(this.options.debounceMs);
+    }
+  }
+
+  discardPendingSave(): void {
+    this.clearTimer();
+    this.latestRevision = this.persistedRevision;
+    this.options.onPendingChange(false);
+    this.publish("clean");
   }
 
   /**
@@ -76,6 +99,7 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
    * (and its reschedule) settles the remaining edits on its own.
    */
   async flush(): Promise<FileSaveFlushResult> {
+    if (this.savingPaused) return "saving";
     if (this.inFlight !== null) return "saving";
     if (this.latestRevision === this.persistedRevision) return "unchanged";
     this.clearTimer();
@@ -83,6 +107,9 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
   }
 
   async settle(): Promise<FileSaveSettleResult> {
+    if (this.savingPaused) {
+      return this.latestRevision === this.persistedRevision ? "unchanged" : "failed";
+    }
     const hadUnsavedChanges = this.latestRevision !== this.persistedRevision;
     this.clearTimer();
 
@@ -116,7 +143,11 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
   }
 
   private persistLatest(): Promise<boolean> {
-    if (this.inFlight !== null || this.latestRevision === this.persistedRevision) {
+    if (
+      this.savingPaused ||
+      this.inFlight !== null ||
+      this.latestRevision === this.persistedRevision
+    ) {
       return Promise.resolve(false);
     }
 

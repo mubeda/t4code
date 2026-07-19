@@ -125,6 +125,18 @@ export class FileEditingSession<LAnnotation, A = unknown, E = unknown> {
     return this.coordinator.settle();
   }
 
+  pauseSaving(): void {
+    this.coordinator.pauseSaving();
+  }
+
+  resumeSaving(): void {
+    this.coordinator.resumeSaving();
+  }
+
+  discardPendingSave(): void {
+    this.coordinator.discardPendingSave();
+  }
+
   undo(): void {
     if (!this.editor.canUndo) return;
     this.editor.undo();

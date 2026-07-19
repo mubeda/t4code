@@ -946,11 +946,9 @@ export default function FilePreviewPanel({
               threadRef={threadRef}
               availableEditors={availableEditors}
               onOpenFile={onOpenFile}
-              onBeforePathMutation={(mutationPath) =>
-                editingSessions.preparePathMutation(mutationPath)
+              onBeginPathMutation={(mutationPath) =>
+                editingSessions.beginPathMutation(mutationPath)
               }
-              onPathRenamed={(from, to) => editingSessions.remapUnder(from, to)}
-              onPathDeleted={(deletedPath) => editingSessions.removeUnder(deletedPath)}
             />
           </aside>
         ) : null}
