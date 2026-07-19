@@ -535,7 +535,7 @@ import ChatView, {
 import type { ChatMessage, Project, Thread } from "../types";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useRightPanelStore, type RightPanelSurface } from "../rightPanelStore";
-import { useCenterPanelStore } from "../centerPanelStore";
+import { HOST_SURFACE_ID, useCenterPanelStore } from "../centerPanelStore";
 import { useTerminalUiStateStore } from "../terminalUiStateStore";
 import { useUiStateStore } from "../uiStateStore";
 import { useDiffPanelStore } from "../diffPanelStore";
@@ -786,6 +786,23 @@ function runEffects(): Array<() => void> {
 
 function commandCallsFor(key: string): Array<{ key: string; input: unknown }> {
   return h.commandCalls.filter((call) => call.key === key);
+}
+
+function closedTerminalIds(): string[] {
+  return commandCallsFor("terminal.close").map((call) => {
+    const command = call.input as {
+      environmentId: EnvironmentId;
+      input: {
+        threadId: ThreadId;
+        terminalId: string;
+        deleteHistory: boolean;
+      };
+    };
+    expect(command.environmentId).toBe(environmentId);
+    expect(command.input.threadId).toBe(threadId);
+    expect(command.input.deleteHistory).toBe(true);
+    return command.input.terminalId;
+  });
 }
 
 function composerHandle(overrides: Partial<ChatComposerHandle> = {}): ChatComposerHandle {
@@ -3505,7 +3522,7 @@ describe("ChatView banners and dialogs", () => {
     expect(draft?.interactionMode).toBe("plan");
   });
 
-  it("center panel tabs activate and close center surfaces", () => {
+  it("closes a center terminal session when its tab is closed", () => {
     seedConnectedServerThread();
     useCenterPanelStore.getState().openTerminalPanel(threadRef, "terminal-42");
     publishSeededStoreState(useCenterPanelStore);
@@ -3522,5 +3539,104 @@ describe("ChatView banners and dialogs", () => {
         .getState()
         .byThreadKey[threadKey]?.surfaces.some((surface) => surface.kind === "terminal") ?? false,
     ).toBe(false);
+    expect(closedTerminalIds()).toEqual(["terminal-42"]);
+  });
+
+  it("closes a center terminal session from the panel close control", () => {
+    seedConnectedServerThread();
+    useCenterPanelStore.getState().openTerminalPanel(threadRef, "terminal-panel");
+    publishSeededStoreState(useCenterPanelStore);
+    renderServerRoute();
+
+    const panel = capturedProps("centerTerminalPanel");
+    (panel["onClose"] as () => void)();
+
+    expect(closedTerminalIds()).toEqual(["terminal-panel"]);
+    expect(
+      useCenterPanelStore
+        .getState()
+        .byThreadKey[threadKey]?.surfaces.some((surface) => surface.id === "terminal:terminal-panel") ??
+        false,
+    ).toBe(false);
+  });
+
+  it("closes only removed center terminals when closing other surfaces", () => {
+    seedConnectedServerThread();
+    for (const terminalId of ["terminal-left", "terminal-kept", "terminal-right"]) {
+      useCenterPanelStore.getState().openTerminalPanel(threadRef, terminalId);
+    }
+    publishSeededStoreState(useCenterPanelStore);
+    renderServerRoute();
+
+    const tabs = capturedProps("centerPanelTabs");
+    const kept = useCenterPanelStore
+      .getState()
+      .byThreadKey[threadKey]!.surfaces.find(
+        (surface) => surface.id === "terminal:terminal-kept",
+      )!;
+    (tabs["onCloseOtherSurfaces"] as (surface: typeof kept) => void)(kept);
+
+    expect(closedTerminalIds()).toEqual(["terminal-left", "terminal-right"]);
+    expect(
+      useCenterPanelStore
+        .getState()
+        .byThreadKey[threadKey]?.surfaces.map((surface) => surface.id),
+    ).toEqual([HOST_SURFACE_ID, "terminal:terminal-kept"]);
+  });
+
+  it("closes only center terminals to the right of the selected surface", () => {
+    seedConnectedServerThread();
+    for (const terminalId of ["terminal-left", "terminal-middle", "terminal-right"]) {
+      useCenterPanelStore.getState().openTerminalPanel(threadRef, terminalId);
+    }
+    publishSeededStoreState(useCenterPanelStore);
+    renderServerRoute();
+
+    const tabs = capturedProps("centerPanelTabs");
+    const selected = useCenterPanelStore
+      .getState()
+      .byThreadKey[threadKey]!.surfaces.find(
+        (surface) => surface.id === "terminal:terminal-left",
+      )!;
+    (tabs["onCloseSurfacesToRight"] as (surface: typeof selected) => void)(selected);
+
+    expect(closedTerminalIds()).toEqual(["terminal-middle", "terminal-right"]);
+    expect(
+      useCenterPanelStore
+        .getState()
+        .byThreadKey[threadKey]?.surfaces.map((surface) => surface.id),
+    ).toEqual([HOST_SURFACE_ID, "terminal:terminal-left"]);
+  });
+
+  it("closes every center terminal when closing all surfaces", () => {
+    seedConnectedServerThread();
+    for (const terminalId of ["terminal-one", "terminal-two"]) {
+      useCenterPanelStore.getState().openTerminalPanel(threadRef, terminalId);
+    }
+    publishSeededStoreState(useCenterPanelStore);
+    renderServerRoute();
+
+    const tabs = capturedProps("centerPanelTabs");
+    (tabs["onCloseAllSurfaces"] as () => void)();
+
+    expect(closedTerminalIds()).toEqual(["terminal-one", "terminal-two"]);
+    expect(useCenterPanelStore.getState().byThreadKey[threadKey]?.surfaces ?? []).toEqual([]);
+  });
+
+  it("does not close a terminal when dismissing a center chat surface", () => {
+    seedConnectedServerThread();
+    const siblingThreadId = ThreadId.make("center-chat-only");
+    useCenterPanelStore.getState().openChatPanel(threadRef, siblingThreadId, "Codex");
+    publishSeededStoreState(useCenterPanelStore);
+    renderServerRoute();
+
+    const tabs = capturedProps("centerPanelTabs");
+    const chatSurface = useCenterPanelStore
+      .getState()
+      .byThreadKey[threadKey]!.surfaces.find((surface) => surface.kind === "chat")!;
+    (tabs["onCloseSurface"] as (surface: typeof chatSurface) => void)(chatSurface);
+
+    expect(commandCallsFor("terminal.close")).toHaveLength(0);
+    expect(commandCallsFor("thread.delete")).toHaveLength(1);
   });
 });
