@@ -9,8 +9,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     cloud::{RelayClientInstallEvent, RelayClientService, RelayClientStatus},
     diagnostics::{
-        AttributionKind, CurrentProcessDiagnostics, DiagnosticsMonitor, NativeProcessSampler,
-        NativeResourceSampler, ProcessResourceHistory, ProcessSignal, build_process_tree_entries,
+        CurrentProcessDiagnostics, DiagnosticsMonitor, NativeProcessSampler, NativeResourceSampler,
+        ProcessResourceHistory, ProcessSignal, build_process_tree_entries,
     },
     production::orchestration_effects::SetupScriptLaunch,
     provider_usage::{
@@ -663,37 +663,26 @@ fn process_diagnostics_to_wire(current: CurrentProcessDiagnostics) -> Value {
 }
 
 fn resource_history_to_wire(history: ProcessResourceHistory) -> Value {
-    let latest_sampled_at_ms = history.latest_sampled_at_ms;
-    let mut top_processes = history
-        .processes
-        .into_iter()
-        .filter(|process| Some(process.last_seen_at_ms) == latest_sampled_at_ms)
-        .collect::<Vec<_>>();
-    top_processes.sort_by(|left, right| {
-        right
-            .cpu_seconds_approx
-            .total_cmp(&left.cpu_seconds_approx)
-            .then_with(|| left.process_key.cmp(&right.process_key))
-    });
+    let legacy = history.legacy;
 
     json!({
         "readAt": format_epoch_ms(history.read_at_ms),
         "windowMs": history.window_ms,
         "bucketMs": history.bucket_ms,
         "sampleIntervalMs": history.sample_interval_ms,
-        "retainedSampleCount": history.retained_sample_count,
-        "totalCpuSecondsApprox": history.total_cpu_seconds_approx.combined,
-        "buckets": history.buckets.into_iter().map(|bucket| json!({
+        "retainedSampleCount": legacy.retained_sample_count,
+        "totalCpuSecondsApprox": legacy.total_cpu_seconds_approx,
+        "buckets": legacy.buckets.into_iter().map(|bucket| json!({
             "startedAt": format_epoch_ms(bucket.started_at_ms), "endedAt": format_epoch_ms(bucket.ended_at_ms),
-            "avgCpuPercent": bucket.cpu_percent.average.combined,
-            "maxCpuPercent": bucket.cpu_percent.peak.combined,
-            "maxRssBytes": bucket.rss_bytes.peak.combined,
-            "maxProcessCount": bucket.max_process_count.combined,
+            "avgCpuPercent": bucket.avg_cpu_percent,
+            "maxCpuPercent": bucket.max_cpu_percent,
+            "maxRssBytes": bucket.max_rss_bytes,
+            "maxProcessCount": bucket.max_process_count,
         })).collect::<Vec<_>>(),
-        "topProcesses": top_processes.into_iter().map(|process| json!({
-            "processKey": process.process_key, "pid": process.pid, "ppid": 0,
-            "command": if process.label.trim().is_empty() { "unknown" } else { &process.label },
-            "depth": 0, "isServerRoot": process.kind == AttributionKind::Server,
+        "topProcesses": legacy.top_processes.into_iter().map(|process| json!({
+            "processKey": process.process_key, "pid": process.pid, "ppid": process.ppid,
+            "command": process.command,
+            "depth": process.depth, "isServerRoot": process.is_server_root,
             "firstSeenAt": format_epoch_ms(process.first_seen_at_ms), "lastSeenAt": format_epoch_ms(process.last_seen_at_ms),
             "currentCpuPercent": process.current_cpu_percent, "avgCpuPercent": process.avg_cpu_percent,
             "maxCpuPercent": process.max_cpu_percent, "cpuSecondsApprox": process.cpu_seconds_approx,
@@ -802,7 +791,7 @@ fn format_epoch_ms(value: i128) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{future::Future, pin::Pin, time::Duration};
 
     use crate::{
         ServerConfig,
@@ -810,13 +799,33 @@ mod tests {
             AttributedProcess, AttributedProcessSnapshot, AttributionConfidence, AttributionKind,
             AttributionScope, BucketMetric, NativeResourceSampler, NotApplicableUiProcessObserver,
             ProcessAttributionRegistry, ProcessAttributionTotals, ProcessIdentity,
-            ProcessResourceBucket, ProcessResourceSummary, ProcessRow, SplitMetric, UiCoverage,
+            ProcessResourceBucket, ProcessResourceSummary, ProcessResourceTotals, ProcessRow,
+            ResourceSampler, SamplingError, SplitMetric, UiCoverage,
+            history::{
+                LegacyProcessResourceBucket, LegacyProcessResourceHistory,
+                LegacyProcessResourceSummary,
+            },
         },
         production::control::NativeServerControl,
         terminal::{PortablePtyBackend, TerminalManagerOptions},
     };
 
     use super::*;
+
+    #[derive(Debug)]
+    struct StaticResourceSampler {
+        snapshot: AttributedProcessSnapshot,
+    }
+
+    impl ResourceSampler for StaticResourceSampler {
+        fn sample(
+            &self,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<AttributedProcessSnapshot, SamplingError>> + Send + '_>,
+        > {
+            Box::pin(async { Ok(self.snapshot.clone()) })
+        }
+    }
 
     #[test]
     fn typed_payload_decoders_reject_non_object_wire_values() {
@@ -833,7 +842,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_history_wire_only_ranks_processes_present_in_the_latest_sample() {
+    fn legacy_history_wire_uses_the_precomputed_active_cpu_ranking() {
         fn summary(
             process_key: &str,
             last_seen_at_ms: i128,
@@ -848,6 +857,28 @@ mod tests {
                 confidence: AttributionConfidence::Exact,
                 first_seen_at_ms: 0,
                 last_seen_at_ms,
+                current_cpu_percent: 1.0,
+                avg_cpu_percent: 1.0,
+                max_cpu_percent: 1.0,
+                cpu_seconds_approx,
+                current_rss_bytes: 1,
+                max_rss_bytes: 1,
+                sample_count: 1,
+            }
+        }
+        fn legacy_summary(
+            process_key: &str,
+            cpu_seconds_approx: f64,
+        ) -> LegacyProcessResourceSummary {
+            LegacyProcessResourceSummary {
+                process_key: process_key.to_owned(),
+                pid: 1,
+                ppid: 0,
+                command: process_key.to_owned(),
+                depth: 0,
+                is_server_root: false,
+                first_seen_at_ms: 0,
+                last_seen_at_ms: 2_000,
                 current_cpu_percent: 1.0,
                 avg_cpu_percent: 1.0,
                 max_cpu_percent: 1.0,
@@ -875,6 +906,16 @@ mod tests {
                 summary("active:a", 2_000, 4.0),
             ],
             error: None,
+            legacy: LegacyProcessResourceHistory {
+                retained_sample_count: 3,
+                total_cpu_seconds_approx: 10.0,
+                buckets: Vec::new(),
+                top_processes: vec![
+                    legacy_summary("active:a", 4.0),
+                    legacy_summary("active:b", 4.0),
+                    legacy_summary("active:z", 2.0),
+                ],
+            },
         });
 
         assert_eq!(
@@ -886,6 +927,149 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["active:a", "active:b", "active:z"]
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_history_wire_uses_only_the_native_server_tree_projection() {
+        let sampled_at_ms = OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000;
+        let mut server = ProcessRow::fixture(10, 1, "/native/t4code --serve");
+        server.started_at = 100;
+        server.cpu_percent = 10.0;
+        server.cpu_core_percent = Some(5.0);
+        server.rss_bytes = 100;
+        let mut child = ProcessRow::fixture(11, 10, "/native/codex --model gpt");
+        child.started_at = 110;
+        child.cpu_percent = 20.0;
+        child.cpu_core_percent = Some(10.0);
+        child.rss_bytes = 200;
+        let mut claimed_root = ProcessRow::fixture(20, 1, "/native/claimed-provider");
+        claimed_root.started_at = 200;
+        claimed_root.cpu_percent = 100.0;
+        claimed_root.cpu_core_percent = Some(50.0);
+        claimed_root.rss_bytes = 10_000;
+        let server_identity = ProcessIdentity {
+            pid: 10,
+            started_at: 100,
+        };
+        let child_identity = ProcessIdentity {
+            pid: 11,
+            started_at: 110,
+        };
+        let claimed_identity = ProcessIdentity {
+            pid: 20,
+            started_at: 200,
+        };
+        let attributed = |identity: ProcessIdentity,
+                          scope: AttributionScope,
+                          kind: AttributionKind,
+                          label: &str,
+                          cpu_percent: f64,
+                          rss_bytes: u64| AttributedProcess {
+            identity,
+            process_key: identity.key(),
+            scope,
+            kind,
+            label: label.to_owned(),
+            confidence: AttributionConfidence::Exact,
+            cpu_percent,
+            rss_bytes,
+        };
+        let monitor = DiagnosticsMonitor::new(
+            Arc::new(StaticResourceSampler {
+                snapshot: AttributedProcessSnapshot {
+                    sampled_at_ms,
+                    server_identity,
+                    native_rows: Arc::from([server, child, claimed_root]),
+                    processes: vec![
+                        attributed(
+                            server_identity,
+                            AttributionScope::Core,
+                            AttributionKind::Server,
+                            "attributed/server-label",
+                            10.0,
+                            100,
+                        ),
+                        attributed(
+                            child_identity,
+                            AttributionScope::Core,
+                            AttributionKind::Provider,
+                            "attributed/child-label",
+                            20.0,
+                            200,
+                        ),
+                        attributed(
+                            claimed_identity,
+                            AttributionScope::External,
+                            AttributionKind::Provider,
+                            "attributed/claimed-label",
+                            100.0,
+                            10_000,
+                        ),
+                    ],
+                    totals: ProcessAttributionTotals {
+                        combined: ProcessResourceTotals {
+                            cpu_percent: 130.0,
+                            rss_bytes: 10_300,
+                            process_count: 3,
+                        },
+                        core: ProcessResourceTotals {
+                            cpu_percent: 30.0,
+                            rss_bytes: 300,
+                            process_count: 2,
+                        },
+                        external: ProcessResourceTotals {
+                            cpu_percent: 100.0,
+                            rss_bytes: 10_000,
+                            process_count: 1,
+                        },
+                    },
+                    ui_coverage: UiCoverage::default(),
+                },
+            }),
+            Duration::from_secs(2),
+        );
+
+        let history = monitor.read_history(1_000, 1_000).await;
+        assert_eq!(
+            history
+                .processes
+                .iter()
+                .map(|process| process.pid)
+                .collect::<Vec<_>>(),
+            [10, 11, 20]
+        );
+        let wire = resource_history_to_wire(history);
+        let bucket = &wire["buckets"][0];
+        let top_processes = wire["topProcesses"].as_array().expect("top processes");
+
+        assert!(
+            (wire["totalCpuSecondsApprox"]
+                .as_f64()
+                .expect("total CPU seconds")
+                - 0.3)
+                .abs()
+                < 1e-9
+        );
+        assert_eq!(wire["retainedSampleCount"], 2);
+        assert_eq!(bucket["avgCpuPercent"], 30.0);
+        assert_eq!(bucket["maxCpuPercent"], 30.0);
+        assert_eq!(bucket["maxRssBytes"], 300);
+        assert_eq!(bucket["maxProcessCount"], 2);
+        assert_eq!(
+            top_processes
+                .iter()
+                .map(|process| process["pid"].as_u64().expect("pid"))
+                .collect::<Vec<_>>(),
+            [11, 10]
+        );
+        assert_eq!(top_processes[0]["ppid"], 10);
+        assert_eq!(top_processes[0]["command"], "/native/codex --model gpt");
+        assert_eq!(top_processes[0]["depth"], 1);
+        assert_eq!(top_processes[0]["isServerRoot"], false);
+        assert_eq!(top_processes[1]["ppid"], 1);
+        assert_eq!(top_processes[1]["command"], "/native/t4code --serve");
+        assert_eq!(top_processes[1]["depth"], 0);
+        assert_eq!(top_processes[1]["isServerRoot"], true);
     }
 
     #[test]
@@ -1190,6 +1374,35 @@ mod tests {
                 sample_count: 2,
             }],
             error: Some("sample failed".to_owned()),
+            legacy: LegacyProcessResourceHistory {
+                retained_sample_count: 2,
+                total_cpu_seconds_approx: 1.5,
+                buckets: vec![LegacyProcessResourceBucket {
+                    started_at_ms: 0,
+                    ended_at_ms: 1_000,
+                    avg_cpu_percent: 5.0,
+                    max_cpu_percent: 10.0,
+                    max_rss_bytes: 1024,
+                    max_process_count: 2,
+                }],
+                top_processes: vec![LegacyProcessResourceSummary {
+                    process_key: "1:server".to_owned(),
+                    pid: 1,
+                    ppid: 0,
+                    command: "server".to_owned(),
+                    depth: 0,
+                    is_server_root: true,
+                    first_seen_at_ms: 0,
+                    last_seen_at_ms: 1_000,
+                    current_cpu_percent: 2.0,
+                    avg_cpu_percent: 3.0,
+                    max_cpu_percent: 4.0,
+                    cpu_seconds_approx: 1.0,
+                    current_rss_bytes: 512,
+                    max_rss_bytes: 1024,
+                    sample_count: 2,
+                }],
+            },
         });
         assert_eq!(history["buckets"][0]["maxProcessCount"], 2);
         assert_eq!(history["error"]["_tag"], "Some");

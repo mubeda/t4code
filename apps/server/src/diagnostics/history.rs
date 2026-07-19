@@ -5,8 +5,9 @@ use std::{
 };
 
 use super::{
-    AttributedProcess, AttributionConfidence, AttributionKind, AttributionScope,
-    ProcessAttributionTotals, UiCoverage,
+    AttributedProcess, AttributedProcessSnapshot, AttributionConfidence, AttributionKind,
+    AttributionScope, ProcessAttributionTotals, ProcessIdentity, UiCoverage,
+    build_process_tree_entries,
 };
 
 const RETENTION: Duration = Duration::from_secs(60 * 60);
@@ -18,6 +19,7 @@ pub struct AttributedProcessSample {
     pub processes: Vec<AttributedProcess>,
     pub totals: ProcessAttributionTotals,
     pub ui_coverage: UiCoverage,
+    legacy_processes: Vec<LegacyProcessSample>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -74,6 +76,102 @@ pub struct ProcessResourceHistory {
     pub buckets: Vec<ProcessResourceBucket>,
     pub processes: Vec<ProcessResourceSummary>,
     pub error: Option<String>,
+    pub(crate) legacy: LegacyProcessResourceHistory,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct LegacyProcessSample {
+    sampled_at_ms: i128,
+    process_key: String,
+    pid: u32,
+    ppid: u32,
+    command: String,
+    cpu_percent: f64,
+    cpu_core_percent: f64,
+    rss_bytes: u64,
+    depth: usize,
+    is_server_root: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct LegacyProcessResourceHistory {
+    pub retained_sample_count: usize,
+    pub total_cpu_seconds_approx: f64,
+    pub buckets: Vec<LegacyProcessResourceBucket>,
+    pub top_processes: Vec<LegacyProcessResourceSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LegacyProcessResourceBucket {
+    pub started_at_ms: i128,
+    pub ended_at_ms: i128,
+    pub avg_cpu_percent: f64,
+    pub max_cpu_percent: f64,
+    pub max_rss_bytes: u64,
+    pub max_process_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LegacyProcessResourceSummary {
+    pub process_key: String,
+    pub pid: u32,
+    pub ppid: u32,
+    pub command: String,
+    pub depth: usize,
+    pub is_server_root: bool,
+    pub first_seen_at_ms: i128,
+    pub last_seen_at_ms: i128,
+    pub current_cpu_percent: f64,
+    pub avg_cpu_percent: f64,
+    pub max_cpu_percent: f64,
+    pub cpu_seconds_approx: f64,
+    pub current_rss_bytes: u64,
+    pub max_rss_bytes: u64,
+    pub sample_count: usize,
+}
+
+impl From<&AttributedProcessSnapshot> for AttributedProcessSample {
+    fn from(snapshot: &AttributedProcessSnapshot) -> Self {
+        Self {
+            sampled_at_ms: snapshot.sampled_at_ms,
+            processes: snapshot.processes.clone(),
+            totals: snapshot.totals,
+            ui_coverage: snapshot.ui_coverage.clone(),
+            legacy_processes: project_legacy_processes(snapshot),
+        }
+    }
+}
+
+fn project_legacy_processes(snapshot: &AttributedProcessSnapshot) -> Vec<LegacyProcessSample> {
+    let rows_by_pid = snapshot
+        .native_rows
+        .iter()
+        .map(|row| (row.pid, row))
+        .collect::<HashMap<_, _>>();
+    build_process_tree_entries(&snapshot.native_rows, snapshot.server_identity.pid)
+        .into_iter()
+        .map(|entry| {
+            let row = rows_by_pid
+                .get(&entry.pid)
+                .expect("process tree entries originate from native rows");
+            LegacyProcessSample {
+                sampled_at_ms: snapshot.sampled_at_ms,
+                process_key: ProcessIdentity {
+                    pid: row.pid,
+                    started_at: row.started_at,
+                }
+                .key(),
+                pid: row.pid,
+                ppid: entry.ppid,
+                command: entry.command,
+                cpu_percent: f64::from(entry.cpu_percent),
+                cpu_core_percent: f64::from(row.cpu_core_percent.unwrap_or(entry.cpu_percent)),
+                rss_bytes: entry.rss_bytes,
+                depth: entry.depth,
+                is_server_root: entry.pid == snapshot.server_identity.pid,
+            }
+        })
+        .collect()
 }
 
 pub(crate) fn trim_samples(samples: &mut VecDeque<Arc<AttributedProcessSample>>, now_ms: i128) {
@@ -110,6 +208,14 @@ pub(crate) fn aggregate_history(
         .iter()
         .map(|sample| sample.totals.external.cpu_percent / 100.0 * interval_seconds)
         .sum::<f64>();
+    let legacy = aggregate_legacy_history(
+        retained,
+        &samples,
+        read_at_ms,
+        window_ms,
+        bucket_ms,
+        interval_seconds,
+    );
 
     ProcessResourceHistory {
         read_at_ms,
@@ -130,7 +236,133 @@ pub(crate) fn aggregate_history(
         buckets: build_buckets(&samples, read_at_ms, window_ms, bucket_ms),
         processes: summarize_processes(&samples, interval_seconds),
         error,
+        legacy,
     }
+}
+
+fn aggregate_legacy_history(
+    retained: &[Arc<AttributedProcessSample>],
+    selected: &[&AttributedProcessSample],
+    read_at_ms: i128,
+    window_ms: u64,
+    bucket_ms: u64,
+    interval_seconds: f64,
+) -> LegacyProcessResourceHistory {
+    let samples = selected
+        .iter()
+        .flat_map(|sample| sample.legacy_processes.iter())
+        .collect::<Vec<_>>();
+    LegacyProcessResourceHistory {
+        retained_sample_count: retained
+            .iter()
+            .map(|sample| sample.legacy_processes.len())
+            .sum(),
+        total_cpu_seconds_approx: samples
+            .iter()
+            .map(|sample| sample.cpu_core_percent / 100.0 * interval_seconds)
+            .sum(),
+        buckets: build_legacy_buckets(&samples, read_at_ms, window_ms, bucket_ms),
+        top_processes: summarize_legacy_processes(&samples, interval_seconds),
+    }
+}
+
+fn summarize_legacy_processes(
+    samples: &[&LegacyProcessSample],
+    interval_seconds: f64,
+) -> Vec<LegacyProcessResourceSummary> {
+    let latest_sampled_at_ms = samples.iter().map(|sample| sample.sampled_at_ms).max();
+    let mut groups = HashMap::<String, Vec<&LegacyProcessSample>>::new();
+    for sample in samples {
+        groups
+            .entry(sample.process_key.clone())
+            .or_default()
+            .push(sample);
+    }
+    let mut summaries = groups
+        .into_iter()
+        .filter_map(|(process_key, mut samples)| {
+            samples.sort_by_key(|sample| sample.sampled_at_ms);
+            let first = *samples.first()?;
+            let latest = *samples.last()?;
+            if Some(latest.sampled_at_ms) != latest_sampled_at_ms {
+                return None;
+            }
+            let cpu_total = samples.iter().map(|sample| sample.cpu_percent).sum::<f64>();
+            Some(LegacyProcessResourceSummary {
+                process_key,
+                pid: latest.pid,
+                ppid: latest.ppid,
+                command: latest.command.clone(),
+                depth: latest.depth,
+                is_server_root: latest.is_server_root,
+                first_seen_at_ms: first.sampled_at_ms,
+                last_seen_at_ms: latest.sampled_at_ms,
+                current_cpu_percent: latest.cpu_percent,
+                avg_cpu_percent: cpu_total / samples.len() as f64,
+                max_cpu_percent: samples
+                    .iter()
+                    .map(|sample| sample.cpu_percent)
+                    .fold(0.0, f64::max),
+                cpu_seconds_approx: samples
+                    .iter()
+                    .map(|sample| sample.cpu_core_percent / 100.0 * interval_seconds)
+                    .sum(),
+                current_rss_bytes: latest.rss_bytes,
+                max_rss_bytes: samples
+                    .iter()
+                    .map(|sample| sample.rss_bytes)
+                    .max()
+                    .unwrap_or(0),
+                sample_count: samples.len(),
+            })
+        })
+        .collect::<Vec<_>>();
+    summaries.sort_by(|left, right| {
+        right
+            .cpu_seconds_approx
+            .total_cmp(&left.cpu_seconds_approx)
+            .then_with(|| left.process_key.cmp(&right.process_key))
+    });
+    summaries
+}
+
+fn build_legacy_buckets(
+    samples: &[&LegacyProcessSample],
+    read_at_ms: i128,
+    window_ms: u64,
+    bucket_ms: u64,
+) -> Vec<LegacyProcessResourceBucket> {
+    let mut buckets = Vec::new();
+    let mut started_at_ms = read_at_ms - i128::from(window_ms);
+    while started_at_ms < read_at_ms {
+        let ended_at_ms = (started_at_ms + i128::from(bucket_ms)).min(read_at_ms);
+        let mut reads = HashMap::<i128, (f64, u64, usize)>::new();
+        for sample in samples.iter().copied().filter(|sample| {
+            sample.sampled_at_ms >= started_at_ms
+                && (sample.sampled_at_ms < ended_at_ms
+                    || ended_at_ms == read_at_ms && sample.sampled_at_ms <= ended_at_ms)
+        }) {
+            let totals = reads.entry(sample.sampled_at_ms).or_default();
+            totals.0 += sample.cpu_percent;
+            totals.1 = totals.1.saturating_add(sample.rss_bytes);
+            totals.2 += 1;
+        }
+        let avg_cpu_percent = if reads.is_empty() {
+            0.0
+        } else {
+            reads.values().map(|totals| totals.0).sum::<f64>() / reads.len() as f64
+        };
+        buckets.push(LegacyProcessResourceBucket {
+            started_at_ms,
+            ended_at_ms,
+            avg_cpu_percent,
+            max_cpu_percent: reads.values().map(|totals| totals.0).fold(0.0, f64::max),
+            max_rss_bytes: reads.values().map(|totals| totals.1).max().unwrap_or(0),
+            max_process_count: reads.values().map(|totals| totals.2).max().unwrap_or(0),
+        });
+        started_at_ms = ended_at_ms;
+    }
+    buckets
 }
 
 fn summarize_processes(
@@ -446,6 +678,7 @@ mod tests {
                 status: coverage_status,
                 message: Some("fixture coverage".to_owned()),
             },
+            legacy_processes: Vec::new(),
         })
     }
 
@@ -473,6 +706,7 @@ mod tests {
                     processes: Vec::new(),
                     totals: ProcessAttributionTotals::default(),
                     ui_coverage: UiCoverage::default(),
+                    legacy_processes: Vec::new(),
                 })
             })
             .collect::<VecDeque<_>>();
@@ -487,6 +721,7 @@ mod tests {
             processes: Vec::new(),
             totals: ProcessAttributionTotals::default(),
             ui_coverage: UiCoverage::default(),
+            legacy_processes: Vec::new(),
         }));
         trim_samples(&mut retained, RETENTION.as_millis() as i128 + 3);
 
