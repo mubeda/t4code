@@ -18,7 +18,7 @@ use crate::{
         load_snapshot,
     },
     persistence::{ProviderSessionRuntime, Repositories},
-    process::configure_supervised_background_command_wrap,
+    process::{configure_supervised_background_command_wrap, locate_executable},
     production::{
         connect_mcp::ConnectMcpService, operational_logs::ProviderOperationalLog,
         orchestration_effects::process_compatible_path,
@@ -1456,27 +1456,8 @@ pub(crate) fn resolve_provider_executable_in_path(
     input: &str,
     search_path: Option<&OsStr>,
 ) -> Option<PathBuf> {
-    let path = PathBuf::from(input);
-    if path.is_file() {
-        return Some(path);
-    }
-    if path.components().count() > 1 {
-        return None;
-    }
-    let extensions = provider_executable_extensions();
-    search_path
-        .into_iter()
-        .flat_map(|value| std::env::split_paths(value).collect::<Vec<_>>())
-        .find_map(|directory| {
-            extensions.iter().find_map(|extension| {
-                let candidate = if extension.is_empty() {
-                    directory.join(input)
-                } else {
-                    directory.join(format!("{input}.{extension}"))
-                };
-                candidate.is_file().then_some(candidate)
-            })
-        })
+    let cwd = std::env::current_dir().ok()?;
+    locate_executable(input, &cwd, search_path, provider_executable_extensions())
 }
 
 #[cfg(windows)]
