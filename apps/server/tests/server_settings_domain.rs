@@ -2,10 +2,121 @@ use t4code_server::server_settings;
 
 use server_settings::{
     ObservabilitySettingsPatch, ProviderEnvironmentVariableInput, ProviderInstanceInput,
+    ProviderOptionSelectionState, ProviderOptionSelectionValueState, ProviderSessionDefaultState,
     ProviderSettingsPatch, ProviderSettingsState, ProviderSettingsStore, ProvidersPatch,
     ServerSettingsPatch, ServerSettingsReadError,
 };
 use tempfile::TempDir;
+
+#[tokio::test]
+async fn provider_session_defaults_replace_the_whole_map_and_roundtrip() {
+    let temp = TempDir::new().expect("temp");
+    let store = ProviderSettingsStore::new(temp.path());
+
+    store
+        .update(ServerSettingsPatch {
+            automatic_git_fetch_interval_ms: Some(12_345),
+            provider_instances: Some(std::collections::BTreeMap::from([(
+                "work".to_owned(),
+                ProviderInstanceInput {
+                    driver: "codex".to_owned(),
+                    enabled: true,
+                    display_name: Some("Work".to_owned()),
+                    environment: Vec::new(),
+                    config: serde_json::json!({"binaryPath":"/opt/bin/codex"}),
+                },
+            )])),
+            provider_session_defaults: Some(std::collections::BTreeMap::from([(
+                "legacy".to_owned(),
+                ProviderSessionDefaultState {
+                    model: "legacy-model".to_owned(),
+                    options: None,
+                },
+            )])),
+            ..ServerSettingsPatch::default()
+        })
+        .await
+        .expect("initial update");
+
+    let expected_defaults = std::collections::BTreeMap::from([
+        (
+            "claudeAgent".to_owned(),
+            ProviderSessionDefaultState {
+                model: "claude-sonnet-4-6".to_owned(),
+                options: Some(vec![ProviderOptionSelectionState {
+                    id: "effort".to_owned(),
+                    value: ProviderOptionSelectionValueState::String("high".to_owned()),
+                }]),
+            },
+        ),
+        (
+            "codex".to_owned(),
+            ProviderSessionDefaultState {
+                model: "gpt-5.4".to_owned(),
+                options: Some(vec![
+                    ProviderOptionSelectionState {
+                        id: "reasoningEffort".to_owned(),
+                        value: ProviderOptionSelectionValueState::String("medium".to_owned()),
+                    },
+                    ProviderOptionSelectionState {
+                        id: "fastMode".to_owned(),
+                        value: ProviderOptionSelectionValueState::Boolean(true),
+                    },
+                ]),
+            },
+        ),
+    ]);
+
+    let updated = store
+        .update(ServerSettingsPatch {
+            provider_session_defaults: Some(expected_defaults.clone()),
+            ..ServerSettingsPatch::default()
+        })
+        .await
+        .expect("replace provider session defaults");
+
+    assert_eq!(updated.provider_session_defaults, expected_defaults);
+    assert!(!updated.provider_session_defaults.contains_key("legacy"));
+    assert_eq!(updated.automatic_git_fetch_interval, 12_345);
+    assert_eq!(
+        updated
+            .provider_instances
+            .get("work")
+            .expect("provider instance")
+            .display_name
+            .as_deref(),
+        Some("Work")
+    );
+
+    let persisted: serde_json::Value = serde_json::from_slice(
+        &tokio::fs::read(temp.path().join("settings.json"))
+            .await
+            .expect("settings file"),
+    )
+    .expect("valid settings JSON");
+    assert_eq!(
+        persisted["providerSessionDefaults"]["claudeAgent"]["model"],
+        "claude-sonnet-4-6"
+    );
+    assert_eq!(
+        persisted["providerSessionDefaults"]["codex"]["options"][0],
+        serde_json::json!({"id":"reasoningEffort","value":"medium"})
+    );
+    assert_eq!(
+        persisted["providerSessionDefaults"]["codex"]["options"][1],
+        serde_json::json!({"id":"fastMode","value":true})
+    );
+    assert!(persisted.get("provider_session_defaults").is_none());
+
+    drop(store);
+    let reloaded = ProviderSettingsStore::new(temp.path())
+        .get()
+        .await
+        .expect("reload settings");
+    assert_eq!(reloaded.provider_session_defaults, expected_defaults);
+    assert_eq!(reloaded.automatic_git_fetch_interval, 12_345);
+    assert!(reloaded.provider_instances.contains_key("work"));
+}
 
 #[tokio::test]
 async fn trims_observability_settings_and_defaults_blank_binary_paths() {

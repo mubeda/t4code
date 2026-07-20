@@ -106,6 +106,28 @@ pub struct ProviderInstanceState {
     pub config: Value,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ProviderOptionSelectionValueState {
+    String(String),
+    Boolean(bool),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderOptionSelectionState {
+    pub id: String,
+    pub value: ProviderOptionSelectionValueState,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSessionDefaultState {
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<ProviderOptionSelectionState>>,
+}
+
 const fn enabled_by_default() -> bool {
     true
 }
@@ -123,6 +145,8 @@ pub struct ProviderSettingsState {
     pub providers: ProvidersState,
     #[serde(default)]
     pub provider_instances: BTreeMap<String, ProviderInstanceState>,
+    #[serde(default)]
+    pub provider_session_defaults: BTreeMap<String, ProviderSessionDefaultState>,
 }
 
 impl Default for ProviderSettingsState {
@@ -133,6 +157,7 @@ impl Default for ProviderSettingsState {
             observability: ObservabilitySettingsState::default(),
             providers: ProvidersState::default(),
             provider_instances: BTreeMap::new(),
+            provider_session_defaults: BTreeMap::new(),
         }
     }
 }
@@ -188,6 +213,7 @@ pub struct ServerSettingsPatch {
     pub observability: Option<ObservabilitySettingsPatch>,
     pub providers: Option<ProvidersPatch>,
     pub provider_instances: Option<BTreeMap<String, ProviderInstanceInput>>,
+    pub provider_session_defaults: Option<BTreeMap<String, ProviderSessionDefaultState>>,
 }
 
 #[derive(Debug, Error)]
@@ -455,6 +481,9 @@ fn apply_patch(
                 )
             })
             .collect();
+    }
+    if let Some(defaults) = patch.provider_session_defaults {
+        current.provider_session_defaults = defaults;
     }
     current
 }

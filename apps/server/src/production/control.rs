@@ -432,6 +432,7 @@ fn apply_settings_defaults(settings: &mut Value) {
                 "opencode": { "enabled": true, "binaryPath": "opencode", "serverUrl": "", "serverPassword": "", "customModels": [] },
             },
             "providerInstances": {},
+            "providerSessionDefaults": {},
             "observability": { "otlpTracesUrl": "", "otlpMetricsUrl": "" },
             "terminal": { "webglEnabled": true },
         }),
@@ -460,7 +461,10 @@ fn apply_settings_patch(target: &mut Value, patch: Value) {
     };
     let target = target.as_object_mut().expect("settings object");
     for (key, value) in patch {
-        if key == "providerInstances" || key == "automaticGitFetchInterval" {
+        if key == "providerInstances"
+            || key == "providerSessionDefaults"
+            || key == "automaticGitFetchInterval"
+        {
             target.insert(key.clone(), value.clone());
             continue;
         }
@@ -699,6 +703,91 @@ mod tests {
     use crate::production::server_terminal::ProductionServerControl;
 
     use super::*;
+
+    #[test]
+    fn provider_session_defaults_are_defaulted_and_replaced_as_a_whole() {
+        let mut settings = json!({
+            "providers": {
+                "codex": {
+                    "enabled": false,
+                    "binaryPath": "/opt/bin/codex"
+                }
+            },
+            "providerInstances": {
+                "work": {
+                    "driver": "codex",
+                    "displayName": "Work"
+                }
+            }
+        });
+
+        apply_settings_defaults(&mut settings);
+        assert_eq!(settings["providerSessionDefaults"], json!({}));
+        let providers = settings["providers"].clone();
+        let provider_instances = settings["providerInstances"].clone();
+
+        apply_settings_patch(
+            &mut settings,
+            json!({
+                "providerSessionDefaults": {
+                    "codex": {
+                        "model": "gpt-5.4",
+                        "options": [{"id": "reasoningEffort", "value": "medium"}]
+                    },
+                    "claudeAgent": {
+                        "model": "claude-sonnet-4-6"
+                    }
+                }
+            }),
+        );
+        assert_eq!(
+            settings["providerSessionDefaults"],
+            json!({
+                "codex": {
+                    "model": "gpt-5.4",
+                    "options": [{"id": "reasoningEffort", "value": "medium"}]
+                },
+                "claudeAgent": {
+                    "model": "claude-sonnet-4-6"
+                }
+            })
+        );
+        assert_eq!(settings["providers"], providers);
+        assert_eq!(settings["providerInstances"], provider_instances);
+
+        apply_settings_patch(
+            &mut settings,
+            json!({
+                "providerSessionDefaults": {
+                    "codex": {
+                        "model": "gpt-5.4-mini",
+                        "options": [{"id": "fastMode", "value": true}]
+                    }
+                }
+            }),
+        );
+        assert_eq!(
+            settings["providerSessionDefaults"],
+            json!({
+                "codex": {
+                    "model": "gpt-5.4-mini",
+                    "options": [{"id": "fastMode", "value": true}]
+                }
+            })
+        );
+        assert_eq!(settings["providers"], providers);
+        assert_eq!(settings["providerInstances"], provider_instances);
+
+        let provider_session_defaults = settings["providerSessionDefaults"].clone();
+        apply_settings_patch(
+            &mut settings,
+            json!({"observability":{"otlpTracesUrl":"https://traces.example"}}),
+        );
+        assert_eq!(
+            settings["providerSessionDefaults"],
+            provider_session_defaults
+        );
+    }
 
     #[tokio::test]
     async fn server_settings_expose_terminal_webgl_default_and_patch() {
