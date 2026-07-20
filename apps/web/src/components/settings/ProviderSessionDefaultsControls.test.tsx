@@ -152,6 +152,12 @@ function entries(kind: "Select" | "Switch"): ReadonlyArray<Record<string, unknow
   return controls.entries.filter((entry) => entry.kind === kind).map((entry) => entry.props);
 }
 
+function attributeValues(markup: string, attribute: string): ReadonlyArray<string> {
+  return [...markup.matchAll(new RegExp(`\\s${attribute}="([^"]+)"`, "g"))].map(
+    (match) => match[1]!,
+  );
+}
+
 beforeEach(() => {
   controls.reset();
 });
@@ -166,13 +172,34 @@ describe("ProviderSessionDefaultsControls", () => {
     expect(controls.entries.map((entry) => entry.kind)).toEqual(["Select", "Select", "Switch"]);
     expect(markup).toContain('aria-label="Default model"');
     expect(markup).toContain('aria-label="Default effort"');
-    expect(markup).toContain('for="provider-default-model"');
-    expect(markup).toContain('id="provider-default-model"');
-    expect(markup).toContain('for="provider-default-effort"');
-    expect(markup).toContain('id="provider-default-effort"');
-    expect(markup).toContain('for="provider-default-fast-mode"');
-    expect(markup).toContain('id="provider-default-fast-mode"');
+    expect(attributeValues(markup, "for")).toEqual(attributeValues(markup, "id"));
     expect(entries("Switch")[0]?.["aria-label"]).toBe("Fast by default");
+  });
+
+  it("gives each rendered defaults row unique control ids and local label targets", () => {
+    const markup = renderToStaticMarkup(
+      <>
+        <section data-row="first">
+          <ProviderSessionDefaultsControls {...baseProps()} />
+        </section>
+        <section data-row="second">
+          <ProviderSessionDefaultsControls {...baseProps()} />
+        </section>
+      </>,
+    );
+    const firstRow = markup.match(/<section data-row="first">([\s\S]*?)<\/section>/)?.[1];
+    const secondRow = markup.match(/<section data-row="second">([\s\S]*?)<\/section>/)?.[1];
+
+    expect(firstRow).toBeDefined();
+    expect(secondRow).toBeDefined();
+
+    const firstIds = attributeValues(firstRow!, "id");
+    const secondIds = attributeValues(secondRow!, "id");
+    const allIds = [...firstIds, ...secondIds];
+
+    expect(new Set(allIds)).toHaveLength(allIds.length);
+    expect(attributeValues(firstRow!, "for").every((id) => firstIds.includes(id))).toBe(true);
+    expect(attributeValues(secondRow!, "for").every((id) => secondIds.includes(id))).toBe(true);
   });
 
   it("disables every available control when the provider is disabled", () => {
