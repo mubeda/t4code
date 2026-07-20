@@ -4,10 +4,14 @@ import {
   type TerminalLaunchCommand,
 } from "@t4code/contracts";
 import {
+  PROVIDER_SESSION_EFFORT_OPTION_IDS,
   resolveProviderSessionDefault,
   type ProviderSessionDefaultFallback,
   type ResolvedProviderSessionDefault,
 } from "@t4code/shared/providerSessionDefaults";
+import { resolvePromptInjectedEffort } from "@t4code/shared/model";
+
+import { getProviderModelCapabilities } from "~/providerModels";
 
 import { decodeTerminalLaunchCommand } from "~/lib/terminalLaunchCommand";
 import type { ProviderInstanceEntry } from "~/providerInstances";
@@ -65,6 +69,7 @@ export type ProviderTerminalActionItem = ProviderTerminalAction | DisabledProvid
 
 const COMMAND_BOUNDS_REASON =
   "Provider terminal command exceeds supported limits. Shorten the provider name or configured binary path.";
+const CLAUDE_NATIVE_EFFORT_FALLBACKS = new Set(["low", "medium", "high", "xhigh", "max"]);
 
 function binaryPath(value: unknown): string | null {
   if (!value || typeof value !== "object") return null;
@@ -74,9 +79,38 @@ function binaryPath(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function resolveClaudeNativeEffort(
+  resolution: ResolvedProviderSessionDefault,
+  models: ProviderInstanceEntry["models"],
+): string | null {
+  const effort = resolution.effort;
+  if (effort === null) return null;
+
+  const driver = ProviderDriverKind.make("claudeAgent");
+  const capabilities = getProviderModelCapabilities(
+    models,
+    resolution.modelSelection.model,
+    driver,
+  );
+  if (resolvePromptInjectedEffort(capabilities, effort) !== null) {
+    return null;
+  }
+  const metadataRecognizesEffort = capabilities.optionDescriptors?.some(
+    (descriptor) =>
+      descriptor.type === "select" &&
+      PROVIDER_SESSION_EFFORT_OPTION_IDS.some((id) => id === descriptor.id) &&
+      descriptor.options.some((option) => option.id === effort),
+  );
+  if (metadataRecognizesEffort) {
+    return effort;
+  }
+  return CLAUDE_NATIVE_EFFORT_FALLBACKS.has(effort) ? effort : null;
+}
+
 function providerArguments(
   driver: ProviderDriverKind,
   resolution: ResolvedProviderSessionDefault,
+  models: ProviderInstanceEntry["models"],
 ): ReadonlyArray<string> {
   const model = resolution.modelSelection.model;
   if (driver === ProviderDriverKind.make("codex")) {
@@ -90,11 +124,8 @@ function providerArguments(
     return args;
   }
   if (driver === ProviderDriverKind.make("claudeAgent")) {
-    return [
-      "--model",
-      model,
-      ...(resolution.effort === null ? [] : ["--effort", resolution.effort]),
-    ];
+    const nativeEffort = resolveClaudeNativeEffort(resolution, models);
+    return ["--model", model, ...(nativeEffort === null ? [] : ["--effort", nativeEffort])];
   }
   if (driver === ProviderDriverKind.make("cursor")) {
     const baseModel = model.replace(/\[[^\]]*\]$/, "");
@@ -137,7 +168,7 @@ export function resolveProviderTerminalAction(
   });
   const command = decodeTerminalLaunchCommand({
     executable,
-    args: [...definition.args, ...providerArguments(entry.driverKind, resolution)],
+    args: [...definition.args, ...providerArguments(entry.driverKind, resolution, entry.models)],
     label,
   });
   if (command === null) {

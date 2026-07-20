@@ -110,6 +110,30 @@ describe("getComposerProviderState", () => {
     });
   });
 
+  it("uses a raw prompt-injected session default for the prompt but dispatches the native default", () => {
+    const state = getComposerProviderState({
+      provider: ProviderDriverKind.make("claudeAgent"),
+      model: MODEL,
+      models: modelWith([
+        selectDescriptor(
+          "effort",
+          [
+            { id: "high", label: "High", isDefault: true },
+            { id: "ultrathink", label: "Ultrathink" },
+          ],
+          ["ultrathink"],
+        ),
+      ]),
+      modelOptions: selections(["effort", "ultrathink"]),
+    });
+
+    expect(state).toEqual({
+      provider: ProviderDriverKind.make("claudeAgent"),
+      promptEffort: "ultrathink",
+      modelOptionsForDispatch: selections(["effort", "high"]),
+    });
+  });
+
   it("preserves selections that match defaults so deepMerge can overwrite prior state", () => {
     const state = getComposerProviderState({
       provider: PROVIDER,
