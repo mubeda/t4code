@@ -1,6 +1,5 @@
 use std::sync::Mutex;
 
-#[allow(dead_code, unused_imports)]
 pub mod platform;
 pub mod registry;
 

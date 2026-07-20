@@ -7,7 +7,7 @@ use objc2::runtime::AnyObject;
 use objc2_app_kit::{
     NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey, NSImage,
 };
-use objc2_foundation::{NSDate, NSDictionary, NSError, NSSet, NSString};
+use objc2_foundation::{NSDate, NSDictionary, NSError, NSSet, NSString, NSThread};
 use objc2_web_kit::{
     WKSnapshotConfiguration, WKWebView, WKWebsiteDataTypeCookies, WKWebsiteDataTypeDiskCache,
     WKWebsiteDataTypeIndexedDBDatabases, WKWebsiteDataTypeLocalStorage,
@@ -19,6 +19,21 @@ use super::{ClearDataKinds, PlatformWebviewOps, PreviewPlatformError, json_envel
 const PLATFORM_CALL_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct MacosWebviewOps;
+
+fn completion_wait_guard(is_main_thread: bool) -> Result<(), PreviewPlatformError> {
+    if is_main_thread {
+        Err(PreviewPlatformError::Unavailable(
+            "completion-based preview platform calls cannot wait on the macOS main thread"
+                .to_string(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn ensure_completion_wait_allowed() -> Result<(), PreviewPlatformError> {
+    completion_wait_guard(NSThread::isMainThread_class())
+}
 
 /// Run `f` with the WKWebView on the main thread and post the result back.
 fn with_wk<T: Send + 'static>(
@@ -44,6 +59,7 @@ impl PlatformWebviewOps for MacosWebviewOps {
         js: &str,
         timeout: Duration,
     ) -> Result<String, PreviewPlatformError> {
+        ensure_completion_wait_allowed()?;
         let script = json_envelope(js);
         let (tx, rx) = mpsc::sync_channel::<Result<String, PreviewPlatformError>>(1);
         webview
@@ -119,6 +135,7 @@ impl PlatformWebviewOps for MacosWebviewOps {
         webview: &tauri::Webview,
         timeout: Duration,
     ) -> Result<Vec<u8>, PreviewPlatformError> {
+        ensure_completion_wait_allowed()?;
         let (tx, rx) = mpsc::sync_channel::<Result<Vec<u8>, PreviewPlatformError>>(1);
         webview
             .with_webview(move |platform| {
@@ -187,6 +204,7 @@ impl PlatformWebviewOps for MacosWebviewOps {
         webview: &tauri::Webview,
         kinds: ClearDataKinds,
     ) -> Result<(), PreviewPlatformError> {
+        ensure_completion_wait_allowed()?;
         let (tx, rx) = mpsc::sync_channel::<()>(1);
         webview
             .with_webview(move |platform| {
@@ -223,5 +241,25 @@ impl PlatformWebviewOps for MacosWebviewOps {
             .map_err(|error| PreviewPlatformError::Unavailable(error.to_string()))?;
         rx.recv_timeout(PLATFORM_CALL_TIMEOUT)
             .map_err(|_| PreviewPlatformError::Timeout)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PreviewPlatformError, completion_wait_guard};
+
+    #[test]
+    fn completion_wait_guard_rejects_the_main_thread() {
+        let error = completion_wait_guard(true).unwrap_err();
+        assert!(matches!(
+            error,
+            PreviewPlatformError::Unavailable(message)
+                if message.contains("macOS main thread")
+        ));
+    }
+
+    #[test]
+    fn completion_wait_guard_allows_worker_threads() {
+        assert!(completion_wait_guard(false).is_ok());
     }
 }
