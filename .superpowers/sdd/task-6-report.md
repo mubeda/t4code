@@ -842,3 +842,100 @@ vp run: 0/11 cache hit (0%)
 git diff --check
 exit 0
 ```
+
+---
+
+# Provider Defaults Stability QA — Task 6 Addendum
+
+Status: **DONE WITH CONCERNS**
+Source HEAD before/after QA: `779108a12f8b8f9e251b1865fceb74e864a423e6`
+
+Task 6 was executed without production or test edits. The current-worktree native app was launched
+twice with the exact isolated environment, controlled through fresh accessibility snapshots by
+exact PID, quit normally, and fully stopped.
+
+## Passed
+
+- Rust provider-inventory focused suite: 18 tests passed.
+- Shared defaults focused suite: 29 tests passed.
+- Named settings tests without the stale project filter: 44 tests passed.
+- Named chat/terminal tests without the stale project filter: 139 tests passed.
+- `vp check` and `vp run typecheck` passed.
+- Provider enable/disable and three refresh cycles kept supported controls mounted, ordered, and
+  value-stable.
+- All five Codex models and all eight Claude models were exercised; invalid cross-model effort
+  values fell back to a nonblank valid default.
+- Claude Fast was shown only on its four supported Opus descriptors and persisted while moving
+  among those models.
+- Closing/reopening Settings and a normal full app restart preserved the last valid Codex and
+  Claude defaults.
+- Both native dev commands exited 0 and final process cleanup found nothing left running.
+
+## Concerns and blocked cases
+
+1. The exact web commands containing `--project unit` fail before test collection because no Vite+
+   project named `unit` exists. The identical file lists pass without that filter.
+2. Rich Codex inventory does not expose `Fast by default` for any available model. This fails the
+   required always-mounted Codex Fast control and prevents Fast-on terminal validation.
+3. Rich-only Claude effort values are rewritten by the quick inventory after selection. A direct
+   native example is Sonnet 5 `ultrathink` immediately reverting to `high`.
+4. `T4CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD=1` does not add a project. The isolated app stays at
+   `No projects yet`, disabling chat creation. Therefore existing/new chat immutability, added
+   panels, and live terminal argv cases could not be executed.
+
+Full command outcomes, model inventories, lifecycle PIDs, screenshot names, and blocked-case
+details are in `.superpowers/qa/provider-defaults-stability/results.md`.
+
+---
+
+# Task 6 blocker fixes
+
+Implementation commit: `abdd938982144e6838d5a622f00a962b68648e4c`
+
+## Files changed and behavior
+
+- `packages/shared/src/model.ts` adds an explicit provider-default opt-in for preserving
+  prompt-injected descriptor selections. The default path still resets those raw values for the
+  live composer.
+- `packages/shared/src/providerSessionDefaults.ts` opts provider session defaults into that path
+  and merges a missing Codex `serviceTier` descriptor into live model metadata without replacing
+  authoritative effort or other descriptors.
+- `packages/shared/src/model.test.ts` and `packages/shared/src/providerSessionDefaults.test.ts`
+  cover the default reset behavior, explicit prompt-injected preservation, all three provider
+  default APIs, Codex-only Fast exposure, and model-change compatibility.
+- `apps/web/src/components/settings/ProviderSessionDefaultsControls.test.tsx` covers the Fast switch
+  for rich Codex metadata that omits `serviceTier`.
+- `apps/web/src/hooks/useHandleNewThread.test.tsx`,
+  `apps/web/src/components/ChatView.hooks.test.tsx`, and
+  `apps/web/src/components/chat/providerTerminalActions.test.ts` cover Codex Fast and Claude
+  `ultrathink` across new-chat, panel, and native terminal command boundaries.
+
+## Red and green evidence
+
+- RED: `vp test packages/shared/src/model.test.ts packages/shared/src/providerSessionDefaults.test.ts`
+  reported 7 expected failures: the opt-in still reset `ultrathink`, Codex Fast was absent from
+  controls/resolve/update, and Claude `ultrathink` was rewritten in controls/resolve/update.
+- RED: `vp test apps/web/src/components/settings/ProviderSessionDefaultsControls.test.tsx`
+  reported the expected missing `Fast by default` failure.
+- RED: the new-chat, panel, and provider-terminal focused tests showed Codex `serviceTier` being
+  dropped and Claude `ultrathink` becoming the descriptor default. After correcting the Claude
+  new-chat fixture to select the Claude instance, its focused red run failed only on the expected
+  `ultrathink` rewrite (alongside the expected Codex Fast loss).
+- GREEN: shared focused command passed 85 tests; settings UI passed 11 tests; new-chat, panel, and
+  provider-terminal command passed 141 tests.
+
+## Final command outcomes
+
+- `vp test packages/shared/src/model.test.ts packages/shared/src/providerSessionDefaults.test.ts`:
+  85 passed, 0 failed.
+- `vp test apps/web/src/components/settings/ProviderSessionDefaultsControls.test.tsx`: 11 passed,
+  0 failed.
+- `vp test apps/web/src/hooks/useHandleNewThread.test.tsx apps/web/src/components/ChatView.hooks.test.tsx apps/web/src/components/chat/providerTerminalActions.test.ts`:
+  141 passed, 0 failed.
+- `vp check`: exit 0; all 1562 files formatted and 1182 files linted with no warnings or errors.
+- `vp run typecheck`: exit 0.
+- `git diff --check`: exit 0.
+
+## Residual concerns
+
+None. Native UI QA was intentionally deferred to the root task as requested.
