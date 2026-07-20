@@ -286,32 +286,41 @@ describe("getProviderSessionDefaultControls", () => {
     expect(controls.effort).toBe("medium");
   });
 
-  it("keeps an unavailable configured model during discovery failure without exposing capabilities", () => {
+  it("keeps Codex effort and fast mode available during an empty discovery snapshot", () => {
     const configuredDefault: ProviderSessionDefault = {
       model: "private-model",
       options: [
-        { id: "reasoningEffort", value: "high" },
+        { id: "reasoningEffort", value: "xhigh" },
         { id: "serviceTier", value: "fast" },
       ],
     };
-    const snapshot = structuredClone(configuredDefault);
-
-    expect(
-      getProviderSessionDefaultControls({
-        driver: CODEX,
-        models: [],
-        configuredDefault,
-      }),
-    ).toEqual({
-      configuredModel: "private-model",
-      resolvedModel: "private-model",
-      modelAvailable: false,
-      effortDescriptor: null,
-      effort: null,
-      fastModeSupported: false,
-      fastMode: null,
+    const controls = getProviderSessionDefaultControls({
+      driver: CODEX,
+      models: [],
+      configuredDefault,
     });
-    expect(configuredDefault).toEqual(snapshot);
+
+    expect(controls.configuredModel).toBe("private-model");
+    expect(controls.effortDescriptor?.id).toBe("reasoningEffort");
+    expect(controls.effortDescriptor?.options.map(({ id }) => id)).toContain("xhigh");
+    expect(controls.effort).toBe("xhigh");
+    expect(controls.fastModeSupported).toBe(true);
+    expect(controls.fastMode).toBe(true);
+  });
+
+  it("keeps Claude effort available during an empty discovery snapshot", () => {
+    const controls = getProviderSessionDefaultControls({
+      driver: CLAUDE,
+      models: [],
+      configuredDefault: {
+        model: "claude-private",
+        options: [{ id: "effort", value: "max" }],
+      },
+    });
+
+    expect(controls.effortDescriptor?.id).toBe("effort");
+    expect(controls.effort).toBe("max");
+    expect(controls.fastModeSupported).toBe(false);
   });
 });
 
@@ -583,6 +592,32 @@ describe("resolveProviderSessionDefault", () => {
     expect(claude.fastMode).toBe(true);
     expect(codex.fastMode).toBe(false);
   });
+
+  it("resolves offline Codex defaults into new-session native options", () => {
+    const result = resolveProviderSessionDefault({
+      driver: CODEX,
+      instanceId: CODEX_ID,
+      models: [],
+      configuredDefault: {
+        model: "gpt-offline",
+        options: [
+          { id: "reasoningEffort", value: "xhigh" },
+          { id: "serviceTier", value: "fast" },
+        ],
+      },
+    });
+
+    expect(result.modelSelection).toEqual({
+      instanceId: CODEX_ID,
+      model: DEFAULT_MODEL_BY_PROVIDER[CODEX],
+      options: [
+        { id: "reasoningEffort", value: "xhigh" },
+        { id: "serviceTier", value: "fast" },
+      ],
+    });
+    expect(result.effort).toBe("xhigh");
+    expect(result.fastMode).toBe(true);
+  });
 });
 
 describe("updateProviderSessionDefault", () => {
@@ -652,6 +687,54 @@ describe("updateProviderSessionDefault", () => {
       options: [
         { id: "effort", value: "medium" },
         { id: "fastMode", value: true },
+      ],
+    });
+  });
+
+  it("persists Codex fast and effort changes without a live descriptor", () => {
+    const current: ProviderSessionDefault = {
+      model: "gpt-offline",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "default" },
+      ],
+    };
+
+    expect(
+      updateProviderSessionDefault({
+        driver: CODEX,
+        models: [],
+        current,
+        change: { type: "fastMode", value: true },
+      }),
+    ).toEqual({
+      model: "gpt-offline",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "fast" },
+      ],
+    });
+  });
+
+  it("persists a Codex effort change without a live descriptor", () => {
+    expect(
+      updateProviderSessionDefault({
+        driver: CODEX,
+        models: [],
+        current: {
+          model: "gpt-offline",
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "default" },
+          ],
+        },
+        change: { type: "effort", value: "xhigh" },
+      }),
+    ).toEqual({
+      model: "gpt-offline",
+      options: [
+        { id: "reasoningEffort", value: "xhigh" },
+        { id: "serviceTier", value: "default" },
       ],
     });
   });
