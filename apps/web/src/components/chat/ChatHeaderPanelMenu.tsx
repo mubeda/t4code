@@ -19,7 +19,10 @@ import {
 
 interface ChatHeaderPanelMenuProps {
   readonly providerStatuses: ReadonlyArray<ServerProvider>;
-  readonly settings: Pick<ServerSettings, "providerInstances" | "providers">;
+  readonly settings: Pick<
+    ServerSettings,
+    "providerInstances" | "providers" | "providerSessionDefaults"
+  >;
   /** False when the host thread can't yet spawn sibling panels (no thread ref). */
   readonly canCreatePanel: boolean;
   readonly onCreateChatPanel: (entry: ProviderInstanceEntry) => void;

@@ -64,6 +64,7 @@ function props(
     settings: {
       providerInstances: DEFAULT_SERVER_SETTINGS.providerInstances,
       providers: DEFAULT_SERVER_SETTINGS.providers,
+      providerSessionDefaults: DEFAULT_SERVER_SETTINGS.providerSessionDefaults,
     },
     canCreatePanel: false,
     onCreateChatPanel: vi.fn(),

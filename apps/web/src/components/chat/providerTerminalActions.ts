@@ -3,6 +3,10 @@ import {
   type ServerSettings,
   type TerminalLaunchCommand,
 } from "@t4code/contracts";
+import {
+  resolveProviderSessionDefault,
+  type ResolvedProviderSessionDefault,
+} from "@t4code/shared/providerSessionDefaults";
 
 import { decodeTerminalLaunchCommand } from "~/lib/terminalLaunchCommand";
 import type { ProviderInstanceEntry } from "~/providerInstances";
@@ -11,6 +15,11 @@ interface ProviderTerminalDefinition {
   readonly executable: string;
   readonly args: ReadonlyArray<string>;
 }
+
+type ProviderTerminalSettings = Pick<
+  ServerSettings,
+  "providerInstances" | "providers" | "providerSessionDefaults"
+>;
 
 const DEFINITIONS: Partial<Record<ProviderDriverKind, ProviderTerminalDefinition>> = {
   [ProviderDriverKind.make("claudeAgent")]: {
@@ -62,9 +71,54 @@ function binaryPath(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function providerArguments(
+  driver: ProviderDriverKind,
+  resolution: ResolvedProviderSessionDefault,
+): ReadonlyArray<string> {
+  const model = resolution.modelSelection.model;
+  if (driver === ProviderDriverKind.make("codex")) {
+    const args = ["--model", model];
+    if (resolution.effort !== null) {
+      args.push("--config", `model_reasoning_effort="${resolution.effort}"`);
+    }
+    if (resolution.fastMode !== null) {
+      args.push("--config", `service_tier="${resolution.fastMode ? "fast" : "default"}"`);
+    }
+    return args;
+  }
+  if (driver === ProviderDriverKind.make("claudeAgent")) {
+    return [
+      "--model",
+      model,
+      ...(resolution.effort === null ? [] : ["--effort", resolution.effort]),
+    ];
+  }
+  if (driver === ProviderDriverKind.make("cursor")) {
+    const baseModel = model.replace(/\[[^\]]*\]$/, "");
+    const parameters = [
+      resolution.effort === null ? null : `effort=${resolution.effort}`,
+      resolution.fastMode === null ? null : `fast=${String(resolution.fastMode)}`,
+    ].filter((value): value is string => value !== null);
+    const cursorModel =
+      parameters.length === 0 ? baseModel : `${baseModel}[${parameters.join(",")}]`;
+    return ["--model", cursorModel];
+  }
+  if (driver === ProviderDriverKind.make("grok")) {
+    return [
+      "--model",
+      model,
+      ...(resolution.effort === null ? [] : ["--effort", resolution.effort]),
+    ];
+  }
+  if (driver === ProviderDriverKind.make("opencode")) {
+    return ["--model", model];
+  }
+  return [];
+}
+
 export function resolveProviderTerminalAction(
   entry: ProviderInstanceEntry,
-  settings: Pick<ServerSettings, "providerInstances" | "providers">,
+  settings: ProviderTerminalSettings,
 ): ProviderTerminalActionItem | null {
   const definition = DEFINITIONS[entry.driverKind];
   if (!definition) return null;
@@ -72,9 +126,15 @@ export function resolveProviderTerminalAction(
   const legacy = (settings.providers as Readonly<Record<string, unknown>>)[entry.driverKind];
   const executable = binaryPath(instance?.config) ?? binaryPath(legacy) ?? definition.executable;
   const label = `${entry.displayName} Terminal`;
+  const resolution = resolveProviderSessionDefault({
+    driver: entry.driverKind,
+    instanceId: entry.instanceId,
+    models: entry.models,
+    configuredDefault: settings.providerSessionDefaults[entry.driverKind] ?? null,
+  });
   const command = decodeTerminalLaunchCommand({
     executable,
-    args: [...definition.args],
+    args: [...definition.args, ...providerArguments(entry.driverKind, resolution)],
     label,
   });
   if (command === null) {
