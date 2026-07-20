@@ -353,14 +353,7 @@ mod tests {
                 .contains("non-UTF-8")
         );
 
-        let invalid_json =
-            executable_script(directory.path(), "invalid-json", "printf nope", "echo nope");
-        assert!(
-            read_status_fixture(&invalid_json, Duration::from_secs(1))
-                .await
-                .unwrap_err()
-                .contains("decode")
-        );
+        assert!(parse_tailscale_status("nope").unwrap_err().contains("decode"));
 
         let slow = executable_script(
             directory.path(),
