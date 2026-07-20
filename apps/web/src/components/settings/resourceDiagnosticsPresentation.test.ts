@@ -320,6 +320,111 @@ describe("presentLiveProcesses", () => {
     ).toEqual(["2:1", "9:1"]);
   });
 
+  it("totally orders non-finite live CPU values with process-key ties", () => {
+    const process = (processKey: string, cpuPercent: number) =>
+      processEntry({
+        pid: 1,
+        processKey,
+        scope: "external",
+        kind: "helper",
+        label: "same",
+        cpuPercent,
+      });
+    const processes = [
+      process("nan-b", Number.NaN),
+      process("positive-infinity-b", Number.POSITIVE_INFINITY),
+      process("finite-b", 5),
+      process("negative-infinity-b", Number.NEGATIVE_INFINITY),
+      process("nan-a", Number.NaN),
+      process("positive-infinity-a", Number.POSITIVE_INFINITY),
+      process("finite-a", 5),
+      process("negative-infinity-a", Number.NEGATIVE_INFINITY),
+    ];
+
+    const ascending = presentLiveProcesses({
+      diagnostics: liveFixture({ processes }),
+      queryError: null,
+      sort: { key: "cpu", direction: "asc" },
+    });
+    const descending = presentLiveProcesses({
+      diagnostics: liveFixture({ processes }),
+      queryError: null,
+      sort: { key: "cpu", direction: "desc" },
+    });
+
+    expect(ascending.rows.map((row) => row.processKey)).toEqual([
+      "negative-infinity-a",
+      "negative-infinity-b",
+      "finite-a",
+      "finite-b",
+      "positive-infinity-a",
+      "positive-infinity-b",
+      "nan-a",
+      "nan-b",
+    ]);
+    expect(descending.rows.map((row) => row.processKey)).toEqual([
+      "nan-a",
+      "nan-b",
+      "positive-infinity-a",
+      "positive-infinity-b",
+      "finite-a",
+      "finite-b",
+      "negative-infinity-a",
+      "negative-infinity-b",
+    ]);
+  });
+
+  it("presents non-finite live CPU values as unavailable", () => {
+    const diagnostics = liveFixture({
+      totals: {
+        combined: { processCount: 3, rssBytes: 30, cpuPercent: Number.NaN },
+        core: { processCount: 1, rssBytes: 10, cpuPercent: Number.POSITIVE_INFINITY },
+        external: {
+          processCount: 2,
+          rssBytes: 20,
+          cpuPercent: Number.NEGATIVE_INFINITY,
+        },
+      },
+      processes: [
+        processEntry({
+          pid: 1,
+          processKey: "nan",
+          scope: "core",
+          kind: "server",
+          label: "NaN",
+          cpuPercent: Number.NaN,
+        }),
+        processEntry({
+          pid: 2,
+          processKey: "positive-infinity",
+          scope: "external",
+          kind: "provider",
+          label: "Positive infinity",
+          cpuPercent: Number.POSITIVE_INFINITY,
+        }),
+        processEntry({
+          pid: 3,
+          processKey: "negative-infinity",
+          scope: "external",
+          kind: "helper",
+          label: "Negative infinity",
+          cpuPercent: Number.NEGATIVE_INFINITY,
+        }),
+      ],
+    });
+
+    const presentation = presentLiveProcesses({ diagnostics, queryError: null });
+
+    expect(presentation.summary?.combined.cpuLabel).toBe("Unavailable");
+    expect(presentation.summary?.core.cpuLabel).toBe("Unavailable");
+    expect(presentation.summary?.external.cpuLabel).toBe("Unavailable");
+    expect(presentation.rows.map((row) => row.cpuLabel)).toEqual([
+      "Unavailable",
+      "Unavailable",
+      "Unavailable",
+    ]);
+  });
+
   it("presents every attributed live column", () => {
     const presentation = presentLiveProcesses({
       diagnostics: liveFixture(),

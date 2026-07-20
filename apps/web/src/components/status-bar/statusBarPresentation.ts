@@ -179,13 +179,22 @@ function presentConsumer(process: ServerProcessDiagnosticsEntry): ResourceConsum
 }
 
 function totalsReconcile(input: ServerProcessDiagnosticsResult["totals"]): boolean {
+  if (
+    input.combined.rssBytes !== input.core.rssBytes + input.external.rssBytes ||
+    input.combined.processCount !== input.core.processCount + input.external.processCount
+  ) {
+    return false;
+  }
+  if (
+    !Number.isFinite(input.combined.cpuPercent) ||
+    !Number.isFinite(input.core.cpuPercent) ||
+    !Number.isFinite(input.external.cpuPercent)
+  ) {
+    return true;
+  }
   const expectedCpuPercent = input.core.cpuPercent + input.external.cpuPercent;
   const cpuTolerance = Math.max(1, Math.abs(expectedCpuPercent)) * 1e-9;
-  return (
-    input.combined.rssBytes === input.core.rssBytes + input.external.rssBytes &&
-    input.combined.processCount === input.core.processCount + input.external.processCount &&
-    Math.abs(input.combined.cpuPercent - expectedCpuPercent) <= cpuTolerance
-  );
+  return Math.abs(input.combined.cpuPercent - expectedCpuPercent) <= cpuTolerance;
 }
 
 function assertReconciledTotals(input: ServerProcessDiagnosticsResult["totals"]): void {

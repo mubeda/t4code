@@ -1,9 +1,12 @@
 import * as Schema from "effect/Schema";
+import * as Option from "effect/Option";
 import { describe, expect, it } from "vite-plus/test";
 
 import { ProviderDriverKind } from "./providerInstance.ts";
 import {
   isProviderAvailable,
+  ServerProcessDiagnosticsEntry,
+  ServerProcessResourceTotals,
   ServerProvider,
   ServerProviderUpdateError,
   ServerProviderUpdateInput,
@@ -17,6 +20,8 @@ import {
 const decodeServerProvider = Schema.decodeUnknownSync(ServerProvider);
 const decodeProviderDriverKind = Schema.decodeUnknownSync(ProviderDriverKind);
 const decodeProviderUpdateError = Schema.decodeUnknownSync(ServerProviderUpdateError);
+const decodeProcessDiagnosticsEntry = Schema.decodeUnknownSync(ServerProcessDiagnosticsEntry);
+const decodeProcessResourceTotals = Schema.decodeUnknownSync(ServerProcessResourceTotals);
 const encodeProviderUpdateError = Schema.encodeSync(ServerProviderUpdateError);
 
 describe("ServerProvider", () => {
@@ -159,5 +164,49 @@ describe("ServerProviderUpdateError", () => {
     };
     expectDecodeFailure(ServerProviderUpdateInput, invalid, expected);
     expectEncodeFailure(ServerProviderUpdateInput, invalid, expected);
+  });
+});
+
+describe("server process resource metrics", () => {
+  const totals = {
+    cpuPercent: 1,
+    rssBytes: 1024,
+    processCount: 1,
+  };
+  const process = {
+    pid: 1,
+    ppid: 0,
+    pgid: Option.none(),
+    status: "Run",
+    cpuPercent: 1,
+    rssBytes: 1024,
+    elapsed: "00:00:01",
+    command: "t4code",
+    depth: 0,
+    childPids: [],
+    processKey: "1:1",
+    scope: "core",
+    kind: "server",
+    label: "T4Code Server",
+    confidence: "exact",
+  };
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    "rejects non-finite live CPU values at the contract boundary",
+    (cpuPercent) => {
+      const expected = {
+        rootTag: "Composite" as const,
+        paths: [["cpuPercent"]],
+        containsTag: "Filter" as const,
+      };
+
+      expectDecodeFailure(ServerProcessResourceTotals, { ...totals, cpuPercent }, expected);
+      expectDecodeFailure(ServerProcessDiagnosticsEntry, { ...process, cpuPercent }, expected);
+    },
+  );
+
+  it("preserves finite negative live CPU values", () => {
+    expect(decodeProcessResourceTotals({ ...totals, cpuPercent: -1.5 }).cpuPercent).toBe(-1.5);
+    expect(decodeProcessDiagnosticsEntry({ ...process, cpuPercent: -1.5 }).cpuPercent).toBe(-1.5);
   });
 });

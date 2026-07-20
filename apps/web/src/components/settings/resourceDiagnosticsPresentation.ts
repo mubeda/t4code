@@ -370,7 +370,7 @@ function compareLiveProcesses(
       result = left.rssBytes - right.rssBytes;
       break;
     case "cpu":
-      result = left.cpuPercent - right.cpuPercent;
+      result = compareNumbersTotal(left.cpuPercent, right.cpuPercent);
       break;
     case "name":
       result = compareText(left.label, right.label);
