@@ -37,6 +37,7 @@ const h = vi.hoisted(() => {
     modelPickers: [] as Array<Record<string, unknown>>,
     traitsPickers: [] as Array<Record<string, unknown>>,
     instanceCards: [] as Array<Record<string, unknown>>,
+    sections: [] as Array<Record<string, unknown>>,
     theme: "system" as string,
     setTheme: vi.fn(),
     settings: null as unknown,
@@ -230,14 +231,17 @@ vi.mock("./settingsLayout", () => ({
   SettingsPageContainer: (props: AnyProps) => (
     <div data-testid="settings-page">{props.children as ReactNode}</div>
   ),
-  SettingsSection: (props: AnyProps) => (
-    <section data-section-title={typeof props.title === "string" ? props.title : "custom"}>
-      {props.icon as ReactNode}
-      {props.title as ReactNode}
-      {props.headerAction as ReactNode}
-      {props.children as ReactNode}
-    </section>
-  ),
+  SettingsSection: (props: AnyProps) => {
+    h.sections.push(props);
+    return (
+      <section data-section-title={typeof props.title === "string" ? props.title : "custom"}>
+        {props.icon as ReactNode}
+        {props.title as ReactNode}
+        {props.headerAction as ReactNode}
+        {props.children as ReactNode}
+      </section>
+    );
+  },
   SettingsRow: (props: AnyProps) => {
     h.rows.push(props);
     return (
@@ -369,6 +373,7 @@ function clearRegistries(): void {
   h.modelPickers.length = 0;
   h.traitsPickers.length = 0;
   h.instanceCards.length = 0;
+  h.sections.length = 0;
 }
 
 function render(node: ReactElement): string {
@@ -1017,8 +1022,14 @@ describe("useSettingsRestore", () => {
 
 describe("ProviderSettingsPanel", () => {
   function baseProviderSettings(): UnifiedSettings {
+    const futureDriver = ProviderDriverKind.make("futureDriver");
     return {
       ...DEFAULT_UNIFIED_SETTINGS,
+      providerSessionDefaults: {
+        [CODEX_DRIVER]: { model: "codex-default", options: [{ id: "fastMode", value: false }] },
+        [CLAUDE_DRIVER]: { model: "claude-default", options: [{ id: "reasoning", value: "high" }] },
+        [futureDriver]: { model: "future-default" },
+      },
       providerInstances: {
         [ProviderInstanceId.make("codex")]: {
           driver: CODEX_DRIVER,
@@ -1052,7 +1063,8 @@ describe("ProviderSettingsPanel", () => {
   }
 
   it("renders provider rows including custom and orphaned instances", () => {
-    h.settings = baseProviderSettings();
+    const settings = baseProviderSettings();
+    h.settings = settings;
     h.serverProviders = [
       makeServerProvider({
         instanceId: "codex",
@@ -1066,6 +1078,9 @@ describe("ProviderSettingsPanel", () => {
     const markup = render(<ProviderSettingsPanel />);
     expect(markup).toContain("Providers");
     expect(markup).toContain("Checked");
+    expect(h.sections.find((section) => section.title === "Providers")?.contentVariant).toBe(
+      "stack",
+    );
 
     const cardIds = h.instanceCards.map((card) => String(card.instanceId));
     // Cursor's default slot is hidden (no live cursor provider), but the
@@ -1083,6 +1098,8 @@ describe("ProviderSettingsPanel", () => {
     expect(codexCard.headerAction).not.toBeNull();
     expect(codexCard.hiddenModels).toEqual(["model-hidden"]);
     expect(codexCard.favoriteModels).toEqual(["model-alpha"]);
+    expect(codexCard.sessionDefaults).toEqual(settings.providerSessionDefaults[CODEX_DRIVER]);
+    expect(typeof codexCard.onSessionDefaultsChange).toBe("function");
 
     const grokCard = h.instanceCards.find((card) => String(card.instanceId) === "grok")!;
     expect(grokCard.headerAction).toBeNull();
@@ -1092,6 +1109,31 @@ describe("ProviderSettingsPanel", () => {
       (card) => String(card.instanceId) === "codex_personal",
     )!;
     expect(typeof personalCard.onDelete).toBe("function");
+    expect(personalCard).not.toHaveProperty("sessionDefaults");
+    expect(personalCard).not.toHaveProperty("onSessionDefaultsChange");
+  });
+
+  it("replaces only the edited driver session default", () => {
+    const settings = baseProviderSettings();
+    h.settings = settings;
+
+    render(<ProviderSettingsPanel />);
+    const codexCard = h.instanceCards.find((card) => String(card.instanceId) === "codex")!;
+    const nextCodexDefault = {
+      model: "codex-next",
+      options: [{ id: "reasoning", value: "medium" }],
+    };
+
+    (codexCard.onSessionDefaultsChange as (next: typeof nextCodexDefault) => void)(
+      nextCodexDefault,
+    );
+
+    expect(h.updateSettings).toHaveBeenCalledWith({
+      providerSessionDefaults: {
+        ...settings.providerSessionDefaults,
+        [CODEX_DRIVER]: nextCodexDefault,
+      },
+    });
   });
 
   it("routes instance card callbacks into settings patches", () => {
