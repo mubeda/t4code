@@ -20,6 +20,7 @@ import {
   EnvironmentId,
   EventId,
   MessageId,
+  type ModelSelection,
   OrchestrationProposedPlanId,
   ProjectId,
   type ProjectScript,
@@ -848,6 +849,52 @@ function installComposerHandle(overrides: Partial<ChatComposerHandle> = {}): {
   const handle = composerHandle(overrides);
   composerRef.current = handle;
   return { handle, promptRef: composer["promptRef"] as RefObject<string> };
+}
+
+function seedFreshLocalDraft(
+  logicalProjectKey: string,
+  modelSelection: ModelSelection,
+): ReturnType<typeof newDraftId> {
+  const draftId = newDraftId();
+  seedEnvironment(makeEnvironmentPresentation());
+  seedProject(makeProject());
+  seedGitStatus(true);
+  useComposerDraftStore
+    .getState()
+    .setLogicalProjectDraftThreadId(
+      logicalProjectKey,
+      scopeProjectRef(environmentId, projectId),
+      draftId,
+      { threadId, createdAt: now, envMode: "local" },
+    );
+  useComposerDraftStore.getState().setModelSelection(draftId, modelSelection);
+  publishSeededStoreState(useComposerDraftStore);
+  return draftId;
+}
+
+function draftModelSelection(
+  draftId: ReturnType<typeof newDraftId>,
+  instanceId: ProviderInstanceId,
+): ModelSelection {
+  const selection = useComposerDraftStore.getState().getComposerDraft(draftId)
+    ?.modelSelectionByProvider[instanceId];
+  expect(selection).toBeDefined();
+  return selection!;
+}
+
+function installComposerModelSelection(
+  selection: ModelSelection,
+  promptEffort: string,
+): RefObject<string> {
+  return installComposerHandle({
+    getSendContext: () => ({
+      ...composerHandle().getSendContext(),
+      selectedPromptEffort: promptEffort,
+      selectedModelOptionsForDispatch: selection.options,
+      selectedModelSelection: selection,
+      selectedModel: selection.model,
+    }),
+  }).promptRef;
 }
 
 interface FakeLegendListOptions {
@@ -2467,6 +2514,131 @@ describe("ChatView project script handlers", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("ChatView send flows", () => {
+  it("promotes a freshly seeded draft with its unchanged full model selection", async () => {
+    const seededSelection: ModelSelection = {
+      instanceId: codexInstanceId,
+      model: "gpt-5.4",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "fast" },
+      ],
+    };
+    const draftId = seedFreshLocalDraft("logical-project-first-turn", seededSelection);
+    const storedSelection = draftModelSelection(draftId, codexInstanceId);
+    expect(storedSelection).toEqual(seededSelection);
+
+    renderDraftRoute(draftId);
+    const promptRef = installComposerModelSelection(storedSelection, "high");
+    promptRef.current = "use the seeded defaults";
+
+    await (capturedProps("chatComposer")["onSend"] as () => Promise<void>)();
+
+    const startCalls = commandCallsFor("thread.startTurn");
+    expect(startCalls).toHaveLength(1);
+    const input = startCalls[0]!.input as {
+      input: {
+        modelSelection: ModelSelection;
+        bootstrap?: { createThread?: { modelSelection: ModelSelection } };
+      };
+    };
+    expect(input.input.modelSelection).toBe(storedSelection);
+    expect(input.input.bootstrap?.createThread?.modelSelection).toBe(storedSelection);
+  });
+
+  it("uses explicit draft model, effort, and fast changes for the first turn", async () => {
+    const seededSelection: ModelSelection = {
+      instanceId: codexInstanceId,
+      model: "gpt-5.4",
+      options: [
+        { id: "reasoningEffort", value: "medium" },
+        { id: "fastMode", value: false },
+      ],
+    };
+    const userSelection: ModelSelection = {
+      instanceId: codexInstanceId,
+      model: "gpt-5.4-mini",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "fastMode", value: true },
+      ],
+    };
+    const draftId = seedFreshLocalDraft("logical-project-first-turn-edited", seededSelection);
+    useComposerDraftStore.getState().setModelSelection(draftId, userSelection);
+    publishSeededStoreState(useComposerDraftStore);
+
+    const storedSelection = draftModelSelection(draftId, codexInstanceId);
+    expect(storedSelection).toEqual(userSelection);
+
+    renderDraftRoute(draftId);
+    const promptRef = installComposerModelSelection(storedSelection, "high");
+    promptRef.current = "use my explicit choices";
+
+    await (capturedProps("chatComposer")["onSend"] as () => Promise<void>)();
+
+    const startCalls = commandCallsFor("thread.startTurn");
+    expect(startCalls).toHaveLength(1);
+    const input = startCalls[0]!.input as {
+      input: {
+        modelSelection: ModelSelection;
+        bootstrap?: { createThread?: { modelSelection: ModelSelection } };
+      };
+    };
+    expect(input.input.modelSelection).toBe(storedSelection);
+    expect(input.input.bootstrap?.createThread?.modelSelection).toBe(storedSelection);
+  });
+
+  it("keeps an existing thread selection after provider session defaults change", async () => {
+    const persistedSelection: ModelSelection = {
+      instanceId: codexInstanceId,
+      model: "gpt-5.4",
+      options: [
+        { id: "reasoningEffort", value: "low" },
+        { id: "fastMode", value: false },
+      ],
+    };
+    seedConnectedServerThread(makeThread({ modelSelection: persistedSelection }));
+    h.settings = {
+      ...h.settings,
+      providerSessionDefaults: {
+        [ProviderDriverKind.make("codex")]: {
+          model: "gpt-5.4-mini",
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "fastMode", value: true },
+          ],
+        },
+      },
+    };
+
+    renderServerRoute();
+    const promptRef = installComposerModelSelection(persistedSelection, "low");
+    promptRef.current = "continue with the persisted selection";
+
+    await (capturedProps("chatComposer")["onSend"] as () => Promise<void>)();
+
+    expect(commandCallsFor("thread.create")).toHaveLength(0);
+    const startCalls = commandCallsFor("thread.startTurn");
+    expect(startCalls).toHaveLength(1);
+    const input = startCalls[0]!.input as {
+      input: {
+        modelSelection: ModelSelection;
+        bootstrap?: unknown;
+      };
+    };
+    expect(input.input.modelSelection).toBe(persistedSelection);
+    expect(input.input.bootstrap).toBeUndefined();
+    expect(
+      commandCallsFor("thread.updateMetadata").filter(
+        (call) =>
+          (
+            call.input as {
+              input?: { modelSelection?: ModelSelection };
+            }
+          ).input?.modelSelection !== undefined,
+      ),
+    ).toHaveLength(0);
+  });
+
   it("returns without dispatch when the composer handle has no send context", async () => {
     seedConnectedServerThread();
     renderServerRoute();
