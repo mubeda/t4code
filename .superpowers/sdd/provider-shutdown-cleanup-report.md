@@ -14,8 +14,10 @@ It does not change process attribution, provider supervision, terminal
 supervision, or the dependency ledger.
 
 Initial commit: `64c9633626` (`fix(desktop): clean providers on termination`).
-Concurrency correction commit subject:
-`fix(desktop): coordinate backend shutdown races`.
+First concurrency correction: `5544190dd8`
+(`fix(desktop): coordinate backend shutdown races`).
+Final completion-boundary correction commit subject:
+`fix(desktop): await in-flight starts during shutdown`.
 
 ## Root Cause
 
@@ -119,6 +121,47 @@ Additional passing coverage verifies:
 - the existing termination helper waits for server cleanup before requesting
   exit.
 
+The first concurrency correction was independently reviewed again and exposed
+two narrower completion-boundary races:
+
+1. stop waited for already-published backends but not starts that had captured
+   an active epoch before shutdown. It could therefore report completion and
+   request app exit while such a start was still ready but gated before
+   publication; the start's late-backend cleanup had not run yet.
+2. the cleanup task changed lifecycle from Stopping to Stopped/Terminated,
+   unlocked, and only then sent the shared result. A stop entering in that
+   window returned a synthetic success and lost the real cleanup failure.
+
+The updated start-race RED uses a `cfg(test)` notification after current
+backends are drained. At that exact boundary, the old implementation exposed a
+completed Stopped lifecycle while the pre-shutdown start remained gated. It
+failed with:
+
+```text
+stop must wait for starts that began before shutdown
+```
+
+`BackendStartPermit` is now an RAII in-flight-start registration. Begin-start
+increments the count under the same lifecycle mutex that stop uses; permit Drop
+decrements and notifies even if the start future is cancelled. The stop task
+registers its notification before checking the count, then remains in Stopping
+until all earlier starts have either published or completed late-backend
+cleanup. No standard mutex is held across that await.
+
+The existing shared-failure test now also calls stop after cleanup completed.
+The old implementation failed because that later caller received `Ok(())`.
+Completed Stopped/Terminated states now retain the cloneable cleanup result.
+The watch result is sent synchronously while holding the lifecycle mutex before
+the completed state becomes visible, so concurrent and later callers receive
+the same error.
+
+A third RED,
+`failed_shutdown_does_not_allow_an_explicit_restart`, showed that the earlier
+Stopped state reopened after a cleanup failure. Stopped now reopens only when
+its retained result is `Ok(())`; an error or timeout is preserved and makes
+restart unsafe. The three focused completion-boundary tests pass without
+deadlock or timeout.
+
 ## Release and Live Process Evidence
 
 `vp run build:desktop` succeeded after the final correction. The direct release
@@ -159,8 +202,8 @@ The release build and live process evidence below ran after the deferred-listene
 implementation in `64c9633626`; no packaged UI was launched during the
 concurrency review correction.
 
-- Focused shutdown/lifecycle tests: 6 passed, 0 failed.
-- `cargo test -p t4code-desktop`: 170 unit tests passed, 1 bridge public
+- Focused shutdown/lifecycle tests: 7 passed, 0 failed.
+- `cargo test -p t4code-desktop`: 171 unit tests passed, 1 bridge public
   contract test passed, 4 SSH public contract tests passed, and doc tests
   passed; no failures.
 - `vp run build:desktop`: passed.
