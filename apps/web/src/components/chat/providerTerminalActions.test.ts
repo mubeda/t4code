@@ -73,6 +73,15 @@ const claudeEffortDescriptor: ProviderOptionDescriptor = {
   id: "effort",
 };
 
+const claudePromptInjectedEffortDescriptor: ProviderOptionDescriptor = {
+  ...claudeEffortDescriptor,
+  options: [
+    { id: "high", label: "High", isDefault: true },
+    { id: "ultrathink", label: "Ultrathink" },
+  ],
+  promptInjectedValues: ["ultrathink"],
+};
+
 const cursorEffortDescriptor: ProviderOptionDescriptor = {
   ...effortDescriptor,
   id: "reasoning",
@@ -252,6 +261,81 @@ describe("resolveProviderTerminalAction", () => {
       )?.command?.args,
     ).toEqual(["--dangerously-skip-permissions", "--model", "claude-opus-4-8", "--effort", "high"]);
   });
+
+  it.each([
+    {
+      effort: "ultrathink",
+      expected: ["--dangerously-skip-permissions", "--model", "claude-opus-4-8"],
+    },
+    {
+      effort: "high",
+      expected: [
+        "--dangerously-skip-permissions",
+        "--model",
+        "claude-opus-4-8",
+        "--effort",
+        "high",
+      ],
+    },
+  ])("maps the Claude $effort default to supported terminal arguments", ({ effort, expected }) => {
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerSessionDefaults: {
+        [CLAUDE_DRIVER]: {
+          model: "claude-opus-4-8",
+          options: [{ id: "effort", value: effort }],
+        },
+      },
+    } satisfies ServerSettings;
+
+    expect(
+      resolveProviderTerminalAction(
+        entry("claudeAgent", "claudeAgent", "Claude", [
+          model("claude-opus-4-8", [claudePromptInjectedEffortDescriptor]),
+        ]),
+        settings,
+      )?.command?.args,
+    ).toEqual(expected);
+  });
+
+  it.each([
+    {
+      effort: "ultrathink",
+      expected: [
+        "--dangerously-skip-permissions",
+        "--model",
+        DEFAULT_MODEL_BY_PROVIDER[CLAUDE_DRIVER],
+      ],
+    },
+    {
+      effort: "high",
+      expected: [
+        "--dangerously-skip-permissions",
+        "--model",
+        DEFAULT_MODEL_BY_PROVIDER[CLAUDE_DRIVER],
+        "--effort",
+        "high",
+      ],
+    },
+  ])(
+    "conservatively maps the Claude $effort default during empty discovery",
+    ({ effort, expected }) => {
+      const settings = {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerSessionDefaults: {
+          [CLAUDE_DRIVER]: {
+            model: "claude-offline",
+            options: [{ id: "effort", value: effort }],
+          },
+        },
+      } satisfies ServerSettings;
+
+      expect(
+        resolveProviderTerminalAction(entry("claudeAgent", "claudeAgent", "Claude", []), settings)
+          ?.command?.args,
+      ).toEqual(expected);
+    },
+  );
 
   it('passes Codex fast mode off as an explicit service_tier="default" config', () => {
     const settings = {

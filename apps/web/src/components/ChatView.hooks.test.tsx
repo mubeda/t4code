@@ -554,6 +554,7 @@ import type { ChatComposerHandle } from "./chat/ChatComposer";
 import type { ComposerBannerStackItem } from "./chat/ComposerBannerStack";
 import type { ProviderInstanceEntry } from "../providerInstances";
 import type { TerminalContextDraft, TerminalContextSelection } from "../lib/terminalContext";
+import { getComposerProviderState } from "./chat/composerProviderState";
 
 const environmentId = EnvironmentId.make("environment-local");
 const projectId = ProjectId.make("project-1");
@@ -2779,6 +2780,102 @@ describe("ChatView send flows", () => {
     };
     expect(input.input.modelSelection).toBe(storedSelection);
     expect(input.input.bootstrap?.createThread?.modelSelection).toBe(storedSelection);
+  });
+
+  it("prefixes the first prompt from a prompt-injected Claude session default", async () => {
+    const claudeDriver = ProviderDriverKind.make("claudeAgent");
+    const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
+    const claudeModel: ServerProvider["models"][number] = {
+      slug: "claude-sonnet-5",
+      name: "Claude Sonnet 5",
+      isCustom: false,
+      capabilities: {
+        optionDescriptors: [
+          {
+            id: "effort",
+            label: "Effort",
+            type: "select",
+            options: [
+              { id: "high", label: "High", isDefault: true },
+              { id: "ultrathink", label: "Ultrathink" },
+            ],
+            promptInjectedValues: ["ultrathink"],
+          },
+        ],
+      },
+    };
+    const seededSelection: ModelSelection = {
+      instanceId: claudeInstanceId,
+      model: claudeModel.slug,
+      options: [{ id: "effort", value: "ultrathink" }],
+    };
+    const draftId = seedFreshLocalDraft("claude-ultrathink-first-turn", seededSelection);
+    seedEnvironment(
+      makeEnvironmentPresentation({
+        serverConfig: {
+          providers: [
+            {
+              ...codexProvider,
+              instanceId: claudeInstanceId,
+              driver: claudeDriver,
+              models: [claudeModel],
+            },
+          ],
+          environment: { label: "Local" },
+        },
+      }),
+    );
+
+    renderDraftRoute(draftId);
+    const storedSelection = draftModelSelection(draftId, claudeInstanceId);
+    const composerState = getComposerProviderState({
+      provider: claudeDriver,
+      model: claudeModel.slug,
+      models: [claudeModel],
+      modelOptions: storedSelection.options,
+    });
+    const dispatchSelection: ModelSelection = {
+      instanceId: claudeInstanceId,
+      model: claudeModel.slug,
+      ...(composerState.modelOptionsForDispatch
+        ? { options: composerState.modelOptionsForDispatch }
+        : {}),
+    };
+    const { promptRef } = installComposerHandle({
+      getSendContext: () => ({
+        ...composerHandle().getSendContext(),
+        selectedPromptEffort: composerState.promptEffort,
+        selectedModelOptionsForDispatch: composerState.modelOptionsForDispatch,
+        selectedModelSelection: dispatchSelection,
+        selectedProvider: claudeDriver,
+        selectedModel: claudeModel.slug,
+        selectedProviderModels: [claudeModel],
+      }),
+    });
+    promptRef.current = "Investigate the flaky test";
+
+    await (capturedProps("chatComposer")["onSend"] as () => Promise<void>)();
+
+    expect(commandCallsFor("thread.startTurn")).toHaveLength(1);
+    expect(commandCallsFor("thread.startTurn")[0]?.input).toMatchObject({
+      input: {
+        message: { text: "Ultrathink:\nInvestigate the flaky test" },
+        modelSelection: {
+          instanceId: claudeInstanceId,
+          model: "claude-sonnet-5",
+          options: [{ id: "effort", value: "high" }],
+        },
+        bootstrap: {
+          createThread: {
+            modelSelection: {
+              instanceId: claudeInstanceId,
+              model: "claude-sonnet-5",
+              options: [{ id: "effort", value: "high" }],
+            },
+          },
+        },
+      },
+    });
   });
 
   it("uses explicit draft model, effort, and fast changes for the first turn", async () => {

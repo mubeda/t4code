@@ -9,7 +9,9 @@ import {
   buildProviderOptionSelectionsFromDescriptors,
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
+  getProviderOptionStringSelectionValue,
   isClaudeUltrathinkPrompt,
+  resolvePromptInjectedEffort,
 } from "@t4code/shared/model";
 import type { ReactNode } from "react";
 
@@ -61,7 +63,12 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
       descriptor.type === "select",
   );
   const primaryValue = getProviderOptionCurrentValue(primarySelectDescriptor ?? null);
-  const promptEffort = typeof primaryValue === "string" ? primaryValue : null;
+  const rawPrimaryValue = primarySelectDescriptor
+    ? getProviderOptionStringSelectionValue(modelOptions, primarySelectDescriptor.id)
+    : undefined;
+  const promptInjectedEffort = resolvePromptInjectedEffort(caps, rawPrimaryValue);
+  const promptEffort =
+    promptInjectedEffort ?? (typeof primaryValue === "string" ? primaryValue : null);
   const ultrathinkActive =
     (primarySelectDescriptor?.promptInjectedValues?.length ?? 0) > 0 &&
     promptInjectionState === "ultrathink";
