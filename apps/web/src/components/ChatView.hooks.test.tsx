@@ -16,7 +16,7 @@ import type { ReactElement, ReactNode, RefObject } from "react";
 import {
   ApprovalRequestId,
   type ChatAttachmentId,
-  DEFAULT_MODEL,
+  DEFAULT_MODEL_BY_PROVIDER,
   EnvironmentId,
   EventId,
   MessageId,
@@ -25,6 +25,7 @@ import {
   type ProjectScript,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProviderOptionDescriptor,
   type ServerProvider,
   ThreadId,
   TurnId,
@@ -1118,6 +1119,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -2000,6 +2002,89 @@ describe("ChatView project script handlers", () => {
     return capturedProps("chatHeader");
   }
 
+  it("creates a chat panel with configured provider defaults and copied workspace values", async () => {
+    const reasoningEffort: ProviderOptionDescriptor = {
+      id: "reasoningEffort",
+      label: "Reasoning",
+      type: "select",
+      options: [
+        { id: "medium", label: "Medium", isDefault: true },
+        { id: "high", label: "High" },
+      ],
+      currentValue: "medium",
+    };
+    const serviceTier: ProviderOptionDescriptor = {
+      id: "serviceTier",
+      label: "Service tier",
+      type: "select",
+      options: [
+        { id: "default", label: "Standard", isDefault: true },
+        { id: "fast", label: "Fast" },
+      ],
+      currentValue: "default",
+    };
+    const configuredModel = {
+      slug: "gpt-configured",
+      name: "Configured",
+      isCustom: false,
+      capabilities: { optionDescriptors: [reasoningEffort, serviceTier] },
+    };
+    seedEnvironment(makeEnvironmentPresentation());
+    seedProject(makeProject({ defaultModelSelection: null, scripts: [script] }));
+    seedServerThread(
+      makeThread({
+        branch: "feature/panels",
+        worktreePath: "X:/demo/worktrees/panels",
+      }),
+    );
+    seedGitStatus(true);
+    h.settings = {
+      ...h.settings,
+      providerSessionDefaults: {
+        [ProviderDriverKind.make("codex")]: {
+          model: "gpt-configured",
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "fast" },
+          ],
+        },
+      },
+    };
+    renderServerRoute();
+    const header = capturedProps("chatHeader");
+    const entry = {
+      instanceId: codexInstanceId,
+      driverKind: ProviderDriverKind.make("codex"),
+      displayName: "Codex",
+      models: [
+        { slug: "gpt-first", name: "First", isCustom: false, capabilities: null },
+        configuredModel,
+      ],
+    } as unknown as ProviderInstanceEntry;
+
+    (header["onCreateChatPanel"] as (entry: ProviderInstanceEntry) => void)(entry);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(commandCallsFor("thread.create")).toHaveLength(1);
+    expect(commandCallsFor("thread.create")[0]?.input).toMatchObject({
+      environmentId,
+      input: {
+        projectId,
+        branch: "feature/panels",
+        worktreePath: "X:/demo/worktrees/panels",
+        modelSelection: {
+          instanceId: codexInstanceId,
+          model: "gpt-configured",
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "fast" },
+          ],
+        },
+      },
+    });
+  });
+
   it("runs a script in the active terminal and remembers it per project", async () => {
     const header = renderWithScripts();
     const onRunProjectScript = header["onRunProjectScript"] as (
@@ -2122,7 +2207,7 @@ describe("ChatView project script handlers", () => {
 
     const entry = {
       instanceId: codexInstanceId,
-      driver: ProviderDriverKind.make("codex"),
+      driverKind: ProviderDriverKind.make("codex"),
       displayName: "Codex",
       models: codexProvider.models,
     } as unknown as ProviderInstanceEntry;
@@ -2162,11 +2247,60 @@ describe("ChatView project script handlers", () => {
     ).toHaveLength(2);
   });
 
+  it("falls back to a built-in model discovered for the target provider instance", async () => {
+    const targetInstanceId = ProviderInstanceId.make("codex_work");
+    seedEnvironment(makeEnvironmentPresentation());
+    seedProject(
+      makeProject({
+        defaultModelSelection: {
+          instanceId: codexInstanceId,
+          model: "gpt-custom-first",
+        },
+        scripts: [script],
+      }),
+    );
+    seedServerThread(makeThread());
+    seedGitStatus(true);
+    h.settings = {
+      ...h.settings,
+      providerSessionDefaults: {
+        [ProviderDriverKind.make("codex")]: { model: "gpt-other-instance" },
+      },
+    };
+    renderServerRoute();
+    const header = capturedProps("chatHeader");
+    const entry = {
+      instanceId: targetInstanceId,
+      driverKind: ProviderDriverKind.make("codex"),
+      displayName: "Codex Work",
+      models: [
+        { slug: "gpt-custom-first", name: "Custom", isCustom: true, capabilities: null },
+        { slug: "gpt-built-in", name: "Built in", isCustom: false, capabilities: null },
+      ],
+    } as unknown as ProviderInstanceEntry;
+
+    (header["onCreateChatPanel"] as (entry: ProviderInstanceEntry) => void)(entry);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(commandCallsFor("thread.create")).toHaveLength(1);
+    expect(commandCallsFor("thread.create")[0]?.input).toMatchObject({
+      input: {
+        modelSelection: {
+          instanceId: targetInstanceId,
+          model: "gpt-built-in",
+        },
+      },
+    });
+  });
+
   it("creates a provider chat panel even when model discovery is temporarily empty", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const header = renderWithScripts();
+    const claudeDriver = ProviderDriverKind.make("claudeAgent");
     const entry = {
       instanceId: ProviderInstanceId.make("claudeAgent"),
-      driver: ProviderDriverKind.make("claudeAgent"),
+      driverKind: claudeDriver,
       displayName: "Claude",
       models: [],
     } as unknown as ProviderInstanceEntry;
@@ -2192,11 +2326,20 @@ describe("ChatView project script handlers", () => {
         title: "Panel — Claude",
         modelSelection: {
           instanceId: ProviderInstanceId.make("claudeAgent"),
-          model: DEFAULT_MODEL,
+          model: DEFAULT_MODEL_BY_PROVIDER[claudeDriver],
         },
         kind: "panel",
       },
     });
+    expect(warn).toHaveBeenCalledWith(
+      "Provider session default fallback",
+      expect.objectContaining({
+        driver: claudeDriver,
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        resolvedModel: DEFAULT_MODEL_BY_PROVIDER[claudeDriver],
+        reason: "models-unavailable",
+      }),
+    );
 
     const centerState = useCenterPanelStore.getState().byThreadKey[threadKey];
     const claudeSurface = centerState?.surfaces.find((surface) => surface.kind === "chat");

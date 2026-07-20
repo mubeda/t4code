@@ -1,4 +1,4 @@
-import { EnvironmentId, ProjectId, ThreadId } from "@t4code/contracts";
+import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t4code/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const h = vi.hoisted(() => ({
@@ -83,15 +83,22 @@ afterEach(() => {
 });
 
 describe("center panel actions", () => {
-  it("creates chat panels with defaults and copied workspace values", async () => {
+  it("creates chat panels with the resolved selection and copied workspace values", async () => {
     const actions = useCenterPanelActions();
+    const modelSelection = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5.4",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "fast" },
+      ],
+    };
     const threadId = await actions.createChatPanel({
       hostRef,
       projectId: ProjectId.make("project-1"),
       worktreePath: "",
       branch: "feature/panels",
-      instanceId: "codex-instance",
-      model: "",
+      modelSelection,
       providerLabel: "Codex",
     });
 
@@ -103,9 +110,11 @@ describe("center panel actions", () => {
         title: "Panel — Codex",
         branch: "feature/panels",
         worktreePath: null,
+        modelSelection,
         kind: "panel",
       }),
     });
+    expect(h.createThread.mock.calls[0]?.[0].input.modelSelection).toBe(modelSelection);
     expect(h.openChatPanel).toHaveBeenCalledWith(hostRef, threadId, "Codex");
 
     await actions.createChatPanel({
@@ -113,8 +122,7 @@ describe("center panel actions", () => {
       projectId: ProjectId.make("project-1"),
       worktreePath: "/tmp/worktree",
       branch: null,
-      instanceId: "codex-instance",
-      model: "gpt-test",
+      modelSelection,
       providerLabel: "Codex",
     });
     expect(h.createThread).toHaveBeenLastCalledWith(
@@ -129,7 +137,10 @@ describe("center panel actions", () => {
     const input = {
       hostRef,
       projectId: ProjectId.make("project-1"),
-      instanceId: "codex-instance",
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex-instance"),
+        model: "gpt-5.4",
+      },
       providerLabel: "Codex",
     };
 
