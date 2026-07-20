@@ -26,6 +26,25 @@ use crate::{
 
 const MAX_KEYBINDINGS: usize = 256;
 
+fn merge_provider_snapshot(
+    current: Option<&Value>,
+    refreshed: provider_inventory::ProviderProbeResult,
+) -> Value {
+    let mut next = refreshed.snapshot;
+    if refreshed.rich_metadata == provider_inventory::RichMetadataOutcome::Succeeded {
+        return next;
+    }
+    let Some(current) = current else {
+        return next;
+    };
+    for field in ["models", "slashCommands", "skills", "agents"] {
+        if let Some(value) = current.get(field) {
+            next[field] = value.clone();
+        }
+    }
+    next
+}
+
 #[cfg(test)]
 #[derive(Clone, Debug)]
 struct ProviderProbePause {
@@ -113,7 +132,11 @@ impl NativeServerControl {
         redact_sensitive_environment(&mut settings);
         let loaded_keybindings = keybindings::load(&keybindings_path).await;
         let cwd = std::env::current_dir().unwrap_or_else(|_| config.base_dir.clone());
-        let providers = provider_inventory::probe(&settings, None, &cwd).await;
+        let providers = provider_inventory::probe(&settings, None, &cwd)
+            .await
+            .into_iter()
+            .map(|result| result.snapshot)
+            .collect();
         let (config_events, _) = broadcast::channel(32);
         Self {
             config,
@@ -266,7 +289,7 @@ impl NativeServerControl {
         settings: &Value,
         instance_id: Option<&str>,
         cwd: &Path,
-    ) -> Vec<Value> {
+    ) -> Vec<provider_inventory::ProviderProbeResult> {
         #[cfg(test)]
         let pause = self.next_quick_provider_probe_pause.lock().await.take();
         #[cfg(test)]
@@ -282,7 +305,7 @@ impl NativeServerControl {
         settings: &Value,
         instance_id: Option<&str>,
         cwd: &Path,
-    ) -> Vec<Value> {
+    ) -> Vec<provider_inventory::ProviderProbeResult> {
         #[cfg(test)]
         let pause = self.next_full_provider_probe_pause.lock().await.take();
         #[cfg(test)]
@@ -295,7 +318,7 @@ impl NativeServerControl {
 
     async fn publish_provider_snapshots_if_current(
         &self,
-        refreshed: Vec<Value>,
+        refreshed: Vec<provider_inventory::ProviderProbeResult>,
         partial: bool,
         generation: u64,
         expected_settings: &Value,
@@ -310,21 +333,44 @@ impl NativeServerControl {
         Some(providers)
     }
 
-    async fn merge_provider_snapshots(&self, refreshed: Vec<Value>, partial: bool) -> Vec<Value> {
+    async fn merge_provider_snapshots(
+        &self,
+        refreshed: Vec<provider_inventory::ProviderProbeResult>,
+        partial: bool,
+    ) -> Vec<Value> {
         let mut current = self.providers.write().await;
         if partial {
-            for provider in refreshed {
-                let Some(id) = provider.get("instanceId").and_then(Value::as_str) else {
+            for result in refreshed {
+                let Some(id) = result
+                    .snapshot
+                    .get("instanceId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                else {
                     continue;
                 };
-                if let Some(position) = current.iter().position(|row| row["instanceId"] == id) {
-                    current[position] = provider;
+                let position = current.iter().position(|row| {
+                    row.get("instanceId").and_then(Value::as_str) == Some(id.as_str())
+                });
+                let merged = merge_provider_snapshot(position.map(|index| &current[index]), result);
+                if let Some(position) = position {
+                    current[position] = merged;
                 } else {
-                    current.push(provider);
+                    current.push(merged);
                 }
             }
         } else {
-            *current = refreshed;
+            let previous = current.clone();
+            *current = refreshed
+                .into_iter()
+                .map(|result| {
+                    let id = result.snapshot.get("instanceId").and_then(Value::as_str);
+                    let previous = previous
+                        .iter()
+                        .find(|row| row.get("instanceId").and_then(Value::as_str) == id);
+                    merge_provider_snapshot(previous, result)
+                })
+                .collect();
         }
         current.clone()
     }
@@ -1212,6 +1258,72 @@ mod tests {
     use super::*;
 
     #[test]
+    fn quick_and_failed_probes_retain_rich_metadata_but_update_health() {
+        let current = json!({
+            "instanceId": "codex",
+            "status": "ready",
+            "checkedAt": "old",
+            "models": [{ "slug": "gpt-rich" }],
+            "slashCommands": [{ "name": "goal" }],
+            "skills": [{ "name": "review" }],
+            "agents": [{ "name": "builder" }]
+        });
+        let quick = provider_inventory::ProviderProbeResult {
+            snapshot: json!({
+                "instanceId": "codex",
+                "status": "warning",
+                "checkedAt": "new",
+                "models": [{ "slug": "gpt-fallback" }],
+                "slashCommands": [{ "name": "goal" }],
+                "skills": [],
+                "agents": []
+            }),
+            rich_metadata: provider_inventory::RichMetadataOutcome::NotRequested,
+        };
+        let failed = provider_inventory::ProviderProbeResult {
+            rich_metadata: provider_inventory::RichMetadataOutcome::Failed,
+            ..quick.clone()
+        };
+
+        for result in [quick, failed] {
+            let merged = merge_provider_snapshot(Some(&current), result);
+            assert_eq!(merged["status"], "warning");
+            assert_eq!(merged["checkedAt"], "new");
+            assert_eq!(merged["models"], current["models"]);
+            assert_eq!(merged["skills"], current["skills"]);
+            assert_eq!(merged["agents"], current["agents"]);
+        }
+    }
+
+    #[test]
+    fn successful_rich_probe_can_authoritatively_clear_metadata() {
+        let current = json!({
+            "instanceId": "codex",
+            "models": [{ "slug": "retired" }],
+            "slashCommands": [{ "name": "old" }],
+            "skills": [{ "name": "old" }],
+            "agents": [{ "name": "old" }]
+        });
+        let merged = merge_provider_snapshot(
+            Some(&current),
+            provider_inventory::ProviderProbeResult {
+                snapshot: json!({
+                    "instanceId": "codex",
+                    "models": [],
+                    "slashCommands": [],
+                    "skills": [],
+                    "agents": []
+                }),
+                rich_metadata: provider_inventory::RichMetadataOutcome::Succeeded,
+            },
+        );
+
+        assert_eq!(merged["models"], json!([]));
+        assert_eq!(merged["skills"], json!([]));
+        assert_eq!(merged["agents"], json!([]));
+    }
+
+    #[test]
     fn provider_session_defaults_are_defaulted_and_replaced_as_a_whole() {
         let mut settings = json!({
             "providers": {
@@ -1952,7 +2064,10 @@ mod tests {
         assert!(refreshed["providers"].is_array());
         let _ = control
             .merge_provider_snapshots(
-                vec![json!({"instanceId":"unit-provider","status":"disabled"})],
+                vec![provider_inventory::ProviderProbeResult {
+                    snapshot: json!({"instanceId":"unit-provider","status":"disabled"}),
+                    rich_metadata: provider_inventory::RichMetadataOutcome::Succeeded,
+                }],
                 true,
             )
             .await;
