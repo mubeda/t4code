@@ -1012,6 +1012,7 @@ impl BackendSupervisor {
     }
 }
 
+#[cfg(any(unix, test))]
 pub(crate) async fn shutdown_backend_after_termination(
     backend: BackendSupervisor,
     termination: impl std::future::Future<Output = ()> + Send,
