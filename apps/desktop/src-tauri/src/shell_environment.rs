@@ -463,10 +463,13 @@ fn run_shell_probe(
         .join()
         .map_err(|_| PathHydrationFailure::OutputReadFailed)?
         .map_err(|_| PathHydrationFailure::OutputReadFailed)?;
+    if captured.exceeded_limit {
+        return Err(PathHydrationFailure::OutputTooLarge);
+    }
     if !status.success() {
         return Err(PathHydrationFailure::NonZeroExit);
     }
-    parse_captured_path(&captured.bytes, captured.exceeded_limit)
+    parse_captured_path(&captured.bytes, false)
 }
 
 #[cfg(unix)]
@@ -720,6 +723,18 @@ __T4CODE_PATH_END__\\nlogout\\n'",
                 "printf '__T4CODE_PATH_START__'; i=0; \
 while [ \"$i\" -lt 8192 ]; do printf x; i=$((i + 1)); done; \
 printf '__T4CODE_PATH_END__'",
+                Duration::from_secs(5),
+                128,
+            ),
+            Err(PathHydrationFailure::OutputTooLarge)
+        );
+
+        assert_eq!(
+            probe_shell_path_with_command(
+                Path::new("/bin/sh"),
+                "printf '__T4CODE_PATH_START__'; i=0; \
+while [ \"$i\" -lt 8192 ]; do printf x; i=$((i + 1)); done; \
+printf '__T4CODE_PATH_END__'; exit 7",
                 Duration::from_secs(5),
                 128,
             ),
