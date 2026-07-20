@@ -31,9 +31,11 @@ The operations guide now states that:
 - `available`, `partial`, `unavailable`, and `notApplicable` qualify desktop UI
   coverage. The initial desktop adapter reports UI usage unavailable instead of
   estimating from process names.
-- Registered provider, terminal, and eligible helper roots own descendants by
-  nearest-root attribution. Unregistered native-server descendants remain
-  visible as External/unknown/fallback rather than silently becoming Core.
+- Production provider and terminal roots own descendants by nearest-root
+  attribution. The schema reserves the `helper` kind, but no production helper
+  launcher currently registers it. Native-server descendants without a
+  registered provider or terminal ancestor remain visible as
+  External/unknown/fallback rather than silently becoming Core.
 - PID plus operating-system start identity prevents ownership transfer on PID
   reuse.
 - A refresh failure retains and marks the last good sample stale; the initial
@@ -105,10 +107,10 @@ At 1296 by 768 in the packaged macOS app:
 - Diagnostics Live showed separate Combined/Core/External summaries. The Core
   row had no signal control. A transient `/usr/bin/security` process appeared
   as External fallback with eligible controls and disappeared after exit.
-- History retained External processes separately (including opencode,
-  Claude, and helpers) while Core remained the server. Memory/CPU switching,
-  sortable headers, dark theme, truncation, and overflow layout were visually
-  usable. One observed CPU sample reconciled exactly:
+- History retained External processes separately (including opencode, Claude,
+  and unregistered fallback descendants) while Core remained the server.
+  Memory/CPU switching, sortable headers, dark theme, truncation, and overflow
+  layout were visually usable. One observed CPU sample reconciled exactly:
   Combined `9.0%` = Core `4.8%` + External `4.2%`.
 - Adding the current worktree as a project and opening Terminal 1 showed Core
   server `204.8 MiB / 3.2% / 1 process` and External terminal shell
@@ -123,9 +125,9 @@ At 1296 by 768 in the packaged macOS app:
   `211.1 MiB / 4.3% / 2`; the terminal shell remained until app shutdown.
 
 No paid or external provider prompt was sent, avoiding unapproved API spend and
-data transmission. Provider exact-root/descendant attribution is therefore
-covered by automated backend tests in this run, not by a live provider manual
-check.
+data transmission. Provider exact-root/descendant attribution was initially
+covered by automated backend tests only. The correction pass below records the
+separate zero-network packaged-provider attempt and its outcome.
 
 Polling cadence was not instrumented manually in the packaged app. Source and
 tests show that the always-mounted status bar owns the intended two-second
@@ -141,6 +143,62 @@ Windows and Linux packaged checks were not run on this macOS host. Both remain
 required pre-release checks using the same idle/load, attribution, signal,
 coverage, polling, and cleanup checklist. Unit tests are not presented as
 cross-platform packaged verification.
+
+## Packaged Provider Correction Pass
+
+The correction pass exercised the production provider launcher in the exact
+packaged worktree bundle without a paid or external provider request. The app
+ran as PID `80100` with an isolated
+`T4CODE_HOME=/tmp/t4code-task9-provider.YCYTVj/state`. Both the persisted Codex
+`binaryPath` and `CODEX_BIN` resolved to the absolute temporary fixture shim,
+and `CODEX_HOME` pointed to an empty temporary directory. The fixture speaks the
+Codex app-server JSONL protocol over stdio, makes no network requests, and
+starts a bounded local Node child only after `thread/start`.
+
+Before that safe launch, an initial attempt exposed that the status-bar usage
+probe resolves `CODEX_BIN` or `PATH` independently of provider settings and
+briefly started the real Codex executable. That process was identified by its
+usage-probe arguments and terminated before any thread or turn was sent. The
+packaged app was relaunched with the explicit fixture `CODEX_BIN` and empty
+`CODEX_HOME`; the successful run below used only the temporary fixture.
+
+Adding the temporary Git project and sending a deterministic prompt through the
+normal packaged UI completed a real provider session in 3 ms and rendered
+`T4Code deterministic streamed fixture response.` The launcher process and its
+load descendant were:
+
+- PID `86600`, PPID `80100`: Node running
+  `provider-shims/codex-fixture.mjs ... app-server`;
+- PID `86625`, PPID `86600`: the fixture's 100,000,000-byte allocation and
+  bounded CPU loop.
+
+At about 11 seconds, `ps` reported the root at 48,320 KiB RSS and 0% CPU and the
+child at 146,208 KiB RSS and 99.9% CPU. Resource Manager reconciled the same
+sample as Combined `344.1 MiB / 101.8% / 3` = Core
+`154.2 MiB / 1.3% / 1` + External `190.0 MiB / 100.4% / 2`. The highest
+consumers were the External Codex child at `142.8 MiB / 100.4%` and External
+Codex root at `47.2 MiB / 0%`; the server stayed Core.
+
+Diagnostics Live independently showed Combined
+`344.6 MiB / 89.2% / 3` = Core `154.6 MiB / 1.4% / 1` + External
+`190.0 MiB / 87.8% / 2`. Both fixture PIDs were External,
+`kind=provider`, `label=codex`, and signalable; the Core server was not
+signalable. The registered root has exact confidence and the child inherits the
+nearest registered root. The UI exposes scope/kind/label rather than the
+confidence enum, so the confidence distinction was corroborated by the exact
+PID/PPID ancestry and production registration semantics. History also
+reconciled approximately `34.1 s` Combined CPU = `5.44 s` Core + `28.6 s`
+External and a same-sample `344.6 MiB` peak = `154.6 MiB` Core +
+`190.0 MiB` External. The UI-coverage-unavailable warning remained explicit in
+both views.
+
+Provider cleanup failed and remains a blocking regression for Task 9 approval.
+After terminating app PID `80100`, the app and port 3773 were absent, but
+provider PID `86600` and child PID `86625` survived for more than 10 seconds.
+Terminating the exact provider root then removed both. A separate
+systematic-debugging/TDD correction is required, followed by a fresh packaged
+provider lifecycle run; this report does not claim the provider cleanup check
+passed.
 
 ## Supervised Process Stack Regression
 
@@ -183,8 +241,25 @@ platform applicability and update policy pointing to
 `third_party/portable-pty/UPSTREAM.md`. The expected registry inventory count
 changed from 51 to 66.
 
-The focused ledger suite then passed 10/10 tests. No `current` audit status was
-fabricated; all new entries remain `pending`.
+The correction pass made the ledger's `inventorySummary` authoritative. A RED
+test changed each of its six fields in turn and demonstrated that the validator
+previously accepted every stale value. The validator now compares all six
+declared counts with fresh repository discovery, and the repository test
+compares the complete summary object instead of pinning individual counts.
+
+Fresh discovery reports:
+
+- JavaScript direct entries: 79;
+- JavaScript ledger keys: 78;
+- Rust registry entries: 66;
+- Rust path entries: 1;
+- GitHub Actions references: 9;
+- toolchain entries: 9.
+
+The focused ledger suite passed 11/11 tests and
+`vp run check:dependency-ledger` reported zero unaccounted inventory entries.
+No `current` audit status was fabricated; all new vendored entries remain
+`pending`.
 
 ## Automated Verification
 
@@ -194,9 +269,9 @@ Completed before the final commit:
 - `vp test packages/contracts/src/rpcRustParity.test.ts`: 3/3 passed.
 - Status-bar focused suite: 37/37 passed.
 - Diagnostics-settings focused suite: 78/78 passed.
-- Dependency-ledger focused suite: 10/10 passed.
+- Dependency-ledger focused suite: 11/11 passed.
 - `cargo test -q -p t4code-server`: passed with zero failures.
-- `vp test`: 482/482 files and 6,374/6,374 tests passed.
+- `vp test`: 482/482 files and 6,375/6,375 tests passed.
 - `vp run typecheck`: passed.
 - `vp check`: passed.
 
@@ -222,6 +297,7 @@ The web test output included existing localStorage warnings; no test failed.
 - `apps/server/src/process/supervised.rs`
 - `docs/operations/observability.md`
 - `docs/dependency-upgrades/2026-07-17-ledger.json`
+- `scripts/check-dependency-upgrade-ledger.ts`
 - `scripts/check-dependency-upgrade-ledger.test.ts`
 - `.superpowers/sdd/task-9-report.md`
 

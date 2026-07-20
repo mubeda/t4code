@@ -82,9 +82,9 @@
     }
   },
   "inventorySummary": {
-    "javascriptDirect": 80,
-    "javascriptLedger": 80,
-    "rustRegistry": 51,
+    "javascriptDirect": 79,
+    "javascriptLedger": 78,
+    "rustRegistry": 66,
     "rustPath": 1,
     "actions": 9,
     "toolchains": 9
