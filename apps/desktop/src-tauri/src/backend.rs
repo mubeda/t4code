@@ -380,6 +380,7 @@ struct BackendSlotState {
 struct BackendState {
     slots: BTreeMap<String, BackendSlotState>,
     next_run_id: u64,
+    in_flight_starts: usize,
     lifecycle: BackendLifecycle,
 }
 
@@ -395,8 +396,11 @@ enum BackendLifecycle {
     },
     Stopped {
         epoch: u64,
+        result: Result<(), String>,
     },
-    Terminated,
+    Terminated {
+        result: Result<(), String>,
+    },
 }
 
 impl Default for BackendLifecycle {
@@ -405,10 +409,22 @@ impl Default for BackendLifecycle {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 struct BackendStartPermit {
     epoch: u64,
     run_id: u64,
+    state: Arc<Mutex<BackendState>>,
+    start_completed: Arc<Notify>,
+}
+
+impl Drop for BackendStartPermit {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.state.lock() {
+            debug_assert!(state.in_flight_starts > 0);
+            state.in_flight_starts = state.in_flight_starts.saturating_sub(1);
+        }
+        self.start_completed.notify_waiters();
+    }
 }
 
 fn backend_slot_key(plan: &BackendLaunchPlan) -> String {
@@ -418,8 +434,11 @@ fn backend_slot_key(plan: &BackendLaunchPlan) -> String {
 #[derive(Debug, Clone, Default)]
 pub struct BackendSupervisor {
     state: Arc<Mutex<BackendState>>,
+    start_completed: Arc<Notify>,
     #[cfg(test)]
     start_publish_gate: Arc<Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>>,
+    #[cfg(test)]
+    shutdown_cleanup_reached: Arc<Mutex<Option<oneshot::Sender<()>>>>,
 }
 
 impl BackendSupervisor {
@@ -582,8 +601,8 @@ impl BackendSupervisor {
                 .lock()
                 .expect("backend supervisor mutex poisoned");
             if matches!(
-                state.lifecycle,
-                BackendLifecycle::Active { epoch } if epoch == permit.epoch
+                &state.lifecycle,
+                BackendLifecycle::Active { epoch } if *epoch == permit.epoch
             ) {
                 let slot = state.slots.entry(slot_key.clone()).or_default();
                 let previous = slot.backend.take();
@@ -633,12 +652,22 @@ impl BackendSupervisor {
             .state
             .lock()
             .map_err(|error| format!("backend supervisor mutex poisoned: {error}"))?;
-        let epoch = match state.lifecycle {
-            BackendLifecycle::Active { epoch } => epoch,
-            BackendLifecycle::Stopped { epoch } if allow_restart_after_stop => {
-                let epoch = epoch.saturating_add(1);
-                state.lifecycle = BackendLifecycle::Active { epoch };
-                epoch
+        let in_flight_starts = state
+            .in_flight_starts
+            .checked_add(1)
+            .ok_or_else(|| "Too many desktop backend starts are in flight.".to_string())?;
+        let epoch = match &state.lifecycle {
+            BackendLifecycle::Active { epoch } => *epoch,
+            BackendLifecycle::Stopped {
+                epoch,
+                result: Ok(()),
+            } if allow_restart_after_stop => epoch.saturating_add(1),
+            BackendLifecycle::Stopped {
+                result: Err(error), ..
+            } if allow_restart_after_stop => {
+                return Err(format!(
+                    "Desktop backend cleanup failed; restart is unsafe: {error}"
+                ));
             }
             BackendLifecycle::Stopping { .. } => {
                 return Err("Desktop backend shutdown is still in progress.".to_string());
@@ -648,13 +677,40 @@ impl BackendSupervisor {
                     "Desktop backend has stopped; automatic restart was cancelled.".to_string(),
                 );
             }
-            BackendLifecycle::Terminated => {
+            BackendLifecycle::Terminated { .. } => {
                 return Err("Desktop backend is terminating and cannot be restarted.".to_string());
             }
         };
+        if matches!(state.lifecycle, BackendLifecycle::Stopped { .. }) {
+            state.lifecycle = BackendLifecycle::Active { epoch };
+        }
         let run_id = state.next_run_id;
         state.next_run_id = state.next_run_id.saturating_add(1);
-        Ok(BackendStartPermit { epoch, run_id })
+        state.in_flight_starts = in_flight_starts;
+        Ok(BackendStartPermit {
+            epoch,
+            run_id,
+            state: self.state.clone(),
+            start_completed: self.start_completed.clone(),
+        })
+    }
+
+    async fn wait_for_in_flight_starts(&self) {
+        loop {
+            let notified = self.start_completed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self
+                .state
+                .lock()
+                .expect("backend supervisor mutex poisoned")
+                .in_flight_starts
+                == 0
+            {
+                return;
+            }
+            notified.await;
+        }
     }
 
     #[cfg(test)]
@@ -675,6 +731,26 @@ impl BackendSupervisor {
         if let Some((reached, release)) = gate {
             let _ = reached.send(());
             let _ = release.await;
+        }
+    }
+
+    #[cfg(test)]
+    fn set_shutdown_cleanup_reached(&self, reached: oneshot::Sender<()>) {
+        *self
+            .shutdown_cleanup_reached
+            .lock()
+            .expect("backend shutdown test notification mutex poisoned") = Some(reached);
+    }
+
+    #[cfg(test)]
+    fn notify_shutdown_cleanup_reached(&self) {
+        if let Some(reached) = self
+            .shutdown_cleanup_reached
+            .lock()
+            .expect("backend shutdown test notification mutex poisoned")
+            .take()
+        {
+            let _ = reached.send(());
         }
     }
 
@@ -727,10 +803,19 @@ impl BackendSupervisor {
                     Some((shutdown_epoch, backends, completion_tx)),
                 )
             } else {
+                let completed_result = match &state.lifecycle {
+                    BackendLifecycle::Stopped { result, .. }
+                    | BackendLifecycle::Terminated { result } => result.clone(),
+                    BackendLifecycle::Active { .. } | BackendLifecycle::Stopping { .. } => {
+                        unreachable!("active and stopping lifecycle handled above")
+                    }
+                };
                 if terminate && matches!(state.lifecycle, BackendLifecycle::Stopped { .. }) {
-                    state.lifecycle = BackendLifecycle::Terminated;
+                    state.lifecycle = BackendLifecycle::Terminated {
+                        result: completed_result.clone(),
+                    };
                 }
-                let (_completion_tx, completion_rx) = watch::channel(Some(Ok(())));
+                let (_completion_tx, completion_rx) = watch::channel(Some(completed_result));
                 (completion_rx, None)
             }
         };
@@ -747,6 +832,9 @@ impl BackendSupervisor {
                     }
                 }
                 let result = first_error.map_or(Ok(()), Err);
+                #[cfg(test)]
+                supervisor.notify_shutdown_cleanup_reached();
+                supervisor.wait_for_in_flight_starts().await;
 
                 {
                     let mut state = supervisor
@@ -758,14 +846,14 @@ impl BackendSupervisor {
                     } = state.lifecycle
                         && epoch == shutdown_epoch
                     {
+                        let _ = completion_tx.send(Some(result.clone()));
                         state.lifecycle = if terminate {
-                            BackendLifecycle::Terminated
+                            BackendLifecycle::Terminated { result }
                         } else {
-                            BackendLifecycle::Stopped { epoch }
+                            BackendLifecycle::Stopped { epoch, result }
                         };
                     }
                 }
-                let _ = completion_tx.send(Some(result));
             });
         }
 
@@ -2573,7 +2661,7 @@ mod tests {
         let first_supervisor = supervisor.clone();
         let first_stop = tokio::spawn(async move {
             first_supervisor
-                .stop_for_exit(BackendShutdownConfig::default())
+                .stop(BackendShutdownConfig::default())
                 .await
         });
         while !runtime.stop_requested.load(Ordering::SeqCst) {
@@ -2583,7 +2671,7 @@ mod tests {
         let second_supervisor = supervisor.clone();
         let second_stop = tokio::spawn(async move {
             second_supervisor
-                .stop_for_exit(BackendShutdownConfig::default())
+                .stop(BackendShutdownConfig::default())
                 .await
         });
         tokio::task::yield_now().await;
@@ -2603,14 +2691,55 @@ mod tests {
             .expect_err("second stop should share the cleanup failure");
         assert_eq!(first_error, "shared cleanup failure");
         assert_eq!(second_error, first_error);
+        let later_error = supervisor
+            .stop(BackendShutdownConfig::default())
+            .await
+            .expect_err("later stop callers should retain the completed cleanup failure");
+        assert_eq!(later_error, first_error);
         assert!(matches!(
             supervisor
                 .state
                 .lock()
                 .expect("backend supervisor mutex poisoned")
                 .lifecycle,
-            BackendLifecycle::Terminated
+            BackendLifecycle::Stopped { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn failed_shutdown_does_not_allow_an_explicit_restart() {
+        let supervisor = BackendSupervisor::new();
+        let runtime = ManagedBackendRuntime {
+            run_id: 78,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            shutdown: Arc::new(Mutex::new(None)),
+            completion: Arc::new(Notify::new()),
+            join_result: Arc::new(AsyncMutex::new(Some(Err(
+                "restart-blocking cleanup failure".to_string(),
+            )))),
+        };
+        supervisor
+            .state
+            .lock()
+            .expect("backend supervisor mutex poisoned")
+            .slots
+            .insert(
+                PRIMARY_LOCAL_ENVIRONMENT_ID.to_owned(),
+                BackendSlotState {
+                    backend: Some(ManagedBackend::Runtime(Box::new(runtime))),
+                    ..BackendSlotState::default()
+                },
+            );
+
+        let shutdown_error = supervisor
+            .stop(BackendShutdownConfig::default())
+            .await
+            .expect_err("shutdown should surface the cleanup failure");
+        assert_eq!(shutdown_error, "restart-blocking cleanup failure");
+        let restart_error = supervisor
+            .begin_start(true)
+            .expect_err("failed shutdown must not open a new lifecycle");
+        assert!(restart_error.contains("cleanup"), "{restart_error}");
     }
 
     #[tokio::test]
@@ -2625,6 +2754,8 @@ mod tests {
         let (publish_reached, wait_for_publish) = oneshot::channel();
         let (allow_publish, publish_release) = oneshot::channel();
         supervisor.set_start_publish_gate(publish_reached, publish_release);
+        let (cleanup_reached, wait_for_cleanup) = oneshot::channel();
+        supervisor.set_shutdown_cleanup_reached(cleanup_reached);
         let plan = BackendLaunchPlan::local(temp.path().to_path_buf(), local_test_config(port));
 
         let start_supervisor = supervisor.clone();
@@ -2641,14 +2772,29 @@ mod tests {
             .await
             .expect("start should reach the pre-publish gate");
 
-        supervisor
-            .stop(BackendShutdownConfig::default())
+        let stop_supervisor = supervisor.clone();
+        let stop =
+            tokio::spawn(
+                async move { stop_supervisor.stop(BackendShutdownConfig::default()).await },
+            );
+        wait_for_cleanup
             .await
-            .expect("stop should win while start is blocked before publish");
+            .expect("shutdown should finish cleaning currently published backends");
+        let shutdown_completed_before_start_cleanup = matches!(
+            supervisor
+                .state
+                .lock()
+                .expect("backend supervisor mutex poisoned")
+                .lifecycle,
+            BackendLifecycle::Stopped { .. } | BackendLifecycle::Terminated { .. }
+        );
         allow_publish
             .send(())
             .expect("blocked start should still be waiting");
         let start_result = start.await.expect("start task should join");
+        stop.await
+            .expect("stop task should join")
+            .expect("stop should succeed after late startup cleanup");
         if start_result.is_ok() {
             supervisor
                 .stop(BackendShutdownConfig::default())
@@ -2656,6 +2802,10 @@ mod tests {
                 .expect("RED cleanup should stop a backend published after shutdown");
         }
 
+        assert!(
+            !shutdown_completed_before_start_cleanup,
+            "stop must wait for starts that began before shutdown"
+        );
         let error = start_result.expect_err("start begun before stop must not publish afterward");
         assert!(error.contains("shutdown"), "{error}");
         assert!(

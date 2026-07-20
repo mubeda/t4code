@@ -197,10 +197,11 @@ the app and port 3773 were absent, but zero-network fixture provider PID `86600`
 and child PID `86625` survived for more than 10 seconds. Terminating the exact
 fixture root then removed both.
 
-Commit `64c9633626` added graceful SIGTERM handling, and the follow-up
-supervisor-lifecycle correction in the same provider-shutdown work closes the
-reviewed concurrent-stop and start-versus-stop races. The complete diagnosis,
-RED/GREEN evidence, and verification are in the
+Commit `64c9633626` added graceful SIGTERM handling, and commit `5544190dd8`
+added the coordinated supervisor lifecycle. A final follow-up correction in
+the same provider-shutdown work makes shutdown completion include in-flight
+starts and retains failed cleanup results so unsafe restart is rejected. The
+complete diagnosis, RED/GREEN evidence, and verification are in the
 [provider shutdown cleanup report](provider-shutdown-cleanup-report.md).
 
 The earlier attribution and load measurements above used only the zero-network
