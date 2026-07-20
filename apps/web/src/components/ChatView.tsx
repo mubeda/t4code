@@ -1265,7 +1265,7 @@ function ChatViewContent(props: ChatViewProps) {
     ? scopeProjectRef(draftThread.environmentId, draftThread.projectId)
     : null;
   const fallbackDraftProject = useProject(fallbackDraftProjectRef);
-  const fallbackDraftModelSelection = useMemo(() => {
+  const fallbackDraftResolution = useMemo(() => {
     if (!draftThread) return null;
     const targetInstanceId =
       fallbackDraftProject?.defaultModelSelection?.instanceId ??
@@ -1277,8 +1277,15 @@ function ChatViewContent(props: ChatViewProps) {
       providers,
       settings,
       projectSelection: fallbackDraftProject?.defaultModelSelection ?? null,
-    }).modelSelection;
+    });
   }, [draftThread, environmentById, fallbackDraftProject?.defaultModelSelection, settings]);
+  const fallbackDraftModelSelection = fallbackDraftResolution?.modelSelection ?? null;
+  const legacyDraftMissingStoredModelSelection = useMemo(() => {
+    if (!draftThread) return false;
+    const composerDraft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+    return Object.keys(composerDraft?.modelSelectionByProvider ?? {}).length === 0;
+  }, [composerDraftTarget, draftThread]);
+  const warnedLegacyDraftFallbacksRef = useRef(new Set<string>());
   const localDraftError =
     routeKind === "server" && serverThread
       ? null
@@ -4413,6 +4420,21 @@ function ChatViewContent(props: ChatViewProps) {
             }
           : undefined;
       beginLocalDispatch({ preparingWorktree: false });
+      const legacyDraftFallback = fallbackDraftResolution?.fallback ?? null;
+      const warningKey = routeThreadKey;
+      if (
+        isLocalDraftThread &&
+        legacyDraftMissingStoredModelSelection &&
+        fallbackDraftResolution !== null &&
+        legacyDraftFallback &&
+        ctxSelectedModelSelection.instanceId ===
+          fallbackDraftResolution.modelSelection.instanceId &&
+        ctxSelectedModelSelection.model === fallbackDraftResolution.modelSelection.model &&
+        !warnedLegacyDraftFallbacksRef.current.has(warningKey)
+      ) {
+        warnedLegacyDraftFallbacksRef.current.add(warningKey);
+        console.warn("Provider session default fallback", legacyDraftFallback);
+      }
       const startResult = await startThreadTurn({
         environmentId,
         input: {

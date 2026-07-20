@@ -222,4 +222,35 @@ describe("ChatHeaderPanelMenu", () => {
     );
     expect(props.onOpenProviderTerminalPanel).toHaveBeenCalledOnce();
   });
+
+  it.each([
+    {
+      state: "provider-disabled",
+      item: panelItem({ disabled: true, disabledReason: "Provider unavailable" }),
+      canCreatePanel: true,
+    },
+    {
+      state: "thread-disabled",
+      item: panelItem(),
+      canCreatePanel: false,
+    },
+  ])("does not warn or launch a $state provider terminal action", ({ item, canCreatePanel }) => {
+    harness.items = [item];
+    harness.providerTerminalFallback = {
+      driver: "codex",
+      instanceId: "codex",
+      configuredModel: "retired-model",
+      resolvedModel: "gpt-5.4",
+      reason: "configured-model-unavailable",
+    };
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    warning.mockClear();
+
+    const { props } = render(canCreatePanel);
+    expect(harness.menuItems[2]).toMatchObject({ disabled: true });
+    (harness.menuItems[2]!.onClick as () => void)();
+
+    expect(warning).not.toHaveBeenCalled();
+    expect(props.onOpenProviderTerminalPanel).not.toHaveBeenCalled();
+  });
 });

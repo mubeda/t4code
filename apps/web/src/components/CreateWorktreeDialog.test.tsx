@@ -556,28 +556,84 @@ staticDescribe("CreateWorktreeDialog", () => {
     expect(captured.switches[0]?.checked).toBe(true);
   });
 
-  it("uses the explicit project model selection when the target provider supports it", async () => {
+  it("initializes an untouched dialog from the available project provider and its options", async () => {
     testState.projects = [
-      project({ defaultModelSelection: { instanceId: "opencode", model: "qwen" } }),
+      project({
+        defaultModelSelection: {
+          instanceId: "codex",
+          model: "gpt-5.4",
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "fast" },
+          ],
+        },
+      }),
     ];
     testState.serverConfigs.set(ENVIRONMENT_ID, {
       providers: [
         {
-          instanceId: "opencode",
-          driver: "opencode",
-          displayName: "OpenCode",
+          instanceId: "claudeAgent",
+          driver: "claudeAgent",
+          displayName: "Claude",
           enabled: true,
           installed: true,
           status: "ready",
-          models: [{ slug: "qwen", name: "Qwen", isCustom: false, capabilities: null }],
+          models: [
+            {
+              slug: "claude-sonnet-4-6",
+              name: "Sonnet",
+              isCustom: false,
+              capabilities: null,
+            },
+          ],
+        },
+        {
+          instanceId: "codex",
+          driver: "codex",
+          displayName: "Codex",
+          enabled: true,
+          installed: true,
+          status: "ready",
+          models: [
+            {
+              slug: "gpt-5.4",
+              name: "GPT-5.4",
+              isCustom: false,
+              capabilities: {
+                optionDescriptors: [
+                  {
+                    id: "reasoningEffort",
+                    label: "Reasoning",
+                    type: "select",
+                    options: [
+                      { id: "medium", label: "Medium", isDefault: true },
+                      { id: "high", label: "High" },
+                    ],
+                    currentValue: "medium",
+                  },
+                  {
+                    id: "serviceTier",
+                    label: "Service tier",
+                    type: "select",
+                    options: [
+                      { id: "default", label: "Default", isDefault: true },
+                      { id: "fast", label: "Fast" },
+                    ],
+                    currentValue: "default",
+                  },
+                ],
+              },
+            },
+          ],
         },
       ],
       settings: DEFAULT_SERVER_SETTINGS,
     });
     render();
+    expect(captured.selects[1]?.value).toBe("codex");
     button("Name").onClick?.();
     render();
-    input("Worktree / branch name").onChange?.({ target: { value: "fallback" } });
+    input("Worktree / branch name").onChange?.({ target: { value: "project-default" } });
     render();
     button("Create worktree").onClick?.();
     await flushPromises();
@@ -585,7 +641,14 @@ staticDescribe("CreateWorktreeDialog", () => {
     expect(testState.createThread).toHaveBeenCalledWith(
       expect.objectContaining({
         input: expect.objectContaining({
-          modelSelection: { instanceId: "opencode", model: "qwen" },
+          modelSelection: {
+            instanceId: "codex",
+            model: "gpt-5.4",
+            options: [
+              { id: "reasoningEffort", value: "high" },
+              { id: "serviceTier", value: "fast" },
+            ],
+          },
         }),
       }),
     );
