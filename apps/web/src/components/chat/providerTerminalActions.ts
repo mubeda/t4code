@@ -5,6 +5,7 @@ import {
 } from "@t4code/contracts";
 import {
   resolveProviderSessionDefault,
+  type ProviderSessionDefaultFallback,
   type ResolvedProviderSessionDefault,
 } from "@t4code/shared/providerSessionDefaults";
 
@@ -49,6 +50,7 @@ export interface ProviderTerminalAction {
   readonly label: string;
   readonly command: TerminalLaunchCommand;
   readonly disabledReason: null;
+  readonly fallback?: ProviderSessionDefaultFallback;
 }
 
 export interface DisabledProviderTerminalAction {
@@ -56,6 +58,7 @@ export interface DisabledProviderTerminalAction {
   readonly label: string;
   readonly command: null;
   readonly disabledReason: string;
+  readonly fallback?: ProviderSessionDefaultFallback;
 }
 
 export type ProviderTerminalActionItem = ProviderTerminalAction | DisabledProviderTerminalAction;
@@ -150,5 +153,6 @@ export function resolveProviderTerminalAction(
     label,
     command,
     disabledReason: null,
+    ...(resolution.fallback ? { fallback: resolution.fallback } : {}),
   };
 }

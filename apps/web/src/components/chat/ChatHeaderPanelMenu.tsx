@@ -127,6 +127,9 @@ export const ChatHeaderPanelMenu = memo(function ChatHeaderPanelMenu({
                   disabled={disabled}
                   onClick={() => {
                     if (action.command !== null) {
+                      if (action.fallback) {
+                        console.warn("Provider session default fallback", action.fallback);
+                      }
                       onOpenProviderTerminalPanel(action);
                     }
                   }}

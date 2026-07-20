@@ -2514,6 +2514,84 @@ describe("ChatView project script handlers", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("ChatView send flows", () => {
+  it("uses shared defaults for a legacy draft that has no stored model selection", () => {
+    const draftId = newDraftId();
+    const capabilityRichProvider: ServerProvider = {
+      ...codexProvider,
+      models: [
+        {
+          ...codexProvider.models[0]!,
+          capabilities: {
+            optionDescriptors: [
+              {
+                id: "reasoningEffort",
+                label: "Reasoning",
+                type: "select",
+                options: [
+                  { id: "medium", label: "Medium", isDefault: true },
+                  { id: "high", label: "High" },
+                ],
+                currentValue: "medium",
+              },
+              {
+                id: "serviceTier",
+                label: "Service tier",
+                type: "select",
+                options: [
+                  { id: "default", label: "Default", isDefault: true },
+                  { id: "fast", label: "Fast" },
+                ],
+                currentValue: "default",
+              },
+            ],
+          },
+        },
+      ],
+    };
+    seedEnvironment(
+      makeEnvironmentPresentation({
+        serverConfig: {
+          providers: [capabilityRichProvider],
+          environment: { label: "Local" },
+        },
+      }),
+    );
+    seedProject(makeProject({ defaultModelSelection: null }));
+    seedGitStatus(true);
+    h.settings = {
+      ...h.settings,
+      providerSessionDefaults: {
+        codex: {
+          model: "gpt-5.4",
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "fast" },
+          ],
+        },
+      },
+    };
+    useComposerDraftStore
+      .getState()
+      .setLogicalProjectDraftThreadId(
+        "legacy-draft",
+        scopeProjectRef(environmentId, projectId),
+        draftId,
+        { threadId, createdAt: now, envMode: "local" },
+      );
+    publishSeededStoreState(useComposerDraftStore);
+
+    renderDraftRoute(draftId);
+
+    expect(capturedProps("chatComposer")["activeThreadModelSelection"]).toEqual({
+      instanceId: codexInstanceId,
+      model: "gpt-5.4",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "fast" },
+      ],
+    });
+  });
+
   it("promotes a freshly seeded draft with its unchanged full model selection", async () => {
     const seededSelection: ModelSelection = {
       instanceId: codexInstanceId,
@@ -3729,6 +3807,59 @@ describe("ChatView banners and dialogs", () => {
 
   it("opens the pull request dialog flow and prepares a draft thread", async () => {
     seedConnectedServerThread();
+    seedProject(makeProject({ defaultModelSelection: null }));
+    const capabilityRichCodexProvider: ServerProvider = {
+      ...codexProvider,
+      models: [
+        {
+          ...codexProvider.models[0]!,
+          capabilities: {
+            optionDescriptors: [
+              {
+                id: "reasoningEffort",
+                label: "Reasoning",
+                type: "select",
+                options: [
+                  { id: "medium", label: "Medium", isDefault: true },
+                  { id: "high", label: "High" },
+                ],
+                currentValue: "medium",
+              },
+              {
+                id: "serviceTier",
+                label: "Service tier",
+                type: "select",
+                options: [
+                  { id: "default", label: "Default", isDefault: true },
+                  { id: "fast", label: "Fast" },
+                ],
+                currentValue: "default",
+              },
+            ],
+          },
+        },
+      ],
+    };
+    seedEnvironment(
+      makeEnvironmentPresentation({
+        serverConfig: {
+          providers: [capabilityRichCodexProvider],
+          environment: { label: "Local" },
+        },
+      }),
+    );
+    h.settings = {
+      ...h.settings,
+      providerSessionDefaults: {
+        codex: {
+          model: "gpt-5.4",
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "fast" },
+          ],
+        },
+      },
+    };
     seedHostState("pullRequestDialogState", { initialReference: "octo/repo#42", key: 7 });
 
     const markup = renderServerRoute();
@@ -3751,8 +3882,19 @@ describe("ChatView banners and dialogs", () => {
     )({ branch: "pr-branch", worktreePath: null });
 
     expect(h.navigateCalls.length).toBeGreaterThanOrEqual(1);
-    const navigateCall = h.navigateCalls[0] as { to: string };
+    const navigateCall = h.navigateCalls[0] as {
+      to: string;
+      params: { draftId: ReturnType<typeof newDraftId> };
+    };
     expect(navigateCall.to).toBe("/draft/$draftId");
+    expect(draftModelSelection(navigateCall.params.draftId, codexInstanceId)).toEqual({
+      instanceId: codexInstanceId,
+      model: "gpt-5.4",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "fast" },
+      ],
+    });
   });
 
   it("reuses a stored draft session for pull request checkout when one exists", async () => {

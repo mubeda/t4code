@@ -52,6 +52,7 @@
             }
           },
           "providerInstances": {},
+          "providerSessionDefaults": {},
           "observability": {
             "otlpTracesUrl": "",
             "otlpMetricsUrl": ""

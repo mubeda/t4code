@@ -8,7 +8,9 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
-use tokio::sync::{RwLock, broadcast, mpsc};
+#[cfg(test)]
+use tokio::sync::Barrier;
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -31,6 +33,10 @@ pub struct NativeServerControl {
     settings_path: PathBuf,
     keybindings_path: PathBuf,
     settings: Arc<RwLock<Value>>,
+    settings_update_lock: Arc<Mutex<()>>,
+    settings_load_error: Option<Value>,
+    #[cfg(test)]
+    settings_update_barrier: Arc<RwLock<Option<Arc<Barrier>>>>,
     keybinding_rules: Arc<RwLock<Vec<Value>>>,
     keybinding_issues: Arc<RwLock<Vec<Value>>>,
     providers: Arc<RwLock<Vec<Value>>>,
@@ -54,11 +60,18 @@ impl NativeServerControl {
         let state_directory = config.state_dir();
         let settings_path = state_directory.join("settings.json");
         let keybindings_path = state_directory.join("keybindings.json");
-        let mut settings = read_json::<Value>(&settings_path)
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| json!({}));
+        let (mut settings, settings_load_error) = match read_json::<Value>(&settings_path).await {
+            Ok(Some(settings)) => (settings, None),
+            Ok(None) => (json!({}), None),
+            Err(error) => (
+                json!({}),
+                Some(settings_error(
+                    &settings_path,
+                    "read-file",
+                    &error.to_string(),
+                )),
+            ),
+        };
         apply_settings_defaults(&mut settings);
         redact_sensitive_environment(&mut settings);
         let loaded_keybindings = keybindings::load(&keybindings_path).await;
@@ -72,6 +85,10 @@ impl NativeServerControl {
             settings_path,
             keybindings_path,
             settings: Arc::new(RwLock::new(settings.clone())),
+            settings_update_lock: Arc::new(Mutex::new(())),
+            settings_load_error,
+            #[cfg(test)]
+            settings_update_barrier: Arc::new(RwLock::new(None)),
             keybinding_rules: Arc::new(RwLock::new(loaded_keybindings.rules)),
             keybinding_issues: Arc::new(RwLock::new(loaded_keybindings.issues)),
             providers: Arc::new(RwLock::new(providers)),
@@ -113,6 +130,14 @@ impl NativeServerControl {
             ));
         }
 
+        #[cfg(test)]
+        if let Some(barrier) = self.settings_update_barrier.read().await.clone() {
+            barrier.wait().await;
+        }
+        let _update_guard = self.settings_update_lock.lock().await;
+        if let Some(error) = &self.settings_load_error {
+            return Err(error.clone());
+        }
         let current = self.settings.read().await.clone();
         let mut next = current;
         apply_settings_patch(&mut next, patch);
@@ -127,6 +152,7 @@ impl NativeServerControl {
             })?;
         redact_sensitive_environment(&mut next);
         *self.settings.write().await = next.clone();
+        drop(_update_guard);
 
         let cwd = std::env::current_dir().unwrap_or_else(|_| self.config.base_dir.clone());
         let providers = provider_inventory::probe(&next, None, &cwd).await;
@@ -139,6 +165,11 @@ impl NativeServerControl {
         self.publish_provider_snapshots(&providers);
         self.spawn_full_provider_refresh(next.clone(), cwd);
         Ok(next)
+    }
+
+    #[cfg(test)]
+    async fn install_settings_update_barrier(&self, parties: usize) {
+        *self.settings_update_barrier.write().await = Some(Arc::new(Barrier::new(parties)));
     }
 
     async fn refresh_providers(&self, payload: &Value) -> Value {
@@ -264,8 +295,14 @@ impl ProductionServerControl for NativeServerControl {
                 return Err(json!({ "_tag": "RequestCancelled", "method": method }));
             }
             match method {
-                "server.getConfig" => Ok(control.config_snapshot().await),
-                "server.getSettings" => Ok(control.settings.read().await.clone()),
+                "server.getConfig" => match &control.settings_load_error {
+                    Some(error) => Err(error.clone()),
+                    None => Ok(control.config_snapshot().await),
+                },
+                "server.getSettings" => match &control.settings_load_error {
+                    Some(error) => Err(error.clone()),
+                    None => Ok(control.settings.read().await.clone()),
+                },
                 "server.updateSettings" => control.update_settings(payload).await,
                 "server.refreshProviders" => Ok(control.refresh_providers(&payload).await),
                 "server.updateProvider" => {
@@ -298,6 +335,10 @@ impl ProductionServerControl for NativeServerControl {
         tokio::spawn(async move {
             match method {
                 "subscribeServerConfig" => {
+                    if let Some(error) = &control.settings_load_error {
+                        let _ = sender.send(Err(error.clone())).await;
+                        return;
+                    }
                     let settings = control.settings.read().await.clone();
                     let cwd =
                         std::env::current_dir().unwrap_or_else(|_| control.config.base_dir.clone());
@@ -809,6 +850,119 @@ mod tests {
             .expect("patch applies");
         assert_eq!(updated["terminal"]["webglEnabled"], false);
         assert_eq!(updated["enableProviderUpdateChecks"], true);
+    }
+
+    #[tokio::test]
+    async fn concurrent_settings_updates_preserve_every_committed_patch() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let temp = tempfile::tempdir().expect("state directory");
+        let mut config = ServerConfig::new(temp.path());
+        config.environment_id = "environment-concurrent-settings".to_owned();
+        let control = NativeServerControl::new(config, json!({"policy": "test"})).await;
+        control.install_settings_update_barrier(24).await;
+
+        let updates = (0..24)
+            .map(|index| {
+                let control = control.clone();
+                tokio::spawn(async move {
+                    control
+                        .update_settings(json!({
+                            "patch": {
+                                "concurrentUpdates": {
+                                    format!("update-{index}"): true
+                                },
+                                "providerInstances": {
+                                    "concurrency-test": {
+                                        "driver": "codex",
+                                        "environment": [{
+                                            "name": "TOKEN",
+                                            "value": format!("secret-{index}"),
+                                            "sensitive": true
+                                        }]
+                                    }
+                                }
+                            }
+                        }))
+                        .await
+                })
+            })
+            .collect::<Vec<_>>();
+        for update in updates {
+            update
+                .await
+                .expect("settings task joins")
+                .expect("settings update succeeds");
+        }
+
+        let settings = control
+            .call("server.getSettings", json!({}), CancellationToken::new())
+            .await
+            .expect("settings remain readable");
+        for index in 0..24 {
+            assert_eq!(
+                settings["concurrentUpdates"][format!("update-{index}")],
+                true
+            );
+        }
+        let persisted = read_json::<Value>(control.settings_path.clone())
+            .await
+            .expect("settings file reads")
+            .expect("settings file exists");
+        assert_eq!(
+            persisted["concurrentUpdates"],
+            settings["concurrentUpdates"]
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_settings_surface_structured_errors_and_refuse_mutation() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let temp = tempfile::tempdir().expect("state directory");
+        let config = ServerConfig::new(temp.path());
+        let settings_path = config.state_dir().join("settings.json");
+        tokio::fs::create_dir_all(config.state_dir())
+            .await
+            .expect("state directory exists");
+        tokio::fs::write(&settings_path, b"{not-json")
+            .await
+            .expect("malformed settings fixture");
+        let control = NativeServerControl::new(config, json!({"policy": "test"})).await;
+
+        let read_error = control
+            .call("server.getSettings", json!({}), CancellationToken::new())
+            .await
+            .expect_err("malformed settings are not presented as defaults");
+        assert_eq!(read_error["_tag"], "ServerSettingsError");
+        assert_eq!(read_error["operation"], "read-file");
+        assert_eq!(
+            control
+                .call("server.getConfig", json!({}), CancellationToken::new())
+                .await
+                .expect_err("malformed settings reject config reads"),
+            read_error
+        );
+        let mut config_stream =
+            control.subscribe("subscribeServerConfig", CancellationToken::new());
+        assert_eq!(
+            config_stream
+                .recv()
+                .await
+                .expect("config stream reports its load failure")
+                .expect_err("malformed settings reject config subscriptions"),
+            read_error
+        );
+
+        let update_error = control
+            .update_settings(json!({"patch":{"enableAssistantStreaming":true}}))
+            .await
+            .expect_err("malformed settings refuse mutation");
+        assert_eq!(update_error, read_error);
+        assert_eq!(
+            tokio::fs::read(&settings_path)
+                .await
+                .expect("malformed file remains readable"),
+            b"{not-json"
+        );
     }
 
     #[tokio::test]

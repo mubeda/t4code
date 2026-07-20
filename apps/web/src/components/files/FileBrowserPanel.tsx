@@ -1,4 +1,4 @@
-import { DEFAULT_MODEL, ProviderInstanceId } from "@t4code/contracts";
+import { DEFAULT_SERVER_SETTINGS, ProviderInstanceId } from "@t4code/contracts";
 import type { EditorId, EnvironmentId, ProjectEntry, ScopedThreadRef } from "@t4code/contracts";
 import {
   isAtomCommandInterrupted,
@@ -18,12 +18,17 @@ import { T4CODE_PIERRE_ICONS } from "~/pierre-icons";
 import { isPreviewSupportedInRuntime } from "~/previewStateStore";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { assetEnvironment } from "~/state/assets";
-import { useEnvironmentHttpBaseUrl, usePrimaryEnvironmentId } from "~/state/environments";
+import {
+  useEnvironment,
+  useEnvironmentHttpBaseUrl,
+  usePrimaryEnvironmentId,
+} from "~/state/environments";
 import { previewEnvironment } from "~/state/preview";
 import { projectEnvironment } from "~/state/projects";
 import { shellEnvironment } from "~/state/shell";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
+import { resolveProviderSessionSelectionForInstance } from "~/providerSessionSelection";
 
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import FileEntryDialog, { type FileEntryDialogRequest } from "./FileEntryDialog";
@@ -116,6 +121,7 @@ export default function FileBrowserPanel({
   const previousTreePathsRef = useRef<readonly string[]>([]);
 
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const environment = useEnvironment(environmentId);
   const isPrimaryEnv = primaryEnvironmentId === environmentId;
   const hasWorkspaceRoot = cwd.length > 0;
 
@@ -179,6 +185,15 @@ export default function FileBrowserPanel({
   const addAsProject = useCallback(
     (workspaceRoot: string) => {
       void (async () => {
+        const serverConfig = environment?.serverConfig;
+        const resolution = resolveProviderSessionSelectionForInstance({
+          instanceId: ProviderInstanceId.make("codex"),
+          providers: serverConfig?.providers ?? [],
+          settings: serverConfig?.settings ?? DEFAULT_SERVER_SETTINGS,
+        });
+        if (resolution.fallback) {
+          console.warn("Provider session default fallback", resolution.fallback);
+        }
         const result = await createProject({
           environmentId,
           input: {
@@ -186,10 +201,7 @@ export default function FileBrowserPanel({
             title: inferProjectTitleFromPath(workspaceRoot),
             workspaceRoot,
             createWorkspaceRootIfMissing: true,
-            defaultModelSelection: {
-              instanceId: ProviderInstanceId.make("codex"),
-              model: DEFAULT_MODEL,
-            },
+            defaultModelSelection: resolution.modelSelection,
           },
         });
         if (result._tag === "Failure") {
@@ -202,7 +214,7 @@ export default function FileBrowserPanel({
         }
       })();
     },
-    [createProject, environmentId, showMutationError],
+    [createProject, environment?.serverConfig, environmentId, showMutationError],
   );
 
   const createChildEntry = useCallback(

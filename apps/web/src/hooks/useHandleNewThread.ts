@@ -10,7 +10,6 @@ import {
   ProviderDriverKind,
   type ScopedProjectRef,
 } from "@t4code/contracts";
-import { resolveProviderSessionDefault } from "@t4code/shared/providerSessionDefaults";
 import { useParams, useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import {
@@ -29,6 +28,7 @@ import {
 import { readThreadShell, useProjects, useServerConfigs, useThread } from "../state/entities";
 import { resolveNewDraftStartFromOrigin } from "../lib/chatThreadActions";
 import { resolveThreadRouteTarget } from "../threadRoutes";
+import { resolveProviderSessionSelectionForInstance } from "../providerSessionSelection";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
 import { useClientSettings } from "./useSettings";
 
@@ -169,19 +169,10 @@ export function useNewThreadHandler() {
         project?.defaultModelSelection?.instanceId ??
         stickyActiveProvider ??
         defaultInstanceIdForDriver(ProviderDriverKind.make("codex"));
-      const targetProvider = environmentProviders.find(
-        (provider) => provider.instanceId === targetInstanceId,
-      );
-      const targetDriver =
-        targetProvider?.driver ??
-        environmentSettings.providerInstances[targetInstanceId]?.driver ??
-        ProviderDriverKind.make(targetInstanceId);
-      const configuredDefault = environmentSettings.providerSessionDefaults[targetDriver];
-      const resolution = resolveProviderSessionDefault({
-        driver: targetDriver,
+      const resolution = resolveProviderSessionSelectionForInstance({
         instanceId: targetInstanceId,
-        models: targetProvider?.models ?? [],
-        ...(configuredDefault === undefined ? {} : { configuredDefault }),
+        providers: environmentProviders,
+        settings: environmentSettings,
         ...(project === undefined ? {} : { projectSelection: project.defaultModelSelection }),
       });
       return (async () => {

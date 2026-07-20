@@ -111,6 +111,7 @@ import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { isCommandPaletteOpen } from "../commandPaletteContext";
 import { buildTemporaryWorktreeBranchName } from "@t4code/shared/git";
 import { useMediaQuery } from "../hooks/useMediaQuery";
+import { resolveProviderSessionSelectionForInstance } from "../providerSessionSelection";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import {
   selectActiveRightPanel,
@@ -1264,6 +1265,20 @@ function ChatViewContent(props: ChatViewProps) {
     ? scopeProjectRef(draftThread.environmentId, draftThread.projectId)
     : null;
   const fallbackDraftProject = useProject(fallbackDraftProjectRef);
+  const fallbackDraftModelSelection = useMemo(() => {
+    if (!draftThread) return null;
+    const targetInstanceId =
+      fallbackDraftProject?.defaultModelSelection?.instanceId ??
+      useComposerDraftStore.getState().stickyActiveProvider ??
+      defaultInstanceIdForDriver(ProviderDriverKind.make("codex"));
+    const providers = environmentById.get(draftThread.environmentId)?.serverConfig?.providers ?? [];
+    return resolveProviderSessionSelectionForInstance({
+      instanceId: targetInstanceId,
+      providers,
+      settings,
+      projectSelection: fallbackDraftProject?.defaultModelSelection ?? null,
+    }).modelSelection;
+  }, [draftThread, environmentById, fallbackDraftProject?.defaultModelSelection, settings]);
   const localDraftError =
     routeKind === "server" && serverThread
       ? null
@@ -1275,13 +1290,13 @@ function ChatViewContent(props: ChatViewProps) {
         ? buildLocalDraftThread(
             threadId,
             draftThread,
-            fallbackDraftProject?.defaultModelSelection ?? {
+            fallbackDraftModelSelection ?? {
               instanceId: ProviderInstanceId.make("codex"),
               model: DEFAULT_MODEL,
             },
           )
         : undefined,
-    [draftThread, fallbackDraftProject?.defaultModelSelection, threadId],
+    [draftThread, fallbackDraftModelSelection, threadId],
   );
   const isServerThread = routeKind === "server" && serverThread !== null;
   const activeThread = isServerThread ? serverThread : localDraftThread;
@@ -1653,6 +1668,16 @@ function ChatViewContent(props: ChatViewProps) {
 
       const nextDraftId = newDraftId();
       const nextThreadId = newThreadId();
+      const targetInstanceId =
+        activeProject.defaultModelSelection?.instanceId ??
+        useComposerDraftStore.getState().stickyActiveProvider ??
+        defaultInstanceIdForDriver(ProviderDriverKind.make("codex"));
+      const resolution = resolveProviderSessionSelectionForInstance({
+        instanceId: targetInstanceId,
+        providers: activeEnvironment?.serverConfig?.providers ?? [],
+        settings,
+        projectSelection: activeProject.defaultModelSelection,
+      });
       setLogicalProjectDraftThreadId(logicalProjectKey, activeProjectRef, nextDraftId, {
         threadId: nextThreadId,
         createdAt: new Date().toISOString(),
@@ -1660,6 +1685,10 @@ function ChatViewContent(props: ChatViewProps) {
         interactionMode: DEFAULT_INTERACTION_MODE,
         ...input,
       });
+      setComposerDraftModelSelection(nextDraftId, resolution.modelSelection);
+      if (resolution.fallback) {
+        console.warn("Provider session default fallback", resolution.fallback);
+      }
       await navigate({
         to: "/draft/$draftId",
         params: buildDraftThreadRouteParams(nextDraftId),
@@ -1668,6 +1697,7 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [
       activeProject,
+      activeEnvironment?.serverConfig?.providers,
       draftId,
       getDraftSession,
       getDraftSessionByLogicalProjectKey,
@@ -1675,8 +1705,11 @@ function ChatViewContent(props: ChatViewProps) {
       navigate,
       projectGroupingSettings,
       routeKind,
+      setComposerDraftModelSelection,
       setDraftThreadContext,
       setLogicalProjectDraftThreadId,
+      settings.providerInstances,
+      settings.providerSessionDefaults,
     ],
   );
 
