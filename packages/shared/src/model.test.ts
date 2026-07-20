@@ -306,6 +306,31 @@ describe("getProviderOptionDescriptors edge cases", () => {
     }
   });
 
+  it("preserves a prompt-injected selection only when explicitly requested", () => {
+    const caps = createModelCapabilities({
+      optionDescriptors: [
+        {
+          id: "effort",
+          label: "Reasoning",
+          type: "select",
+          options: [
+            { id: "high", label: "High", isDefault: true },
+            { id: "ultrathink", label: "Ultrathink" },
+          ],
+          promptInjectedValues: ["ultrathink"],
+        },
+      ],
+    });
+    const descriptor = getProviderOptionDescriptors({
+      caps,
+      selections: [{ id: "effort", value: "ultrathink" }],
+      preservePromptInjectedSelections: true,
+    })[0]!;
+    if (descriptor.type === "select") {
+      expect(descriptor.currentValue).toBe("ultrathink");
+    }
+  });
+
   it("drops a prompt-injected value when no default exists", () => {
     const caps = createModelCapabilities({
       optionDescriptors: [

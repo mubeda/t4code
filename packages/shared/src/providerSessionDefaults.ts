@@ -89,6 +89,23 @@ function selectedString(
   return typeof selection?.value === "string" ? selection.value : null;
 }
 
+function getCodexServiceTierDescriptor(
+  selections: ReadonlyArray<ProviderOptionSelection> | undefined,
+): ProviderOptionDescriptor {
+  const tier = selectedString(selections, [SERVICE_TIER_OPTION_ID]);
+  return {
+    id: SERVICE_TIER_OPTION_ID,
+    label: "Service Tier",
+    type: "select",
+    options: [
+      { id: DEFAULT_SERVICE_TIER_VALUE, label: "Standard", isDefault: true },
+      { id: FAST_SERVICE_TIER_VALUE, label: "Fast" },
+    ],
+    currentValue:
+      tier === FAST_SERVICE_TIER_VALUE ? FAST_SERVICE_TIER_VALUE : DEFAULT_SERVICE_TIER_VALUE,
+  };
+}
+
 function getInvariantProviderModel(
   driver: ProviderDriverKind,
   model: string,
@@ -113,18 +130,7 @@ function getInvariantProviderModel(
   ];
 
   if (driver === CODEX_DRIVER_KIND) {
-    const tier = selectedString(selections, [SERVICE_TIER_OPTION_ID]);
-    optionDescriptors.push({
-      id: SERVICE_TIER_OPTION_ID,
-      label: "Service Tier",
-      type: "select",
-      options: [
-        { id: DEFAULT_SERVICE_TIER_VALUE, label: "Standard", isDefault: true },
-        { id: FAST_SERVICE_TIER_VALUE, label: "Fast" },
-      ],
-      currentValue:
-        tier === FAST_SERVICE_TIER_VALUE ? FAST_SERVICE_TIER_VALUE : DEFAULT_SERVICE_TIER_VALUE,
-    });
+    optionDescriptors.push(getCodexServiceTierDescriptor(selections));
   }
 
   return {
@@ -205,7 +211,7 @@ function normalizeProviderOptions(
   model: ServerProviderModel | null,
   selections?: ReadonlyArray<ProviderOptionSelection> | null,
 ): NormalizedProviderOptions {
-  if (!model?.capabilities) {
+  if (!model || (!model.capabilities && driver !== CODEX_DRIVER_KIND)) {
     return {
       descriptors: [],
       effortDescriptor: null,
@@ -215,9 +221,19 @@ function normalizeProviderOptions(
     };
   }
 
+  const liveDescriptors = model.capabilities?.optionDescriptors ?? [];
+  const optionDescriptors =
+    driver === CODEX_DRIVER_KIND &&
+    !liveDescriptors.some((descriptor) => descriptor.id === SERVICE_TIER_OPTION_ID)
+      ? [...liveDescriptors, getCodexServiceTierDescriptor(selections ?? undefined)]
+      : liveDescriptors;
   const descriptors = getProviderOptionDescriptors({
-    caps: model.capabilities,
+    caps: {
+      ...model.capabilities,
+      optionDescriptors,
+    },
     selections,
+    preservePromptInjectedSelections: true,
   });
   const effortDescriptor = findEffortDescriptor(descriptors);
   const effortValue = getProviderOptionCurrentValue(effortDescriptor);

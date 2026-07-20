@@ -80,6 +80,7 @@ export function getModelSelectionBooleanOptionValue(
 function resolveDescriptorChoiceValue(
   descriptor: Extract<ProviderOptionDescriptor, { type: "select" }>,
   raw: string | null | undefined,
+  preservePromptInjectedSelections: boolean,
 ): string | undefined {
   const trimmed = trimOrNull(raw);
   if (!trimmed) {
@@ -89,6 +90,7 @@ function resolveDescriptorChoiceValue(
     return trimmed;
   }
   if (
+    !preservePromptInjectedSelections &&
     descriptor.promptInjectedValues?.includes(trimmed) &&
     descriptor.options.some((option) => option.id === trimmed)
   ) {
@@ -119,6 +121,7 @@ function cloneSelection(selection: ProviderOptionSelection): ProviderOptionSelec
 function withDescriptorCurrentValue(
   descriptor: ProviderOptionDescriptor,
   rawCurrentValue: string | boolean | undefined,
+  preservePromptInjectedSelections: boolean,
 ): ProviderOptionDescriptor {
   if (descriptor.type === "boolean") {
     if (typeof rawCurrentValue === "boolean") {
@@ -131,8 +134,12 @@ function withDescriptorCurrentValue(
   }
   const currentValue =
     typeof rawCurrentValue === "string"
-      ? resolveDescriptorChoiceValue(descriptor, rawCurrentValue)
-      : resolveDescriptorChoiceValue(descriptor, descriptor.currentValue);
+      ? resolveDescriptorChoiceValue(descriptor, rawCurrentValue, preservePromptInjectedSelections)
+      : resolveDescriptorChoiceValue(
+          descriptor,
+          descriptor.currentValue,
+          preservePromptInjectedSelections,
+        );
   if (!currentValue) {
     const { currentValue: _unusedCurrentValue, ...rest } = descriptor;
     return rest;
@@ -146,14 +153,16 @@ function withDescriptorCurrentValue(
 export function getProviderOptionDescriptors(input: {
   caps: ModelCapabilities;
   selections?: ReadonlyArray<ProviderOptionSelection> | null | undefined;
+  preservePromptInjectedSelections?: boolean;
 }): ReadonlyArray<ProviderOptionDescriptor> {
-  const { caps, selections } = input;
+  const { caps, selections, preservePromptInjectedSelections = false } = input;
   const baseDescriptors = (caps.optionDescriptors ?? []).map(cloneDescriptor);
 
   return baseDescriptors.map((descriptor) =>
     withDescriptorCurrentValue(
       descriptor,
       getRawSelectionValueById(selections, descriptor.id) ?? descriptor.currentValue,
+      preservePromptInjectedSelections,
     ),
   );
 }

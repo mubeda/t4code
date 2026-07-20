@@ -124,6 +124,16 @@ const claudeEffortDescriptor: ProviderOptionDescriptor = {
   currentValue: "low",
 };
 
+const claudePromptInjectedEffortDescriptor: ProviderOptionDescriptor = {
+  ...claudeEffortDescriptor,
+  options: [
+    { id: "low", label: "Low", isDefault: true },
+    { id: "high", label: "High" },
+    { id: "ultrathink", label: "Ultrathink" },
+  ],
+  promptInjectedValues: ["ultrathink"],
+};
+
 const fastModeDescriptor: ProviderOptionDescriptor = {
   id: "fastMode",
   label: "Fast mode",
@@ -350,9 +360,7 @@ describe("useNewThreadHandler", () => {
         serverProvider({
           instanceId: codexInstanceId,
           driver: codexDriver,
-          models: [
-            providerModel("gpt-configured", [reasoningEffortDescriptor, serviceTierDescriptor]),
-          ],
+          models: [providerModel("gpt-configured", [reasoningEffortDescriptor])],
         }),
       ],
       settings: {
@@ -367,7 +375,6 @@ describe("useNewThreadHandler", () => {
         },
       },
     });
-
     await mount(<NewThreadHarness />);
     await clickNewThread();
 
@@ -378,6 +385,42 @@ describe("useNewThreadHandler", () => {
         { id: "reasoningEffort", value: "high" },
         { id: "serviceTier", value: "fast" },
       ],
+    });
+  });
+
+  it("seeds a normal new draft from a Claude prompt-injected effort default", async () => {
+    testState.projects = [project()];
+    configureEnvironment({
+      providers: [
+        serverProvider({
+          instanceId: claudeWorkInstanceId,
+          driver: claudeDriver,
+          models: [providerModel("claude-sonnet-5", [claudePromptInjectedEffortDescriptor])],
+        }),
+      ],
+      settings: {
+        providerInstances: {
+          [claudeWorkInstanceId]: { driver: claudeDriver },
+        },
+        providerSessionDefaults: {
+          [claudeDriver]: {
+            model: "claude-sonnet-5",
+            options: [{ id: "effort", value: "ultrathink" }],
+          },
+        },
+      },
+    });
+    useComposerDraftStore
+      .getState()
+      .setStickyModelSelection(createModelSelection(claudeWorkInstanceId, "claude-sonnet-5"));
+
+    await mount(<NewThreadHarness />);
+    await clickNewThread();
+
+    expect(createdDraftModelSelection()).toEqual({
+      instanceId: claudeWorkInstanceId,
+      model: "claude-sonnet-5",
+      options: [{ id: "effort", value: "ultrathink" }],
     });
   });
 
@@ -613,7 +656,10 @@ describe("useNewThreadHandler", () => {
     expect(createdDraftModelSelection()).toEqual({
       instanceId: codexWorkInstanceId,
       model: "built-in-second",
-      options: [{ id: "reasoningEffort", value: "high" }],
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "default" },
+      ],
     });
     expect(
       testState.serverConfigs.get(environmentId)?.settings.providerSessionDefaults[codexDriver],

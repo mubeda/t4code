@@ -62,6 +62,16 @@ const claudeEffortDescriptor: ProviderOptionDescriptor = {
   currentValue: "high",
 };
 
+const claudePromptInjectedEffortDescriptor: ProviderOptionDescriptor = {
+  ...claudeEffortDescriptor,
+  options: [
+    { id: "medium", label: "Medium" },
+    { id: "high", label: "High", isDefault: true },
+    { id: "ultrathink", label: "Ultrathink" },
+  ],
+  promptInjectedValues: ["ultrathink"],
+};
+
 const cursorReasoningDescriptor: ProviderOptionDescriptor = {
   id: "reasoning",
   label: "Reasoning",
@@ -284,6 +294,43 @@ describe("getProviderSessionDefaultControls", () => {
     });
 
     expect(controls.effort).toBe("medium");
+  });
+
+  it("adds the Codex service-tier invariant to rich live model metadata", () => {
+    const controls = getProviderSessionDefaultControls({
+      driver: CODEX,
+      models: [model("gpt-rich", [reasoningEffortDescriptor, contextWindowDescriptor])],
+      configuredDefault: {
+        model: "gpt-rich",
+        options: [
+          { id: "reasoningEffort", value: "xhigh" },
+          { id: "serviceTier", value: "fast" },
+        ],
+      },
+    });
+
+    expect(controls.effortDescriptor?.options.map(({ id }) => id)).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+    ]);
+    expect(controls.effort).toBe("xhigh");
+    expect(controls.fastModeSupported).toBe(true);
+    expect(controls.fastMode).toBe(true);
+  });
+
+  it("accepts a configured Claude prompt-injected effort", () => {
+    const controls = getProviderSessionDefaultControls({
+      driver: CLAUDE,
+      models: [model("claude-sonnet-5", [claudePromptInjectedEffortDescriptor])],
+      configuredDefault: {
+        model: "claude-sonnet-5",
+        options: [{ id: "effort", value: "ultrathink" }],
+      },
+    });
+
+    expect(controls.effort).toBe("ultrathink");
   });
 
   it("keeps Codex effort and fast mode available during an empty discovery snapshot", () => {
@@ -569,6 +616,43 @@ describe("resolveProviderSessionDefault", () => {
     expect(result.fastMode).toBe(true);
   });
 
+  it("resolves the Codex service-tier invariant from rich metadata that omits it", () => {
+    const result = resolveProviderSessionDefault({
+      driver: CODEX,
+      instanceId: CODEX_ID,
+      models: [model("gpt-rich", [reasoningEffortDescriptor, contextWindowDescriptor])],
+      configuredDefault: {
+        model: "gpt-rich",
+        options: [
+          { id: "reasoningEffort", value: "high" },
+          { id: "serviceTier", value: "fast" },
+        ],
+      },
+    });
+
+    expect(result.modelSelection.options).toEqual([
+      { id: "reasoningEffort", value: "high" },
+      { id: "contextWindow", value: "200k" },
+      { id: "serviceTier", value: "fast" },
+    ]);
+    expect(result.fastMode).toBe(true);
+  });
+
+  it("resolves a configured Claude prompt-injected effort into the native selection", () => {
+    const result = resolveProviderSessionDefault({
+      driver: CLAUDE,
+      instanceId: CLAUDE_ID,
+      models: [model("claude-sonnet-5", [claudePromptInjectedEffortDescriptor])],
+      configuredDefault: {
+        model: "claude-sonnet-5",
+        options: [{ id: "effort", value: "ultrathink" }],
+      },
+    });
+
+    expect(result.effort).toBe("ultrathink");
+    expect(result.modelSelection.options).toEqual([{ id: "effort", value: "ultrathink" }]);
+  });
+
   it("maps boolean fastMode and Codex standard service tier to false", () => {
     const claude = resolveProviderSessionDefault({
       driver: CLAUDE,
@@ -647,6 +731,43 @@ describe("updateProviderSessionDefault", () => {
         { id: "reasoningEffort", value: "high" },
         { id: "serviceTier", value: "fast" },
       ],
+    });
+  });
+
+  it("persists Codex fast mode when rich live metadata omits serviceTier", () => {
+    expect(
+      updateProviderSessionDefault({
+        driver: CODEX,
+        models: [model("gpt-rich", [reasoningEffortDescriptor, contextWindowDescriptor])],
+        current: {
+          model: "gpt-rich",
+          options: [{ id: "reasoningEffort", value: "high" }],
+        },
+        change: { type: "fastMode", value: true },
+      }),
+    ).toEqual({
+      model: "gpt-rich",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "fast" },
+      ],
+    });
+  });
+
+  it("persists a Claude prompt-injected effort selection", () => {
+    expect(
+      updateProviderSessionDefault({
+        driver: CLAUDE,
+        models: [model("claude-sonnet-5", [claudePromptInjectedEffortDescriptor])],
+        current: {
+          model: "claude-sonnet-5",
+          options: [{ id: "effort", value: "high" }],
+        },
+        change: { type: "effort", value: "ultrathink" },
+      }),
+    ).toEqual({
+      model: "claude-sonnet-5",
+      options: [{ id: "effort", value: "ultrathink" }],
     });
   });
 
@@ -762,7 +883,7 @@ describe("updateProviderSessionDefault", () => {
     });
   });
 
-  it("preserves compatible values and resets incompatible values on model changes", () => {
+  it("preserves compatible provider invariants and resets incompatible effort on model changes", () => {
     const current: ProviderSessionDefault = {
       model: "gpt-5.4",
       options: [
@@ -809,7 +930,10 @@ describe("updateProviderSessionDefault", () => {
     });
     expect(incompatible).toEqual({
       model: "reasoning-lite",
-      options: [{ id: "reasoningEffort", value: "medium" }],
+      options: [
+        { id: "reasoningEffort", value: "medium" },
+        { id: "serviceTier", value: "fast" },
+      ],
     });
   });
 
