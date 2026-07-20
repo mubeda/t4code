@@ -3,7 +3,7 @@ import type { AtomCommandResult } from "@t4code/client-runtime/state/runtime";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 
-import { FileSaveCoordinator } from "./fileSaveCoordinator";
+import { FileSaveCoordinator, type FileSaveSnapshot } from "./fileSaveCoordinator";
 
 function deferred() {
   let resolve!: (result: AtomCommandResult<void, never>) => void;
@@ -45,6 +45,140 @@ describe("FileSaveCoordinator", () => {
     expect(onPendingChange.mock.calls).toEqual([[true], [true], [false]]);
   });
 
+  it("publishes stable clean, pending, saving, and clean snapshots", async () => {
+    vi.useFakeTimers();
+    const write = deferred();
+    const coordinator = new FileSaveCoordinator({
+      debounceMs: 500,
+      persist: vi.fn(() => write.promise),
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+    });
+    const snapshots: FileSaveSnapshot[] = [];
+    const unsubscribe = coordinator.subscribe(() => {
+      snapshots.push(coordinator.getSnapshot());
+    });
+
+    expect(coordinator.getSnapshot()).toEqual({
+      phase: "clean",
+      canSave: false,
+      confirmedRevision: 0,
+    });
+
+    coordinator.change("draft");
+    expect(coordinator.getSnapshot()).toEqual({
+      phase: "pending",
+      canSave: true,
+      confirmedRevision: 0,
+    });
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(coordinator.getSnapshot()).toEqual({
+      phase: "saving",
+      canSave: false,
+      confirmedRevision: 0,
+    });
+
+    write.resolve(AsyncResult.success(undefined));
+    await Promise.resolve();
+    expect(coordinator.getSnapshot()).toEqual({
+      phase: "clean",
+      canSave: false,
+      confirmedRevision: 1,
+    });
+    expect(snapshots.map(({ phase }) => phase)).toEqual(["pending", "saving", "clean"]);
+
+    unsubscribe();
+    coordinator.change("after unsubscribe");
+    expect(snapshots.map(({ phase }) => phase)).toEqual(["pending", "saving", "clean"]);
+  });
+
+  it("publishes a retryable failed snapshot without confirming the revision", async () => {
+    vi.useFakeTimers();
+    const coordinator = new FileSaveCoordinator({
+      debounceMs: 500,
+      persist: vi.fn().mockResolvedValue(AsyncResult.failure(Cause.fail(new Error("disk full")))),
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+    });
+
+    coordinator.change("draft");
+    await vi.advanceTimersByTimeAsync(500);
+    await Promise.resolve();
+
+    expect(coordinator.getSnapshot()).toEqual({
+      phase: "failed",
+      canSave: true,
+      confirmedRevision: 0,
+    });
+  });
+
+  it("does not start another write when a saving listener settles", async () => {
+    vi.useFakeTimers();
+    const write = deferred();
+    const persist = vi
+      .fn<(contents: string) => Promise<AtomCommandResult<void, never>>>()
+      .mockReturnValue(write.promise);
+    const coordinator = new FileSaveCoordinator({
+      debounceMs: 500,
+      persist,
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+    });
+    let settled: Promise<unknown> | undefined;
+    coordinator.subscribe(() => {
+      if (coordinator.getSnapshot().phase === "saving") settled = coordinator.settle();
+    });
+
+    coordinator.change("draft");
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(persist).toHaveBeenCalledOnce();
+
+    write.resolve(AsyncResult.success(undefined));
+    await expect(settled).resolves.toBe("saved");
+  });
+
+  it("settle waits for an in-flight write and then persists a newer revision", async () => {
+    vi.useFakeTimers();
+    const firstWrite = deferred();
+    const persist = vi
+      .fn<(contents: string) => Promise<AtomCommandResult<void, never>>>()
+      .mockReturnValueOnce(firstWrite.promise)
+      .mockResolvedValueOnce(AsyncResult.success(undefined));
+    const coordinator = new FileSaveCoordinator({
+      debounceMs: 500,
+      persist,
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+    });
+
+    coordinator.change("first");
+    await vi.advanceTimersByTimeAsync(500);
+    coordinator.change("latest");
+    const settled = coordinator.settle();
+    expect(persist).toHaveBeenCalledTimes(1);
+
+    firstWrite.resolve(AsyncResult.success(undefined));
+    await expect(settled).resolves.toBe("saved");
+    expect(persist).toHaveBeenCalledTimes(2);
+    expect(persist).toHaveBeenLastCalledWith("latest");
+    expect(coordinator.getSnapshot().phase).toBe("clean");
+  });
+
+  it("settle reports failure and leaves the latest revision retryable", async () => {
+    const coordinator = new FileSaveCoordinator({
+      debounceMs: 500,
+      persist: vi.fn().mockResolvedValue(AsyncResult.failure(Cause.fail(new Error("read only")))),
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+    });
+    coordinator.change("draft");
+
+    await expect(coordinator.settle()).resolves.toBe("failed");
+    expect(coordinator.getSnapshot()).toMatchObject({ phase: "failed", canSave: true });
+  });
+
   it("keeps pending state until an edit made during a write is also saved", async () => {
     vi.useFakeTimers();
     const firstWrite = deferred();
@@ -71,6 +205,64 @@ describe("FileSaveCoordinator", () => {
     expect(persist).toHaveBeenCalledTimes(2);
     expect(persist).toHaveBeenLastCalledWith("latest");
     expect(onPendingChange.mock.calls.at(-1)).toEqual([false]);
+  });
+
+  it("keeps Save disabled and the saving phase while a newer edit waits behind a write", async () => {
+    vi.useFakeTimers();
+    const firstWrite = deferred();
+    const coordinator = new FileSaveCoordinator({
+      debounceMs: 500,
+      persist: vi
+        .fn<(contents: string) => Promise<AtomCommandResult<void, never>>>()
+        .mockReturnValueOnce(firstWrite.promise)
+        .mockResolvedValueOnce(AsyncResult.success(undefined)),
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+    });
+
+    coordinator.change("first");
+    await vi.advanceTimersByTimeAsync(500);
+    coordinator.change("edited while saving");
+
+    expect(coordinator.getSnapshot()).toMatchObject({
+      phase: "saving",
+      canSave: false,
+    });
+
+    firstWrite.resolve(AsyncResult.success(undefined));
+    await vi.runAllTimersAsync();
+    expect(coordinator.getSnapshot()).toMatchObject({
+      phase: "clean",
+      canSave: false,
+    });
+  });
+
+  it("keeps pending edits unflushable while saving is paused for a mutation", () => {
+    const coordinator = new FileSaveCoordinator({
+      debounceMs: 500,
+      persist: vi.fn().mockResolvedValue(AsyncResult.success(undefined)),
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+    });
+
+    coordinator.change("before mutation");
+    coordinator.pauseSaving();
+    expect(coordinator.getSnapshot()).toMatchObject({
+      phase: "pending",
+      canSave: false,
+    });
+
+    coordinator.change("edited during mutation");
+    expect(coordinator.getSnapshot()).toMatchObject({
+      phase: "pending",
+      canSave: false,
+    });
+
+    coordinator.resumeSaving();
+    expect(coordinator.getSnapshot()).toMatchObject({
+      phase: "pending",
+      canSave: true,
+    });
   });
 
   it("leaves the file pending when the latest write fails", async () => {

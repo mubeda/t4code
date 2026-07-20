@@ -523,7 +523,10 @@ vi.mock("./SourceControlPanel", () => ({
   default: () => <div data-mock="source-control-panel" />,
 }));
 vi.mock("./files/FilePreviewPanel", () => ({
-  default: () => <div data-mock="file-preview-panel" />,
+  default: (props: Record<string, unknown>) => {
+    h.capture("filePreviewPanel", props);
+    return <div data-mock="file-preview-panel" />;
+  },
 }));
 
 import ChatView, {
@@ -539,6 +542,7 @@ import { HOST_SURFACE_ID, useCenterPanelStore } from "../centerPanelStore";
 import { useTerminalUiStateStore } from "../terminalUiStateStore";
 import { useUiStateStore } from "../uiStateStore";
 import { useDiffPanelStore } from "../diffPanelStore";
+import { FileEditingSessionRegistry } from "./files/fileEditingSessionRegistry";
 import { newDraftId } from "../lib/utils";
 import {
   deriveLogicalProjectKeyFromSettings,
@@ -1648,6 +1652,20 @@ describe("ChatView right panel handlers", () => {
     renderServerRoute();
     return capturedProps("rightPanelTabs");
   }
+
+  it("passes one project-scoped editing registry into file surfaces", async () => {
+    seedConnectedServerThread();
+    useRightPanelStore.getState().openFile(threadRef, "src/a.ts");
+    useRightPanelStore.getState().openFile(threadRef, "src/b.ts");
+    publishSeededStoreState(useRightPanelStore);
+
+    renderServerRoute();
+    await vi.dynamicImportSettled();
+    renderServerRoute();
+
+    const props = capturedProps("filePreviewPanel");
+    expect(props["editingSessions"]).toBeInstanceOf(FileEditingSessionRegistry);
+  });
 
   it("activates plan / terminal / diff surfaces with their side effects", () => {
     const props = openedPanelProps((ref) => {
