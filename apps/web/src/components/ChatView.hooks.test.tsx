@@ -2592,6 +2592,70 @@ describe("ChatView send flows", () => {
     });
   });
 
+  it.each(["draft", "server-style"] as const)(
+    "warns once at legacy draft promotion through the %s route when a configured model falls back",
+    async (route) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const draftId = newDraftId();
+      seedEnvironment(makeEnvironmentPresentation());
+      seedProject(makeProject({ defaultModelSelection: null }));
+      seedGitStatus(true);
+      h.settings = {
+        ...h.settings,
+        providerSessionDefaults: {
+          codex: {
+            model: "retired-codex-model",
+            options: [],
+          },
+        },
+      };
+      useComposerDraftStore
+        .getState()
+        .setLogicalProjectDraftThreadId(
+          "legacy-draft-fallback",
+          scopeProjectRef(environmentId, projectId),
+          draftId,
+          { threadId, createdAt: now, envMode: "local" },
+        );
+      publishSeededStoreState(useComposerDraftStore);
+
+      if (route === "draft") {
+        renderDraftRoute(draftId);
+      } else {
+        renderServerRoute();
+      }
+
+      expect(warn).not.toHaveBeenCalled();
+      const resolvedSelection = capturedProps("chatComposer")[
+        "activeThreadModelSelection"
+      ] as ModelSelection;
+      expect(resolvedSelection).toEqual({
+        instanceId: codexInstanceId,
+        model: "gpt-5.4",
+      });
+      const promptRef = installComposerModelSelection(resolvedSelection, "medium");
+      const onSend = capturedProps("chatComposer")["onSend"] as () => Promise<void>;
+
+      promptRef.current = "promote the legacy draft";
+      await onSend();
+      promptRef.current = "retry the same legacy promotion boundary";
+      await onSend();
+
+      expect(warn.mock.calls).toEqual([
+        [
+          "Provider session default fallback",
+          {
+            driver: ProviderDriverKind.make("codex"),
+            instanceId: codexInstanceId,
+            configuredModel: "retired-codex-model",
+            resolvedModel: "gpt-5.4",
+            reason: "configured-model-unavailable",
+          },
+        ],
+      ]);
+    },
+  );
+
   it("promotes a freshly seeded draft with its unchanged full model selection", async () => {
     const seededSelection: ModelSelection = {
       instanceId: codexInstanceId,

@@ -100,6 +100,8 @@ export function CreateWorktreeDialog({
   const [createMore, setCreateMore] = useState(false);
   const [instanceId, setInstanceId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const instanceSelectionTouchedRef = useRef(false);
+  const previousOpenRef = useRef(false);
 
   // A fresh query/tab invalidates whatever branch row was previously picked.
   useEffect(() => {
@@ -107,7 +109,12 @@ export function CreateWorktreeDialog({
   }, [nameText, mode]);
 
   useEffect(() => {
+    const wasOpen = previousOpenRef.current;
+    previousOpenRef.current = open;
     if (!open) return;
+    if (!wasOpen) {
+      instanceSelectionTouchedRef.current = false;
+    }
     setProjectId((current) => current ?? defaultProjectId ?? projects[0]?.id ?? null);
     const frame = window.requestAnimationFrame(() => {
       nameInputRef.current?.focus();
@@ -161,10 +168,18 @@ export function CreateWorktreeDialog({
   }, [serverConfig]);
 
   useEffect(() => {
-    if (instanceId && providers.some((p) => p.instanceId === instanceId)) return;
-    const first = providers[0];
-    setInstanceId(first?.instanceId ?? null);
-  }, [providers, instanceId]);
+    if (!open) return;
+    const selectionAvailable =
+      instanceId !== null && providers.some((provider) => provider.instanceId === instanceId);
+    if (instanceSelectionTouchedRef.current && selectionAvailable) return;
+    if (!selectionAvailable) {
+      instanceSelectionTouchedRef.current = false;
+    }
+    const projectInstanceId = project?.defaultModelSelection?.instanceId;
+    const preferredProvider =
+      providers.find((provider) => provider.instanceId === projectInstanceId) ?? providers[0];
+    setInstanceId(preferredProvider?.instanceId ?? null);
+  }, [instanceId, open, project?.defaultModelSelection?.instanceId, providers]);
 
   const resolution = useMemo(
     () =>
@@ -448,7 +463,10 @@ export function CreateWorktreeDialog({
             <Select
               modal={false}
               value={instanceId ?? undefined}
-              onValueChange={(value) => setInstanceId(value as string)}
+              onValueChange={(value) => {
+                instanceSelectionTouchedRef.current = true;
+                setInstanceId(value as string);
+              }}
               items={providers.map((p) => ({
                 value: p.instanceId,
                 label: p.displayName,

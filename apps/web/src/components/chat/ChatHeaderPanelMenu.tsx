@@ -126,6 +126,9 @@ export const ChatHeaderPanelMenu = memo(function ChatHeaderPanelMenu({
                   className={disabled ? "data-disabled:pointer-events-auto" : undefined}
                   disabled={disabled}
                   onClick={() => {
+                    if (disabled) {
+                      return;
+                    }
                     if (action.command !== null) {
                       if (action.fallback) {
                         console.warn("Provider session default fallback", action.fallback);
