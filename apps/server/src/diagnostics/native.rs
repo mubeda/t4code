@@ -3,8 +3,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use thiserror::Error;
+
+use crate::process::ProcessCleanupReport;
 
 use super::{
     PROCESS_COMMAND_MAX_SCALARS, ProcessIdentity, ProcessRow, ProcessSampler, SamplingError,
@@ -56,29 +58,81 @@ impl NativeProcessSampler {
         signal_process_identity(expected_identity, signal)
     }
 
-    pub async fn cleanup_descendants(&self, root_pid: u32) -> Result<Vec<u32>, SignalError> {
+    pub(crate) async fn cleanup_descendants(
+        &self,
+        root_pid: u32,
+    ) -> Result<ProcessCleanupReport, SignalError> {
         let rows = self
             .sample()
             .await
             .map_err(|error| SignalError::Read(error.to_string()))?;
         let mut descendants = build_descendant_entries(&rows, root_pid);
         descendants.sort_by_key(|entry| std::cmp::Reverse(entry.depth));
-        let mut signaled = Vec::with_capacity(descendants.len());
-        for entry in descendants {
-            let row = rows
-                .iter()
-                .find(|row| row.pid == entry.pid)
-                .ok_or(SignalError::NotFound(entry.pid))?;
-            signal_process_identity(
-                ProcessIdentity {
-                    pid: row.pid,
-                    started_at: row.started_at,
-                },
-                ProcessSignal::Kill,
-            )?;
-            signaled.push(entry.pid);
+        let identities = descendants
+            .into_iter()
+            .filter_map(|entry| {
+                rows.iter()
+                    .find(|row| row.pid == entry.pid)
+                    .map(|row| ProcessIdentity {
+                        pid: row.pid,
+                        started_at: row.started_at,
+                    })
+            })
+            .collect::<Vec<_>>();
+        Ok(cleanup_process_identities(&identities, |identity| {
+            signal_process_identity(identity, ProcessSignal::Kill)
+        }))
+    }
+}
+
+fn cleanup_process_identities(
+    identities: &[ProcessIdentity],
+    mut signal: impl FnMut(ProcessIdentity) -> Result<(), SignalError>,
+) -> ProcessCleanupReport {
+    let mut report = ProcessCleanupReport::default();
+    for identity in identities {
+        match signal(*identity) {
+            Ok(()) => report.record_success(),
+            Err(error) => {
+                report.record_failure(format!("process {}: {error}", identity.pid));
+            }
         }
-        Ok(signaled)
+    }
+    report
+}
+
+#[derive(Debug)]
+struct ProcessPresentation {
+    pid: u32,
+    status: String,
+    cpu_percent: f32,
+    cpu_core_percent: Option<f32>,
+    rss_bytes: u64,
+    elapsed: String,
+    command: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PlatformProcessRecord {
+    started_at: u64,
+    ppid: u32,
+}
+
+fn combine_process_observations(
+    presentation: ProcessPresentation,
+    platform: PlatformProcessRecord,
+) -> ProcessRow {
+    ProcessRow {
+        pid: presentation.pid,
+        started_at: platform.started_at,
+        ppid: platform.ppid,
+        pgid: None,
+        status: presentation.status,
+        cpu_percent: presentation.cpu_percent,
+        cpu_core_percent: presentation.cpu_core_percent,
+        rss_bytes: presentation.rss_bytes,
+        elapsed: presentation.elapsed,
+        command: presentation.command,
     }
 }
 
@@ -107,26 +161,22 @@ fn collect_rows(system: &Arc<Mutex<System>>) -> Result<Vec<ProcessRow>, Sampling
             if pid == 0 || process.thread_kind().is_some() {
                 return None;
             }
-            let started_at = platform_process_creation_identity(pid).ok()?;
-            Some({
-                let raw_cpu = process.cpu_usage().max(0.0);
-                ProcessRow {
-                    pid,
-                    started_at,
-                    ppid: process.parent().map(Pid::as_u32).unwrap_or(0),
-                    pgid: None,
-                    status: format!("{:?}", process.status()),
-                    cpu_percent: if cfg!(windows) {
-                        (raw_cpu / processors).clamp(0.0, 100.0)
-                    } else {
-                        raw_cpu
-                    },
-                    cpu_core_percent: Some(raw_cpu),
-                    rss_bytes: process.memory(),
-                    elapsed: format_elapsed(process.run_time()),
-                    command: command_string(process.cmd(), process.name()),
-                }
-            })
+            let raw_cpu = process.cpu_usage().max(0.0);
+            let presentation = ProcessPresentation {
+                pid,
+                status: format!("{:?}", process.status()),
+                cpu_percent: if cfg!(windows) {
+                    (raw_cpu / processors).clamp(0.0, 100.0)
+                } else {
+                    raw_cpu
+                },
+                cpu_core_percent: Some(raw_cpu),
+                rss_bytes: process.memory(),
+                elapsed: format_elapsed(process.run_time()),
+                command: command_string(process.cmd(), process.name()),
+            };
+            let platform = platform_process_record(pid).ok()?;
+            Some(combine_process_observations(presentation, platform))
         })
         .collect::<Vec<_>>();
     rows.sort_by_key(|row| row.pid);
@@ -134,23 +184,36 @@ fn collect_rows(system: &Arc<Mutex<System>>) -> Result<Vec<ProcessRow>, Sampling
 }
 
 #[cfg(target_os = "linux")]
-fn platform_process_creation_identity(pid: u32) -> std::io::Result<u64> {
+fn platform_process_record(pid: u32) -> std::io::Result<PlatformProcessRecord> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
-    parse_linux_process_start_ticks(&stat)
+    parse_linux_process_record(&stat)
 }
 
 #[cfg(target_os = "linux")]
-fn parse_linux_process_start_ticks(stat: &str) -> std::io::Result<u64> {
+fn parse_linux_process_record(stat: &str) -> std::io::Result<PlatformProcessRecord> {
     let command_end = stat.rfind(')').ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "Linux process stat has no command terminator",
         )
     })?;
-    stat.get(command_end + 1..)
+    let fields = stat
+        .get(command_end + 1..)
         .into_iter()
         .flat_map(str::split_whitespace)
-        .nth(19)
+        .collect::<Vec<_>>();
+    let ppid = fields
+        .get(1)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Linux process stat has no parent field",
+            )
+        })?
+        .parse::<u32>()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let started_at = fields
+        .get(19)
         .ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -158,11 +221,12 @@ fn parse_linux_process_start_ticks(stat: &str) -> std::io::Result<u64> {
             )
         })?
         .parse::<u64>()
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    Ok(PlatformProcessRecord { started_at, ppid })
 }
 
 #[cfg(target_os = "macos")]
-fn platform_process_creation_identity(pid: u32) -> std::io::Result<u64> {
+fn platform_process_record(pid: u32) -> std::io::Result<PlatformProcessRecord> {
     use std::ffi::{c_int, c_void};
 
     const PROC_PIDTBSDINFO: c_int = 3;
@@ -220,7 +284,10 @@ fn platform_process_creation_identity(pid: u32) -> std::io::Result<u64> {
     if read != i32::try_from(size).expect("proc_bsdinfo size fits c_int") {
         return Err(std::io::Error::last_os_error());
     }
-    macos_process_creation_identity(info.pbi_start_tvsec, info.pbi_start_tvusec)
+    Ok(PlatformProcessRecord {
+        started_at: macos_process_creation_identity(info.pbi_start_tvsec, info.pbi_start_tvusec)?,
+        ppid: info.pbi_ppid,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -237,22 +304,57 @@ fn macos_process_creation_identity(seconds: u64, microseconds: u64) -> std::io::
 }
 
 #[cfg(windows)]
-fn platform_process_creation_identity(pid: u32) -> std::io::Result<u64> {
+fn platform_process_record(pid: u32) -> std::io::Result<PlatformProcessRecord> {
     use windows_sys::Win32::{
         Foundation::CloseHandle,
-        System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+        System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION},
     };
 
     // SAFETY: the requested access is query-only and the returned owned handle
     // is checked for null and closed exactly once below.
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, 0, pid) };
     if handle.is_null() {
         return Err(std::io::Error::last_os_error());
     }
-    let identity = windows_process_creation_identity(handle);
+    let record = windows_process_record(handle);
     // SAFETY: `handle` was opened successfully above and is closed once.
     unsafe { CloseHandle(handle) };
-    identity
+    record
+}
+
+#[cfg(windows)]
+fn windows_process_record(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+) -> std::io::Result<PlatformProcessRecord> {
+    use windows_sys::{
+        Wdk::System::Threading::{NtQueryInformationProcess, ProcessBasicInformation},
+        Win32::System::Threading::PROCESS_BASIC_INFORMATION,
+    };
+
+    let started_at = windows_process_creation_identity(handle)?;
+    let mut basic = PROCESS_BASIC_INFORMATION::default();
+    // SAFETY: `basic` is an initialized output buffer of the declared size and
+    // `handle` remains owned and live for the complete record query.
+    let status = unsafe {
+        NtQueryInformationProcess(
+            handle,
+            ProcessBasicInformation,
+            std::ptr::from_mut(&mut basic).cast(),
+            u32::try_from(std::mem::size_of::<PROCESS_BASIC_INFORMATION>())
+                .expect("PROCESS_BASIC_INFORMATION size fits u32"),
+            std::ptr::null_mut(),
+        )
+    };
+    if status < 0 {
+        return Err(std::io::Error::other(format!(
+            "NtQueryInformationProcess failed with NTSTATUS {status:#x}"
+        )));
+    }
+    Ok(PlatformProcessRecord {
+        started_at,
+        ppid: u32::try_from(basic.InheritedFromUniqueProcessId)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
+    })
 }
 
 #[cfg(windows)]
@@ -281,11 +383,63 @@ fn windows_filetime_identity(filetime: windows_sys::Win32::Foundation::FILETIME)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-fn platform_process_creation_identity(_pid: u32) -> std::io::Result<u64> {
+fn platform_process_record(_pid: u32) -> std::io::Result<PlatformProcessRecord> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "high-fidelity process identity is unavailable on this platform",
     ))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn platform_process_creation_identity(pid: u32) -> std::io::Result<u64> {
+    platform_process_record(pid).map(|record| record.started_at)
+}
+
+#[cfg(any(windows, test))]
+const WINDOWS_ERROR_ACCESS_DENIED: i32 = 5;
+#[cfg(any(windows, test))]
+const WINDOWS_ERROR_INVALID_HANDLE: i32 = 6;
+#[cfg(any(windows, test))]
+const WINDOWS_ERROR_INVALID_PARAMETER: i32 = 87;
+#[cfg(any(windows, test))]
+const WINDOWS_ERROR_NOT_FOUND: i32 = 1_168;
+
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WindowsProcessOperation {
+    Open,
+    QueryCreationTime,
+}
+
+#[cfg(any(windows, test))]
+fn classify_windows_process_error(
+    pid: u32,
+    operation: WindowsProcessOperation,
+    error_code: i32,
+) -> SignalError {
+    if error_code == WINDOWS_ERROR_ACCESS_DENIED {
+        return SignalError::Rejected(pid);
+    }
+    if operation == WindowsProcessOperation::Open
+        && matches!(
+            error_code,
+            WINDOWS_ERROR_INVALID_PARAMETER | WINDOWS_ERROR_NOT_FOUND
+        )
+    {
+        return SignalError::NotFound(pid);
+    }
+    if operation == WindowsProcessOperation::QueryCreationTime
+        && error_code == WINDOWS_ERROR_INVALID_HANDLE
+    {
+        return SignalError::Read(format!(
+            "GetProcessTimes failed with Win32 error {error_code}"
+        ));
+    }
+    let operation = match operation {
+        WindowsProcessOperation::Open => "OpenProcess",
+        WindowsProcessOperation::QueryCreationTime => "GetProcessTimes",
+    };
+    SignalError::Read(format!("{operation} failed with Win32 error {error_code}"))
 }
 
 trait IdentityBoundProcess: std::fmt::Debug {
@@ -403,8 +557,13 @@ impl Drop for WindowsIdentityBoundProcess {
 #[cfg(windows)]
 impl IdentityBoundProcess for WindowsIdentityBoundProcess {
     fn creation_identity(&self) -> Result<u64, SignalError> {
-        windows_process_creation_identity(self.handle)
-            .map_err(|error| SignalError::Read(error.to_string()))
+        windows_process_creation_identity(self.handle).map_err(|error| {
+            classify_windows_process_error(
+                self.pid,
+                WindowsProcessOperation::QueryCreationTime,
+                error.raw_os_error().unwrap_or_default(),
+            )
+        })
     }
 
     fn signal(&self, signal: ProcessSignal) -> Result<(), SignalError> {
@@ -437,7 +596,12 @@ fn open_identity_bound_process(pid: u32) -> Result<Box<dyn IdentityBoundProcess>
         )
     };
     if handle.is_null() {
-        return Err(SignalError::NotFound(pid));
+        let error = std::io::Error::last_os_error();
+        return Err(classify_windows_process_error(
+            pid,
+            WindowsProcessOperation::Open,
+            error.raw_os_error().unwrap_or_default(),
+        ));
     }
     Ok(Box::new(WindowsIdentityBoundProcess { pid, handle }))
 }
@@ -551,11 +715,109 @@ mod tests {
             .iter()
             .find(|row| row.pid == std::process::id())
             .expect("current test process should remain visible");
+        let platform =
+            platform_process_record(std::process::id()).expect("current platform process record");
 
-        assert_eq!(
-            current.started_at,
-            platform_process_creation_identity(std::process::id())
-                .expect("current process creation identity")
+        assert_eq!(current.started_at, platform.started_at);
+        assert_eq!(current.ppid, platform.ppid);
+    }
+
+    #[test]
+    fn collection_window_replacement_cannot_inherit_cached_ancestry() {
+        let cached_process_a = ProcessPresentation {
+            pid: 42,
+            status: "cached-a".to_owned(),
+            cpu_percent: 1.0,
+            cpu_core_percent: Some(1.0),
+            rss_bytes: 100,
+            elapsed: "00:00:01".to_owned(),
+            command: "cached-a".to_owned(),
+        };
+        let coherent_process_b = PlatformProcessRecord {
+            started_at: 200,
+            ppid: 1,
+        };
+
+        let row = combine_process_observations(cached_process_a, coherent_process_b);
+
+        assert_eq!(row.started_at, 200);
+        assert_eq!(row.ppid, 1);
+        assert_eq!(row.command, "cached-a");
+    }
+
+    #[test]
+    fn windows_process_errors_distinguish_missing_denied_and_unexpected_failures() {
+        assert!(matches!(
+            classify_windows_process_error(
+                42,
+                WindowsProcessOperation::Open,
+                WINDOWS_ERROR_INVALID_PARAMETER,
+            ),
+            SignalError::NotFound(42)
+        ));
+        assert!(matches!(
+            classify_windows_process_error(
+                42,
+                WindowsProcessOperation::Open,
+                WINDOWS_ERROR_NOT_FOUND,
+            ),
+            SignalError::NotFound(42)
+        ));
+        assert!(matches!(
+            classify_windows_process_error(
+                42,
+                WindowsProcessOperation::Open,
+                WINDOWS_ERROR_ACCESS_DENIED,
+            ),
+            SignalError::Rejected(42)
+        ));
+        assert!(matches!(
+            classify_windows_process_error(
+                42,
+                WindowsProcessOperation::QueryCreationTime,
+                WINDOWS_ERROR_ACCESS_DENIED,
+            ),
+            SignalError::Rejected(42)
+        ));
+        assert!(matches!(
+            classify_windows_process_error(
+                42,
+                WindowsProcessOperation::QueryCreationTime,
+                WINDOWS_ERROR_INVALID_HANDLE,
+            ),
+            SignalError::Read(message) if message.contains("GetProcessTimes")
+        ));
+    }
+
+    #[test]
+    fn cleanup_fallback_continues_after_failures_and_bounds_its_report() {
+        let identities = (1..=20)
+            .map(|pid| ProcessIdentity {
+                pid,
+                started_at: u64::from(pid) * 100,
+            })
+            .collect::<Vec<_>>();
+        let mut attempted = Vec::new();
+
+        let report = cleanup_process_identities(&identities, |identity| {
+            attempted.push(identity.pid);
+            if identity.pid == 2 {
+                Ok(())
+            } else {
+                Err(SignalError::Read("界".repeat(500)))
+            }
+        });
+
+        assert_eq!(attempted, (1..=20).collect::<Vec<_>>());
+        assert_eq!(report.attempted, 20);
+        assert_eq!(report.succeeded, 1);
+        assert_eq!(report.failure_count, 19);
+        assert!(report.failures.len() < report.failure_count);
+        assert!(
+            report
+                .failures
+                .iter()
+                .all(|failure| failure.chars().count() <= 160)
         );
     }
 
@@ -571,17 +833,29 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_start_ticks_distinguish_close_process_replacements() {
-        let first = parse_linux_process_start_ticks(
+        let first = parse_linux_process_record(
             "42 (command with spaces) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 100",
         )
         .expect("first start ticks");
-        let replacement = parse_linux_process_start_ticks(
+        let replacement = parse_linux_process_record(
             "42 (command with spaces) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 101",
         )
         .expect("replacement start ticks");
 
-        assert_eq!(first, 100);
-        assert_eq!(replacement, 101);
+        assert_eq!(
+            first,
+            PlatformProcessRecord {
+                started_at: 100,
+                ppid: 1,
+            }
+        );
+        assert_eq!(
+            replacement,
+            PlatformProcessRecord {
+                started_at: 101,
+                ppid: 1,
+            }
+        );
     }
 
     #[cfg(windows)]

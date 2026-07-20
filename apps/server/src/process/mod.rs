@@ -1,4 +1,5 @@
 mod background;
+mod cleanup;
 mod runner;
 mod shell;
 #[cfg(windows)]
@@ -11,6 +12,7 @@ pub use background::{
     configure_background_command, configure_background_std_command,
     configure_supervised_background_command_wrap,
 };
+pub(crate) use cleanup::{ProcessCleanupReport, bound_process_cleanup_failure};
 pub use runner::{
     OutputMode, ProcessError, ProcessRunInput, ProcessRunOutput, ProcessRunner, TimeoutBehavior,
 };
