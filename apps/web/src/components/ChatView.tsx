@@ -36,6 +36,7 @@ import {
   createModelSelection,
   resolvePromptInjectedEffort,
 } from "@t4code/shared/model";
+import { resolveProviderSessionDefault } from "@t4code/shared/providerSessionDefaults";
 import { CHAT_LIST_ANCHOR_OFFSET } from "@t4code/shared/chatList";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t4code/shared/projectScripts";
 import { truncate } from "@t4code/shared/String";
@@ -3741,18 +3742,38 @@ function ChatViewContent(props: ChatViewProps) {
   const handleCreateChatPanel = useCallback(
     (entry: ProviderInstanceEntry) => {
       if (!activeThread || !activeThreadRef || !centerPanelLaunchContext) return;
-      const model = entry.models[0]?.slug;
+      const configuredDefault = settings.providerSessionDefaults[entry.driverKind];
+      const projectSelection =
+        activeProject?.defaultModelSelection?.instanceId === entry.instanceId
+          ? activeProject.defaultModelSelection
+          : null;
+      const resolution = resolveProviderSessionDefault({
+        driver: entry.driverKind,
+        instanceId: entry.instanceId,
+        models: entry.models,
+        ...(configuredDefault === undefined ? {} : { configuredDefault }),
+        ...(projectSelection === null ? {} : { projectSelection }),
+      });
+      if (resolution.fallback) {
+        console.warn("Provider session default fallback", resolution.fallback);
+      }
       void centerPanelActions.createChatPanel({
         hostRef: activeThreadRef,
         projectId: activeThread.projectId,
         worktreePath: centerPanelLaunchContext.worktreePath,
         branch: activeThread.branch ?? null,
-        instanceId: entry.instanceId,
-        ...(model ? { model } : {}),
+        modelSelection: resolution.modelSelection,
         providerLabel: entry.displayName,
       });
     },
-    [activeThread, activeThreadRef, centerPanelActions, centerPanelLaunchContext],
+    [
+      activeProject?.defaultModelSelection,
+      activeThread,
+      activeThreadRef,
+      centerPanelActions,
+      centerPanelLaunchContext,
+      settings.providerSessionDefaults,
+    ],
   );
   const openCenterTerminal = useCallback(
     (options?: OpenTerminalPanelOptions) => {
