@@ -80,6 +80,8 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
             let backend = app.state::<backend::BackendSupervisor>().inner().clone();
+            #[cfg(unix)]
+            backend::install_termination_signal_handler(app_handle.clone(), backend.clone());
             tauri::async_runtime::spawn(async move {
                 match backend.start_default(app_handle).await {
                     Ok(_config) => {}

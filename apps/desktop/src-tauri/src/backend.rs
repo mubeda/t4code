@@ -682,6 +682,46 @@ impl BackendSupervisor {
     }
 }
 
+pub(crate) async fn shutdown_backend_after_termination(
+    backend: BackendSupervisor,
+    termination: impl std::future::Future<Output = ()> + Send,
+    request_exit: impl FnOnce() + Send,
+) {
+    termination.await;
+    if let Err(error) = backend.stop(BackendShutdownConfig::default()).await {
+        tracing::warn!("failed to stop Tauri desktop backend after termination signal: {error}");
+    }
+    request_exit();
+}
+
+#[cfg(unix)]
+pub(crate) fn install_termination_signal_handler<R: Runtime>(
+    app: AppHandle<R>,
+    backend: BackendSupervisor,
+) {
+    tauri::async_runtime::spawn(shutdown_backend_after_termination(
+        backend,
+        wait_for_termination_signal(),
+        move || app.exit(0),
+    ));
+}
+
+#[cfg(unix)]
+async fn wait_for_termination_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut terminate = match signal(SignalKind::terminate()) {
+        Ok(terminate) => terminate,
+        Err(error) => {
+            tracing::error!("failed to install desktop termination handler: {error}");
+            std::future::pending().await
+        }
+    };
+    if terminate.recv().await.is_none() {
+        std::future::pending().await
+    }
+}
+
 fn emit_backend_ready<R: Runtime>(
     app: &AppHandle<R>,
     reason: &'static str,
@@ -3091,6 +3131,68 @@ exit /b 9
             .wait_for_completion()
             .await
             .expect("completed runtime result should remain available");
+    }
+
+    #[tokio::test]
+    async fn termination_waits_for_in_process_backend_cleanup_before_exit() {
+        let temp = tempfile::tempdir().expect("tempdir should open");
+        let (handle, config) = start_test_server(temp.path()).await;
+        let backend = BackendSupervisor::new();
+        let runtime = ManagedBackendRuntime::new(42, handle);
+        {
+            let mut state = backend
+                .state
+                .lock()
+                .expect("backend supervisor mutex poisoned");
+            state.slots.insert(
+                PRIMARY_LOCAL_ENVIRONMENT_ID.to_owned(),
+                BackendSlotState {
+                    backend: Some(ManagedBackend::Runtime(Box::new(runtime))),
+                    ..BackendSlotState::default()
+                },
+            );
+        }
+        let (terminate, termination) = oneshot::channel();
+        let exit_requested = Arc::new(AtomicBool::new(false));
+        let exit_requested_task = exit_requested.clone();
+
+        let shutdown = tokio::spawn(shutdown_backend_after_termination(
+            backend.clone(),
+            async move {
+                let _ = termination.await;
+            },
+            move || exit_requested_task.store(true, Ordering::SeqCst),
+        ));
+        tokio::task::yield_now().await;
+        assert!(
+            !exit_requested.load(Ordering::SeqCst),
+            "exit must not be requested before termination"
+        );
+
+        terminate.send(()).expect("termination should be observed");
+        shutdown.await.expect("termination task should join");
+
+        assert!(exit_requested.load(Ordering::SeqCst));
+        assert!(
+            backend
+                .state
+                .lock()
+                .expect("backend supervisor mutex poisoned")
+                .slots
+                .is_empty(),
+            "backend state must be drained before exit"
+        );
+        let address = format!("{}:{}", config.local_host, config.port);
+        assert!(
+            tokio::net::TcpStream::connect(address).await.is_err(),
+            "in-process server must stop before exit is requested"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn termination_signal_listener_can_be_created_without_tokio_reactor() {
+        let _listener = wait_for_termination_signal();
     }
 
     #[tokio::test]
