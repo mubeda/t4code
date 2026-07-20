@@ -199,6 +199,37 @@ describe("statusBarPresentation", () => {
     });
   });
 
+  it("presents non-finite live CPU values as unavailable without failing reconciliation", () => {
+    const vm = buildResourcePresentation(
+      diagnosticsFixture({
+        totals: {
+          combined: { processCount: 1, rssBytes: mebibytes(50), cpuPercent: Number.NaN },
+          core: { processCount: 0, rssBytes: 0, cpuPercent: Number.POSITIVE_INFINITY },
+          external: {
+            processCount: 1,
+            rssBytes: mebibytes(50),
+            cpuPercent: Number.NEGATIVE_INFINITY,
+          },
+        },
+        processes: [
+          processEntry({
+            processKey: "1:1",
+            pid: 1,
+            scope: "external",
+            kind: "helper",
+            label: "Invalid CPU sample",
+            cpuPercent: Number.NaN,
+          }),
+        ],
+      }),
+    );
+
+    expect(vm.headline?.cpuLabel).toBe("Unavailable");
+    expect(vm.core?.cpuLabel).toBe("Unavailable");
+    expect(vm.external?.cpuLabel).toBe("Unavailable");
+    expect(vm.consumers[0]?.cpuLabel).toBe("Unavailable");
+  });
+
   it("orders highest consumers by RSS and shows scope, memory, and CPU for every row", () => {
     const vm = buildResourcePresentation(diagnosticsFixture());
 

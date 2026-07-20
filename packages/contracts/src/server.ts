@@ -334,7 +334,7 @@ export const ServerProcessAttributionConfidence = Schema.Literals([
 export type ServerProcessAttributionConfidence = typeof ServerProcessAttributionConfidence.Type;
 
 export const ServerProcessResourceTotals = Schema.Struct({
-  cpuPercent: Schema.Number,
+  cpuPercent: Schema.Finite,
   rssBytes: NonNegativeInt,
   processCount: NonNegativeInt,
 });
@@ -370,7 +370,7 @@ export const ServerProcessDiagnosticsEntry = Schema.Struct({
   ppid: NonNegativeInt,
   pgid: Schema.Option(Schema.Int),
   status: TrimmedNonEmptyString,
-  cpuPercent: Schema.Number,
+  cpuPercent: Schema.Finite,
   rssBytes: NonNegativeInt,
   elapsed: TrimmedNonEmptyString,
   command: TrimmedNonEmptyString,
