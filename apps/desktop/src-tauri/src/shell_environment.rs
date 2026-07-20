@@ -10,14 +10,17 @@ use std::{
     io::{self, Read as _},
     os::{
         fd::AsRawFd as _,
-        unix::{ffi::OsStringExt as _, fs::PermissionsExt as _, process::CommandExt as _},
+        unix::{
+            ffi::OsStringExt as _,
+            fs::PermissionsExt as _,
+            process::{CommandExt as _, ExitStatusExt as _},
+        },
     },
     process::{Child, ChildStdout, Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU32, Ordering},
     },
-    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
@@ -35,6 +38,8 @@ const PATH_PROBE_COMMAND: &str = concat!(
 );
 #[cfg(unix)]
 const PATH_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(unix)]
+const PATH_PROBE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(1);
 #[cfg(unix)]
 const PATH_PROBE_OUTPUT_LIMIT: usize = 256 * 1024;
 
@@ -329,7 +334,10 @@ fn drain_stdout(
 }
 
 #[cfg(unix)]
-fn terminate_process_group(child: &mut Child, process_group_id: u32) {
+fn terminate_process_group(
+    child: &mut Child,
+    process_group_id: u32,
+) -> io::Result<std::process::ExitStatus> {
     if let Ok(process_group_id) = i32::try_from(process_group_id) {
         // SAFETY: the probe child is spawned as the leader of a new process
         // group. A negative PID targets that group; failures such as an already
@@ -339,19 +347,7 @@ fn terminate_process_group(child: &mut Child, process_group_id: u32) {
         }
     }
     let _ = child.kill();
-    let _ = child.wait();
-}
-
-#[cfg(unix)]
-fn stop_and_join(
-    child: &mut Child,
-    process_group_id: u32,
-    stop: &AtomicBool,
-    reader: JoinHandle<io::Result<CapturedOutput>>,
-) {
-    stop.store(true, Ordering::Release);
-    terminate_process_group(child, process_group_id);
-    let _ = reader.join();
+    child.wait()
 }
 
 #[cfg(unix)]
@@ -420,7 +416,7 @@ fn run_shell_probe(
         spawned_pid.store(process_group_id, Ordering::Release);
     }
     let Some(stdout) = child.stdout.take() else {
-        terminate_process_group(&mut child, process_group_id);
+        let _ = terminate_process_group(&mut child, process_group_id);
         return Err(PathHydrationFailure::OutputReadFailed);
     };
     let stop = Arc::new(AtomicBool::new(false));
@@ -428,30 +424,30 @@ fn run_shell_probe(
     let reader = std::thread::spawn(move || drain_stdout(stdout, output_limit, reader_stop));
     let deadline = Instant::now() + timeout;
 
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() >= deadline => {
-                stop_and_join(&mut child, process_group_id, &stop, reader);
-                return Err(PathHydrationFailure::TimedOut);
-            }
-            Ok(None) => {
-                std::thread::sleep(
-                    Duration::from_millis(10)
-                        .min(deadline.saturating_duration_since(Instant::now())),
-                );
-            }
-            Err(_) => {
-                stop_and_join(&mut child, process_group_id, &stop, reader);
-                return Err(PathHydrationFailure::WaitFailed);
-            }
-        }
-    };
-
-    terminate_process_group(&mut child, process_group_id);
     while !reader.is_finished() && Instant::now() < deadline {
         std::thread::sleep(
             Duration::from_millis(5).min(deadline.saturating_duration_since(Instant::now())),
+        );
+    }
+    let reached_deadline = !reader.is_finished();
+
+    // Keep the group leader unreaped until after signalling the process group.
+    // Reaping it first leaves only a numeric process-group ID, which the OS may
+    // immediately reuse for an unrelated process before cleanup runs.
+    let status = match terminate_process_group(&mut child, process_group_id) {
+        Ok(status) => status,
+        Err(_) => {
+            stop.store(true, Ordering::Release);
+            let _ = reader.join();
+            return Err(PathHydrationFailure::WaitFailed);
+        }
+    };
+
+    let cleanup_deadline = Instant::now() + PATH_PROBE_CLEANUP_TIMEOUT;
+    while !reader.is_finished() && Instant::now() < cleanup_deadline {
+        std::thread::sleep(
+            Duration::from_millis(5)
+                .min(cleanup_deadline.saturating_duration_since(Instant::now())),
         );
     }
     if !reader.is_finished() {
@@ -465,6 +461,9 @@ fn run_shell_probe(
         .map_err(|_| PathHydrationFailure::OutputReadFailed)?;
     if captured.exceeded_limit {
         return Err(PathHydrationFailure::OutputTooLarge);
+    }
+    if reached_deadline && status.signal() == Some(libc::SIGKILL) {
+        return Err(PathHydrationFailure::TimedOut);
     }
     if !status.success() {
         return Err(PathHydrationFailure::NonZeroExit);
