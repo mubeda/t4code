@@ -37,7 +37,7 @@ export function ProviderSessionDefaultsControls({
     models,
     ...(value ? { configuredDefault: value } : {}),
   });
-  const modelDisabled = disabled || !controls.modelAvailable;
+  const modelDisabled = disabled;
   const selectedModel = controls.modelAvailable ? controls.resolvedModel : controls.configuredModel;
   const selectedServerModel = models.find((model) => model.slug === selectedModel);
   const modelLabel = selectedServerModel?.name ?? selectedModel;
