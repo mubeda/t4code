@@ -339,8 +339,9 @@ export function getProviderSessionDefaultControls(input: {
 function replaceSelection(
   selections: ReadonlyArray<ProviderOptionSelection>,
   replacement: ProviderOptionSelection,
+  replacedIds: ReadonlyArray<string> = [replacement.id],
 ): Array<ProviderOptionSelection> {
-  return [...selections.filter((selection) => selection.id !== replacement.id), replacement];
+  return [...selections.filter((selection) => !replacedIds.includes(selection.id)), replacement];
 }
 
 function buildPersistedSelections(
@@ -401,10 +402,14 @@ export function updateProviderSessionDefault(input: {
   let normalizedOptions = normalizeProviderOptions(input.driver, optionsModel, selections);
 
   if (input.change.type === "effort" && normalizedOptions.effortDescriptor) {
-    selections = replaceSelection(selections, {
-      id: normalizedOptions.effortDescriptor.id,
-      value: input.change.value,
-    });
+    selections = replaceSelection(
+      selections,
+      {
+        id: normalizedOptions.effortDescriptor.id,
+        value: input.change.value,
+      },
+      PROVIDER_SESSION_EFFORT_OPTION_IDS,
+    );
     normalizedOptions = normalizeUpdatedSelections(selections);
   } else if (input.change.type === "fastMode") {
     const fastModeDescriptor = getFastModeDescriptor(input.driver, normalizedOptions.descriptors);
