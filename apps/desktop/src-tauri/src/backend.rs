@@ -393,6 +393,7 @@ enum BackendLifecycle {
         epoch: u64,
         terminate: bool,
         completion: watch::Receiver<Option<Result<(), String>>>,
+        late_start_cleanup_error: Option<String>,
     },
     Stopped {
         epoch: u64,
@@ -417,6 +418,23 @@ struct BackendStartPermit {
     start_completed: Arc<Notify>,
 }
 
+impl BackendStartPermit {
+    fn record_cleanup_error(&self, error: String) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("backend supervisor mutex poisoned");
+        if let BackendLifecycle::Stopping {
+            late_start_cleanup_error,
+            ..
+        } = &mut state.lifecycle
+        {
+            late_start_cleanup_error
+                .get_or_insert_with(|| format!("Late desktop backend cleanup failed: {error}"));
+        }
+    }
+}
+
 impl Drop for BackendStartPermit {
     fn drop(&mut self) {
         if let Ok(mut state) = self.state.lock() {
@@ -439,6 +457,8 @@ pub struct BackendSupervisor {
     start_publish_gate: Arc<Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>>,
     #[cfg(test)]
     shutdown_cleanup_reached: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    #[cfg(test)]
+    late_start_cleanup_failure: Arc<Mutex<Option<String>>>,
 }
 
 impl BackendSupervisor {
@@ -621,6 +641,11 @@ impl BackendSupervisor {
         };
         let Some((managed_for_monitor, previous)) = installed else {
             let cleanup = stop_managed_backend(managed, BackendShutdownConfig::default()).await;
+            #[cfg(test)]
+            let cleanup = self.inject_late_start_cleanup_failure(cleanup);
+            if let Err(error) = &cleanup {
+                permit.record_cleanup_error(error.clone());
+            }
             return Err(match cleanup {
                 Ok(()) => {
                     "Desktop backend shutdown began before startup could be published.".to_string()
@@ -754,6 +779,27 @@ impl BackendSupervisor {
         }
     }
 
+    #[cfg(test)]
+    fn set_late_start_cleanup_failure(&self, error: impl Into<String>) {
+        *self
+            .late_start_cleanup_failure
+            .lock()
+            .expect("late backend cleanup test failure mutex poisoned") = Some(error.into());
+    }
+
+    #[cfg(test)]
+    fn inject_late_start_cleanup_failure(&self, cleanup: Result<(), String>) -> Result<(), String> {
+        match self
+            .late_start_cleanup_failure
+            .lock()
+            .expect("late backend cleanup test failure mutex poisoned")
+            .take()
+        {
+            Some(error) => Err(error),
+            None => cleanup,
+        }
+    }
+
     pub async fn stop(&self, shutdown: BackendShutdownConfig) -> Result<(), String> {
         self.stop_inner(shutdown, false).await
     }
@@ -790,6 +836,7 @@ impl BackendSupervisor {
                     epoch: shutdown_epoch,
                     terminate,
                     completion: completion_rx.clone(),
+                    late_start_cleanup_error: None,
                 };
 
                 let backends = state
@@ -831,7 +878,6 @@ impl BackendSupervisor {
                         first_error = Some(error);
                     }
                 }
-                let result = first_error.map_or(Ok(()), Err);
                 #[cfg(test)]
                 supervisor.notify_shutdown_cleanup_reached();
                 supervisor.wait_for_in_flight_starts().await;
@@ -842,15 +888,29 @@ impl BackendSupervisor {
                         .lock()
                         .expect("backend supervisor mutex poisoned");
                     if let BackendLifecycle::Stopping {
-                        epoch, terminate, ..
-                    } = state.lifecycle
-                        && epoch == shutdown_epoch
+                        epoch,
+                        terminate,
+                        late_start_cleanup_error,
+                        ..
+                    } = &mut state.lifecycle
+                        && *epoch == shutdown_epoch
                     {
+                        let result = match (first_error, late_start_cleanup_error.take()) {
+                            (None, None) => Ok(()),
+                            (Some(error), None) | (None, Some(error)) => Err(error),
+                            (Some(error), Some(late_error)) => {
+                                Err(format!("{error}; {late_error}"))
+                            }
+                        };
+                        let terminate = *terminate;
                         let _ = completion_tx.send(Some(result.clone()));
                         state.lifecycle = if terminate {
                             BackendLifecycle::Terminated { result }
                         } else {
-                            BackendLifecycle::Stopped { epoch, result }
+                            BackendLifecycle::Stopped {
+                                epoch: *epoch,
+                                result,
+                            }
                         };
                     }
                 }
@@ -2822,6 +2882,105 @@ mod tests {
                 .await
                 .is_err(),
             "late-created backend must be cleaned before start returns"
+        );
+    }
+
+    #[tokio::test]
+    async fn late_start_cleanup_failure_is_shared_retained_and_blocks_restart() {
+        let temp = tempfile::tempdir().expect("tempdir should open");
+        let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .expect("temporary port should bind")
+            .local_addr()
+            .expect("temporary listener should have an address")
+            .port();
+        let supervisor = BackendSupervisor::new();
+        let (publish_reached, wait_for_publish) = oneshot::channel();
+        let (allow_publish, publish_release) = oneshot::channel();
+        supervisor.set_start_publish_gate(publish_reached, publish_release);
+        let (cleanup_reached, wait_for_cleanup) = oneshot::channel();
+        supervisor.set_shutdown_cleanup_reached(cleanup_reached);
+        supervisor.set_late_start_cleanup_failure("injected late cleanup failure");
+        let plan = BackendLaunchPlan::local(temp.path().to_path_buf(), local_test_config(port));
+
+        let start_supervisor = supervisor.clone();
+        let start = tokio::spawn(async move {
+            start_supervisor
+                .start_with_options(
+                    plan,
+                    BackendReadinessConfig::default(),
+                    BackendRestartConfig::default(),
+                )
+                .await
+        });
+        wait_for_publish
+            .await
+            .expect("start should reach the pre-publish gate");
+
+        let first_stop_supervisor = supervisor.clone();
+        let first_stop = tokio::spawn(async move {
+            first_stop_supervisor
+                .stop(BackendShutdownConfig::default())
+                .await
+        });
+        wait_for_cleanup
+            .await
+            .expect("shutdown should reach its in-flight start wait");
+
+        let second_stop_supervisor = supervisor.clone();
+        let second_stop = tokio::spawn(async move {
+            second_stop_supervisor
+                .stop(BackendShutdownConfig::default())
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !first_stop.is_finished() && !second_stop.is_finished(),
+            "all stop callers must wait for late startup cleanup"
+        );
+
+        allow_publish
+            .send(())
+            .expect("blocked start should still be waiting");
+        let start_error = start
+            .await
+            .expect("start task should join")
+            .expect_err("start must surface its late cleanup failure");
+        assert!(
+            start_error.contains("injected late cleanup failure"),
+            "{start_error}"
+        );
+
+        let first_error = first_stop
+            .await
+            .expect("first stop task should join")
+            .expect_err("stop must surface the late cleanup failure");
+        let second_error = second_stop
+            .await
+            .expect("second stop task should join")
+            .expect_err("concurrent stop must share the late cleanup failure");
+        assert!(
+            first_error.contains("injected late cleanup failure"),
+            "{first_error}"
+        );
+        assert_eq!(second_error, first_error);
+
+        let retained_error = supervisor
+            .stop(BackendShutdownConfig::default())
+            .await
+            .expect_err("later stop callers must retain the late cleanup failure");
+        assert_eq!(retained_error, first_error);
+        let restart_error = supervisor
+            .begin_start(true)
+            .expect_err("a late cleanup failure must block restart");
+        assert!(restart_error.contains("cleanup"), "{restart_error}");
+        assert!(
+            supervisor
+                .state
+                .lock()
+                .expect("backend supervisor mutex poisoned")
+                .slots
+                .is_empty(),
+            "late-created backend must not remain installed"
         );
     }
 
