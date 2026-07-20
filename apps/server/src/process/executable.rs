@@ -77,27 +77,14 @@ impl LaunchProgram {
 }
 
 #[doc(hidden)]
-pub const WINDOWS_BATCH_TRAMPOLINE_ARG: &str =
-    "--t4code-internal-windows-batch-trampoline";
+pub const WINDOWS_PTY_TRAMPOLINE_ARG: &str = "--t4code-internal-windows-pty-trampoline";
 
-#[derive(Clone, Debug)]
-pub(crate) enum WindowsBatchLaunch {
-    Native,
-    #[cfg(any(windows, test))]
-    Trampoline {
-        executable: PathBuf,
-        gate_name: OsString,
-        ready_name: OsString,
-    },
-}
-
-/// Runs a Windows batch shim requested by an internal same-binary launch.
+/// Runs a Windows PTY target requested by an internal same-binary launch.
 ///
-/// `std::process::Command` owns the `.cmd`/`.bat` quoting here. Its Windows
-/// implementation invokes the command processor with delayed expansion
-/// disabled and rejects unsupported batch arguments, while the first launch
-/// into this executable remains an ordinary structured argv invocation.
-pub fn run_windows_batch_trampoline() -> Option<i32> {
+/// The parent attaches this trampoline to the terminal job before authorizing
+/// the prepared target. `std::process::Command` retains ownership of Windows
+/// `.cmd`/`.bat` quoting and invokes other targets with their structured argv.
+pub fn run_windows_pty_trampoline() -> Option<i32> {
     #[cfg(not(windows))]
     {
         None
@@ -105,29 +92,29 @@ pub fn run_windows_batch_trampoline() -> Option<i32> {
     #[cfg(windows)]
     {
         let mut arguments = std::env::args_os().skip(1);
-        if arguments.next().as_deref() != Some(OsStr::new(WINDOWS_BATCH_TRAMPOLINE_ARG)) {
+        if arguments.next().as_deref() != Some(OsStr::new(WINDOWS_PTY_TRAMPOLINE_ARG)) {
             return None;
         }
         let Some(gate_name) = arguments.next() else {
-            eprintln!("t4code: the internal Windows batch launch is missing its gate.");
+            eprintln!("t4code: the internal Windows PTY launch is missing its gate.");
             return Some(1);
         };
         let Some(ready_name) = arguments.next() else {
-            eprintln!("t4code: the internal Windows batch launch is missing its ready event.");
+            eprintln!("t4code: the internal Windows PTY launch is missing its ready event.");
             return Some(1);
         };
-        let Some(script) = arguments.next() else {
-            eprintln!("t4code: the internal Windows batch launch is missing its script.");
+        let Some(program) = arguments.next() else {
+            eprintln!("t4code: the internal Windows PTY launch is missing its target.");
             return Some(1);
         };
-        if wait_for_windows_batch_gate(&gate_name, &ready_name).is_err() {
-            eprintln!("t4code: the internal Windows batch launch was not authorized.");
+        if wait_for_windows_pty_gate(&gate_name, &ready_name).is_err() {
+            eprintln!("t4code: the internal Windows PTY launch was not authorized.");
             return Some(1);
         }
-        match std::process::Command::new(script).args(arguments).status() {
+        match std::process::Command::new(program).args(arguments).status() {
             Ok(status) => Some(status.code().unwrap_or(1)),
             Err(_) => {
-                eprintln!("t4code: failed to start the requested Windows provider.");
+                eprintln!("t4code: failed to start the requested Windows PTY target.");
                 Some(1)
             }
         }
@@ -135,7 +122,7 @@ pub fn run_windows_batch_trampoline() -> Option<i32> {
 }
 
 #[cfg(windows)]
-fn wait_for_windows_batch_gate(gate_name: &OsStr, ready_name: &OsStr) -> Result<(), ()> {
+fn wait_for_windows_pty_gate(gate_name: &OsStr, ready_name: &OsStr) -> Result<(), ()> {
     use std::os::windows::ffi::OsStrExt;
 
     use windows_sys::Win32::{
@@ -191,7 +178,6 @@ fn wait_for_windows_batch_gate(gate_name: &OsStr, ready_name: &OsStr) -> Result<
 pub(crate) fn wrap_launch_program(
     platform: Platform,
     executable: &Path,
-    windows_batch_launch: WindowsBatchLaunch,
 ) -> Result<LaunchProgram, String> {
     let extension = executable.extension().and_then(OsStr::to_str);
     if platform == Platform::Windows
@@ -224,28 +210,10 @@ pub(crate) fn wrap_launch_program(
                 "Windows batch executable paths cannot contain control characters".to_owned(),
             );
         }
-        return match windows_batch_launch {
-            WindowsBatchLaunch::Native => Ok(LaunchProgram {
-                program: executable.to_path_buf(),
-                prefix_args: Vec::new(),
-            }),
-            #[cfg(any(windows, test))]
-            WindowsBatchLaunch::Trampoline {
-                executable: trampoline,
-                gate_name,
-                ready_name,
-            } => Ok(LaunchProgram {
-                program: trampoline,
-                prefix_args: [
-                    OsString::from(WINDOWS_BATCH_TRAMPOLINE_ARG),
-                    gate_name,
-                    ready_name,
-                    executable.as_os_str().to_owned(),
-                ]
-                .into_iter()
-                .collect(),
-            }),
-        };
+        return Ok(LaunchProgram {
+            program: executable.to_path_buf(),
+            prefix_args: Vec::new(),
+        });
     }
     Ok(LaunchProgram {
         program: executable.to_path_buf(),
@@ -253,11 +221,32 @@ pub(crate) fn wrap_launch_program(
     })
 }
 
-pub(crate) fn is_windows_batch_executable(platform: Platform, executable: &Path) -> bool {
+fn is_windows_batch_executable(platform: Platform, executable: &Path) -> bool {
     platform == Platform::Windows
         && executable.extension().and_then(OsStr::to_str).is_some_and(|extension| {
             extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
         })
+}
+
+#[cfg(any(windows, test))]
+pub(crate) fn wrap_windows_pty_launch(
+    target: PreparedLaunch,
+    trampoline: &Path,
+    gate_name: &OsStr,
+    ready_name: &OsStr,
+) -> PreparedLaunch {
+    PreparedLaunch {
+        program: trampoline.to_path_buf(),
+        args: [
+            OsString::from(WINDOWS_PTY_TRAMPOLINE_ARG),
+            gate_name.to_owned(),
+            ready_name.to_owned(),
+            target.program.into_os_string(),
+        ]
+        .into_iter()
+        .chain(target.args)
+        .collect(),
+    }
 }
 
 pub(crate) fn locate_executable<E>(

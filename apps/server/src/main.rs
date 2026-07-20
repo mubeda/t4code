@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    if let Some(exit_code) = t4code_server::process::run_windows_batch_trampoline() {
+    if let Some(exit_code) = t4code_server::process::run_windows_pty_trampoline() {
         std::process::exit(exit_code);
     }
     match t4code_server::run_cli().await {

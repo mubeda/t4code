@@ -19,8 +19,7 @@ use crate::{
     },
     persistence::{ProviderSessionRuntime, Repositories},
     process::{
-        Platform, PreparedLaunch, WindowsBatchLaunch,
-        configure_supervised_background_command_wrap,
+        Platform, PreparedLaunch, configure_supervised_background_command_wrap,
         launch_executable_extensions, locate_executable, wrap_launch_program,
     },
     production::{
@@ -1483,10 +1482,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    Ok(
-        wrap_launch_program(Platform::current(), executable, WindowsBatchLaunch::Native)?
-            .prepare(arguments),
-    )
+    Ok(wrap_launch_program(Platform::current(), executable)?.prepare(arguments))
 }
 
 async fn kill_child(child: &SharedChild) {
