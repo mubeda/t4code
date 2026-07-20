@@ -1,7 +1,8 @@
 # T4Code
 
-T4Code is a web and desktop GUI for coding agents (currently Codex, Claude, Cursor,
-Grok, and OpenCode, more coming soon).
+T4Code is a minimal web GUI for coding agents. It is a different approach of T3 Code with some
+nice features of Orca and Conductor.build (currently Codex, Claude, Cursor, and OpenCode, more
+coming soon).
 
 This project is a public GitHub fork of [T4Code](https://github.com/mubeda/t4code).
 

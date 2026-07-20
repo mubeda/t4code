@@ -399,7 +399,7 @@ fn platform_process_record(_pid: u32) -> std::io::Result<PlatformProcessRecord> 
     ))
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn platform_process_creation_identity(pid: u32) -> std::io::Result<u64> {
     platform_process_record(pid).map(|record| record.started_at)
 }
@@ -922,11 +922,8 @@ mod tests {
     fn macos_signal_is_unsupported_without_an_identity_bound_primitive() {
         assert!(matches!(
             signal_process_identity(
-                ProcessIdentity {
-                    pid: std::process::id(),
-                    started_at: platform_process_creation_identity(std::process::id())
-                        .expect("current identity"),
-                },
+                NativeProcessSampler::process_identity(std::process::id())
+                    .expect("current identity"),
                 ProcessSignal::Kill,
             ),
             Err(SignalError::Unsupported)
