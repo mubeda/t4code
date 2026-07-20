@@ -92,7 +92,7 @@ function panelItem(overrides: Record<string, unknown> = {}) {
 function render(canCreatePanel: boolean) {
   const props = {
     providerStatuses: [],
-    settings: { providerInstances: {}, providers: {} },
+    settings: { providerInstances: {}, providers: {}, providerSessionDefaults: {} },
     canCreatePanel,
     onCreateChatPanel: vi.fn(),
     onOpenTerminalPanel: vi.fn(),
