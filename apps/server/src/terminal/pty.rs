@@ -1,6 +1,8 @@
 use std::{
     collections::BTreeMap,
-    env, fmt,
+    env,
+    ffi::OsStr,
+    fmt,
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc},
@@ -10,8 +12,14 @@ use std::{
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tokio::sync::{broadcast, watch};
 
+use crate::process::{
+    Platform, launch_executable_extensions, locate_executable, wrap_launch_program,
+};
+
+#[cfg(any(windows, test))]
+use crate::process::wrap_windows_pty_launch;
 #[cfg(windows)]
-use crate::process::WindowsJob;
+use crate::process::{WindowsJob, WindowsPtyLaunchGate};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PtyExit {
@@ -21,7 +29,7 @@ pub struct PtyExit {
 
 #[derive(Clone, Debug)]
 pub struct PtySpawnInput {
-    pub shell: String,
+    pub executable: String,
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub cols: u16,
@@ -45,11 +53,196 @@ pub trait PtyBackend: fmt::Debug + Send + Sync {
 #[derive(Debug, Default)]
 pub struct PortablePtyBackend;
 
-impl PtyBackend for PortablePtyBackend {
-    fn spawn(&self, input: &PtySpawnInput) -> Result<Arc<dyn PtyProcess>, String> {
-        if !executable_is_discoverable(&input.shell, &input.env) {
-            return Err(format!("shell executable was not found: {}", input.shell));
+struct PreparedPtyCommand {
+    command: CommandBuilder,
+    #[cfg(windows)]
+    launch_gate: WindowsPtyLaunchGate,
+}
+
+struct SpawnedChildGuard {
+    child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
+    root_killer: Option<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
+    #[cfg(unix)]
+    root_process_id: Option<i32>,
+    #[cfg(unix)]
+    process_group: Option<i32>,
+    #[cfg(windows)]
+    job: Option<WindowsJob>,
+    #[cfg(test)]
+    tree_cleanup_observer: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl SpawnedChildGuard {
+    #[cfg(any(not(unix), test))]
+    fn new(child: Box<dyn portable_pty::Child + Send + Sync>) -> Self {
+        Self {
+            child: Some(child),
+            root_killer: None,
+            #[cfg(unix)]
+            root_process_id: None,
+            #[cfg(unix)]
+            process_group: None,
+            #[cfg(windows)]
+            job: None,
+            #[cfg(test)]
+            tree_cleanup_observer: None,
         }
+    }
+
+    #[cfg(unix)]
+    fn new_with_process_group(
+        child: Box<dyn portable_pty::Child + Send + Sync>,
+        process_group: Option<i32>,
+    ) -> Self {
+        Self {
+            child: Some(child),
+            root_killer: None,
+            root_process_id: None,
+            process_group,
+            #[cfg(test)]
+            tree_cleanup_observer: None,
+        }
+    }
+
+    fn child(&self) -> &(dyn portable_pty::Child + Send + Sync) {
+        self.child.as_deref().expect("spawned child guard")
+    }
+
+    fn handoff_child_to_waiter(&mut self) -> Box<dyn portable_pty::Child + Send + Sync> {
+        let root_killer = self.child().clone_killer();
+        let child = self.child.take().expect("spawned child guard");
+        self.root_killer = Some(root_killer);
+        child
+    }
+
+    #[cfg(unix)]
+    fn remember_root_process_id(&mut self, process_id: u32) -> Result<(), String> {
+        let process_id = i32::try_from(process_id)
+            .map_err(|_| "PTY child process id exceeded the Unix PID range".to_owned())?;
+        self.root_process_id = Some(process_id);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn observe_tree_cleanup(&mut self, observer: impl FnOnce() + Send + 'static) {
+        self.tree_cleanup_observer = Some(Box::new(observer));
+    }
+
+    #[cfg(unix)]
+    fn commit_process_group(mut self) -> Option<i32> {
+        self.root_killer.take();
+        self.root_process_id.take();
+        self.process_group.take()
+    }
+
+    #[cfg(windows)]
+    fn own_job(&mut self, job: WindowsJob) {
+        debug_assert!(self.job.is_none(), "PTY child job already attached");
+        self.job = Some(job);
+    }
+
+    #[cfg(windows)]
+    fn commit_job(mut self) -> Result<WindowsJob, String> {
+        let job = self
+            .job
+            .take()
+            .ok_or_else(|| "PTY child job was not retained during setup".to_owned())?;
+        self.root_killer.take();
+        Ok(job)
+    }
+}
+
+type PtyThreadTask = Box<dyn FnOnce() + Send + 'static>;
+
+fn spawn_pty_thread_with(
+    name: String,
+    task: PtyThreadTask,
+    spawn: impl FnOnce(thread::Builder, PtyThreadTask) -> std::io::Result<thread::JoinHandle<()>>,
+) -> std::io::Result<()> {
+    spawn(thread::Builder::new().name(name), task).map(drop)
+}
+
+fn spawn_pty_thread(name: String, task: PtyThreadTask) -> std::io::Result<()> {
+    spawn_pty_thread_with(name, task, |builder, task| builder.spawn(task))
+}
+
+impl Drop for SpawnedChildGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(process_group) = self.process_group
+            && let Err(error) = kill_unix_process_group(process_group)
+        {
+            tracing::debug!(%error, process_group, "failed to kill PTY process group after spawn setup failure");
+        }
+        #[cfg(windows)]
+        if let Some(job) = self.job.as_ref()
+            && let Err(error) = job.terminate()
+        {
+            tracing::debug!(%error, "failed to kill PTY job after spawn setup failure");
+        }
+        #[cfg(test)]
+        if let Some(observer) = self.tree_cleanup_observer.take() {
+            observer();
+        }
+        if let Some(child) = self.child.as_mut() {
+            if let Err(error) = child.kill() {
+                tracing::debug!(%error, "failed to kill PTY child after spawn setup failure");
+            }
+            return;
+        }
+        #[cfg(unix)]
+        let root_killed = self.root_process_id.is_some_and(|process_id| {
+            if let Err(error) = kill_unix_process(process_id) {
+                tracing::debug!(%error, process_id, "failed to SIGKILL PTY root after waiter spawn failure");
+                false
+            } else {
+                true
+            }
+        });
+        #[cfg(not(unix))]
+        let root_killed = false;
+        if !root_killed
+            && let Some(root_killer) = self.root_killer.as_mut()
+            && let Err(error) = root_killer.kill()
+        {
+            tracing::debug!(%error, "failed to kill PTY root after waiter spawn failure");
+        }
+    }
+}
+
+impl PortablePtyBackend {
+    #[cfg(windows)]
+    #[doc(hidden)]
+    pub fn spawn_with_windows_pty_trampoline(
+        &self,
+        input: &PtySpawnInput,
+        trampoline: &Path,
+    ) -> Result<Arc<dyn PtyProcess>, String> {
+        let launch_gate = WindowsPtyLaunchGate::new().map_err(|error| error.to_string())?;
+        let command = build_pty_command_on_with_trampoline(
+            Platform::Windows,
+            input,
+            trampoline,
+            launch_gate.name(),
+            launch_gate.ready_name(),
+        )?;
+        self.spawn_command(
+            input,
+            PreparedPtyCommand {
+                command,
+                launch_gate,
+            },
+        )
+    }
+
+    fn spawn_command(
+        &self,
+        input: &PtySpawnInput,
+        prepared: PreparedPtyCommand,
+    ) -> Result<Arc<dyn PtyProcess>, String> {
+        let command = prepared.command;
+        #[cfg(windows)]
+        let launch_gate = prepared.launch_gate;
         let pair = match native_pty_system().openpty(PtySize {
             rows: input.rows,
             cols: input.cols,
@@ -59,35 +252,39 @@ impl PtyBackend for PortablePtyBackend {
             Ok(pair) => pair,
             Err(error) => return Err(error.to_string()),
         };
-        let mut command = CommandBuilder::new(&input.shell);
-        command.args(&input.args);
-        command.cwd(&input.cwd);
-        for (key, value) in &input.env {
-            command.env(key, value);
-        }
 
-        let mut child = match pair.slave.spawn_command(command) {
+        let child = match pair.slave.spawn_command(command) {
             Ok(child) => child,
             Err(error) => return Err(error.to_string()),
         };
+        #[cfg(unix)]
+        let mut child =
+            SpawnedChildGuard::new_with_process_group(child, pair.master.process_group_leader());
+        #[cfg(not(unix))]
+        let mut child = SpawnedChildGuard::new(child);
         drop(pair.slave);
-        let pid = match child.process_id() {
+        let pid = match child.child().process_id() {
             Some(pid) => pid,
             None => return Err("PTY child did not expose a process id".to_string()),
         };
         #[cfg(unix)]
-        let process_group = pair.master.process_group_leader();
+        child.remember_root_process_id(pid)?;
         #[cfg(windows)]
-        let job = {
-            let raw_handle = match child.as_raw_handle() {
+        {
+            let raw_handle = match child.child().as_raw_handle() {
                 Some(raw_handle) => raw_handle,
                 None => return Err("PTY child did not expose a Windows process handle".to_owned()),
             };
-            match WindowsJob::attach(raw_handle) {
+            let job = match WindowsJob::attach(raw_handle) {
                 Ok(job) => job,
                 Err(error) => return Err(error.to_string()),
-            }
-        };
+            };
+            child.own_job(job);
+        }
+        #[cfg(windows)]
+        if let Err(error) = launch_gate.signal() {
+            return Err(error.to_string());
+        }
         let mut reader = match pair.master.try_clone_reader() {
             Ok(reader) => reader,
             Err(error) => return Err(error.to_string()),
@@ -97,7 +294,7 @@ impl PtyBackend for PortablePtyBackend {
             Err(error) => return Err(error.to_string()),
         };
         #[cfg(not(windows))]
-        let killer = child.clone_killer();
+        let killer = child.child().clone_killer();
         let (output, _) = broadcast::channel(256);
         let (exit, _) = watch::channel(None);
         let (resize, resize_requests) = mpsc::sync_channel(1);
@@ -120,9 +317,13 @@ impl PtyBackend for PortablePtyBackend {
             return Err(error.to_string());
         }
         let exit_sender = exit.clone();
-        if let Err(error) = thread::Builder::new()
-            .name(format!("t4code-pty-wait-{pid}"))
-            .spawn(move || {
+        let wait_child = child.handoff_child_to_waiter();
+        spawn_pty_thread(
+            format!("t4code-pty-wait-{pid}"),
+            Box::new(move || {
+                #[cfg(windows)]
+                let _launch_gate = launch_gate;
+                let mut child = wait_child;
                 let event = match child.wait() {
                     Ok(status) => PtyExit {
                         exit_code: i32::try_from(status.exit_code()).ok(),
@@ -134,10 +335,13 @@ impl PtyBackend for PortablePtyBackend {
                     },
                 };
                 let _ = exit_sender.send(Some(event));
-            })
-        {
-            return Err(error.to_string());
-        }
+            }),
+        )
+        .map_err(|error| error.to_string())?;
+        #[cfg(unix)]
+        let process_group = child.commit_process_group();
+        #[cfg(windows)]
+        let job = child.commit_job()?;
 
         Ok(Arc::new(PortablePtyProcess {
             pid,
@@ -155,22 +359,132 @@ impl PtyBackend for PortablePtyBackend {
     }
 }
 
-fn executable_is_discoverable(command: &str, overrides: &BTreeMap<String, String>) -> bool {
-    let command_path = Path::new(command);
-    if command_path.is_absolute() || command_path.components().count() > 1 {
-        return command_path.is_file();
+impl PtyBackend for PortablePtyBackend {
+    fn spawn(&self, input: &PtySpawnInput) -> Result<Arc<dyn PtyProcess>, String> {
+        let prepared = build_pty_command(input)?;
+        self.spawn_command(input, prepared)
     }
+}
 
+fn build_pty_command(input: &PtySpawnInput) -> Result<PreparedPtyCommand, String> {
+    let platform = Platform::current();
+    let executable = resolve_pty_executable_for_launch(platform, input)?;
+    #[cfg(windows)]
+    {
+        let launch_gate = WindowsPtyLaunchGate::new().map_err(|error| error.to_string())?;
+        let trampoline = std::env::current_exe().map_err(|error| {
+            format!("failed to resolve the Windows PTY launch trampoline: {error}")
+        })?;
+        let target = prepare_pty_launch(platform, input, &executable)?;
+        let launch = wrap_windows_pty_launch(
+            target,
+            &trampoline,
+            launch_gate.name(),
+            launch_gate.ready_name(),
+        );
+        let command = build_pty_command_from_launch(input, launch);
+        return Ok(PreparedPtyCommand {
+            command,
+            launch_gate,
+        });
+    }
+    #[cfg(not(windows))]
+    {
+        let command =
+            build_pty_command_from_launch(input, prepare_pty_launch(platform, input, &executable)?);
+        Ok(PreparedPtyCommand { command })
+    }
+}
+
+#[cfg(test)]
+fn build_pty_command_on(
+    platform: Platform,
+    input: &PtySpawnInput,
+) -> Result<CommandBuilder, String> {
+    let executable = resolve_pty_executable_for_launch(platform, input)?;
+    Ok(build_pty_command_from_launch(
+        input,
+        prepare_pty_launch(platform, input, &executable)?,
+    ))
+}
+
+#[cfg(any(test, windows))]
+fn build_pty_command_on_with_trampoline(
+    platform: Platform,
+    input: &PtySpawnInput,
+    trampoline: &Path,
+    gate_name: &OsStr,
+    ready_name: &OsStr,
+) -> Result<CommandBuilder, String> {
+    let executable = resolve_pty_executable_for_launch(platform, input)?;
+    let target = prepare_pty_launch(platform, input, &executable)?;
+    let launch = wrap_windows_pty_launch(target, trampoline, gate_name, ready_name);
+    Ok(build_pty_command_from_launch(input, launch))
+}
+
+fn resolve_pty_executable_for_launch(
+    platform: Platform,
+    input: &PtySpawnInput,
+) -> Result<PathBuf, String> {
+    match resolve_pty_executable_on(platform, &input.executable, &input.cwd, &input.env) {
+        Some(executable) => Ok(executable),
+        None => Err(format!(
+            "terminal executable was not found: {}",
+            input.executable
+        )),
+    }
+}
+
+fn prepare_pty_launch(
+    platform: Platform,
+    input: &PtySpawnInput,
+    executable: &Path,
+) -> Result<crate::process::PreparedLaunch, String> {
+    Ok(wrap_launch_program(platform, executable)?.prepare(&input.args))
+}
+
+fn build_pty_command_from_launch(
+    input: &PtySpawnInput,
+    launch: crate::process::PreparedLaunch,
+) -> CommandBuilder {
+    let mut command = CommandBuilder::new(launch.program);
+    command.args(launch.args);
+    command.cwd(&input.cwd);
+    for (key, value) in &input.env {
+        command.env(key, value);
+    }
+    command
+}
+
+fn resolve_pty_executable_on(
+    platform: Platform,
+    command: &str,
+    cwd: &Path,
+    overrides: &BTreeMap<String, String>,
+) -> Option<PathBuf> {
     let path = overrides
         .iter()
         .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
         .map(|(_, value)| value.clone())
         .or_else(|| env::var("PATH").ok());
-    let Some(path) = path else {
-        return false;
-    };
 
-    env::split_paths(&path).any(|directory| directory.join(command_path).is_file())
+    let path_extensions = if platform == Platform::Windows {
+        overrides
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case("PATHEXT"))
+            .map(|(_, value)| value.clone())
+            .or_else(|| env::var("PATHEXT").ok())
+    } else {
+        None
+    };
+    let extensions = launch_executable_extensions(platform, path_extensions.as_deref());
+
+    locate_executable(
+        command,
+        Some(cwd),
+        path.as_deref().map(OsStr::new),
+        &extensions,
+    )
 }
 
 fn read_output(reader: &mut dyn Read, sender: &broadcast::Sender<String>) {
@@ -245,14 +559,7 @@ impl PtyProcess for PortablePtyProcess {
     fn kill(&self) -> Result<(), String> {
         #[cfg(unix)]
         if let Some(process_group) = self.process_group {
-            // Negative PIDs target the complete process group created by the PTY.
-            let result = unsafe { kill(-process_group, 9) };
-            if result != 0 {
-                let error = std::io::Error::last_os_error();
-                if error.raw_os_error() != Some(3) {
-                    return Err(error.to_string());
-                }
-            }
+            kill_unix_process_group(process_group).map_err(|error| error.to_string())?;
         }
         #[cfg(windows)]
         {
@@ -284,12 +591,41 @@ impl PtyProcess for PortablePtyProcess {
 unsafe extern "C" {
     fn kill(pid: i32, signal: i32) -> i32;
 }
+
+#[cfg(all(test, unix))]
+unsafe extern "C" {
+    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
+}
+
+#[cfg(unix)]
+fn kill_unix_process_group(process_group: i32) -> std::io::Result<()> {
+    // Negative PIDs target the complete process group created by the PTY.
+    kill_unix_target(-process_group)
+}
+
+#[cfg(unix)]
+fn kill_unix_process(process_id: i32) -> std::io::Result<()> {
+    kill_unix_target(process_id)
+}
+
+#[cfg(unix)]
+fn kill_unix_target(target: i32) -> std::io::Result<()> {
+    let result = unsafe { kill(target, 9) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(3) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
     #[cfg(not(windows))]
     use std::io::{Error, ErrorKind};
-    #[cfg(not(windows))]
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::time::Duration;
 
@@ -338,6 +674,294 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Debug)]
+    struct SetupTestChild {
+        killed: Arc<std::sync::atomic::AtomicBool>,
+        panic_on_clone: bool,
+    }
+
+    impl portable_pty::ChildKiller for SetupTestChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            self.killed
+                .store(true, std::sync::atomic::Ordering::Release);
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+            assert!(!self.panic_on_clone, "injected child killer clone failure");
+            Box::new(self.clone())
+        }
+    }
+
+    impl portable_pty::Child for SetupTestChild {
+        fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+            Ok(None)
+        }
+
+        fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+            Ok(portable_pty::ExitStatus::with_exit_code(0))
+        }
+
+        fn process_id(&self) -> Option<u32> {
+            Some(41)
+        }
+
+        #[cfg(windows)]
+        fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+            None
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct OrderedSetupTestChild {
+        cleanup_order: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl portable_pty::ChildKiller for OrderedSetupTestChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            self.cleanup_order.lock().unwrap().push("root");
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+            Box::new(self.clone())
+        }
+    }
+
+    impl portable_pty::Child for OrderedSetupTestChild {
+        fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+            Ok(None)
+        }
+
+        fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+            Ok(portable_pty::ExitStatus::with_exit_code(0))
+        }
+
+        fn process_id(&self) -> Option<u32> {
+            Some(42)
+        }
+
+        #[cfg(windows)]
+        fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+            None
+        }
+    }
+
+    #[test]
+    fn spawned_child_guard_kills_on_setup_failure_until_process_ownership_commits() {
+        let failed_setup_killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let guard = SpawnedChildGuard::new(Box::new(SetupTestChild {
+            killed: failed_setup_killed.clone(),
+            panic_on_clone: false,
+        }));
+        drop(guard);
+        assert!(failed_setup_killed.load(std::sync::atomic::Ordering::Acquire));
+
+        #[cfg(unix)]
+        {
+            let committed_killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let mut guard = SpawnedChildGuard::new(Box::new(SetupTestChild {
+                killed: committed_killed.clone(),
+                panic_on_clone: false,
+            }));
+            let child = guard.handoff_child_to_waiter();
+            let process_group = guard.commit_process_group();
+            drop(child);
+            assert!(process_group.is_none());
+            assert!(!committed_killed.load(std::sync::atomic::Ordering::Acquire));
+        }
+    }
+
+    #[test]
+    fn waiter_spawn_failure_keeps_the_root_child_fallback() {
+        let killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut guard = SpawnedChildGuard::new(Box::new(SetupTestChild {
+            killed: killed.clone(),
+            panic_on_clone: false,
+        }));
+        let handoff = guard.handoff_child_to_waiter();
+
+        let error = spawn_pty_thread_with(
+            "injected-waiter-spawn-failure".to_owned(),
+            Box::new(move || drop(handoff)),
+            |_builder, _task| Err(std::io::Error::other("injected waiter spawn failure")),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "injected waiter spawn failure");
+        assert!(
+            !killed.load(std::sync::atomic::Ordering::Acquire),
+            "root cleanup must remain with the tree-owning setup guard"
+        );
+        drop(guard);
+        assert!(killed.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn child_killer_clone_panic_keeps_the_root_in_the_setup_guard() {
+        let killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let result = catch_unwind(AssertUnwindSafe({
+            let killed = killed.clone();
+            move || {
+                let mut guard = SpawnedChildGuard::new(Box::new(SetupTestChild {
+                    killed,
+                    panic_on_clone: true,
+                }));
+                let _child = guard.handoff_child_to_waiter();
+            }
+        }));
+
+        assert!(result.is_err());
+        assert!(killed.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn waiter_spawn_failure_sigkills_a_hup_resistant_root_without_a_process_group() {
+        let directory = tempfile::tempdir().unwrap();
+        let ready_file = directory.path().join("root-ready.txt");
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.args([
+            "-c",
+            "trap '' HUP; echo ready > \"$T4CODE_ROOT_READY\"; exec sleep 30",
+        ]);
+        command.env("T4CODE_ROOT_READY", ready_file.as_os_str());
+        let child = pair.slave.spawn_command(command).unwrap();
+        let root_pid = child.process_id().unwrap();
+        let root_pid_i32 = i32::try_from(root_pid).unwrap();
+        let mut guard = SpawnedChildGuard::new_with_process_group(child, None);
+        guard.remember_root_process_id(root_pid).unwrap();
+        drop(pair.slave);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !ready_file.is_file() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture root did not publish readiness"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let child = guard.handoff_child_to_waiter();
+        spawn_pty_thread_with(
+            "injected-hup-resistant-waiter-spawn-failure".to_owned(),
+            Box::new(move || drop(child)),
+            |_builder, _task| Err(std::io::Error::other("injected waiter spawn failure")),
+        )
+        .unwrap_err();
+
+        // SAFETY: signal zero only checks whether the fixture root still exists.
+        assert_eq!(unsafe { kill(root_pid_i32, 0) }, 0);
+        drop(guard);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let mut status = 0;
+        loop {
+            // SAFETY: the fixture root is a direct child of this test process;
+            // WNOHANG observes and reaps it only after termination.
+            let result = unsafe { waitpid(root_pid_i32, &raw mut status, 1) };
+            if result == root_pid_i32 {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                // SAFETY: the PID came from this test's fixture root.
+                unsafe { kill(root_pid_i32, 9) };
+                panic!("HUP-resistant PTY root survived waiter spawn failure");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn waiter_spawn_failure_terminates_the_tree_before_the_root() {
+        let cleanup_order = Arc::new(Mutex::new(Vec::new()));
+        let mut guard = SpawnedChildGuard::new(Box::new(OrderedSetupTestChild {
+            cleanup_order: cleanup_order.clone(),
+        }));
+        guard.observe_tree_cleanup({
+            let cleanup_order = cleanup_order.clone();
+            move || cleanup_order.lock().unwrap().push("tree")
+        });
+        let child = guard.handoff_child_to_waiter();
+
+        spawn_pty_thread_with(
+            "injected-ordered-waiter-spawn-failure".to_owned(),
+            Box::new(move || drop(child)),
+            |_builder, _task| Err(std::io::Error::other("injected waiter spawn failure")),
+        )
+        .unwrap_err();
+
+        assert!(cleanup_order.lock().unwrap().is_empty());
+        drop(guard);
+        assert_eq!(*cleanup_order.lock().unwrap(), ["tree", "root"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn setup_failure_kills_the_unix_process_group() {
+        let directory = tempfile::tempdir().unwrap();
+        let child_pid_file = directory.path().join("descendant-pid.txt");
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.args([
+            "-c",
+            "trap '' HUP; /bin/sh -c 'trap \"\" HUP; echo $$ > \"$T4CODE_CHILD_PID\"; exec sleep 30' & wait",
+        ]);
+        command.env("T4CODE_CHILD_PID", child_pid_file.as_os_str());
+        let child = pair.slave.spawn_command(command).unwrap();
+        let process_group = pair
+            .master
+            .process_group_leader()
+            .expect("fixture PTY should expose its process group");
+        let guard = SpawnedChildGuard::new_with_process_group(child, Some(process_group));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !child_pid_file.is_file() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture descendant did not publish its process id"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let descendant_pid = std::fs::read_to_string(&child_pid_file)
+            .unwrap()
+            .trim()
+            .parse::<i32>()
+            .unwrap();
+        assert_ne!(descendant_pid, process_group);
+
+        drop(guard);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            // SAFETY: signal zero only checks whether the fixture PID still exists.
+            let result = unsafe { kill(descendant_pid, 0) };
+            if result != 0 && std::io::Error::last_os_error().raw_os_error() == Some(3) {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                // SAFETY: the PID came from this test's fixture descendant.
+                unsafe { kill(descendant_pid, 9) };
+                panic!("PTY descendant survived post-spawn setup failure");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     #[test]
     fn executable_discovery_handles_absolute_relative_and_overridden_paths() {
         let executable = std::env::current_exe().expect("current test executable");
@@ -347,17 +971,27 @@ mod tests {
             .expect("test executable file name");
         let directory = executable.parent().expect("test executable directory");
         let overrides = BTreeMap::new();
-        assert!(executable_is_discoverable(
-            executable.to_str().expect("test executable path"),
-            &overrides
-        ));
-        assert!(!executable_is_discoverable(
-            executable
-                .with_file_name("definitely-missing-t4code-shell")
-                .to_str()
-                .expect("missing executable path"),
-            &overrides
-        ));
+        assert_eq!(
+            resolve_pty_executable_on(
+                Platform::current(),
+                executable.to_str().expect("test executable path"),
+                directory,
+                &overrides,
+            ),
+            Some(executable.clone())
+        );
+        assert_eq!(
+            resolve_pty_executable_on(
+                Platform::current(),
+                executable
+                    .with_file_name("definitely-missing-t4code-shell")
+                    .to_str()
+                    .expect("missing executable path"),
+                directory,
+                &overrides,
+            ),
+            None
+        );
 
         let mut isolated = BTreeMap::new();
         isolated.insert(
@@ -367,7 +1001,10 @@ mod tests {
                 .to_string_lossy()
                 .into_owned(),
         );
-        assert!(executable_is_discoverable(command, &isolated));
+        assert_eq!(
+            resolve_pty_executable_on(Platform::current(), command, directory, &isolated),
+            Some(executable.clone())
+        );
         isolated.insert(
             "PATH".to_owned(),
             executable
@@ -377,12 +1014,358 @@ mod tests {
                 .to_string_lossy()
                 .into_owned(),
         );
-        assert!(!executable_is_discoverable("t4code-shell", &isolated));
+        assert_eq!(
+            resolve_pty_executable_on(Platform::current(), "t4code-shell", directory, &isolated,),
+            None
+        );
+    }
+
+    #[test]
+    fn executable_discovery_honors_windows_pathext_for_bare_commands() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("claude.exe");
+        std::fs::write(&executable, b"fixture").unwrap();
+        let mut environment = BTreeMap::new();
+        environment.insert(
+            "Path".to_owned(),
+            std::env::join_paths([directory.path()])
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        );
+        environment.insert("PATHEXT".to_owned(), ".COM;.EXE;.BAT;.CMD".to_owned());
+
+        assert_eq!(
+            resolve_pty_executable_on(Platform::Windows, "claude", directory.path(), &environment,),
+            Some(executable)
+        );
+        assert_eq!(
+            resolve_pty_executable_on(Platform::Unix, "claude", directory.path(), &environment,),
+            None
+        );
+    }
+
+    #[test]
+    fn windows_executable_discovery_includes_powershell_shims_when_pathext_omits_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("claude.ps1");
+        std::fs::write(&executable, b"fixture").unwrap();
+        let environment = BTreeMap::from([
+            (
+                "Path".to_owned(),
+                std::env::join_paths([directory.path()])
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            ("PATHEXT".to_owned(), ".COM;.EXE;.BAT;.CMD".to_owned()),
+        ]);
+
+        assert_eq!(
+            resolve_pty_executable_on(Platform::Windows, "claude", directory.path(), &environment),
+            Some(executable)
+        );
+    }
+
+    #[test]
+    fn windows_pty_launch_wraps_cmd_and_bat_case_insensitively() {
+        let directory = tempfile::tempdir().unwrap();
+        let shim_directory = directory.path().join("provider ! shims");
+        std::fs::create_dir(&shim_directory).unwrap();
+        let trampoline = directory.path().join("t4code ! trampoline.exe");
+        let gate_name = OsStr::new("Local\\T4CodeBatchLaunch-test");
+        let ready_name = OsStr::new("Local\\T4CodeBatchLaunch-test-ready");
+        let arguments = vec![
+            "--flag".to_owned(),
+            "value with spaces".to_owned(),
+            "&literal".to_owned(),
+            "%PATH%".to_owned(),
+            "!literal!".to_owned(),
+            String::new(),
+        ];
+
+        for extension in ["CmD", "bAt"] {
+            let executable = shim_directory.join(format!("provider.{extension}"));
+            std::fs::write(&executable, b"fixture").unwrap();
+            let input = PtySpawnInput {
+                executable: executable.to_string_lossy().into_owned(),
+                args: arguments.clone(),
+                cwd: directory.path().to_path_buf(),
+                cols: 80,
+                rows: 24,
+                env: BTreeMap::from([
+                    ("ComSpec".to_owned(), "user-command-processor".to_owned()),
+                    (
+                        "T4CODE_INTERNAL_BATCH_SCRIPT".to_owned(),
+                        "user-controlled-value".to_owned(),
+                    ),
+                    (
+                        "T4CODE_INTERNAL_BATCH_ARG_2".to_owned(),
+                        "user-controlled-value".to_owned(),
+                    ),
+                ]),
+            };
+
+            let command = build_pty_command_on_with_trampoline(
+                Platform::Windows,
+                &input,
+                &trampoline,
+                gate_name,
+                ready_name,
+            )
+            .unwrap();
+            let expected = std::iter::once(trampoline.clone().into_os_string())
+                .chain(
+                    [
+                        crate::process::WINDOWS_PTY_TRAMPOLINE_ARG,
+                        gate_name.to_str().unwrap(),
+                        ready_name.to_str().unwrap(),
+                        executable.to_str().unwrap(),
+                    ]
+                    .map(std::ffi::OsString::from),
+                )
+                .chain(arguments.iter().map(std::ffi::OsString::from))
+                .collect::<Vec<_>>();
+            assert_eq!(command.get_argv(), &expected);
+            assert_eq!(
+                command.get_env("T4CODE_INTERNAL_BATCH_SCRIPT"),
+                Some(std::ffi::OsStr::new("user-controlled-value"))
+            );
+            assert_eq!(
+                command.get_env("T4CODE_INTERNAL_BATCH_ARG_2"),
+                Some(std::ffi::OsStr::new("user-controlled-value"))
+            );
+            assert_eq!(
+                command.get_env("ComSpec"),
+                Some(std::ffi::OsStr::new("user-command-processor"))
+            );
+        }
+    }
+
+    #[test]
+    fn windows_batch_launch_rejects_control_characters_in_the_script_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("provider\nshim.cmd");
+        std::fs::write(&executable, b"fixture").unwrap();
+        let input = PtySpawnInput {
+            executable: executable.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            cwd: directory.path().to_path_buf(),
+            cols: 80,
+            rows: 24,
+            env: BTreeMap::new(),
+        };
+
+        let error = build_pty_command_on_with_trampoline(
+            Platform::Windows,
+            &input,
+            &directory.path().join("t4code.exe"),
+            OsStr::new("Local\\T4CodeBatchLaunch-test"),
+            OsStr::new("Local\\T4CodeBatchLaunch-test-ready"),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            "Windows batch executable paths cannot contain control characters"
+        );
+    }
+
+    #[test]
+    fn windows_pty_launch_discovers_and_wraps_powershell_shims() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("provider.ps1");
+        std::fs::write(&executable, b"fixture").unwrap();
+        let trampoline = directory.path().join("t4code.exe");
+        let gate_name = OsStr::new("Local\\T4CodePtyLaunch-test");
+        let ready_name = OsStr::new("Local\\T4CodePtyLaunch-test-ready");
+        let arguments = vec![
+            "--flag".to_owned(),
+            "value with spaces".to_owned(),
+            "$literal".to_owned(),
+            String::new(),
+        ];
+        let input = PtySpawnInput {
+            executable: "provider".to_owned(),
+            args: arguments.clone(),
+            cwd: directory.path().to_path_buf(),
+            cols: 80,
+            rows: 24,
+            env: BTreeMap::from([
+                (
+                    "Path".to_owned(),
+                    std::env::join_paths([directory.path()])
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                ("PATHEXT".to_owned(), ".COM;.EXE;.BAT;.CMD".to_owned()),
+            ]),
+        };
+
+        let command = build_pty_command_on_with_trampoline(
+            Platform::Windows,
+            &input,
+            &trampoline,
+            gate_name,
+            ready_name,
+        )
+        .unwrap();
+        let expected = std::iter::once(trampoline.into_os_string())
+            .chain(
+                [
+                    crate::process::WINDOWS_PTY_TRAMPOLINE_ARG,
+                    gate_name.to_str().unwrap(),
+                    ready_name.to_str().unwrap(),
+                    "powershell.exe",
+                ]
+                .map(std::ffi::OsString::from),
+            )
+            .chain(
+                [
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                ]
+                .map(std::ffi::OsString::from),
+            )
+            .chain(std::iter::once(executable.into_os_string()))
+            .chain(arguments.iter().map(std::ffi::OsString::from))
+            .collect::<Vec<_>>();
+        assert_eq!(command.get_argv(), &expected);
+    }
+
+    #[test]
+    fn windows_pty_launch_gates_native_executables() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("provider.exe");
+        std::fs::write(&executable, b"fixture").unwrap();
+        let trampoline = directory.path().join("t4code.exe");
+        let gate_name = OsStr::new("Local\\T4CodePtyLaunch-test");
+        let ready_name = OsStr::new("Local\\T4CodePtyLaunch-test-ready");
+        let arguments = vec!["--flag".to_owned(), "value with spaces".to_owned()];
+        let input = PtySpawnInput {
+            executable: executable.to_string_lossy().into_owned(),
+            args: arguments.clone(),
+            cwd: directory.path().to_path_buf(),
+            cols: 80,
+            rows: 24,
+            env: BTreeMap::new(),
+        };
+
+        let command = build_pty_command_on_with_trampoline(
+            Platform::Windows,
+            &input,
+            &trampoline,
+            gate_name,
+            ready_name,
+        )
+        .unwrap();
+        let expected = std::iter::once(trampoline.into_os_string())
+            .chain(
+                [
+                    crate::process::WINDOWS_PTY_TRAMPOLINE_ARG,
+                    gate_name.to_str().unwrap(),
+                    ready_name.to_str().unwrap(),
+                    executable.to_str().unwrap(),
+                ]
+                .map(std::ffi::OsString::from),
+            )
+            .chain(arguments.iter().map(std::ffi::OsString::from))
+            .collect::<Vec<_>>();
+        assert_eq!(command.get_argv(), &expected);
+    }
+
+    #[test]
+    fn pty_launch_resolves_a_multi_component_executable_to_the_exact_cwd_path() {
+        let cwd = tempfile::tempdir().unwrap();
+        let bin = cwd.path().join("tools");
+        std::fs::create_dir(&bin).unwrap();
+        let executable = bin.join("provider-fixture");
+        std::fs::write(&executable, b"fixture").unwrap();
+        let input = PtySpawnInput {
+            executable: "tools/provider-fixture".to_owned(),
+            args: vec!["--direct".to_owned()],
+            cwd: cwd.path().to_path_buf(),
+            cols: 80,
+            rows: 24,
+            env: BTreeMap::new(),
+        };
+
+        let command = build_pty_command_on(Platform::Unix, &input).unwrap();
+        assert_eq!(
+            command.get_argv(),
+            &[
+                executable.into_os_string(),
+                std::ffi::OsString::from("--direct"),
+            ]
+        );
+    }
+
+    #[test]
+    fn executable_resolution_anchors_relative_path_entries_to_the_terminal_cwd() {
+        let cwd = tempfile::tempdir().unwrap();
+        let bin = cwd.path().join("relative-bin");
+        std::fs::create_dir(&bin).unwrap();
+        let executable = bin.join("provider-fixture");
+        std::fs::write(&executable, b"fixture").unwrap();
+        let mut environment = BTreeMap::new();
+        environment.insert("PATH".to_owned(), "relative-bin".to_owned());
+
+        assert_eq!(
+            resolve_pty_executable_on(Platform::Unix, "provider-fixture", cwd.path(), &environment,),
+            Some(executable)
+        );
+    }
+
+    #[test]
+    fn platform_resolution_rejects_missing_candidates() {
+        let directory = tempfile::tempdir().unwrap();
+        let environment = BTreeMap::from([(
+            "PATH".to_owned(),
+            directory.path().to_string_lossy().into_owned(),
+        )]);
+
+        assert_eq!(
+            resolve_pty_executable_on(
+                Platform::Windows,
+                "missing-provider",
+                directory.path(),
+                &environment,
+            ),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn portable_backend_discovers_a_relative_executable_from_the_terminal_cwd() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let cwd = tempfile::tempdir().unwrap();
+        let executable = cwd.path().join("provider-fixture");
+        std::fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let process = PortablePtyBackend
+            .spawn(&PtySpawnInput {
+                executable: "./provider-fixture".to_owned(),
+                args: Vec::new(),
+                cwd: cwd.path().to_path_buf(),
+                cols: 80,
+                rows: 24,
+                env: BTreeMap::new(),
+            })
+            .unwrap();
+        assert!(process.pid() > 0);
     }
 
     #[tokio::test]
     async fn portable_backend_streams_input_output_resize_and_exit() {
-        let (shell, args, input, output_marker) = if cfg!(windows) {
+        let (executable, args, input, output_marker) = if cfg!(windows) {
             (
                 "cmd.exe".to_owned(),
                 vec!["/D".to_owned(), "/Q".to_owned()],
@@ -405,7 +1388,7 @@ mod tests {
         let backend = PortablePtyBackend;
         let process = backend
             .spawn(&PtySpawnInput {
-                shell,
+                executable,
                 args,
                 cwd: std::env::temp_dir(),
                 cols: 80,
@@ -451,7 +1434,7 @@ mod tests {
 
     #[tokio::test]
     async fn portable_backend_kills_a_live_process_group() {
-        let (shell, args) = if cfg!(windows) {
+        let (executable, args) = if cfg!(windows) {
             (
                 "powershell.exe".to_owned(),
                 vec![
@@ -469,7 +1452,7 @@ mod tests {
         };
         let process = PortablePtyBackend
             .spawn(&PtySpawnInput {
-                shell,
+                executable,
                 args,
                 cwd: std::env::temp_dir(),
                 cols: 80,
@@ -488,10 +1471,10 @@ mod tests {
     }
 
     #[test]
-    fn portable_backend_rejects_a_missing_shell_before_opening_a_pty() {
+    fn portable_backend_rejects_a_missing_executable_before_opening_a_pty() {
         let error = PortablePtyBackend
             .spawn(&PtySpawnInput {
-                shell: "/definitely/missing/t4code-shell".to_owned(),
+                executable: "/definitely/missing/t4code-shell".to_owned(),
                 args: Vec::new(),
                 cwd: std::env::temp_dir(),
                 cols: 80,
@@ -499,7 +1482,7 @@ mod tests {
                 env: BTreeMap::new(),
             })
             .unwrap_err();
-        assert!(error.contains("shell executable was not found"));
+        assert!(error.contains("terminal executable was not found"));
     }
 
     #[cfg(not(windows))]

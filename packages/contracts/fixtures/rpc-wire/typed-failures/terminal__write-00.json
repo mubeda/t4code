@@ -7,21 +7,9 @@
       {
         "_tag": "Fail",
         "error": {
-          "_tag": "TerminalHistoryError",
-          "operation": "truncate",
+          "_tag": "TerminalSessionLookupError",
           "threadId": "",
-          "terminalId": "ref",
-          "cause": [
-            "_l+x<;",
-            "%|G;0&)20{",
-            false,
-            8716772170075465,
-            "A",
-            false,
-            "ntHodG",
-            true,
-            null
-          ]
+          "terminalId": "inFD=j"
         }
       }
     ]

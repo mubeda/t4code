@@ -1,12 +1,9 @@
 import type { ResolvedKeybindingsConfig, ScopedThreadRef } from "@t4code/contracts";
-import { scopeProjectRef } from "@t4code/client-runtime/environment";
-import { projectScriptCwd, projectScriptRuntimeEnv } from "@t4code/shared/projectScripts";
 import { resolveTerminalSessionLabel } from "@t4code/shared/terminalLabels";
 import { useMemo } from "react";
 
 import type { TerminalContextSelection } from "~/lib/terminalContext";
-import { useComposerDraftStore } from "~/composerDraftStore";
-import { useProject, useThread } from "~/state/entities";
+import type { CenterSurface } from "~/centerPanelStore";
 import { useKnownTerminalSessions } from "~/state/terminalSessions";
 
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
@@ -14,7 +11,12 @@ import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 interface CenterTerminalPanelProps {
   /** The HOST thread ref — center terminals reuse the host thread's attach layer. */
   threadRef: ScopedThreadRef;
-  terminalId: string;
+  surface: Extract<CenterSurface, { kind: "terminal" }>;
+  launchContext: {
+    readonly cwd: string;
+    readonly worktreePath: string | null;
+    readonly runtimeEnv: Record<string, string>;
+  } | null;
   keybindings: ResolvedKeybindingsConfig;
   focusRequestId: number;
   onAddTerminalContext: (selection: TerminalContextSelection) => void;
@@ -37,59 +39,40 @@ const noop = () => undefined;
  */
 export function CenterTerminalPanel({
   threadRef,
-  terminalId,
+  surface,
+  launchContext,
   keybindings,
   focusRequestId,
   onAddTerminalContext,
   onClose,
 }: CenterTerminalPanelProps) {
-  const serverThread = useThread(threadRef);
-  const draftThread = useComposerDraftStore((store) => store.getDraftThreadByRef(threadRef));
-  const projectRef = serverThread
-    ? scopeProjectRef(serverThread.environmentId, serverThread.projectId)
-    : draftThread
-      ? scopeProjectRef(draftThread.environmentId, draftThread.projectId)
-      : null;
-  const project = useProject(projectRef);
+  const { terminalId, command, label } = surface;
   const knownTerminalSessions = useKnownTerminalSessions({
     environmentId: threadRef.environmentId,
     threadId: threadRef.threadId,
   });
-  const threadWorktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
   const activeSummary =
     knownTerminalSessions.find((session) => session.target.terminalId === terminalId)?.state
       .summary ?? null;
-  const worktreePath = activeSummary?.worktreePath ?? threadWorktreePath;
-  const cwd = useMemo(
-    () =>
-      activeSummary?.cwd ??
-      (project
-        ? projectScriptCwd({ project: { cwd: project.workspaceRoot }, worktreePath })
-        : null),
-    [activeSummary?.cwd, project, worktreePath],
-  );
-  const runtimeEnv = useMemo(
-    () =>
-      project
-        ? projectScriptRuntimeEnv({ project: { cwd: project.workspaceRoot }, worktreePath })
-        : {},
-    [project, worktreePath],
+  const terminalCommandsById = useMemo(
+    () => (command ? new Map([[terminalId, command]]) : undefined),
+    [command, terminalId],
   );
   const terminalLabelsById = useMemo(
-    () => new Map([[terminalId, resolveTerminalSessionLabel(terminalId, activeSummary)]]),
-    [terminalId, activeSummary],
+    () => new Map([[terminalId, label ?? resolveTerminalSessionLabel(terminalId, activeSummary)]]),
+    [activeSummary, label, terminalId],
   );
 
-  if (!project || !cwd) return null;
+  if (launchContext === null) return null;
 
   return (
     <ThreadTerminalDrawer
       mode="panel"
       threadRef={threadRef}
       threadId={threadRef.threadId}
-      cwd={cwd}
-      worktreePath={worktreePath}
-      runtimeEnv={runtimeEnv}
+      cwd={launchContext.cwd}
+      worktreePath={launchContext.worktreePath}
+      runtimeEnv={launchContext.runtimeEnv}
       height={0}
       terminalIds={[terminalId]}
       activeTerminalId={terminalId}
@@ -101,6 +84,7 @@ export function CenterTerminalPanel({
       onHeightChange={noop}
       onAddTerminalContext={onAddTerminalContext}
       terminalLabelsById={terminalLabelsById}
+      {...(terminalCommandsById ? { terminalCommandsById } : {})}
       keybindings={keybindings}
     />
   );

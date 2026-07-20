@@ -18,7 +18,10 @@ use crate::{
         load_snapshot,
     },
     persistence::{ProviderSessionRuntime, Repositories},
-    process::configure_supervised_background_command_wrap,
+    process::{
+        Platform, PreparedLaunch, configure_supervised_background_command_wrap,
+        launch_executable_extensions, locate_executable, wrap_launch_program,
+    },
     production::{
         connect_mcp::ConnectMcpService, operational_logs::ProviderOperationalLog,
         orchestration_effects::process_compatible_path,
@@ -1418,11 +1421,17 @@ fn spawn_child(
             detail: format!("provider executable was not found: {}", request.binary_path),
         }
     })?;
-    let (program, prefix_args) = provider_launch_program(&executable);
+    let launch = prepare_provider_launch(&executable, args).map_err(|detail| {
+        ProviderRuntimeError::Spawn {
+            provider: provider.clone(),
+            detail,
+        }
+    })?;
+    let program = launch.program;
+    let launch_args = launch.args;
     let mut command = CommandWrap::with_new(program, |command| {
         command
-            .args(prefix_args)
-            .args(args)
+            .args(launch_args)
             .current_dir(&request.cwd)
             .stdin(Stdio::piped())
             .stdout(if pipe_output {
@@ -1460,74 +1469,20 @@ pub(crate) fn resolve_provider_executable_in_path(
     if path.is_file() {
         return Some(path);
     }
-    if path.components().count() > 1 {
-        return None;
-    }
-    let extensions = provider_executable_extensions();
-    search_path
-        .into_iter()
-        .flat_map(|value| std::env::split_paths(value).collect::<Vec<_>>())
-        .find_map(|directory| {
-            extensions.iter().find_map(|extension| {
-                let candidate = if extension.is_empty() {
-                    directory.join(input)
-                } else {
-                    directory.join(format!("{input}.{extension}"))
-                };
-                candidate.is_file().then_some(candidate)
-            })
-        })
+    let cwd = std::env::current_dir().ok();
+    let extensions = launch_executable_extensions(Platform::current(), None);
+    locate_executable(input, cwd.as_deref(), search_path, &extensions)
 }
 
-#[cfg(windows)]
-const WINDOWS_PROVIDER_EXECUTABLE_EXTENSIONS: &[&str] = &["exe", "com", "cmd", "bat", "ps1"];
-
-#[cfg(windows)]
-fn provider_executable_extensions() -> &'static [&'static str] {
-    WINDOWS_PROVIDER_EXECUTABLE_EXTENSIONS
-}
-
-#[cfg(not(windows))]
-fn provider_executable_extensions() -> &'static [&'static str] {
-    &[""]
-}
-
-pub(crate) fn provider_launch_program(executable: &Path) -> (PathBuf, Vec<String>) {
-    let extension = executable
-        .extension()
-        .and_then(|extension| extension.to_str());
-    if cfg!(windows) && extension.is_some_and(|extension| extension.eq_ignore_ascii_case("ps1")) {
-        return (
-            PathBuf::from("powershell.exe"),
-            vec![
-                "-NoLogo".to_owned(),
-                "-NoProfile".to_owned(),
-                "-NonInteractive".to_owned(),
-                "-ExecutionPolicy".to_owned(),
-                "Bypass".to_owned(),
-                "-File".to_owned(),
-                executable.to_string_lossy().into_owned(),
-            ],
-        );
-    }
-    if cfg!(windows)
-        && extension.is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
-        })
-    {
-        return (
-            std::env::var_os("ComSpec")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("cmd.exe")),
-            vec![
-                "/d".to_owned(),
-                "/s".to_owned(),
-                "/c".to_owned(),
-                executable.to_string_lossy().into_owned(),
-            ],
-        );
-    }
-    (executable.to_path_buf(), Vec::new())
+pub(crate) fn prepare_provider_launch<I, S>(
+    executable: &Path,
+    arguments: I,
+) -> Result<PreparedLaunch, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    Ok(wrap_launch_program(Platform::current(), executable)?.prepare(arguments))
 }
 
 async fn kill_child(child: &SharedChild) {
@@ -2826,6 +2781,24 @@ mod tests {
     use tempfile::TempDir;
     use tokio::{net::TcpListener, sync::mpsc, time::timeout};
 
+    struct CurrentDirectoryGuard {
+        original: std::path::PathBuf,
+    }
+
+    impl CurrentDirectoryGuard {
+        fn enter(path: &std::path::Path) -> Self {
+            let original = std::env::current_dir().expect("read original current directory");
+            std::env::set_current_dir(path).expect("enter fixture current directory");
+            Self { original }
+        }
+    }
+
+    impl Drop for CurrentDirectoryGuard {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.original).expect("restore original current directory");
+        }
+    }
+
     #[derive(Default)]
     struct SupervisorDriverState {
         launches: usize,
@@ -4002,10 +3975,10 @@ done
             ),
             None
         );
-        assert_eq!(
-            super::provider_launch_program(&executable),
-            (executable, Vec::new())
-        );
+        let launch =
+            super::prepare_provider_launch(&executable, std::iter::empty::<&str>()).unwrap();
+        assert_eq!(launch.program, executable);
+        assert!(launch.args.is_empty());
     }
 
     #[test]
@@ -4044,13 +4017,90 @@ done
         );
     }
 
+    #[tokio::test]
+    async fn provider_executable_resolution_keeps_one_component_file_in_process_cwd() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let directory = tempfile::TempDir::new().expect("provider fixture directory");
+        let search_directory = tempfile::TempDir::new().expect("provider search directory");
+        let executable_name = if cfg!(windows) {
+            "provider-fixture.exe"
+        } else {
+            "provider-fixture"
+        };
+        std::fs::write(directory.path().join(executable_name), b"fixture")
+            .expect("write provider fixture");
+        let _current_directory = CurrentDirectoryGuard::enter(directory.path());
+
+        assert_eq!(
+            super::resolve_provider_executable_in_path(
+                executable_name,
+                Some(search_directory.path().as_os_str())
+            ),
+            Some(std::path::PathBuf::from(executable_name))
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn provider_executable_resolution_keeps_absolute_file_when_cwd_is_inaccessible() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let directory = tempfile::TempDir::new().expect("provider fixture directory");
+        let executable = directory.path().join("provider-fixture");
+        std::fs::write(&executable, b"fixture").expect("write provider fixture");
+        let inaccessible_cwd = directory.path().join("removed-cwd");
+        std::fs::create_dir(&inaccessible_cwd).expect("create temporary current directory");
+        let _current_directory = CurrentDirectoryGuard::enter(&inaccessible_cwd);
+        std::fs::remove_dir(&inaccessible_cwd).expect("remove current directory");
+        assert!(
+            std::env::current_dir().is_err(),
+            "fixture must make the process cwd inaccessible"
+        );
+
+        assert_eq!(
+            super::resolve_provider_executable_in_path(
+                &executable.to_string_lossy(),
+                Some(std::ffi::OsStr::new(""))
+            ),
+            Some(executable)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn provider_executable_resolution_finds_bare_command_when_cwd_is_inaccessible() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let directory = tempfile::TempDir::new().expect("provider fixture directory");
+        let executable = directory.path().join("provider-fixture");
+        std::fs::write(&executable, b"fixture").expect("write provider fixture");
+        let inaccessible_cwd = directory.path().join("removed-cwd");
+        std::fs::create_dir(&inaccessible_cwd).expect("create temporary current directory");
+        let _current_directory = CurrentDirectoryGuard::enter(&inaccessible_cwd);
+        std::fs::remove_dir(&inaccessible_cwd).expect("remove current directory");
+        assert!(
+            std::env::current_dir().is_err(),
+            "fixture must make the process cwd inaccessible"
+        );
+
+        assert_eq!(
+            super::resolve_provider_executable_in_path(
+                "provider-fixture",
+                Some(directory.path().as_os_str())
+            ),
+            Some(executable)
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_launch_program_wraps_shell_scripts_without_profiles() {
-        let (program, args) = super::provider_launch_program(std::path::Path::new("provider.ps1"));
-        assert_eq!(program, std::path::PathBuf::from("powershell.exe"));
+        let launch = super::prepare_provider_launch(
+            std::path::Path::new("provider.ps1"),
+            ["--flag", "&literal"],
+        )
+        .unwrap();
+        assert_eq!(launch.program, std::path::PathBuf::from("powershell.exe"));
         assert_eq!(
-            args,
+            launch.args,
             [
                 "-NoLogo",
                 "-NoProfile",
@@ -4059,17 +4109,22 @@ done
                 "Bypass",
                 "-File",
                 "provider.ps1",
+                "--flag",
+                "&literal",
             ]
+            .map(std::ffi::OsString::from)
         );
 
-        let (program, args) = super::provider_launch_program(std::path::Path::new("provider.cmd"));
+        let launch = super::prepare_provider_launch(
+            std::path::Path::new("provider.cmd"),
+            ["--flag", "&literal"],
+        )
+        .unwrap();
+        assert_eq!(launch.program, std::path::PathBuf::from("provider.cmd"));
         assert_eq!(
-            program,
-            std::env::var_os("ComSpec")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| std::path::PathBuf::from("cmd.exe"))
+            launch.args,
+            ["--flag", "&literal"].map(std::ffi::OsString::from)
         );
-        assert_eq!(args, ["/d", "/s", "/c", "provider.cmd"]);
     }
 
     #[tokio::test]
@@ -4130,19 +4185,24 @@ done
     #[cfg(not(windows))]
     #[test]
     fn non_windows_executable_resolution_uses_exact_name() {
-        assert_eq!(super::provider_executable_extensions(), &[""]);
+        assert_eq!(
+            crate::process::launch_executable_extensions(crate::process::Platform::current(), None),
+            [""]
+        );
     }
 
     #[cfg(windows)]
     #[test]
     fn windows_executable_resolution_prefers_cmd_over_powershell_shims() {
-        let cmd_index = super::WINDOWS_PROVIDER_EXECUTABLE_EXTENSIONS
+        let extensions =
+            crate::process::launch_executable_extensions(crate::process::Platform::Windows, None);
+        let cmd_index = extensions
             .iter()
-            .position(|extension| *extension == "cmd")
+            .position(|extension| extension.eq_ignore_ascii_case(".cmd"))
             .expect("cmd extension");
-        let powershell_index = super::WINDOWS_PROVIDER_EXECUTABLE_EXTENSIONS
+        let powershell_index = extensions
             .iter()
-            .position(|extension| *extension == "ps1")
+            .position(|extension| extension.eq_ignore_ascii_case(".ps1"))
             .expect("PowerShell extension");
 
         assert!(cmd_index < powershell_index);

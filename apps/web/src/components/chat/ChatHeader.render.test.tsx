@@ -68,6 +68,7 @@ function props(
     canCreatePanel: false,
     onCreateChatPanel: vi.fn(),
     onOpenTerminalPanel: vi.fn(),
+    onOpenProviderTerminalPanel: vi.fn(),
     onRunProjectScript: vi.fn(),
     onAddProjectScript: vi.fn(),
     onUpdateProjectScript: vi.fn(),
@@ -94,6 +95,7 @@ describe("ChatHeader rendering", () => {
   });
 
   it("renders every project action and forwards a draft identity", () => {
+    const onOpenProviderTerminalPanel = vi.fn();
     const markup = renderToStaticMarkup(
       <ChatHeader
         {...props({
@@ -101,6 +103,7 @@ describe("ChatHeader rendering", () => {
           activeProjectScripts: [],
           rightPanelOpen: true,
           draftId: "draft-1" as never,
+          onOpenProviderTerminalPanel,
         })}
       />,
     );
@@ -110,6 +113,7 @@ describe("ChatHeader rendering", () => {
     expect(markup).toContain("open-in-picker");
     expect(markup).toContain("git-actions");
     expect(harness.gitProps).toMatchObject({ draftId: "draft-1", hideTrigger: true });
+    expect(harness.panelProps?.["onOpenProviderTerminalPanel"]).toBe(onOpenProviderTerminalPanel);
 
     (harness.panelProps!["onAddCustomAction"] as () => void)();
   });

@@ -32,6 +32,7 @@ import {
   selectThreadCenterPanelState,
   useCenterPanelStore,
   type CenterSurface,
+  type OpenTerminalPanelOptions,
 } from "~/centerPanelStore";
 import { newThreadId } from "~/lib/utils";
 import { threadEnvironment } from "~/state/threads";
@@ -56,6 +57,7 @@ export interface CenterPanelActions {
   openTerminalPanel: (
     hostRef: ScopedThreadRef,
     existingTerminalIds: ReadonlyArray<string>,
+    options?: OpenTerminalPanelOptions,
   ) => string;
   activateSurface: (hostRef: ScopedThreadRef, surfaceId: string) => void;
   closeSurface: (hostRef: ScopedThreadRef, surface: CenterSurface) => void;
@@ -131,12 +133,16 @@ export function useCenterPanelActions(): CenterPanelActions {
   );
 
   const openTerminalPanel = useCallback(
-    (hostRef: ScopedThreadRef, existingTerminalIds: ReadonlyArray<string>): string => {
+    (
+      hostRef: ScopedThreadRef,
+      existingTerminalIds: ReadonlyArray<string>,
+      options?: OpenTerminalPanelOptions,
+    ): string => {
       // term-N ids get the human "Terminal N" tab label everywhere; the caller
       // passes every id the host thread already uses (drawer + center panels)
       // so the id never aliases an existing attach-created terminal.
       const terminalId = nextTerminalId(existingTerminalIds);
-      useCenterPanelStore.getState().openTerminalPanel(hostRef, terminalId);
+      useCenterPanelStore.getState().openTerminalPanel(hostRef, terminalId, options);
       return terminalId;
     },
     [],
