@@ -192,13 +192,24 @@ External and a same-sample `344.6 MiB` peak = `154.6 MiB` Core +
 `190.0 MiB` External. The UI-coverage-unavailable warning remained explicit in
 both views.
 
-Provider cleanup failed and remains a blocking regression for Task 9 approval.
-After terminating app PID `80100`, the app and port 3773 were absent, but
-provider PID `86600` and child PID `86625` survived for more than 10 seconds.
-Terminating the exact provider root then removed both. A separate
-systematic-debugging/TDD correction is required, followed by a fresh packaged
-provider lifecycle run; this report does not claim the provider cleanup check
-passed.
+The initial provider cleanup check failed: after terminating app PID `80100`,
+the app and port 3773 were absent, but zero-network fixture provider PID `86600`
+and child PID `86625` survived for more than 10 seconds. Terminating the exact
+fixture root then removed both.
+
+Commit `64c9633626` added graceful SIGTERM handling, and the follow-up
+supervisor-lifecycle correction in the same provider-shutdown work closes the
+reviewed concurrent-stop and start-versus-stop races. The complete diagnosis,
+RED/GREEN evidence, and verification are in the
+[provider shutdown cleanup report](provider-shutdown-cleanup-report.md).
+
+The earlier attribution and load measurements above used only the zero-network
+fixture. The post-fix live cleanup proof was a separate run that accidentally
+launched the real installed Codex provider: its local turn was stopped as soon
+as the mismatch was recognized, and SIGTERM of only desktop PID `33630` removed
+that desktop, provider PIDs `42216` and `43498`, and port 3775 while unrelated
+installed T4Code PID `13930` remained alive. That run is cleanup evidence only;
+it is not represented as fixture or zero-network attribution evidence.
 
 ## Supervised Process Stack Regression
 

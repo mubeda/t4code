@@ -110,7 +110,7 @@ pub fn run() {
                     .inner()
                     .clone();
                 if let Err(error) = tauri::async_runtime::block_on(
-                    backend.stop(backend::BackendShutdownConfig::default()),
+                    backend.stop_for_exit(backend::BackendShutdownConfig::default()),
                 ) {
                     tracing::warn!("failed to stop Tauri desktop backend during exit: {error}");
                 }

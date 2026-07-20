@@ -3,15 +3,19 @@
 ## Scope
 
 This correction is limited to the packaged-provider shutdown leak recorded in
-Task 9. It changes the Unix desktop termination path and its desktop tests only:
+Task 9. It changes the Unix desktop termination path, its desktop tests, and the
+Task 9 resolution note:
 
 - `apps/desktop/src-tauri/src/backend.rs`
 - `apps/desktop/src-tauri/src/lib.rs`
+- `.superpowers/sdd/task-9-report.md`
 
 It does not change process attribution, provider supervision, terminal
-supervision, Task 9 documentation, or the dependency ledger.
+supervision, or the dependency ledger.
 
-Commit subject: `fix(desktop): clean providers on termination`.
+Initial commit: `64c9633626` (`fix(desktop): clean providers on termination`).
+Concurrency correction commit subject:
+`fix(desktop): coordinate backend shutdown races`.
 
 ## Root Cause
 
@@ -65,6 +69,56 @@ future is polled inside `tauri::async_runtime`. Both focused tests then passed.
 Signal-registration or closed-stream failures are logged and leave the handler
 pending rather than causing an unsolicited application exit.
 
+## Concurrency Review Correction
+
+Review of the initial correction exposed two additional races:
+
+1. `BackendSupervisor::stop` removed and cleared all backend slots before
+   awaiting cleanup. A concurrent `ExitRequested` or SIGTERM stop therefore saw
+   an empty supervisor and returned, allowing Tauri to exit while the first
+   cleanup was still running.
+2. `start_with_options_inner` completed backend startup before acquiring the
+   supervisor state lock. A stop could finish during that await, after which
+   the late start unconditionally published a new live backend.
+
+The deterministic RED test
+`concurrent_stop_callers_wait_for_the_same_cleanup_completion` blocks the first
+cleanup on the runtime result mutex, starts a second terminal stop, and proves
+the second returned early. It failed with:
+
+```text
+a concurrent stop must wait for the cleanup already in progress
+```
+
+The supervisor now stores one shared, cloneable shutdown-result receiver.
+The first caller owns a detached cleanup operation; every concurrent caller
+waits for the same result, including cleanup failures. Lifecycle state changes
+to Stopped or Terminated only after cleanup completes, and no standard mutex is
+held across an await.
+
+The deterministic RED test
+`start_racing_stop_cleans_late_backend_without_publishing_it` uses a
+`cfg(test)`-only oneshot gate after a real in-process backend reaches readiness
+and before it is published. Stop completes while startup is gated. Before the
+fix, releasing the gate returned `Ok(BackendRunConfig)` and published the
+backend after shutdown.
+
+Each start now captures an active lifecycle epoch before launch. Publication is
+atomic under the state lock and succeeds only if that epoch is still active. A
+late backend is shut down before the start returns an error. A completed normal
+stop permits a later explicit start to open a new epoch; automatic restarts do
+not reopen a stopped lifecycle. Terminal stops used by both SIGTERM and
+`ExitRequested` remain terminal, so an early SIGTERM also rejects a not-yet
+started desktop backend.
+
+Additional passing coverage verifies:
+
+- a normal explicit start after completed stop opens a reachable new lifecycle;
+- an early terminal stop rejects a late startup before it launches;
+- concurrent terminal callers share the exact same cleanup error;
+- the existing termination helper waits for server cleanup before requesting
+  exit.
+
 ## Release and Live Process Evidence
 
 `vp run build:desktop` succeeded after the final correction. The direct release
@@ -101,10 +155,12 @@ Final cleanup polling confirmed:
 
 ## Verification
 
-All verification below ran after the final deferred-listener implementation:
+The release build and live process evidence below ran after the deferred-listener
+implementation in `64c9633626`; no packaged UI was launched during the
+concurrency review correction.
 
-- Focused termination tests: 2 passed, 0 failed.
-- `cargo test -p t4code-desktop`: 166 unit tests passed, 1 bridge public
+- Focused shutdown/lifecycle tests: 6 passed, 0 failed.
+- `cargo test -p t4code-desktop`: 170 unit tests passed, 1 bridge public
   contract test passed, 4 SSH public contract tests passed, and doc tests
   passed; no failures.
 - `vp run build:desktop`: passed.
@@ -114,6 +170,10 @@ All verification below ran after the final deferred-listener implementation:
   repository TypeScript checks. Existing Effect schema suggestions were
   informational and did not fail the command.
 - `git diff --check`: passed.
+
+After the concurrency correction, the full desktop suite, `vp check`,
+`vp run typecheck`, and `git diff --check` were rerun with the results above.
+The packaged application was not launched again.
 
 This report claims only the Unix desktop termination correction and its scoped
 verification. It does not claim Windows/Linux packaged verification or
