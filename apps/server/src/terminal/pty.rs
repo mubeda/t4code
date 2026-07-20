@@ -51,9 +51,53 @@ pub trait PtyBackend: fmt::Debug + Send + Sync {
 #[derive(Debug, Default)]
 pub struct PortablePtyBackend;
 
-impl PtyBackend for PortablePtyBackend {
-    fn spawn(&self, input: &PtySpawnInput) -> Result<Arc<dyn PtyProcess>, String> {
-        let command = build_pty_command(input)?;
+struct SpawnedChildGuard {
+    child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
+}
+
+impl SpawnedChildGuard {
+    fn new(child: Box<dyn portable_pty::Child + Send + Sync>) -> Self {
+        Self { child: Some(child) }
+    }
+
+    fn child(&self) -> &(dyn portable_pty::Child + Send + Sync) {
+        self.child.as_deref().expect("spawned child guard")
+    }
+
+    fn into_child(mut self) -> Box<dyn portable_pty::Child + Send + Sync> {
+        self.child.take().expect("spawned child guard")
+    }
+}
+
+impl Drop for SpawnedChildGuard {
+    fn drop(&mut self) {
+        let Some(child) = self.child.as_mut() else {
+            return;
+        };
+        if let Err(error) = child.kill() {
+            tracing::debug!(%error, "failed to kill PTY child after spawn setup failure");
+        }
+    }
+}
+
+impl PortablePtyBackend {
+    #[cfg(windows)]
+    #[doc(hidden)]
+    pub fn spawn_with_windows_batch_trampoline(
+        &self,
+        input: &PtySpawnInput,
+        trampoline: &Path,
+    ) -> Result<Arc<dyn PtyProcess>, String> {
+        let command =
+            build_pty_command_on_with_trampoline(Platform::Windows, input, trampoline)?;
+        self.spawn_command(input, command)
+    }
+
+    fn spawn_command(
+        &self,
+        input: &PtySpawnInput,
+        command: CommandBuilder,
+    ) -> Result<Arc<dyn PtyProcess>, String> {
         let pair = match native_pty_system().openpty(PtySize {
             rows: input.rows,
             cols: input.cols,
@@ -64,12 +108,12 @@ impl PtyBackend for PortablePtyBackend {
             Err(error) => return Err(error.to_string()),
         };
 
-        let mut child = match pair.slave.spawn_command(command) {
-            Ok(child) => child,
+        let child = match pair.slave.spawn_command(command) {
+            Ok(child) => SpawnedChildGuard::new(child),
             Err(error) => return Err(error.to_string()),
         };
         drop(pair.slave);
-        let pid = match child.process_id() {
+        let pid = match child.child().process_id() {
             Some(pid) => pid,
             None => return Err("PTY child did not expose a process id".to_string()),
         };
@@ -77,7 +121,7 @@ impl PtyBackend for PortablePtyBackend {
         let process_group = pair.master.process_group_leader();
         #[cfg(windows)]
         let job = {
-            let raw_handle = match child.as_raw_handle() {
+            let raw_handle = match child.child().as_raw_handle() {
                 Some(raw_handle) => raw_handle,
                 None => return Err("PTY child did not expose a Windows process handle".to_owned()),
             };
@@ -95,7 +139,7 @@ impl PtyBackend for PortablePtyBackend {
             Err(error) => return Err(error.to_string()),
         };
         #[cfg(not(windows))]
-        let killer = child.clone_killer();
+        let killer = child.child().clone_killer();
         let (output, _) = broadcast::channel(256);
         let (exit, _) = watch::channel(None);
         let (resize, resize_requests) = mpsc::sync_channel(1);
@@ -121,6 +165,7 @@ impl PtyBackend for PortablePtyBackend {
         if let Err(error) = thread::Builder::new()
             .name(format!("t4code-pty-wait-{pid}"))
             .spawn(move || {
+                let mut child = child.into_child();
                 let event = match child.wait() {
                     Ok(status) => PtyExit {
                         exit_code: i32::try_from(status.exit_code()).ok(),
@@ -153,6 +198,13 @@ impl PtyBackend for PortablePtyBackend {
     }
 }
 
+impl PtyBackend for PortablePtyBackend {
+    fn spawn(&self, input: &PtySpawnInput) -> Result<Arc<dyn PtyProcess>, String> {
+        let command = build_pty_command(input)?;
+        self.spawn_command(input, command)
+    }
+}
+
 fn build_pty_command(input: &PtySpawnInput) -> Result<CommandBuilder, String> {
     build_pty_command_on(Platform::current(), input)
 }
@@ -160,6 +212,23 @@ fn build_pty_command(input: &PtySpawnInput) -> Result<CommandBuilder, String> {
 fn build_pty_command_on(
     platform: Platform,
     input: &PtySpawnInput,
+) -> Result<CommandBuilder, String> {
+    build_pty_command_on_with_optional_trampoline(platform, input, None)
+}
+
+#[cfg(any(test, windows))]
+fn build_pty_command_on_with_trampoline(
+    platform: Platform,
+    input: &PtySpawnInput,
+    trampoline: &Path,
+) -> Result<CommandBuilder, String> {
+    build_pty_command_on_with_optional_trampoline(platform, input, Some(trampoline))
+}
+
+fn build_pty_command_on_with_optional_trampoline(
+    platform: Platform,
+    input: &PtySpawnInput,
+    trampoline: Option<&Path>,
 ) -> Result<CommandBuilder, String> {
     let Some(executable) =
         resolve_pty_executable_on(platform, &input.executable, &input.cwd, &input.env)
@@ -169,15 +238,9 @@ fn build_pty_command_on(
             input.executable
         ));
     };
-    let command_processor = input
-        .env
-        .iter()
-        .find(|(key, _)| key.eq_ignore_ascii_case("ComSpec"))
-        .map(|(_, value)| OsStr::new(value));
-    let launch = wrap_launch_program(platform, &executable, command_processor);
+    let launch = wrap_launch_program(platform, &executable, trampoline)?.prepare(&input.args);
     let mut command = CommandBuilder::new(launch.program);
-    command.args(launch.prefix_args);
-    command.args(&input.args);
+    command.args(launch.args);
     command.cwd(&input.cwd);
     for (key, value) in &input.env {
         command.env(key, value);
@@ -381,6 +444,60 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Debug)]
+    struct SetupTestChild {
+        killed: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl portable_pty::ChildKiller for SetupTestChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            self.killed
+                .store(true, std::sync::atomic::Ordering::Release);
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+            Box::new(self.clone())
+        }
+    }
+
+    impl portable_pty::Child for SetupTestChild {
+        fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+            Ok(None)
+        }
+
+        fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+            Ok(portable_pty::ExitStatus::with_exit_code(0))
+        }
+
+        fn process_id(&self) -> Option<u32> {
+            Some(41)
+        }
+
+        #[cfg(windows)]
+        fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+            None
+        }
+    }
+
+    #[test]
+    fn spawned_child_guard_kills_on_setup_failure_until_waiter_owns_child() {
+        let failed_setup_killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let guard = SpawnedChildGuard::new(Box::new(SetupTestChild {
+            killed: failed_setup_killed.clone(),
+        }));
+        drop(guard);
+        assert!(failed_setup_killed.load(std::sync::atomic::Ordering::Acquire));
+
+        let committed_killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let child = SpawnedChildGuard::new(Box::new(SetupTestChild {
+            killed: committed_killed.clone(),
+        }))
+        .into_child();
+        drop(child);
+        assert!(!committed_killed.load(std::sync::atomic::Ordering::Acquire));
+    }
+
     #[test]
     fn executable_discovery_handles_absolute_relative_and_overridden_paths() {
         let executable = std::env::current_exe().expect("current test executable");
@@ -489,16 +606,20 @@ mod tests {
     #[test]
     fn windows_pty_launch_wraps_cmd_and_bat_case_insensitively() {
         let directory = tempfile::tempdir().unwrap();
-        let command_processor = directory.path().join("custom-cmd.exe");
+        let shim_directory = directory.path().join("provider ! shims");
+        std::fs::create_dir(&shim_directory).unwrap();
+        let trampoline = directory.path().join("t4code ! trampoline.exe");
         let arguments = vec![
             "--flag".to_owned(),
             "value with spaces".to_owned(),
             "&literal".to_owned(),
+            "%PATH%".to_owned(),
+            "!literal!".to_owned(),
             String::new(),
         ];
 
         for extension in ["CmD", "bAt"] {
-            let executable = directory.path().join(format!("provider.{extension}"));
+            let executable = shim_directory.join(format!("provider.{extension}"));
             std::fs::write(&executable, b"fixture").unwrap();
             let input = PtySpawnInput {
                 executable: executable.to_string_lossy().into_owned(),
@@ -506,20 +627,73 @@ mod tests {
                 cwd: directory.path().to_path_buf(),
                 cols: 80,
                 rows: 24,
-                env: BTreeMap::from([(
-                    "ComSpec".to_owned(),
-                    command_processor.to_string_lossy().into_owned(),
-                )]),
+                env: BTreeMap::from([
+                    ("ComSpec".to_owned(), "user-command-processor".to_owned()),
+                    (
+                        "T4CODE_INTERNAL_BATCH_SCRIPT".to_owned(),
+                        "user-controlled-value".to_owned(),
+                    ),
+                    (
+                        "T4CODE_INTERNAL_BATCH_ARG_2".to_owned(),
+                        "user-controlled-value".to_owned(),
+                    ),
+                ]),
             };
 
-            let command = build_pty_command_on(Platform::Windows, &input).unwrap();
-            let expected = std::iter::once(command_processor.clone().into_os_string())
-                .chain(["/d", "/s", "/c"].map(std::ffi::OsString::from))
-                .chain(std::iter::once(executable.into_os_string()))
+            let command =
+                build_pty_command_on_with_trampoline(Platform::Windows, &input, &trampoline)
+                    .unwrap();
+            let expected = std::iter::once(trampoline.clone().into_os_string())
+                .chain(
+                    [
+                        crate::process::WINDOWS_BATCH_TRAMPOLINE_ARG,
+                        executable.to_str().unwrap(),
+                    ]
+                    .map(std::ffi::OsString::from),
+                )
                 .chain(arguments.iter().map(std::ffi::OsString::from))
                 .collect::<Vec<_>>();
             assert_eq!(command.get_argv(), &expected);
+            assert_eq!(
+                command.get_env("T4CODE_INTERNAL_BATCH_SCRIPT"),
+                Some(std::ffi::OsStr::new("user-controlled-value"))
+            );
+            assert_eq!(
+                command.get_env("T4CODE_INTERNAL_BATCH_ARG_2"),
+                Some(std::ffi::OsStr::new("user-controlled-value"))
+            );
+            assert_eq!(
+                command.get_env("ComSpec"),
+                Some(std::ffi::OsStr::new("user-command-processor"))
+            );
         }
+    }
+
+    #[test]
+    fn windows_batch_launch_rejects_control_characters_in_the_script_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("provider\nshim.cmd");
+        std::fs::write(&executable, b"fixture").unwrap();
+        let input = PtySpawnInput {
+            executable: executable.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            cwd: directory.path().to_path_buf(),
+            cols: 80,
+            rows: 24,
+            env: BTreeMap::new(),
+        };
+
+        let error = build_pty_command_on_with_trampoline(
+            Platform::Windows,
+            &input,
+            &directory.path().join("t4code.exe"),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            "Windows batch executable paths cannot contain control characters"
+        );
     }
 
     #[test]
@@ -652,68 +826,6 @@ mod tests {
             })
             .unwrap();
         assert!(process.pid() > 0);
-    }
-
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn portable_backend_runs_windows_command_and_powershell_shims() {
-        async fn assert_shim_output(executable: &Path, arguments: &[String], marker: &str) {
-            let process = PortablePtyBackend
-                .spawn(&PtySpawnInput {
-                    executable: executable.to_string_lossy().into_owned(),
-                    args: arguments.to_vec(),
-                    cwd: executable.parent().unwrap().to_path_buf(),
-                    cols: 80,
-                    rows: 24,
-                    env: BTreeMap::new(),
-                })
-                .unwrap();
-            let mut output = process.subscribe_output();
-            let mut exit = process.subscribe_exit();
-            let text = tokio::time::timeout(Duration::from_secs(10), async {
-                let mut text = String::new();
-                while !text.contains(marker) {
-                    text.push_str(&output.recv().await.unwrap());
-                }
-                text
-            })
-            .await
-            .unwrap();
-            assert!(text.contains(marker));
-            tokio::time::timeout(Duration::from_secs(10), exit.changed())
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                exit.borrow().as_ref().and_then(|event| event.exit_code),
-                Some(0)
-            );
-        }
-
-        let directory = tempfile::tempdir().unwrap();
-        let arguments = ["value with spaces".to_owned(), "&literal".to_owned()];
-        for extension in ["cmd", "bat"] {
-            let executable = directory.path().join(format!("provider.{extension}"));
-            std::fs::write(
-                &executable,
-                format!("@echo off\r\nping -n 2 127.0.0.1 >nul\r\necho {extension}:%~1:%~2\r\n"),
-            )
-            .unwrap();
-            assert_shim_output(
-                &executable,
-                &arguments,
-                &format!("{extension}:value with spaces:&literal"),
-            )
-            .await;
-        }
-
-        let powershell = directory.path().join("provider.ps1");
-        std::fs::write(
-            &powershell,
-            "Start-Sleep -Milliseconds 250\nWrite-Output \"ps1:$($args[0]):$($args[1])\"\n",
-        )
-        .unwrap();
-        assert_shim_output(&powershell, &arguments, "ps1:value with spaces:&literal").await;
     }
 
     #[tokio::test]
