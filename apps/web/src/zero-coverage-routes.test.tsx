@@ -358,13 +358,24 @@ describe("center terminal and preview surfaces", () => {
     threadId: ThreadId.make("thread-1"),
   };
 
-  it("derives center terminal launch state from drafts, servers, and session summaries", async () => {
+  it("requires and forwards resolved center terminal launch state", async () => {
     const onAddTerminalContext = vi.fn();
     const onClose = vi.fn();
-    const renderPanel = () => (
+    const renderPanel = (
+      launchContext: {
+        cwd: string;
+        worktreePath: string | null;
+        runtimeEnv: Record<string, string>;
+      } | null = null,
+    ) => (
       <CenterTerminalPanel
         threadRef={threadRef}
-        terminalId="terminal-1"
+        surface={{
+          id: "terminal:terminal-1",
+          kind: "terminal",
+          terminalId: "terminal-1",
+        }}
+        launchContext={launchContext}
         keybindings={{} as never}
         focusRequestId={3}
         onAddTerminalContext={onAddTerminalContext}
@@ -374,13 +385,14 @@ describe("center terminal and preview surfaces", () => {
     const mounted = await mount(renderPanel());
     expect(mounted.container.innerHTML).toBe("");
 
-    h.draftThread = {
-      environmentId: threadRef.environmentId,
-      projectId: "project-1",
-      worktreePath: "/repo/worktree",
-    };
-    h.project = { workspaceRoot: "/repo" };
-    await rerender(mounted, renderPanel());
+    await rerender(
+      mounted,
+      renderPanel({
+        cwd: "/repo/worktree",
+        worktreePath: "/repo/worktree",
+        runtimeEnv: { T4CODE_PROJECT_ROOT: "/repo" },
+      }),
+    );
     expect(h.drawerProps).toMatchObject({
       mode: "panel",
       cwd: "/repo/worktree",
@@ -390,19 +402,24 @@ describe("center terminal and preview surfaces", () => {
       focusRequestId: 3,
     });
 
-    h.serverThread = {
-      environmentId: threadRef.environmentId,
-      projectId: "project-1",
-      worktreePath: null,
-    };
     h.knownSessions = [
       {
         target: { terminalId: "terminal-1" },
         state: { summary: { cwd: "/custom", worktreePath: "/custom-tree", title: "Shell" } },
       },
     ];
-    await rerender(mounted, renderPanel());
-    expect(h.drawerProps).toMatchObject({ cwd: "/custom", worktreePath: "/custom-tree" });
+    await rerender(
+      mounted,
+      renderPanel({
+        cwd: "/repo/current-worktree",
+        worktreePath: "/repo/current-worktree",
+        runtimeEnv: { T4CODE_PROJECT_ROOT: "/repo" },
+      }),
+    );
+    expect(h.drawerProps).toMatchObject({
+      cwd: "/repo/current-worktree",
+      worktreePath: "/repo/current-worktree",
+    });
     (h.drawerProps!.onCloseTerminal as () => void)();
     (h.drawerProps!.onAddTerminalContext as (value: unknown) => void)({
       terminalId: "terminal-1",

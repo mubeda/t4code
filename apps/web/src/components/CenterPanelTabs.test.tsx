@@ -45,6 +45,7 @@ const terminal = {
   id: "terminal:terminal-1",
   kind: "terminal",
   terminalId: "terminal-1",
+  label: "Codex Terminal",
 } as const;
 
 function props(surfaces: CenterSurface[] = [host, chat, terminal]) {
@@ -88,12 +89,13 @@ describe("CenterPanelTabs", () => {
 
     expect(markup).toContain("Main");
     expect(markup).toContain("Claude");
-    expect(markup).toContain("Build terminal");
+    expect(markup).toContain("Codex Terminal");
+    expect(markup).not.toContain("Build terminal");
     expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest", inline: "nearest" });
 
     const { terminalLabelsById: _terminalLabelsById, ...unlabeledProps } = props([
       { id: chat.id, kind: "chat", threadId: chat.threadId },
-      terminal,
+      { id: terminal.id, kind: terminal.kind, terminalId: terminal.terminalId },
     ]);
     const unlabeled = renderToStaticMarkup(<CenterPanelTabs {...unlabeledProps} />);
     expect(unlabeled).toContain("Chat");

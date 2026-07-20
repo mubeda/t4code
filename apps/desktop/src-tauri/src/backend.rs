@@ -3163,13 +3163,16 @@ exit /b 9
 
         let cwd = workspace.path().to_string_lossy();
         let initialized = request_rpc(&mut socket, 100, "vcs.init", json!({ "cwd": cwd })).await;
-        assert!(matches!(
-            initialized,
-            ServerMessage::Exit {
-                exit: RpcExit::Success { .. },
-                ..
-            }
-        ));
+        assert!(
+            matches!(
+                &initialized,
+                ServerMessage::Exit {
+                    exit: RpcExit::Success { .. },
+                    ..
+                }
+            ),
+            "vcs.init should succeed, got {initialized:?}"
+        );
         let refs = request_rpc(
             &mut socket,
             101,
@@ -3359,34 +3362,17 @@ exit /b 9
         let bootstrap_path = temp.path().join("bootstrap.txt");
         let shutdown_signal_path = temp.path().join("shutdown.signal");
         let shutdown_observed_path = temp.path().join("shutdown-observed.txt");
-        let shutdown_signal_name = PathBuf::from(
-            shutdown_signal_path
-                .file_name()
-                .expect("shutdown signal should have a file name"),
-        );
         let (port, requests, server) =
             spawn_external_backend_http_server(shutdown_signal_path.clone());
         let script = format!(
             r#"
-$watcher = [IO.FileSystemWatcher]::new({}, {})
-$sourceIdentifier = 't4code-shutdown-' + [Guid]::NewGuid().ToString('N')
-[void](Register-ObjectEvent -InputObject $watcher -EventName Created -SourceIdentifier $sourceIdentifier)
-$watcher.EnableRaisingEvents = $true
-try {{
-  $bootstrap = [Console]::In.ReadToEnd()
-  [IO.File]::WriteAllText({}, $bootstrap)
-  if (-not [IO.File]::Exists({})) {{
-    [void](Wait-Event -SourceIdentifier $sourceIdentifier)
-  }}
-  [IO.File]::WriteAllText({}, 'shutdown-observed')
-}} finally {{
-  $watcher.EnableRaisingEvents = $false
-  Unregister-Event -SourceIdentifier $sourceIdentifier -ErrorAction SilentlyContinue
-  $watcher.Dispose()
+$bootstrap = [Console]::In.ReadToEnd()
+[IO.File]::WriteAllText({}, $bootstrap)
+while (-not [IO.File]::Exists({})) {{
+  Start-Sleep -Milliseconds 10
 }}
+[IO.File]::WriteAllText({}, 'shutdown-observed')
 "#,
-            powershell_string_literal(temp.path()),
-            powershell_string_literal(&shutdown_signal_name),
             powershell_string_literal(&bootstrap_path),
             powershell_string_literal(&shutdown_signal_path),
             powershell_string_literal(&shutdown_observed_path),

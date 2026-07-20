@@ -22,6 +22,14 @@ impl TerminalStatus {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalLaunchCommand {
+    pub executable: String,
+    pub args: Vec<String>,
+    pub label: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct TerminalOpenInput {
     pub thread_id: String,
@@ -31,6 +39,7 @@ pub struct TerminalOpenInput {
     pub cols: u16,
     pub rows: u16,
     pub env: BTreeMap<String, String>,
+    pub command: Option<TerminalLaunchCommand>,
 }
 
 impl TerminalOpenInput {
@@ -49,6 +58,7 @@ impl TerminalOpenInput {
             cols,
             rows,
             env: BTreeMap::new(),
+            command: None,
         }
     }
 }
@@ -63,6 +73,7 @@ pub struct TerminalAttachInput {
     pub rows: Option<u16>,
     pub env: BTreeMap<String, String>,
     pub restart_if_not_running: bool,
+    pub command: Option<TerminalLaunchCommand>,
 }
 
 impl TerminalAttachInput {
@@ -76,6 +87,7 @@ impl TerminalAttachInput {
             rows: None,
             env: BTreeMap::new(),
             restart_if_not_running: false,
+            command: None,
         }
     }
 }
