@@ -54,9 +54,18 @@ struct ProviderDefinition {
     binary_path: String,
     available: bool,
     custom_models: Vec<String>,
+    configured_model: Option<String>,
+    configured_effort: Option<String>,
+    configured_service_tier: Option<String>,
     endpoint: Option<String>,
     server_password: Option<String>,
     environment: Vec<(OsString, OsString)>,
+}
+
+struct ProviderSessionDefaults {
+    model: Option<String>,
+    effort: Option<String>,
+    service_tier: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -103,6 +112,7 @@ fn definitions(settings: &Value) -> Vec<ProviderDefinition> {
                         .and_then(Value::as_str)
                         .unwrap_or("unknown");
                     let legacy_settings = legacy.and_then(|providers| providers.get(driver));
+                    let session_defaults = provider_session_defaults(settings, driver);
                     let config = instance.get("config");
                     ProviderDefinition {
                         instance_id: instance_id.clone(),
@@ -128,6 +138,9 @@ fn definitions(settings: &Value) -> Vec<ProviderDefinition> {
                         custom_models: string_array(config, "customModels")
                             .or_else(|| string_array(legacy_settings, "customModels"))
                             .unwrap_or_default(),
+                        configured_model: session_defaults.model,
+                        configured_effort: session_defaults.effort,
+                        configured_service_tier: session_defaults.service_tier,
                         endpoint: string_setting(config, "serverUrl")
                             .or_else(|| string_setting(config, "apiEndpoint"))
                             .or_else(|| string_setting(legacy_settings, "serverUrl"))
@@ -153,6 +166,7 @@ fn definitions(settings: &Value) -> Vec<ProviderDefinition> {
             continue;
         }
         let driver_settings = legacy.and_then(|providers| providers.get(driver));
+        let session_defaults = provider_session_defaults(settings, driver);
         definitions.push(ProviderDefinition {
             instance_id: driver.to_owned(),
             driver: driver.to_owned(),
@@ -166,6 +180,9 @@ fn definitions(settings: &Value) -> Vec<ProviderDefinition> {
                 .to_owned(),
             available: true,
             custom_models: string_array(driver_settings, "customModels").unwrap_or_default(),
+            configured_model: session_defaults.model,
+            configured_effort: session_defaults.effort,
+            configured_service_tier: session_defaults.service_tier,
             endpoint: string_setting(driver_settings, "serverUrl")
                 .or_else(|| string_setting(driver_settings, "apiEndpoint"))
                 .filter(|value| !value.trim().is_empty())
@@ -177,6 +194,42 @@ fn definitions(settings: &Value) -> Vec<ProviderDefinition> {
         });
     }
     definitions
+}
+
+fn provider_session_defaults(settings: &Value, driver: &str) -> ProviderSessionDefaults {
+    let session_default = settings
+        .get("providerSessionDefaults")
+        .and_then(Value::as_object)
+        .and_then(|defaults| defaults.get(driver));
+    ProviderSessionDefaults {
+        model: session_default
+            .and_then(|value| value.get("model"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        effort: session_default
+            .and_then(|value| value.get("options"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|selection| {
+                matches!(
+                    selection.get("id").and_then(Value::as_str),
+                    Some("reasoningEffort" | "effort" | "reasoning")
+                )
+            })
+            .and_then(|selection| selection.get("value"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        service_tier: session_default
+            .and_then(|value| value.get("options"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|selection| selection.get("id").and_then(Value::as_str) == Some("serviceTier"))
+            .and_then(|selection| selection.get("value"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    }
 }
 
 fn string_setting<'a>(value: Option<&'a Value>, name: &str) -> Option<&'a str> {
@@ -506,6 +559,12 @@ async fn probe_one(
 
 fn provider_models_without_version(definition: &ProviderDefinition) -> Vec<Value> {
     match definition.driver.as_str() {
+        "codex" => codex::model::fallback_models(
+            definition.configured_model.as_deref(),
+            definition.configured_effort.as_deref(),
+            definition.configured_service_tier.as_deref(),
+            &definition.custom_models,
+        ),
         "claudeAgent" => claude::model::all_models(&definition.custom_models),
         "grok" => serde_json::to_value(grok::model::default_models(&definition.custom_models))
             .ok()
@@ -1337,6 +1396,35 @@ mod tests {
     }
 
     #[test]
+    fn codex_inventory_uses_saved_defaults_before_live_discovery() {
+        let definitions = definitions(&json!({
+            "providerInstances": {
+                "codex": { "driver": "codex", "enabled": true, "config": {} }
+            },
+            "providerSessionDefaults": {
+                "codex": {
+                    "model": "gpt-configured",
+                    "options": [
+                        { "id": "reasoningEffort", "value": "xhigh" },
+                        { "id": "serviceTier", "value": "fast" }
+                    ]
+                }
+            }
+        }));
+        let models = provider_models_without_version(&definitions[0]);
+
+        assert_eq!(models[0]["slug"], "gpt-configured");
+        assert_eq!(
+            models[0]["capabilities"]["optionDescriptors"][0]["currentValue"],
+            "xhigh"
+        );
+        assert_eq!(
+            models[0]["capabilities"]["optionDescriptors"][1]["currentValue"],
+            "fast"
+        );
+    }
+
+    #[test]
     fn codex_cli_version_is_normalized_to_semver() {
         assert_eq!(
             normalize_provider_version("codex", Some("codex-cli 0.144.1".to_owned())),
@@ -1402,6 +1490,9 @@ mod tests {
             binary_path: "grok".to_owned(),
             available: true,
             custom_models: Vec::new(),
+            configured_model: None,
+            configured_effort: None,
+            configured_service_tier: None,
             endpoint: None,
             server_password: None,
             environment: Vec::new(),
