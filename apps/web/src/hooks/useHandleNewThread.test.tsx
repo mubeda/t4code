@@ -21,13 +21,15 @@ import {
   type ServerProviderModel,
 } from "@t4code/contracts";
 import { createModelSelection } from "@t4code/shared/model";
-import { act, type ReactElement, useState } from "react";
+import { act, type ReactElement, useState, useSyncExternalStore } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const testState = vi.hoisted(() => ({
   projects: [] as Array<Record<string, unknown>>,
   serverConfigs: new Map<string, Pick<ServerConfig, "providers" | "settings">>(),
+  serverConfigSubscribers: new Set<() => void>(),
+  clientSettings: { groupProjectsBy: "folder" },
   routeParams: {} as Record<string, string | undefined>,
   router: {
     state: { matches: [{ params: {} as Record<string, string | undefined> }] },
@@ -47,7 +49,14 @@ vi.mock("@tanstack/react-router", () => ({
 
 vi.mock("../state/entities", () => ({
   useProjects: () => testState.projects,
-  useServerConfigs: () => testState.serverConfigs,
+  useServerConfigs: () =>
+    useSyncExternalStore(
+      (onStoreChange) => {
+        testState.serverConfigSubscribers.add(onStoreChange);
+        return () => testState.serverConfigSubscribers.delete(onStoreChange);
+      },
+      () => testState.serverConfigs,
+    ),
   useThread: (threadRef: unknown) => (threadRef ? testState.activeThread : null),
   readThreadShell: () => (testState.shellExists ? { status: "ready" } : null),
 }));
@@ -67,7 +76,7 @@ vi.mock("../uiStateStore", () => ({
 
 vi.mock("./useSettings", () => ({
   useClientSettings: (selector: (settings: Record<string, unknown>) => unknown) =>
-    selector({ groupProjectsBy: "folder" }),
+    selector(testState.clientSettings),
 }));
 
 import { type DraftThreadEnvMode, useComposerDraftStore } from "../composerDraftStore";
@@ -193,13 +202,16 @@ function configureEnvironment(input: {
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly settings?: Partial<typeof DEFAULT_SERVER_SETTINGS>;
 }): void {
-  testState.serverConfigs.set(environmentId, {
+  const serverConfigs = new Map(testState.serverConfigs);
+  serverConfigs.set(environmentId, {
     providers: [...input.providers],
     settings: {
       ...DEFAULT_SERVER_SETTINGS,
       ...input.settings,
     },
   });
+  testState.serverConfigs = serverConfigs;
+  for (const subscriber of testState.serverConfigSubscribers) subscriber();
 }
 
 function createdDraftModelSelection() {
@@ -376,16 +388,18 @@ describe("useNewThreadHandler", () => {
         serverProvider({
           instanceId: codexInstanceId,
           driver: codexDriver,
-          models: [providerModel("gpt-next", [reasoningEffortDescriptor, serviceTierDescriptor])],
+          models: [
+            providerModel("gpt-initial", [reasoningEffortDescriptor, serviceTierDescriptor]),
+          ],
         }),
       ],
       settings: {
         providerSessionDefaults: {
           [codexDriver]: {
-            model: "gpt-next",
+            model: "gpt-initial",
             options: [
-              { id: "reasoningEffort", value: "high" },
-              { id: "serviceTier", value: "fast" },
+              { id: "reasoningEffort", value: "low" },
+              { id: "serviceTier", value: "default" },
             ],
           },
         },
@@ -393,6 +407,30 @@ describe("useNewThreadHandler", () => {
     });
 
     await mount(<NewThreadHarness />);
+
+    await act(async () => {
+      configureEnvironment({
+        providers: [
+          serverProvider({
+            instanceId: codexInstanceId,
+            driver: codexDriver,
+            models: [providerModel("gpt-next", [reasoningEffortDescriptor, serviceTierDescriptor])],
+          }),
+        ],
+        settings: {
+          providerSessionDefaults: {
+            [codexDriver]: {
+              model: "gpt-next",
+              options: [
+                { id: "reasoningEffort", value: "high" },
+                { id: "serviceTier", value: "fast" },
+              ],
+            },
+          },
+        },
+      });
+      await Promise.resolve();
+    });
     await clickNewThread();
 
     expect(createdDraftModelSelection()).toEqual({
