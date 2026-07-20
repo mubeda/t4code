@@ -37,6 +37,15 @@ impl ProcessSampler for NativeProcessSampler {
 }
 
 impl NativeProcessSampler {
+    pub(crate) fn process_identity(pid: u32) -> Result<ProcessIdentity, SamplingError> {
+        let record = platform_process_record(pid)
+            .map_err(|error| SamplingError::Failed(error.to_string()))?;
+        Ok(ProcessIdentity {
+            pid,
+            started_at: record.started_at,
+        })
+    }
+
     pub(crate) fn collect_rows(
         &self,
     ) -> std::pin::Pin<
@@ -720,6 +729,17 @@ mod tests {
 
         assert_eq!(current.started_at, platform.started_at);
         assert_eq!(current.ppid, platform.ppid);
+    }
+
+    #[test]
+    fn process_identity_is_captured_without_waiting_for_a_full_sample() {
+        let identity = NativeProcessSampler::process_identity(std::process::id())
+            .expect("current process identity");
+        let platform =
+            platform_process_record(std::process::id()).expect("current platform process record");
+
+        assert_eq!(identity.pid, std::process::id());
+        assert_eq!(identity.started_at, platform.started_at);
     }
 
     #[test]

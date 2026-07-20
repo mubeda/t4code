@@ -10,7 +10,7 @@ use super::{
 };
 
 const REGISTRY_CAPACITY: usize = 512;
-const UNBOUND_REGISTRATION_TTL: Duration = Duration::from_secs(10);
+const FIRST_OBSERVATION_TTL: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RegistrationSource {
@@ -48,15 +48,16 @@ struct RegistryState {
 
 #[derive(Debug)]
 struct RegistryEntry {
-    pid: u32,
+    identity: ProcessIdentity,
     metadata: ProcessRegistrationMetadata,
-    binding: RegistrationBinding,
+    registered_at: Instant,
+    observation: RegistrationObservation,
 }
 
 #[derive(Clone, Copy, Debug)]
-enum RegistrationBinding {
-    Unbound { deadline: Instant },
-    Bound(ProcessIdentity),
+enum RegistrationObservation {
+    AwaitingFirstSample { deadline: Instant },
+    Observed,
 }
 
 impl ProcessAttributionRegistry {
@@ -71,9 +72,9 @@ impl ProcessAttributionRegistry {
         }
     }
 
-    pub fn register_pid(
+    pub fn register_identity(
         &self,
-        pid: u32,
+        identity: ProcessIdentity,
         mut metadata: ProcessRegistrationMetadata,
     ) -> Option<ProcessRegistration> {
         let now = Instant::now();
@@ -85,7 +86,11 @@ impl ProcessAttributionRegistry {
                 ..
             } = &mut *state;
             entries.retain(|_, entry| {
-                !matches!(entry.binding, RegistrationBinding::Unbound { deadline } if deadline <= now)
+                !matches!(
+                    entry.observation,
+                    RegistrationObservation::AwaitingFirstSample { deadline }
+                        if deadline <= now
+                )
             });
             registration_order.retain(|registration_id| entries.contains_key(registration_id));
         }
@@ -102,10 +107,11 @@ impl ProcessAttributionRegistry {
         state.entries.insert(
             registration_id,
             RegistryEntry {
-                pid,
+                identity,
                 metadata,
-                binding: RegistrationBinding::Unbound {
-                    deadline: now + UNBOUND_REGISTRATION_TTL,
+                registered_at: now,
+                observation: RegistrationObservation::AwaitingFirstSample {
+                    deadline: now + FIRST_OBSERVATION_TTL,
                 },
             },
         );
@@ -118,16 +124,20 @@ impl ProcessAttributionRegistry {
     }
 
     #[must_use]
-    pub fn bind_and_snapshot(&self, rows: &[ProcessRow], now: Instant) -> Vec<ProcessClaim> {
+    pub fn bind_and_snapshot(
+        &self,
+        rows: &[ProcessRow],
+        sample_started_at: Instant,
+    ) -> Vec<ProcessClaim> {
         let mut sampled_identities = HashSet::with_capacity(rows.len());
-        let mut identities_by_pid = HashMap::with_capacity(rows.len());
+        let mut sampled_pids = HashSet::with_capacity(rows.len());
         for row in rows {
             let identity = ProcessIdentity {
                 pid: row.pid,
                 started_at: row.started_at,
             };
             sampled_identities.insert(identity);
-            identities_by_pid.entry(identity.pid).or_insert(identity);
+            sampled_pids.insert(identity.pid);
         }
 
         let mut state = lock_state(&self.inner);
@@ -143,23 +153,55 @@ impl ProcessAttributionRegistry {
                 let Some(entry) = entries.get_mut(registration_id) else {
                     return false;
                 };
-                let retained = match entry.binding {
-                    RegistrationBinding::Unbound { deadline } if deadline <= now => false,
-                    RegistrationBinding::Unbound { .. } => {
-                        if let Some(identity) = identities_by_pid.get(&entry.pid) {
-                            entry.binding = RegistrationBinding::Bound(*identity);
-                        }
-                        true
+                let (retained, emit_claim) = match entry.observation {
+                    RegistrationObservation::AwaitingFirstSample { .. }
+                        if sample_started_at < entry.registered_at
+                            && sampled_identities.contains(&entry.identity) =>
+                    {
+                        entry.observation = RegistrationObservation::Observed;
+                        (true, true)
                     }
-                    RegistrationBinding::Bound(identity) => sampled_identities.contains(&identity),
+                    RegistrationObservation::AwaitingFirstSample { .. }
+                        if sample_started_at < entry.registered_at =>
+                    {
+                        (true, false)
+                    }
+                    RegistrationObservation::AwaitingFirstSample { deadline }
+                        if deadline <= sample_started_at =>
+                    {
+                        (false, false)
+                    }
+                    RegistrationObservation::AwaitingFirstSample { .. }
+                        if sampled_identities.contains(&entry.identity) =>
+                    {
+                        entry.observation = RegistrationObservation::Observed;
+                        (true, true)
+                    }
+                    RegistrationObservation::AwaitingFirstSample { .. }
+                        if sampled_pids.contains(&entry.identity.pid) =>
+                    {
+                        (false, false)
+                    }
+                    RegistrationObservation::AwaitingFirstSample { .. } => (true, false),
+                    RegistrationObservation::Observed
+                        if sampled_identities.contains(&entry.identity) =>
+                    {
+                        (true, true)
+                    }
+                    RegistrationObservation::Observed
+                        if sample_started_at < entry.registered_at =>
+                    {
+                        (true, false)
+                    }
+                    RegistrationObservation::Observed => (false, false),
                 };
                 if !retained {
                     stale_registration_ids.push(*registration_id);
                     return false;
                 }
-                if let RegistrationBinding::Bound(identity) = entry.binding {
+                if emit_claim {
                     snapshot.push(ProcessClaim {
-                        identity,
+                        identity: entry.identity,
                         scope: entry.metadata.scope,
                         kind: entry.metadata.kind,
                         label: entry.metadata.label.clone(),
@@ -247,7 +289,7 @@ fn normalize_label(label: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     use super::*;
     use crate::diagnostics::{
@@ -279,12 +321,69 @@ mod tests {
         }
     }
 
+    fn identity(pid: u32, started_at: u64) -> ProcessIdentity {
+        ProcessIdentity { pid, started_at }
+    }
+
+    fn register(
+        registry: &ProcessAttributionRegistry,
+        pid: u32,
+        started_at: u64,
+        label: &str,
+    ) -> ProcessRegistration {
+        registry
+            .register_identity(identity(pid, started_at), metadata(label))
+            .expect("registration should fit")
+    }
+
     #[test]
-    fn registration_appears_in_a_snapshot_after_its_first_matching_row() {
+    fn captured_identity_refuses_pid_reuse_before_initial_sampling() {
         let registry = ProcessAttributionRegistry::new();
-        let _registration = registry
-            .register_pid(42, metadata("external/provider"))
-            .expect("registration should fit");
+        let _registration = register(&registry, 42, 100, "external/provider");
+
+        let claims = registry.bind_and_snapshot(&[row(42, 1, 200)], Instant::now());
+
+        assert!(claims.is_empty());
+        assert!(
+            registry
+                .bind_and_snapshot(&[row(42, 1, 100)], Instant::now())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn captured_identity_survives_a_sample_that_started_before_registration() {
+        let registry = ProcessAttributionRegistry::new();
+        let sample_started_at = Instant::now();
+        let _registration = register(&registry, 42, 100, "external/provider");
+
+        assert!(
+            registry
+                .bind_and_snapshot(&[row(42, 1, 50)], sample_started_at)
+                .is_empty()
+        );
+        let claims = registry.bind_and_snapshot(&[row(42, 1, 100)], Instant::now());
+
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].identity, identity(42, 100));
+    }
+
+    #[test]
+    fn captured_identity_expires_without_an_initial_observation() {
+        let registry = ProcessAttributionRegistry::new();
+        let _registration = register(&registry, 42, 100, "external/provider");
+        let registered_at = Instant::now();
+
+        let claims =
+            registry.bind_and_snapshot(&[row(42, 1, 100)], registered_at + FIRST_OBSERVATION_TTL);
+
+        assert!(claims.is_empty());
+    }
+
+    #[test]
+    fn captured_identity_appears_in_a_matching_snapshot() {
+        let registry = ProcessAttributionRegistry::new();
+        let _registration = register(&registry, 42, 100, "external/provider");
 
         let claims = registry.bind_and_snapshot(&[row(42, 1, 100)], Instant::now());
 
@@ -299,11 +398,9 @@ mod tests {
     }
 
     #[test]
-    fn first_matching_row_binds_registration_to_its_exact_start_identity() {
+    fn matching_identity_remains_registered_across_snapshots() {
         let registry = ProcessAttributionRegistry::new();
-        let _registration = registry
-            .register_pid(42, metadata("external/provider"))
-            .expect("registration should fit");
+        let _registration = register(&registry, 42, 100, "external/provider");
 
         let first = registry.bind_and_snapshot(&[row(42, 1, 100)], Instant::now());
         let second = registry.bind_and_snapshot(&[row(42, 1, 100)], Instant::now());
@@ -325,11 +422,9 @@ mod tests {
     }
 
     #[test]
-    fn bound_registration_refuses_pid_reuse_with_a_different_start_identity() {
+    fn captured_identity_refuses_pid_reuse_after_a_matching_snapshot() {
         let registry = ProcessAttributionRegistry::new();
-        let _registration = registry
-            .register_pid(42, metadata("external/provider"))
-            .expect("registration should fit");
+        let _registration = register(&registry, 42, 100, "external/provider");
         let now = Instant::now();
 
         let _ = registry.bind_and_snapshot(&[row(42, 1, 100)], now);
@@ -341,9 +436,7 @@ mod tests {
     #[test]
     fn dropping_registration_unregisters_immediately() {
         let registry = ProcessAttributionRegistry::new();
-        let registration = registry
-            .register_pid(42, metadata("external/provider"))
-            .expect("registration should fit");
+        let registration = register(&registry, 42, 100, "external/provider");
         drop(registration);
 
         assert!(
@@ -356,9 +449,7 @@ mod tests {
     #[test]
     fn explicit_unregister_is_idempotent() {
         let registry = ProcessAttributionRegistry::new();
-        let registration = registry
-            .register_pid(42, metadata("external/provider"))
-            .expect("registration should fit");
+        let registration = register(&registry, 42, 100, "external/provider");
 
         registration.unregister();
         registration.unregister();
@@ -371,25 +462,9 @@ mod tests {
     }
 
     #[test]
-    fn unbound_registration_expires_after_ten_seconds() {
+    fn missing_captured_identity_is_pruned_after_a_sample() {
         let registry = ProcessAttributionRegistry::new();
-        let _registration = registry
-            .register_pid(42, metadata("external/provider"))
-            .expect("registration should fit");
-        let registered_at = Instant::now();
-
-        let claims =
-            registry.bind_and_snapshot(&[row(42, 1, 100)], registered_at + Duration::from_secs(10));
-
-        assert!(claims.is_empty());
-    }
-
-    #[test]
-    fn missing_bound_identity_is_pruned_after_a_sample() {
-        let registry = ProcessAttributionRegistry::new();
-        let _registration = registry
-            .register_pid(42, metadata("external/provider"))
-            .expect("registration should fit");
+        let _registration = register(&registry, 42, 100, "external/provider");
         let now = Instant::now();
         let _ = registry.bind_and_snapshot(&[row(42, 1, 100)], now);
 
@@ -405,14 +480,14 @@ mod tests {
     fn capacity_does_not_evict_a_still_owned_registration() {
         let registry = ProcessAttributionRegistry::new();
         let registrations = (0..512)
-            .map(|pid| {
-                registry
-                    .register_pid(pid, metadata("external/provider"))
-                    .expect("registration should fit")
-            })
+            .map(|pid| register(&registry, pid, 100, "external/provider"))
             .collect::<Vec<_>>();
 
-        assert!(registry.register_pid(999, metadata("overflow")).is_none());
+        assert!(
+            registry
+                .register_identity(identity(999, 100), metadata("overflow"))
+                .is_none()
+        );
         assert_eq!(
             registry.bind_and_snapshot(&[row(0, 1, 100)], Instant::now()),
             vec![crate::diagnostics::ProcessClaim {
@@ -431,9 +506,12 @@ mod tests {
     #[test]
     fn labels_are_normalized_and_bounded_to_eighty_utf8_characters() {
         let registry = ProcessAttributionRegistry::new();
-        let _registration = registry
-            .register_pid(42, metadata(&format!("  provider\n{}  ", "é".repeat(100))))
-            .expect("registration should fit");
+        let _registration = register(
+            &registry,
+            42,
+            100,
+            &format!("  provider\n{}  ", "é".repeat(100)),
+        );
 
         let claims = registry.bind_and_snapshot(&[row(42, 1, 100)], Instant::now());
 
@@ -445,9 +523,7 @@ mod tests {
     fn oversized_labels_stop_before_allocating_or_emitting_a_trailing_separator() {
         let registry = ProcessAttributionRegistry::new();
         let oversized_label = format!("{}{}", "x ".repeat(500_000), "é".repeat(500_000));
-        let _registration = registry
-            .register_pid(42, metadata(&oversized_label))
-            .expect("registration should fit");
+        let _registration = register(&registry, 42, 100, &oversized_label);
 
         let claims = registry.bind_and_snapshot(&[row(42, 1, 100)], Instant::now());
 
@@ -459,16 +535,10 @@ mod tests {
     fn wraparound_allocates_unused_ids_without_replacing_entries_or_reordering_snapshot() {
         let registry = ProcessAttributionRegistry::new();
         lock_state(registry.inner.as_ref()).next_registration_id = u64::MAX;
-        let _first = registry
-            .register_pid(1, metadata("first"))
-            .expect("registration should fit");
-        let _second = registry
-            .register_pid(2, metadata("second"))
-            .expect("registration should fit");
+        let _first = register(&registry, 1, 10, "first");
+        let _second = register(&registry, 2, 20, "second");
         lock_state(registry.inner.as_ref()).next_registration_id = u64::MAX;
-        let _third = registry
-            .register_pid(3, metadata("third"))
-            .expect("registration should fit");
+        let _third = register(&registry, 3, 30, "third");
 
         let claims = registry.bind_and_snapshot(
             &[row(1, 0, 10), row(2, 0, 20), row(3, 0, 30)],
@@ -485,14 +555,10 @@ mod tests {
     }
 
     #[test]
-    fn snapshots_bind_first_pid_identity_and_preserve_registration_order() {
+    fn snapshots_match_exact_identity_and_preserve_registration_order() {
         let registry = ProcessAttributionRegistry::new();
-        let _first = registry
-            .register_pid(2, metadata("first"))
-            .expect("registration should fit");
-        let _second = registry
-            .register_pid(1, metadata("second"))
-            .expect("registration should fit");
+        let _first = register(&registry, 2, 20, "first");
+        let _second = register(&registry, 1, 10, "second");
 
         let claims = registry.bind_and_snapshot(
             &[row(2, 0, 20), row(1, 0, 10), row(2, 0, 30)],
@@ -526,9 +592,7 @@ mod tests {
     #[test]
     fn snapshots_are_owned_before_attribution_runs() {
         let registry = ProcessAttributionRegistry::new();
-        let _registration = registry
-            .register_pid(42, metadata("external/provider"))
-            .expect("registration should fit");
+        let _registration = register(&registry, 42, 20, "external/provider");
         let rows = [row(1, 0, 10), row(42, 1, 20)];
         let claims = registry.bind_and_snapshot(&rows, Instant::now());
 

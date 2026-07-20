@@ -11,8 +11,8 @@ use std::{
 
 use crate::{
     diagnostics::{
-        AttributionKind, AttributionScope, ProcessAttributionRegistry, ProcessRegistration,
-        ProcessRegistrationMetadata, RegistrationSource,
+        AttributionKind, AttributionScope, NativeProcessSampler, ProcessAttributionRegistry,
+        ProcessRegistration, ProcessRegistrationMetadata, RegistrationSource,
     },
     orchestration::{
         engine::{
@@ -1527,23 +1527,27 @@ fn spawn_child(
         sanitize_provider_subprocess_environment(command);
     });
     configure_supervised_background_command_wrap(&mut command);
-    let inner = command
+    let mut inner = command
         .spawn()
         .map_err(|error| ProviderRuntimeError::Spawn {
             provider,
             detail: error.to_string(),
         })?;
-    let registration = inner.id().and_then(|pid| {
-        attribution.register_pid(
-            pid,
-            ProcessRegistrationMetadata {
-                scope: AttributionScope::External,
-                kind: AttributionKind::Provider,
-                label: request.provider_label.clone(),
-                source: RegistrationSource::Provider,
-            },
-        )
-    });
+    let registration = inner
+        .id()
+        .and_then(|pid| NativeProcessSampler::process_identity(pid).ok())
+        .filter(|_| matches!(inner.try_wait(), Ok(None)))
+        .and_then(|identity| {
+            attribution.register_identity(
+                identity,
+                ProcessRegistrationMetadata {
+                    scope: AttributionScope::External,
+                    kind: AttributionKind::Provider,
+                    label: request.provider_label.clone(),
+                    source: RegistrationSource::Provider,
+                },
+            )
+        });
     Ok(Box::new(AttributedChild {
         inner,
         registration,
@@ -2925,7 +2929,7 @@ mod tests {
     use crate::{
         diagnostics::{
             AttributionKind, AttributionScope, NativeProcessSampler, ProcessAttributionRegistry,
-            ProcessRow, ProcessSampler,
+            ProcessSampler,
         },
         orchestration::engine::{EngineOptions, OrchestrationCommand},
         persistence::{Database, ProviderSessionRuntime, run_migrations},
@@ -3359,20 +3363,10 @@ done
         request.binary_path = fixture.to_string_lossy().into_owned();
         let child = super::spawn_child(&request, &[], false, registry.clone())
             .expect("provider child should spawn");
-        let pid = child.id().expect("provider child pid");
-        assert_eq!(
-            registry
-                .bind_and_snapshot(&[ProcessRow::fixture(pid, 0, "claude")], Instant::now())
-                .len(),
-            1
-        );
+        assert_eq!(live_claims(&registry).await.len(), 1);
 
         let mut inner = child.into_inner();
-        assert!(
-            registry
-                .bind_and_snapshot(&[ProcessRow::fixture(pid, 0, "claude")], Instant::now())
-                .is_empty()
-        );
+        assert!(live_claims(&registry).await.is_empty());
         let _ = inner.start_kill();
         let _ = inner.wait().await;
     }

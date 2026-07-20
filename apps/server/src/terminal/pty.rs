@@ -11,6 +11,8 @@ use std::{
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tokio::sync::{broadcast, watch};
 
+use crate::diagnostics::{NativeProcessSampler, ProcessIdentity};
+
 #[cfg(windows)]
 use crate::process::WindowsJob;
 
@@ -35,6 +37,9 @@ pub struct PtySpawnInput {
 
 pub trait PtyProcess: fmt::Debug + Send + Sync {
     fn pid(&self) -> u32;
+    fn process_identity(&self) -> Option<ProcessIdentity> {
+        None
+    }
     fn write(&self, data: &str) -> Result<(), String>;
     fn resize(&self, cols: u16, rows: u16) -> Result<(), String>;
     fn kill(&self) -> Result<(), String>;
@@ -97,6 +102,10 @@ impl PtyBackend for PortablePtyBackend {
             Some(pid) => pid,
             None => fail_initialization!("PTY child did not expose a process id"),
         };
+        let process_identity = retain_captured_identity_if_child_live(
+            &mut *child,
+            NativeProcessSampler::process_identity(pid).ok(),
+        );
         let mut reader = match pair.master.try_clone_reader() {
             Ok(reader) => reader,
             Err(error) => fail_initialization!(error),
@@ -164,6 +173,7 @@ impl PtyBackend for PortablePtyBackend {
 
         Ok(Arc::new(PortablePtyProcess {
             pid,
+            process_identity,
             resize,
             writer: Mutex::new(writer),
             #[cfg(not(windows))]
@@ -176,6 +186,13 @@ impl PtyBackend for PortablePtyBackend {
             job,
         }))
     }
+}
+
+fn retain_captured_identity_if_child_live(
+    child: &mut dyn portable_pty::Child,
+    captured: Option<ProcessIdentity>,
+) -> Option<ProcessIdentity> {
+    captured.filter(|_| matches!(child.try_wait(), Ok(None)))
 }
 
 #[cfg(windows)]
@@ -315,6 +332,7 @@ fn read_output(reader: &mut dyn Read, sender: &broadcast::Sender<String>) {
 
 struct PortablePtyProcess {
     pid: u32,
+    process_identity: Option<ProcessIdentity>,
     resize: mpsc::SyncSender<PtySize>,
     writer: Mutex<Box<dyn Write + Send>>,
     #[cfg(not(windows))]
@@ -339,6 +357,10 @@ impl fmt::Debug for PortablePtyProcess {
 impl PtyProcess for PortablePtyProcess {
     fn pid(&self) -> u32 {
         self.pid
+    }
+
+    fn process_identity(&self) -> Option<ProcessIdentity> {
+        self.process_identity
     }
 
     fn write(&self, data: &str) -> Result<(), String> {
@@ -448,6 +470,52 @@ mod tests {
     const PTY_TREE_GRANDCHILD_SURVIVED_ENV: &str = "T4CODE_PTY_TREE_GRANDCHILD_SURVIVED";
     #[cfg(windows)]
     const PTY_TREE_RELEASE_ENV: &str = "T4CODE_PTY_TREE_RELEASE";
+
+    #[derive(Clone, Debug)]
+    struct FinishedPortableChild;
+
+    impl portable_pty::ChildKiller for FinishedPortableChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+            Box::new(self.clone())
+        }
+    }
+
+    impl portable_pty::Child for FinishedPortableChild {
+        fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+            Ok(Some(portable_pty::ExitStatus::with_exit_code(17)))
+        }
+
+        fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+            Ok(portable_pty::ExitStatus::with_exit_code(17))
+        }
+
+        fn process_id(&self) -> Option<u32> {
+            Some(42)
+        }
+
+        #[cfg(windows)]
+        fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+            None
+        }
+    }
+
+    #[test]
+    fn finished_pty_child_does_not_expose_a_captured_process_identity() {
+        let mut child = FinishedPortableChild;
+        let captured = ProcessIdentity {
+            pid: 42,
+            started_at: 100,
+        };
+
+        assert_eq!(
+            retain_captured_identity_if_child_live(&mut child, Some(captured)),
+            None
+        );
+    }
 
     #[cfg(windows)]
     #[test]
@@ -1065,6 +1133,7 @@ mod tests {
         let (exit, _) = watch::channel(None);
         let process = PortablePtyProcess {
             pid: 42,
+            process_identity: None,
             resize,
             writer: Mutex::new(Box::new(TestWriter::WriteError)),
             killer: Mutex::new(Box::new(TestKiller { fail: true })),
@@ -1107,6 +1176,7 @@ mod tests {
         let (exit, _) = watch::channel(None);
         let process = PortablePtyProcess {
             pid: 43,
+            process_identity: None,
             resize,
             writer: Mutex::new(Box::new(TestWriter::FlushError)),
             killer: Mutex::new(Box::new(TestKiller { fail: false })),
