@@ -77,10 +77,36 @@ impl ServerTerminalServices {
 
     pub async fn shutdown(&self) {
         self.terminal.shutdown().await;
-        let _ = self
+        match self
             .process_sampler
             .cleanup_descendants(std::process::id())
-            .await;
+            .await
+        {
+            Ok(report) if report.failure_count > 0 => {
+                tracing::warn!(
+                    attempted = report.attempted,
+                    succeeded = report.succeeded,
+                    failed = report.failure_count,
+                    failures = ?report.failures,
+                    "identity-bound descendant cleanup completed with failures"
+                );
+            }
+            Ok(report) if report.attempted > 0 => {
+                tracing::debug!(
+                    attempted = report.attempted,
+                    succeeded = report.succeeded,
+                    "identity-bound descendant cleanup completed"
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                let error = bound_diagnostic_string(
+                    &error.to_string(),
+                    PROCESS_DIAGNOSTIC_MESSAGE_MAX_SCALARS,
+                );
+                tracing::warn!(%error, "failed to inspect remaining descendants during shutdown");
+            }
+        }
     }
 
     pub async fn close_thread_terminals(&self, thread_id: &str) {

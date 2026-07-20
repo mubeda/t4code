@@ -22,7 +22,7 @@ use crate::{
         load_snapshot,
     },
     persistence::{ProviderSessionRuntime, Repositories},
-    process::configure_supervised_background_command_wrap,
+    process::{bound_process_cleanup_failure, configure_supervised_background_command_wrap},
     production::{
         connect_mcp::ConnectMcpService, operational_logs::ProviderOperationalLog,
         orchestration_effects::process_compatible_path,
@@ -1633,8 +1633,24 @@ pub(crate) fn provider_launch_program(executable: &Path) -> (PathBuf, Vec<String
 
 async fn kill_child(child: &SharedChild) {
     let mut child = child.lock().await;
-    let _ = child.start_kill();
-    let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, child.wait()).await;
+    if let Err(error) = child.start_kill() {
+        let error = bound_process_cleanup_failure(error);
+        tracing::warn!(%error, "failed to start provider process-owner cleanup");
+        return;
+    }
+    match tokio::time::timeout(SHUTDOWN_TIMEOUT, child.wait()).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            let error = bound_process_cleanup_failure(error);
+            tracing::warn!(%error, "failed to wait for provider process-owner cleanup");
+        }
+        Err(_) => {
+            tracing::warn!(
+                timeout_ms = SHUTDOWN_TIMEOUT.as_millis(),
+                "provider process-owner cleanup timed out"
+            );
+        }
+    }
 }
 
 fn runtime_mode(value: &str) -> CodexRuntimeMode {

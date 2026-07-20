@@ -20,7 +20,7 @@ use crate::{
     diagnostic_bundle::DiagnosticBundleService,
     diagnostics::{
         DesktopUiProcessObserver, DiagnosticsMonitor, NativeProcessSampler, NativeResourceSampler,
-        ProcessAttributionRegistry, TraceDiagnosticsStore,
+        ProcessAttributionRegistry, TraceDiagnosticsStore, bound_diagnostic_string,
     },
     git::GitRepository,
     mcp::preview_automation::PreviewAutomationBroker,
@@ -327,7 +327,10 @@ impl ProductionRuntime {
 
     pub async fn shutdown(&self) {
         self.orchestration_effects.shutdown().await;
-        let _ = self.provider_runtime.shutdown().await;
+        if let Err(error) = self.provider_runtime.shutdown().await {
+            let error = bound_diagnostic_string(&error.to_string(), 160);
+            tracing::warn!(%error, "provider process-owner cleanup completed with failures");
+        }
         self.terminal_services.shutdown().await;
         if let Err(error) = self.operational_logs.shutdown().await {
             tracing::warn!(%error, "failed to shut down operational logs cleanly");

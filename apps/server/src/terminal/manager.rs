@@ -16,7 +16,7 @@ use crate::{
         ProcessRegistration, ProcessRegistrationMetadata, ProcessSampler, RegistrationSource,
         build_descendant_entries,
     },
-    process::{Platform, ShellCandidate, resolve_shell_candidates},
+    process::{Platform, ProcessCleanupReport, ShellCandidate, resolve_shell_candidates},
 };
 
 const DEFAULT_SUBPROCESS_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -278,8 +278,10 @@ impl TerminalManager {
         if self.inner.cancellation.is_cancelled() {
             return Err(TerminalError::Shutdown);
         }
-        self.close_sessions(&input.thread_id, Some(&input.terminal_id))
+        let cleanup = self
+            .close_sessions(&input.thread_id, Some(&input.terminal_id))
             .await;
+        log_terminal_cleanup("restart", &cleanup);
         self.start(input, true).await
     }
 
@@ -717,10 +719,16 @@ impl TerminalManager {
 
     pub async fn close(&self, thread_id: &str, terminal_id: Option<&str>) {
         let _lifecycle = self.inner.lifecycle.lock().await;
-        self.close_sessions(thread_id, terminal_id).await;
+        let cleanup = self.close_sessions(thread_id, terminal_id).await;
+        log_terminal_cleanup("close", &cleanup);
     }
 
-    async fn close_sessions(&self, thread_id: &str, terminal_id: Option<&str>) {
+    async fn close_sessions(
+        &self,
+        thread_id: &str,
+        terminal_id: Option<&str>,
+    ) -> ProcessCleanupReport {
+        let mut report = ProcessCleanupReport::default();
         let keys = {
             let sessions = self.inner.sessions.read().await;
             sessions
@@ -741,10 +749,16 @@ impl TerminalManager {
                 session.attribution_registration.take();
                 (session.process.take(), session.advance())
             };
-            if let Some(process) = process
-                && let Err(error) = process.kill()
-            {
-                tracing::debug!(%error, pid = process.pid(), "failed to kill terminal process");
+            if let Some(process) = process {
+                match process.kill() {
+                    Ok(()) => report.record_success(),
+                    Err(error) => report.record_failure(format!(
+                        "terminal {}/{} process {}: {error}",
+                        key.0,
+                        key.1,
+                        process.pid()
+                    )),
+                }
             }
             let _ = self.inner.events.send(TerminalEvent::Closed {
                 thread_id: key.0.clone(),
@@ -756,6 +770,7 @@ impl TerminalManager {
                 terminal_id: key.1,
             });
         }
+        report
     }
 
     pub async fn subscribe_metadata(&self) -> TerminalMetadataAttachment {
@@ -780,6 +795,11 @@ impl TerminalManager {
     }
 
     pub async fn shutdown(&self) {
+        let report = self.shutdown_with_report().await;
+        log_terminal_cleanup("shutdown", &report);
+    }
+
+    async fn shutdown_with_report(&self) -> ProcessCleanupReport {
         let _lifecycle = self.inner.lifecycle.lock().await;
         self.inner.cancellation.cancel();
         let keys = self
@@ -790,9 +810,11 @@ impl TerminalManager {
             .keys()
             .cloned()
             .collect::<Vec<_>>();
+        let mut report = ProcessCleanupReport::default();
         for (thread_id, terminal_id) in keys {
-            self.close_sessions(&thread_id, Some(&terminal_id)).await;
+            report.merge(self.close_sessions(&thread_id, Some(&terminal_id)).await);
         }
+        report
     }
 
     async fn require_session(
@@ -810,6 +832,19 @@ impl TerminalManager {
                 thread_id: thread_id.to_string(),
                 terminal_id: terminal_id.to_string(),
             })
+    }
+}
+
+fn log_terminal_cleanup(operation: &'static str, report: &ProcessCleanupReport) {
+    if report.failure_count > 0 {
+        tracing::warn!(
+            operation,
+            attempted = report.attempted,
+            succeeded = report.succeeded,
+            failed = report.failure_count,
+            failures = ?report.failures,
+            "terminal process-owner cleanup completed with failures"
+        );
     }
 }
 
@@ -953,13 +988,19 @@ mod tests {
         pid: u32,
         output: broadcast::Sender<String>,
         exit: tokio::sync::watch::Sender<Option<PtyExit>>,
+        kill_error: std::sync::Mutex<Option<String>>,
     }
 
     impl HistoryTestPty {
         fn new(pid: u32) -> Self {
             let (output, _) = broadcast::channel(16);
             let (exit, _) = tokio::sync::watch::channel(None);
-            Self { pid, output, exit }
+            Self {
+                pid,
+                output,
+                exit,
+                kill_error: std::sync::Mutex::new(None),
+            }
         }
 
         fn emit(&self, data: &str) {
@@ -973,6 +1014,10 @@ mod tests {
                     signal: None,
                 }))
                 .expect("exit receiver");
+        }
+
+        fn fail_kill(&self, error: String) {
+            *self.kill_error.lock().expect("kill error") = Some(error);
         }
     }
 
@@ -990,7 +1035,11 @@ mod tests {
         }
 
         fn kill(&self) -> Result<(), String> {
-            Ok(())
+            self.kill_error
+                .lock()
+                .expect("kill error")
+                .clone()
+                .map_or(Ok(()), Err)
         }
 
         fn subscribe_output(&self) -> broadcast::Receiver<String> {
@@ -1141,6 +1190,127 @@ mod tests {
         assert_eq!(terminal_claims(&registry, &[shutdown_pid]).len(), 1);
         manager.shutdown().await;
         assert!(terminal_claims(&registry, &[shutdown_pid]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_attempts_every_terminal_owner_and_bounds_failures() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend::default());
+        let registry = ProcessAttributionRegistry::new();
+        let manager = attributed_manager(backend.clone(), registry);
+        for index in 0..12 {
+            manager
+                .open(TerminalOpenInput::new(
+                    "thread-cleanup",
+                    format!("term-{index}"),
+                    root.path().to_path_buf(),
+                    80,
+                    24,
+                ))
+                .await
+                .expect("terminal opens");
+            if index != 1 {
+                backend.latest().fail_kill("界".repeat(500));
+            }
+        }
+
+        let report = manager.shutdown_with_report().await;
+
+        assert_eq!(report.attempted, 12);
+        assert_eq!(report.succeeded, 1);
+        assert_eq!(report.failure_count, 11);
+        assert!(report.failures.len() < report.failure_count);
+        assert!(
+            report
+                .failures
+                .iter()
+                .all(|failure| failure.chars().count() <= 160)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn owner_shutdown_leaves_no_child_or_grandchild_processes() {
+        let root = tempfile::tempdir().expect("terminal process-tree directory");
+        let script = root.path().join("owned-process-tree.sh");
+        let child_ready = root.path().join("child.ready");
+        let grandchild_ready = root.path().join("grandchild.ready");
+        let child_survived = root.path().join("child.survived");
+        let grandchild_survived = root.path().join("grandchild.survived");
+        let release = root.path().join("release");
+        std::fs::write(
+            &script,
+            r#"child_ready=$1
+grandchild_ready=$2
+child_survived=$3
+grandchild_survived=$4
+release=$5
+printf ready > "$child_ready"
+sh -c 'printf ready > "$1"; while [ ! -f "$2" ]; do sleep 0.05; done; printf survived > "$3"; sleep 30' sh "$grandchild_ready" "$release" "$grandchild_survived" &
+while [ ! -f "$release" ]; do sleep 0.05; done
+printf survived > "$child_survived"
+sleep 30
+"#,
+        )
+        .expect("write process-tree script");
+        let manager = TerminalManager::new(
+            Arc::new(PortablePtyBackend),
+            TerminalManagerOptions {
+                preferred_shell: Some("/bin/sh".to_owned()),
+                subprocess_poll_interval: Duration::ZERO,
+                ..TerminalManagerOptions::default()
+            },
+        );
+        manager
+            .open(TerminalOpenInput::new(
+                "thread-owned-tree",
+                "term-owned-tree",
+                root.path().to_path_buf(),
+                80,
+                24,
+            ))
+            .await
+            .expect("terminal opens");
+        let quote =
+            |path: &std::path::Path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
+        manager
+            .write(
+                "thread-owned-tree",
+                "term-owned-tree",
+                &format!(
+                    "/bin/sh {} {} {} {} {} {}\r",
+                    quote(&script),
+                    quote(&child_ready),
+                    quote(&grandchild_ready),
+                    quote(&child_survived),
+                    quote(&grandchild_survived),
+                    quote(&release),
+                ),
+            )
+            .await
+            .expect("launch owned process tree");
+        for ready in [&child_ready, &grandchild_ready] {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while !ready.is_file() {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for {}", ready.display()));
+        }
+
+        manager.shutdown().await;
+        std::fs::write(&release, "release").expect("release survivors");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        assert!(
+            !child_survived.exists(),
+            "owned child survived terminal-manager shutdown"
+        );
+        assert!(
+            !grandchild_survived.exists(),
+            "owned grandchild survived terminal-manager shutdown"
+        );
     }
 
     #[tokio::test]

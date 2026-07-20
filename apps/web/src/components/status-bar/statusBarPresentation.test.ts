@@ -196,24 +196,31 @@ describe("statusBarPresentation", () => {
       processes: [process],
       error: Option.none(),
     };
+    const diagnostics: ServerProcessDiagnosticsResult = {
+      serverPid: 100,
+      readAt: updatedAt,
+      totals: {
+        combined: { processCount: 0, rssBytes: 0, cpuPercent: 0 },
+        core: { processCount: 0, rssBytes: 0, cpuPercent: 0 },
+        external: { processCount: 0, rssBytes: 0, cpuPercent: 0 },
+      },
+      uiCoverage: { status: "notApplicable", message: Option.none() },
+      processes: [],
+      error: Option.none(),
+    };
 
     const vm = buildResourceSummaryViewModel({
-      diagnostics: {
-        serverPid: 100,
-        readAt: updatedAt,
-        totals: {
-          combined: { processCount: 0, rssBytes: 0, cpuPercent: 0 },
-          core: { processCount: 0, rssBytes: 0, cpuPercent: 0 },
-          external: { processCount: 0, rssBytes: 0, cpuPercent: 0 },
-        },
-        uiCoverage: { status: "notApplicable", message: Option.none() },
-        processes: [],
-        error: Option.none(),
-      },
+      diagnostics,
       resourceHistory,
       terminalCount: 0,
     });
 
+    expect(resourceHistory.processes.map((entry) => entry.processKey)).toContain(
+      process.processKey,
+    );
+    expect(
+      selectCurrentTopProcesses(diagnostics.processes).map((entry) => entry.processKey),
+    ).not.toContain(process.processKey);
     expect(vm.memoryLabel).toBe("0 B");
     expect(vm.cpuLabel).toBe("0.0%");
     expect(vm.processCountLabel).toBe("0");

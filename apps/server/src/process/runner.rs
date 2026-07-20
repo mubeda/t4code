@@ -10,7 +10,7 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
-use super::configure_supervised_background_command_wrap;
+use super::{bound_process_cleanup_failure, configure_supervised_background_command_wrap};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
@@ -317,11 +317,13 @@ impl ProcessRunner {
 
 async fn kill_child(child: &mut dyn ChildWrapper) {
     if let Err(error) = child.start_kill() {
-        tracing::debug!(%error, "failed to start supervised process cleanup");
+        let error = bound_process_cleanup_failure(error);
+        tracing::warn!(%error, "failed to start supervised process-owner cleanup");
         return;
     }
     if let Err(error) = child.wait().await {
-        tracing::debug!(%error, "failed to wait for supervised process cleanup");
+        let error = bound_process_cleanup_failure(error);
+        tracing::warn!(%error, "failed to wait for supervised process-owner cleanup");
     }
 }
 
