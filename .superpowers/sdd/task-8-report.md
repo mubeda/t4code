@@ -303,3 +303,57 @@ exit 0
 
 Typecheck reports only the pre-existing repository-wide TS377098 suggestions
 described above.
+
+## Final Finite-Value Preservation Correction
+
+The non-finite display safeguard originally used `Math.max(0, value)` for all
+finite bucket values. That changed contract-valid negative diagnostic values
+before the chart or tooltip received them.
+
+Projection now preserves every finite bucket value exactly and maps only
+non-finite values to zero. Negative CPU labels and tooltips retain their sign.
+Nonnegative bounding is local to rendered chart percentages, which are clamped
+to the finite `0–100` range without changing the projected diagnostics.
+
+### Preservation RED
+
+The pure regression expected `average.core: -6`, `peak.core: -5`, and signed
+labels/tooltips, but received zeros. The component regression likewise
+received `Core 0.0%` because projection erased the negative value before
+rendering.
+
+### Preservation Verification
+
+```text
+vp test apps/web/src/components/settings/resourceDiagnosticsPresentation.test.ts \
+  apps/web/src/components/settings/ResourceDiagnosticsSections.test.tsx \
+  apps/web/src/components/settings/DiagnosticsSettings.test.tsx --run
+
+Test Files 3 passed (3)
+Tests 78 passed (78)
+
+vp test apps/web/src/components/settings --run
+
+Test Files 21 passed (21)
+Tests 324 passed (324)
+```
+
+The component regression also parses every rendered chart height and verifies
+that it is finite and nonnegative while the tooltip still exposes the negative
+diagnostic value.
+
+Preservation correction gates:
+
+```text
+vp check
+pass: All 1543 files are correctly formatted
+pass: Found no warnings or lint errors in 1163 files
+
+vp run typecheck
+exit 0
+
+git diff --check
+exit 0
+```
+
+Typecheck reports only the pre-existing repository-wide TS377098 suggestions.

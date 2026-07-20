@@ -345,6 +345,37 @@ describe("ResourceDiagnosticsSections", () => {
     expect(markup).toContain("Same-sample peak 40.0%");
   });
 
+  it("preserves negative diagnostics while keeping chart dimensions nonnegative", () => {
+    const bucket = historyFixture().buckets[0]!;
+    h.stateSeeds.push({ match: (initial) => initial === "memory", value: "cpu" });
+
+    const markup = render({
+      resourceData: historyFixture({
+        buckets: [
+          {
+            ...bucket,
+            cpuPercent: {
+              average: { combined: 10, core: -6, external: 16 },
+              peak: { combined: 40, core: -5, external: 45 },
+            },
+          },
+        ],
+      }),
+    });
+
+    expect(markup).toContain(
+      "Combined average 10.0%. Same-sample peak 40.0%: Core -5.0%, External 45.0%.",
+    );
+    const heights = [...markup.matchAll(/style="height:([^"]+)"/g)].map((match) =>
+      Number.parseFloat(match[1] ?? ""),
+    );
+    expect(heights.length).toBeGreaterThan(0);
+    for (const height of heights) {
+      expect(Number.isFinite(height)).toBe(true);
+      expect(height).toBeGreaterThanOrEqual(0);
+    }
+  });
+
   it("sorts complete history rows from accessible attributed metric headers", () => {
     let markup = render();
     let historyMarkup = markup.slice(markup.indexOf('data-section-title="Resource History"'));

@@ -861,6 +861,33 @@ describe("presentResourceHistory", () => {
     expect(presentation.chart.maximumAverage).toBe(1);
   });
 
+  it("preserves negative finite bucket diagnostics and tooltip values", () => {
+    const bucket = historyFixture().buckets[0]!;
+    const presentation = presentResourceHistory({
+      history: historyFixture({
+        buckets: [
+          {
+            ...bucket,
+            cpuPercent: {
+              average: { combined: 10, core: -6, external: 16 },
+              peak: { combined: 40, core: -5, external: 45 },
+            },
+          },
+        ],
+      }),
+      queryError: null,
+      metric: "cpu",
+    });
+
+    expect(presentation.chart.bars[0]).toMatchObject({
+      average: { combined: 10, core: -6, external: 16 },
+      peak: { combined: 40, core: -5, external: 45 },
+      averageLabels: { combined: "10.0%", core: "-6.0%", external: "16.0%" },
+      peakLabels: { combined: "40.0%", core: "-5.0%", external: "45.0%" },
+      tooltip: "Combined average 10.0%. Same-sample peak 40.0%: Core -5.0%, External 45.0%.",
+    });
+  });
+
   it("preserves the existing resource window inputs", () => {
     expect(RESOURCE_HISTORY_WINDOWS).toEqual([
       { label: "5m", windowMs: 5 * 60_000, bucketMs: 30_000 },

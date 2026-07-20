@@ -432,6 +432,10 @@ function HistoryMetricToggle({
   );
 }
 
+function chartPercentage(value: number): number {
+  return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 0;
+}
+
 function ResourceHistoryChart({
   presentation,
 }: {
@@ -443,9 +447,14 @@ function ResourceHistoryChart({
       <div className="flex h-32 items-end gap-1 overflow-hidden rounded-sm bg-muted/10 p-2">
         {presentation.chart.bars.map((bar) => {
           const combined = Math.max(0, bar.average.combined);
-          const totalHeight = Math.max(2, (combined / presentation.chart.maximumAverage) * 100);
-          const coreRatio = combined === 0 ? 0 : (bar.average.core / combined) * 100;
-          const externalRatio = combined === 0 ? 0 : (bar.average.external / combined) * 100;
+          const totalHeight = Math.max(
+            2,
+            chartPercentage((combined / presentation.chart.maximumAverage) * 100),
+          );
+          const coreRatio =
+            combined === 0 ? 0 : chartPercentage((bar.average.core / combined) * 100);
+          const externalRatio =
+            combined === 0 ? 0 : chartPercentage((bar.average.external / combined) * 100);
           return (
             <Tooltip key={bar.key}>
               <TooltipTrigger
