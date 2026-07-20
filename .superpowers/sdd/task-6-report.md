@@ -939,3 +939,59 @@ Implementation commit: `abdd938982144e6838d5a622f00a962b68648e4c`
 ## Residual concerns
 
 None. Native UI QA was intentionally deferred to the root task as requested.
+
+---
+
+# Task 6 review fixes
+
+Implementation commit: `2b713467e9caa30475f367185bf8a56e3ab76ed6`
+
+## Behavior fixed
+
+- `getComposerProviderState` now keeps ordinary descriptor normalization unchanged for provider
+  dispatch while separately resolving a raw prompt-injected session default through the model's
+  `promptInjectedValues` metadata. A seeded Claude `ultrathink` default therefore supplies
+  `promptEffort: "ultrathink"`, while dispatched model options contain the native descriptor
+  default.
+- The first-send production boundary is covered through `ChatView`: a new draft seeded with the
+  Claude default sends `Ultrathink:\n...` and bootstraps the provider with native `high` effort.
+- Claude provider terminals omit metadata-declared prompt-injected efforts. With live metadata,
+  declared native values remain authoritative; during empty discovery, only the documented native
+  fallback values (`low`, `medium`, `high`, `xhigh`, and `max`) are emitted.
+- Existing live-composer/TraitsPicker prompt-controlled behavior remains unchanged.
+
+## RED evidence
+
+- Initial focused run: 126 passed and 3 failed as expected. The composer returned `high` instead of
+  raw `ultrathink`, the first `thread.startTurn` message lacked the `Ultrathink:` prefix, and the
+  provider terminal emitted `--effort ultrathink`.
+- Conservative fallback cycle: 22 passed and 1 failed as expected. With an empty model discovery
+  snapshot, the Claude terminal still emitted `--effort ultrathink`.
+
+## GREEN evidence
+
+- The initial focused composer, first-send, and terminal command passed all 129 tests after the
+  metadata-driven fix.
+- The conservative terminal-focused suite passed all 23 tests after adding the bounded native
+  fallback.
+- One test-fixture exact-optional-property type error and one descriptor-union narrowing type error
+  were corrected without changing the tested runtime behavior; the affected suites and type gate
+  were rerun successfully.
+
+## Final command outcomes
+
+- `vp test apps/web/src/components/chat/composerProviderState.test.tsx apps/web/src/components/chat/TraitsPicker.test.tsx`:
+  18 passed, 0 failed.
+- `vp test apps/web/src/components/ChatView.hooks.test.tsx apps/web/src/components/chat/providerTerminalActions.test.ts`:
+  120 passed, 0 failed.
+- `vp test packages/shared/src/model.test.ts packages/shared/src/providerSessionDefaults.test.ts`:
+  85 passed, 0 failed.
+- `vp check`: exit 0; all 1562 files formatted and 1182 files linted with no warnings or errors.
+- `vp run typecheck`: exit 0.
+- `git diff --check`: exit 0.
+
+## Residual concerns
+
+None for the requested semantics. During empty discovery, an unknown future Claude native effort is
+intentionally omitted until authoritative model metadata is available; this is the conservative
+failure mode and prevents unsupported flags from reaching the CLI.
