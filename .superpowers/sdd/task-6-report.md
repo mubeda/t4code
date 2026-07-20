@@ -995,3 +995,51 @@ Implementation commit: `2b713467e9caa30475f367185bf8a56e3ab76ed6`
 None for the requested semantics. During empty discovery, an unknown future Claude native effort is
 intentionally omitted until authoritative model metadata is available; this is the conservative
 failure mode and prevents unsupported flags from reaching the CLI.
+
+---
+
+# Task 6 live Codex Fast fix
+
+Implementation commit: `be6bbc1846a0c35fe7ce05b7b130ca97c8268049`
+
+## Behavior fixed
+
+- Codex provider-default normalization now augments a live `serviceTier` select descriptor with
+  missing invariant `default` and `fast` choices instead of treating the descriptor ID alone as
+  sufficient. Existing descriptor metadata, labels, choices, selection, and surrounding live
+  descriptors remain intact, and existing choices are not duplicated.
+- An incompatible Codex descriptor with the `serviceTier` ID is replaced in place with the safe
+  invariant select shape. The normalization remains Codex-only.
+- Shared controls, session resolution, settings rendering, and provider-terminal resolution now
+  keep Fast available when rich Codex metadata advertises only Standard/default. Explicit Standard
+  remains off, configured Fast remains `serviceTier=fast`, and terminal launch emits
+  `service_tier="fast"`.
+
+## RED evidence
+
+- `vp test packages/shared/src/providerSessionDefaults.test.ts apps/web/src/components/settings/ProviderSessionDefaultsControls.test.tsx apps/web/src/components/chat/providerTerminalActions.test.ts`:
+  70 passed and 6 failed as expected before the implementation. The failures showed partial Codex
+  metadata reporting Fast unsupported, resolving Fast back to `default`, dropping the Fast update
+  and terminal config, omitting the settings switch, and retaining an incompatible boolean
+  descriptor.
+- The partial non-Codex regression passed during RED, confirming that the failing behavior was
+  scoped to the missing Codex invariant rather than general `serviceTier` handling.
+
+## GREEN evidence
+
+- The same focused shared/settings/terminal command passed all 76 tests after the normalization
+  fix.
+- The broader focused command including shared model normalization passed all 126 tests.
+
+## Final command outcomes
+
+- `vp test packages/shared/src/model.test.ts packages/shared/src/providerSessionDefaults.test.ts apps/web/src/components/settings/ProviderSessionDefaultsControls.test.tsx apps/web/src/components/chat/providerTerminalActions.test.ts`:
+  126 passed, 0 failed.
+- `vp check`: exit 0; all 1562 files formatted and 1182 files linted with no warnings or errors.
+- `vp run typecheck`: exit 0.
+- `git diff --check`: exit 0.
+
+## Residual concerns
+
+None for the requested code paths. Native UI QA was intentionally not launched; the root task owns
+the exact-worktree retest.
