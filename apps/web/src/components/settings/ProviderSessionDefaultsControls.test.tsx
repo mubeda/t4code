@@ -64,6 +64,7 @@ vi.mock("../ui/switch", () => ({
 import { ProviderSessionDefaultsControls } from "./ProviderSessionDefaultsControls";
 
 const CODEX = ProviderDriverKind.make("codex");
+const OPENCODE = ProviderDriverKind.make("opencode");
 
 function model(
   slug: string,
@@ -212,6 +213,7 @@ describe("ProviderSessionDefaultsControls", () => {
   it("omits effort and fast controls when the selected model does not support them", () => {
     const markup = render(
       baseProps({
+        driver: OPENCODE,
         models: [
           model("plain", [
             {
@@ -244,20 +246,75 @@ describe("ProviderSessionDefaultsControls", () => {
     expect(controls.entries.map((entry) => entry.kind)).toEqual(["Select"]);
   });
 
-  it("keeps an unavailable saved model visible and non-interactive without changing it", () => {
-    const onChange = vi.fn();
+  it("keeps the complete Codex row and values mounted when discovery becomes empty", () => {
+    const value: ProviderSessionDefault = {
+      model: "gpt-rich",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "fast" },
+      ],
+    };
+    const codexModels = [
+      model("gpt-rich", [
+        {
+          id: "reasoningEffort",
+          label: "Reasoning",
+          type: "select",
+          options: [
+            { id: "medium", label: "Medium", isDefault: true },
+            { id: "high", label: "High" },
+          ],
+          currentValue: "medium",
+        },
+        {
+          id: "serviceTier",
+          label: "Service tier",
+          type: "select",
+          options: [
+            { id: "default", label: "Standard", isDefault: true },
+            { id: "fast", label: "Fast" },
+          ],
+          currentValue: "default",
+        },
+      ]),
+    ];
+    const richMarkup = render(baseProps({ models: codexModels, value }));
+    const richKinds = controls.entries.map((entry) => entry.kind);
+    const emptyMarkup = render(baseProps({ models: [], value }));
+    const emptyKinds = controls.entries.map((entry) => entry.kind);
+
+    expect(richMarkup).toContain("Default effort");
+    expect(emptyMarkup).toContain("Default effort");
+    expect(emptyMarkup).toContain("Fast by default");
+    expect(emptyKinds).toEqual(richKinds);
+    expect(emptyKinds).toEqual(["Select", "Select", "Switch"]);
+    expect(entries("Select")[1]?.value).toBe("high");
+    expect(entries("Switch")[0]?.checked).toBe(true);
+  });
+
+  it("changes only interactivity when Codex is disabled and re-enabled", () => {
+    render(baseProps({ disabled: true }));
+    const disabledShape = controls.entries.map((entry) => entry.kind);
+
+    expect(controls.entries.every((entry) => entry.props.disabled === true)).toBe(true);
+
+    render(baseProps({ disabled: false }));
+
+    expect(controls.entries.map((entry) => entry.kind)).toEqual(disabledShape);
+    expect(controls.entries.every((entry) => entry.props.disabled === false)).toBe(true);
+  });
+
+  it("keeps an unavailable saved model selectable so the user can recover", () => {
     const markup = render(
       baseProps({
         models: [richModels[0]!],
         value: { model: "private-model" },
-        onChange,
       }),
     );
 
     expect(markup).toContain("private-model");
     expect(markup).toContain("Unavailable here; new sessions will use gpt-rich.");
-    expect(entries("Select")[0]).toMatchObject({ disabled: true, value: "private-model" });
-    expect(onChange).not.toHaveBeenCalled();
+    expect(entries("Select")[0]).toMatchObject({ disabled: false, value: "private-model" });
   });
 
   it("selects the resolved live model for a saved model alias", () => {
