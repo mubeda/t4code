@@ -1,11 +1,11 @@
-#![allow(dead_code, unused_imports)]
-
 use std::sync::Mutex;
 
 pub mod registry;
 
+#[allow(unused_imports)]
 pub use registry::{webview_label_for_tab, PendingBounds, PreviewRegistry, TabEntry};
 
+#[allow(dead_code)]
 pub struct PreviewHostState(pub Mutex<PreviewRegistry>);
 
 impl PreviewHostState {

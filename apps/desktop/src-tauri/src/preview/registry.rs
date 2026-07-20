@@ -8,6 +8,7 @@ pub struct PendingBounds {
     pub height: f64,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct TabEntry {
     pub label: String,
@@ -18,6 +19,7 @@ pub struct TabEntry {
     pub created: bool,
 }
 
+#[allow(dead_code)]
 pub fn webview_label_for_tab(tab_id: &str) -> String {
     let sanitized: String = tab_id
         .chars()
@@ -32,11 +34,13 @@ pub fn webview_label_for_tab(tab_id: &str) -> String {
     format!("preview-{sanitized}")
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct PreviewRegistry {
     tabs: HashMap<String, TabEntry>,
 }
 
+#[allow(dead_code)]
 impl PreviewRegistry {
     pub fn new() -> Self {
         Self::default()
