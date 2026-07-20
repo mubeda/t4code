@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
-import { ProviderInstanceId } from "./providerInstance.ts";
+import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import {
   BUNDLED_TERMINAL_FONT_PREFERENCE,
   ClientSettingsPatch,
@@ -11,6 +11,8 @@ import {
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
   DEFAULT_UNIFIED_SETTINGS,
+  ProviderSessionDefault,
+  ProviderSessionDefaultsMap,
   ServerSettings,
   ServerSettingsError,
   ServerSettingsPatch,
@@ -22,6 +24,10 @@ const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
+const decodeProviderSessionDefault = Schema.decodeUnknownSync(ProviderSessionDefault);
+const decodeProviderSessionDefaultsMap = Schema.decodeUnknownSync(ProviderSessionDefaultsMap);
+const encodeProviderSessionDefault = Schema.encodeSync(ProviderSessionDefault);
+const encodeProviderSessionDefaultsMap = Schema.encodeSync(ProviderSessionDefaultsMap);
 const decodeCodexSettings = Schema.decodeUnknownSync(CodexSettings);
 const decodeCursorSettings = Schema.decodeUnknownSync(CursorSettings);
 
@@ -129,6 +135,94 @@ describe("ClientSettings word wrap", () => {
     expect(decoded.wordWrap).toBe(true);
     expect(decoded).not.toHaveProperty("chatWordWrap");
     expect(decoded).not.toHaveProperty("diffWordWrap");
+  });
+});
+
+describe("ServerSettings.providerSessionDefaults", () => {
+  it("defaults legacy settings and the shared default settings object to an empty map", () => {
+    expect(decodeServerSettings({}).providerSessionDefaults).toEqual({});
+    expect(DEFAULT_SERVER_SETTINGS.providerSessionDefaults).toEqual({});
+  });
+
+  it("decodes defaults for both built-in and open driver slugs", () => {
+    const defaults = decodeProviderSessionDefaultsMap({
+      codex: { model: "gpt-5.4" },
+      ollama_local: { model: "llama3.3" },
+    });
+
+    expect(defaults).toEqual({
+      codex: { model: "gpt-5.4" },
+      ollama_local: { model: "llama3.3" },
+    });
+  });
+
+  it("round-trips canonical option selections", () => {
+    const decoded = decodeProviderSessionDefault({
+      model: "gpt-5.4",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "fastMode", value: true },
+      ],
+    });
+
+    expect(encodeProviderSessionDefault(decoded)).toEqual({
+      model: "gpt-5.4",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "fastMode", value: true },
+      ],
+    });
+  });
+
+  it("normalizes legacy object-shaped option selections to the canonical array", () => {
+    expect(
+      decodeProviderSessionDefault({
+        model: "gpt-5.4",
+        options: { reasoningEffort: "high", fastMode: true },
+      }),
+    ).toEqual({
+      model: "gpt-5.4",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "fastMode", value: true },
+      ],
+    });
+  });
+
+  it("trims provider-session defaults while encoding", () => {
+    expect(
+      encodeProviderSessionDefaultsMap({
+        [ProviderDriverKind.make("codex")]: {
+          model: "  gpt-5.4  ",
+          options: [{ id: "  reasoningEffort  ", value: "  high  " }],
+        },
+      }),
+    ).toEqual({
+      codex: {
+        model: "gpt-5.4",
+        options: [{ id: "reasoningEffort", value: "high" }],
+      },
+    });
+  });
+});
+
+describe("ServerSettingsPatch.providerSessionDefaults", () => {
+  it("leaves an omitted default map undefined", () => {
+    expect(decodeServerSettingsPatch({}).providerSessionDefaults).toBeUndefined();
+  });
+
+  it("decodes a supplied default map as a whole replacement", () => {
+    expect(
+      decodeServerSettingsPatch({
+        providerSessionDefaults: {
+          codex: { model: "gpt-5.4" },
+          ollama_local: { model: "llama3.3" },
+        },
+      }).providerSessionDefaults,
+    ).toEqual({
+      codex: { model: "gpt-5.4" },
+      ollama_local: { model: "llama3.3" },
+    });
   });
 });
 
