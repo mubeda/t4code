@@ -315,6 +315,49 @@ describe("getProviderSessionDefaultControls", () => {
   });
 });
 
+describe("Codex-only serviceTier fast-mode binding", () => {
+  const driver = ProviderDriverKind.make("custom-tiered");
+  const instanceId = ProviderInstanceId.make("custom-tiered");
+  const models = [model("tiered-model", [serviceTierDescriptor])];
+  const configuredDefault: ProviderSessionDefault = {
+    model: "tiered-model",
+    options: [{ id: "serviceTier", value: "fast" }],
+  };
+
+  it("does not expose a non-Codex serviceTier as fast mode", () => {
+    const controls = getProviderSessionDefaultControls({
+      driver,
+      models,
+      configuredDefault,
+    });
+
+    expect(controls.fastModeSupported).toBe(false);
+    expect(controls.fastMode).toBeNull();
+  });
+
+  it("does not resolve a non-Codex serviceTier as fast mode", () => {
+    const resolved = resolveProviderSessionDefault({
+      driver,
+      instanceId,
+      models,
+      configuredDefault,
+    });
+
+    expect(resolved.fastMode).toBeNull();
+  });
+
+  it("does not persist a non-Codex serviceTier through a fast-mode mutation", () => {
+    expect(
+      updateProviderSessionDefault({
+        driver,
+        models,
+        current: configuredDefault,
+        change: { type: "fastMode", value: false },
+      }),
+    ).toEqual({ model: "tiered-model" });
+  });
+});
+
 describe("resolveProviderSessionDefault", () => {
   it("uses explicit, project, configured, then discovered defaults in precedence order", () => {
     const configuredDefault: ProviderSessionDefault = {

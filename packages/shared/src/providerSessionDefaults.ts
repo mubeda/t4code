@@ -2,7 +2,7 @@ import {
   DEFAULT_MODEL,
   DEFAULT_MODEL_BY_PROVIDER,
   type ModelSelection,
-  type ProviderDriverKind,
+  ProviderDriverKind,
   type ProviderInstanceId,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
@@ -72,6 +72,7 @@ const FAST_MODE_OPTION_ID = "fastMode";
 const SERVICE_TIER_OPTION_ID = "serviceTier";
 const FAST_SERVICE_TIER_VALUE = "fast";
 const DEFAULT_SERVICE_TIER_VALUE = "default";
+const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
 
 function selectableModels(
   models: ReadonlyArray<ServerProviderModel>,
@@ -115,6 +116,7 @@ function findEffortDescriptor(
 }
 
 function getFastModeDescriptor(
+  driver: ProviderDriverKind,
   descriptors: ReadonlyArray<ProviderOptionDescriptor>,
 ): ProviderOptionDescriptor | null {
   const booleanDescriptor = descriptors.find(
@@ -122,6 +124,9 @@ function getFastModeDescriptor(
   );
   if (booleanDescriptor) {
     return booleanDescriptor;
+  }
+  if (driver !== CODEX_DRIVER_KIND) {
+    return null;
   }
 
   return (
@@ -135,6 +140,7 @@ function getFastModeDescriptor(
 }
 
 function normalizeProviderOptions(
+  driver: ProviderDriverKind,
   model: ServerProviderModel | null,
   selections?: ReadonlyArray<ProviderOptionSelection> | null,
 ): NormalizedProviderOptions {
@@ -154,7 +160,7 @@ function normalizeProviderOptions(
   });
   const effortDescriptor = findEffortDescriptor(descriptors);
   const effortValue = getProviderOptionCurrentValue(effortDescriptor);
-  const fastModeDescriptor = getFastModeDescriptor(descriptors);
+  const fastModeDescriptor = getFastModeDescriptor(driver, descriptors);
   const fastModeValue = getProviderOptionCurrentValue(fastModeDescriptor);
 
   return {
@@ -210,7 +216,7 @@ export function resolveProviderSessionDefault(input: {
   const selections = preferredSelection
     ? preferredSelection.options
     : input.configuredDefault?.options;
-  const normalizedOptions = normalizeProviderOptions(resolvedServerModel, selections);
+  const normalizedOptions = normalizeProviderOptions(input.driver, resolvedServerModel, selections);
   const fallbackReason: ProviderSessionDefaultFallbackReason | null = configuredServerModel
     ? null
     : input.models.length === 0
@@ -251,6 +257,7 @@ export function getProviderSessionDefaultControls(input: {
   const resolvedModel =
     input.models.length === 0 ? configuredModel : (resolvedServerModel?.slug ?? configuredModel);
   const normalizedOptions = normalizeProviderOptions(
+    input.driver,
     resolvedServerModel,
     input.configuredDefault?.options,
   );
@@ -274,6 +281,7 @@ function replaceSelection(
 }
 
 function buildPersistedSelections(
+  driver: ProviderDriverKind,
   normalizedOptions: NormalizedProviderOptions,
 ): Array<ProviderOptionSelection> | undefined {
   const selections: Array<ProviderOptionSelection> = [];
@@ -285,7 +293,7 @@ function buildPersistedSelections(
     });
   }
 
-  const fastModeDescriptor = getFastModeDescriptor(normalizedOptions.descriptors);
+  const fastModeDescriptor = getFastModeDescriptor(driver, normalizedOptions.descriptors);
   const fastModeValue = getProviderOptionCurrentValue(fastModeDescriptor);
   if (fastModeDescriptor?.type === "boolean" && typeof fastModeValue === "boolean") {
     selections.push({ id: fastModeDescriptor.id, value: fastModeValue });
@@ -320,32 +328,32 @@ export function updateProviderSessionDefault(input: {
   }
 
   let selections = input.current?.options ? [...input.current.options] : [];
-  let normalizedOptions = normalizeProviderOptions(selectedServerModel, selections);
+  let normalizedOptions = normalizeProviderOptions(input.driver, selectedServerModel, selections);
 
   if (input.change.type === "effort" && normalizedOptions.effortDescriptor) {
     selections = replaceSelection(selections, {
       id: normalizedOptions.effortDescriptor.id,
       value: input.change.value,
     });
-    normalizedOptions = normalizeProviderOptions(selectedServerModel, selections);
+    normalizedOptions = normalizeProviderOptions(input.driver, selectedServerModel, selections);
   } else if (input.change.type === "fastMode") {
-    const fastModeDescriptor = getFastModeDescriptor(normalizedOptions.descriptors);
+    const fastModeDescriptor = getFastModeDescriptor(input.driver, normalizedOptions.descriptors);
     if (fastModeDescriptor?.type === "boolean") {
       selections = replaceSelection(selections, {
         id: fastModeDescriptor.id,
         value: input.change.value,
       });
-      normalizedOptions = normalizeProviderOptions(selectedServerModel, selections);
+      normalizedOptions = normalizeProviderOptions(input.driver, selectedServerModel, selections);
     } else if (fastModeDescriptor?.type === "select") {
       selections = replaceSelection(selections, {
         id: fastModeDescriptor.id,
         value: input.change.value ? FAST_SERVICE_TIER_VALUE : DEFAULT_SERVICE_TIER_VALUE,
       });
-      normalizedOptions = normalizeProviderOptions(selectedServerModel, selections);
+      normalizedOptions = normalizeProviderOptions(input.driver, selectedServerModel, selections);
     }
   }
 
-  const persistedSelections = buildPersistedSelections(normalizedOptions);
+  const persistedSelections = buildPersistedSelections(input.driver, normalizedOptions);
   return persistedSelections
     ? { model: persistedModel, options: persistedSelections }
     : { model: persistedModel };
