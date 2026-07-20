@@ -332,6 +332,7 @@ fn cleanup_failed_windows_spawn_handle(
 mod tests {
     use std::{
         future::Future,
+        io::Write as _,
         pin::Pin,
         process::{ExitStatus, Stdio},
         sync::{
@@ -340,7 +341,10 @@ mod tests {
         },
     };
 
-    use tokio::process::Child;
+    use tokio::{
+        io::{AsyncBufReadExt, BufReader},
+        process::Child,
+    };
 
     use super::*;
 
@@ -412,18 +416,23 @@ mod tests {
     }
 
     const LIVE_CHILD_FIXTURE_ENV: &str = "T4CODE_SUPERVISED_LIVE_CHILD_FIXTURE";
+    const LIVE_CHILD_FIXTURE_READY: &str = "t4code-live-child-ready";
 
     #[test]
     fn live_child_cleanup_fixture() {
         if std::env::var_os(LIVE_CHILD_FIXTURE_ENV).is_none() {
             return;
         }
+        println!("{LIVE_CHILD_FIXTURE_READY}");
+        std::io::stdout()
+            .flush()
+            .expect("live cleanup fixture readiness should flush");
         loop {
             std::thread::park();
         }
     }
 
-    fn stubborn_live_child() -> (Box<StubbornLiveChild>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    async fn stubborn_live_child() -> (Box<StubbornLiveChild>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
         let mut command = Command::new(
             std::env::current_exe().expect("current test executable should be available"),
         );
@@ -436,9 +445,35 @@ mod tests {
             ])
             .env(LIVE_CHILD_FIXTURE_ENV, "1")
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        let child = command.spawn().expect("live cleanup fixture should spawn");
+        let mut child = command.spawn().expect("live cleanup fixture should spawn");
+        let stdout = child
+            .stdout
+            .take()
+            .expect("live cleanup fixture stdout should be piped");
+        let mut output = String::new();
+        let mut stdout = BufReader::new(stdout);
+        let readiness = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let bytes = stdout.read_line(&mut output).await?;
+                if output.contains(LIVE_CHILD_FIXTURE_READY) {
+                    return Ok::<(), io::Error>(());
+                }
+                if bytes == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "live cleanup fixture exited before readiness",
+                    ));
+                }
+            }
+        })
+        .await;
+        if !matches!(readiness, Ok(Ok(()))) {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            panic!("live cleanup fixture failed to become ready: {readiness:?}, output={output:?}");
+        }
         let kill_calls = Arc::new(AtomicUsize::new(0));
         let wait_calls = Arc::new(AtomicUsize::new(0));
         (
@@ -540,7 +575,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_child_with_failed_owner_and_root_kills_returns_bounded_report() {
-        let (mut child, kill_calls, wait_calls) = stubborn_live_child();
+        let (mut child, kill_calls, wait_calls) = stubborn_live_child().await;
         assert!(
             child
                 .child
