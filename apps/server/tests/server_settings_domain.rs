@@ -109,7 +109,8 @@ async fn provider_session_defaults_replace_the_whole_map_and_roundtrip() {
     assert!(persisted.get("provider_session_defaults").is_none());
 
     drop(store);
-    let reloaded = ProviderSettingsStore::new(temp.path())
+    let reopened_store = ProviderSettingsStore::new(temp.path());
+    let reloaded = reopened_store
         .get()
         .await
         .expect("reload settings");

@@ -31,11 +31,7 @@ import {
   scopeProjectRef,
   scopeThreadRef,
 } from "@t4code/client-runtime/environment";
-import {
-  applyClaudePromptEffortPrefix,
-  createModelSelection,
-  resolvePromptInjectedEffort,
-} from "@t4code/shared/model";
+import { applyClaudePromptEffortPrefix, resolvePromptInjectedEffort } from "@t4code/shared/model";
 import { resolveProviderSessionDefault } from "@t4code/shared/providerSessionDefaults";
 import { CHAT_LIST_ANCHOR_OFFSET } from "@t4code/shared/chatList";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t4code/shared/projectScripts";
@@ -4316,11 +4312,7 @@ function ChatViewContent(props: ChatViewProps) {
       }
     }
     const title = truncate(titleSeed);
-    const threadCreateModelSelection = createModelSelection(
-      ctxSelectedModelSelection.instanceId,
-      ctxSelectedModel || activeProject.defaultModelSelection?.model || DEFAULT_MODEL,
-      ctxSelectedModelSelection.options,
-    );
+    const threadCreateModelSelection = ctxSelectedModelSelection;
 
     let failure: AtomCommandResult<unknown, unknown> | null = null;
     // Auto-title from first message

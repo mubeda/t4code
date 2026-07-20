@@ -657,12 +657,33 @@ describe("useNewThreadHandler", () => {
     ).toEqual(currentSelection);
   });
 
-  it("does not overwrite the composer state of an existing server thread", async () => {
+  it("does not overwrite an existing server thread selection after defaults change", async () => {
     const serverThreadId = ThreadId.make("thread-existing-server");
     const serverThreadRef = scopeThreadRef(environmentId, serverThreadId);
     const currentSelection = createModelSelection(codexInstanceId, "gpt-server-choice", [
       { id: "reasoningEffort", value: "low" },
     ]);
+    configureEnvironment({
+      providers: [
+        serverProvider({
+          instanceId: codexInstanceId,
+          driver: codexDriver,
+          models: [providerModel("gpt-server-choice", [reasoningEffortDescriptor])],
+        }),
+      ],
+      settings: {
+        providerSessionDefaults: {
+          [codexDriver]: {
+            model: "gpt-server-choice",
+            options: [{ id: "reasoningEffort", value: "low" }],
+          },
+        },
+      },
+    });
+    useComposerDraftStore.getState().setModelSelection(serverThreadRef, currentSelection);
+    setRoute({ environmentId, threadId: serverThreadId });
+
+    // A later settings update applies only to future drafts.
     configureEnvironment({
       providers: [
         serverProvider({
@@ -680,8 +701,6 @@ describe("useNewThreadHandler", () => {
         },
       },
     });
-    useComposerDraftStore.getState().setModelSelection(serverThreadRef, currentSelection);
-    setRoute({ environmentId, threadId: serverThreadId });
 
     await mount(<NewThreadHarness />);
     await clickNewThread();
