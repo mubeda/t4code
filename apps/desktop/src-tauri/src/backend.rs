@@ -3163,13 +3163,16 @@ exit /b 9
 
         let cwd = workspace.path().to_string_lossy();
         let initialized = request_rpc(&mut socket, 100, "vcs.init", json!({ "cwd": cwd })).await;
-        assert!(matches!(
-            initialized,
-            ServerMessage::Exit {
-                exit: RpcExit::Success { .. },
-                ..
-            }
-        ));
+        assert!(
+            matches!(
+                &initialized,
+                ServerMessage::Exit {
+                    exit: RpcExit::Success { .. },
+                    ..
+                }
+            ),
+            "vcs.init should succeed, got {initialized:?}"
+        );
         let refs = request_rpc(
             &mut socket,
             101,
