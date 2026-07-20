@@ -1,4 +1,4 @@
-import { EnvironmentId, ProjectId } from "@t4code/contracts";
+import { DEFAULT_SERVER_SETTINGS, EnvironmentId, ProjectId } from "@t4code/contracts";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import * as React from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -556,10 +556,24 @@ staticDescribe("CreateWorktreeDialog", () => {
     expect(captured.switches[0]?.checked).toBe(true);
   });
 
-  it("uses the project model selection when no provider is available", async () => {
+  it("uses the explicit project model selection when the target provider supports it", async () => {
     testState.projects = [
-      project({ defaultModelSelection: { providerInstanceId: "opencode", modelId: "qwen" } }),
+      project({ defaultModelSelection: { instanceId: "opencode", model: "qwen" } }),
     ];
+    testState.serverConfigs.set(ENVIRONMENT_ID, {
+      providers: [
+        {
+          instanceId: "opencode",
+          driver: "opencode",
+          displayName: "OpenCode",
+          enabled: true,
+          installed: true,
+          status: "ready",
+          models: [{ slug: "qwen", name: "Qwen", isCustom: false, capabilities: null }],
+        },
+      ],
+      settings: DEFAULT_SERVER_SETTINGS,
+    });
     render();
     button("Name").onClick?.();
     render();
@@ -571,7 +585,88 @@ staticDescribe("CreateWorktreeDialog", () => {
     expect(testState.createThread).toHaveBeenCalledWith(
       expect.objectContaining({
         input: expect.objectContaining({
-          modelSelection: { providerInstanceId: "opencode", modelId: "qwen" },
+          modelSelection: { instanceId: "opencode", model: "qwen" },
+        }),
+      }),
+    );
+  });
+
+  it("resolves the selected provider's shared model, effort, and fast defaults", async () => {
+    testState.serverConfigs.set(ENVIRONMENT_ID, {
+      providers: [
+        {
+          instanceId: "codex",
+          driver: "codex",
+          displayName: "Codex",
+          enabled: true,
+          installed: true,
+          status: "ready",
+          models: [
+            {
+              slug: "gpt-5.4",
+              name: "GPT-5.4",
+              isCustom: false,
+              capabilities: {
+                optionDescriptors: [
+                  {
+                    id: "reasoningEffort",
+                    label: "Reasoning",
+                    type: "select",
+                    options: [
+                      { id: "medium", label: "Medium", isDefault: true },
+                      { id: "high", label: "High" },
+                    ],
+                    currentValue: "medium",
+                  },
+                  {
+                    id: "serviceTier",
+                    label: "Service tier",
+                    type: "select",
+                    options: [
+                      { id: "default", label: "Default", isDefault: true },
+                      { id: "fast", label: "Fast" },
+                    ],
+                    currentValue: "default",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerSessionDefaults: {
+          codex: {
+            model: "gpt-5.4",
+            options: [
+              { id: "reasoningEffort", value: "high" },
+              { id: "serviceTier", value: "fast" },
+            ],
+          },
+        },
+      },
+    });
+
+    render();
+    button("Name").onClick?.();
+    render();
+    input("Worktree / branch name").onChange?.({ target: { value: "defaults" } });
+    render();
+    button("Create worktree").onClick?.();
+    await flushPromises();
+
+    expect(testState.createThread).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          modelSelection: {
+            instanceId: "codex",
+            model: "gpt-5.4",
+            options: [
+              { id: "reasoningEffort", value: "high" },
+              { id: "serviceTier", value: "fast" },
+            ],
+          },
         }),
       }),
     );

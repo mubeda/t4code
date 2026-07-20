@@ -280,12 +280,24 @@ describe("resolveProviderTerminalAction", () => {
       },
     } satisfies ServerSettings;
 
-    expect(
-      resolveProviderTerminalAction(
-        entry("codex", "codex", "Codex", [model("gpt-5.4-mini", [])]),
-        settings,
-      )?.command?.args,
-    ).toEqual(["--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-5.4-mini"]);
+    const action = resolveProviderTerminalAction(
+      entry("codex", "codex", "Codex", [model("gpt-5.4-mini", [])]),
+      settings,
+    );
+    expect(action?.command?.args).toEqual([
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model",
+      "gpt-5.4-mini",
+    ]);
+    expect(action).toMatchObject({
+      fallback: {
+        driver: "codex",
+        instanceId: "codex",
+        configuredModel: "retired-codex-model",
+        resolvedModel: "gpt-5.4-mini",
+        reason: "configured-model-unavailable",
+      },
+    });
   });
 
   it("prefers instance paths, then legacy paths, and preserves custom names", () => {

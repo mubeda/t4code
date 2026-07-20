@@ -1385,7 +1385,7 @@ async fn plan_command(
             let selection = default_model_selection
                 .as_ref()
                 .and_then(|value| value.cloned())
-                .unwrap_or_else(|| json!({"instanceId":"codex","model":"gpt-5"}));
+                .unwrap_or_else(|| json!({"instanceId":"codex","model":"gpt-5.4"}));
             Ok(vec![
                 make_event(
                     "project.created",
@@ -3690,6 +3690,51 @@ mod tests {
                 metadata,
             },
         }
+    }
+
+    #[tokio::test]
+    async fn project_without_an_explicit_selection_uses_the_current_builtin_fallback() {
+        let database = Database::open_in_memory().await.expect("database");
+        database
+            .call(|connection| {
+                run_migrations(connection, None)?;
+                Ok(())
+            })
+            .await
+            .expect("migrations");
+        let engine = OrchestrationEngine::start(database, EngineOptions::default())
+            .await
+            .expect("engine starts");
+
+        engine
+            .dispatch(
+                serde_json::from_value(json!({
+                    "type": "project.create",
+                    "commandId": "project-default-selection",
+                    "projectId": "project-default-selection",
+                    "title": "Project",
+                    "workspaceRoot": "C:/repo",
+                    "defaultModelSelection": null,
+                    "createdAt": "2026-07-20T00:00:00.000Z"
+                }))
+                .expect("command decodes"),
+            )
+            .await
+            .expect("project creates");
+
+        let snapshot = load_snapshot(&engine.repositories())
+            .await
+            .expect("snapshot loads");
+        let default_thread = snapshot
+            .threads
+            .iter()
+            .find(|thread| thread.kind == "default")
+            .expect("default thread");
+        assert_eq!(
+            default_thread.model_selection,
+            json!({"instanceId":"codex","model":"gpt-5.4"})
+        );
+        engine.shutdown().await;
     }
 
     #[tokio::test]

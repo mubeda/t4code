@@ -110,10 +110,7 @@ async fn provider_session_defaults_replace_the_whole_map_and_roundtrip() {
 
     drop(store);
     let reopened_store = ProviderSettingsStore::new(temp.path());
-    let reloaded = reopened_store
-        .get()
-        .await
-        .expect("reload settings");
+    let reloaded = reopened_store.get().await.expect("reload settings");
     assert_eq!(reloaded.provider_session_defaults, expected_defaults);
     assert_eq!(reloaded.automatic_git_fetch_interval, 12_345);
     assert!(reloaded.provider_instances.contains_key("work"));
@@ -399,7 +396,7 @@ async fn public_store_maps_settings_and_secret_filesystem_failures() {
         ProviderSettingsStore::new(&blocked_root)
             .update(ServerSettingsPatch::default())
             .await,
-        Err(ServerSettingsReadError::Persist { .. })
+        Err(ServerSettingsReadError::Read { .. })
     ));
 
     let secret_root = temp.path().join("secret-root");
@@ -443,6 +440,6 @@ async fn public_store_maps_settings_and_secret_filesystem_failures() {
         ProviderSettingsStore::new(&blocked_settings_root)
             .update(ServerSettingsPatch::default())
             .await,
-        Err(ServerSettingsReadError::Persist { .. })
+        Err(ServerSettingsReadError::Read { .. })
     ));
 }

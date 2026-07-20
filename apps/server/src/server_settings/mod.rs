@@ -274,10 +274,7 @@ impl ProviderSettingsStore {
         patch: ServerSettingsPatch,
     ) -> Result<ProviderSettingsState, ServerSettingsReadError> {
         let _guard = self.lock.lock().await;
-        let current = self
-            .read_persisted()
-            .await
-            .unwrap_or_else(|_| ProviderSettingsState::default());
+        let current = self.read_persisted().await?;
         let next = apply_patch(current, patch);
         let materialized = self.materialize_and_persist(next).await?;
         Ok(materialized)
@@ -601,6 +598,22 @@ mod tests {
                 .await,
             Err(ServerSettingsReadError::Read { .. })
         ));
+
+        let malformed_root = temporary.path().join("malformed-settings");
+        fs::create_dir_all(&malformed_root).await.unwrap();
+        let malformed_path = malformed_root.join("settings.json");
+        fs::write(&malformed_path, b"{not-json").await.unwrap();
+        let malformed_store = ProviderSettingsStore::new(&malformed_root);
+        assert!(matches!(
+            malformed_store
+                .update(ServerSettingsPatch {
+                    add_project_base_directory: Some("/should-not-persist".to_owned()),
+                    ..ServerSettingsPatch::default()
+                })
+                .await,
+            Err(ServerSettingsReadError::Decode { .. })
+        ));
+        assert_eq!(fs::read(&malformed_path).await.unwrap(), b"{not-json");
 
         let blocked_root = temporary.path().join("blocked-root");
         fs::write(&blocked_root, "file").await.unwrap();

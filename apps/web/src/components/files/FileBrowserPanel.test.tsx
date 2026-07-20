@@ -1,4 +1,4 @@
-import { EnvironmentId, ThreadId } from "@t4code/contracts";
+import { DEFAULT_SERVER_SETTINGS, EnvironmentId, ThreadId } from "@t4code/contracts";
 import type { EditorId, ProjectEntry } from "@t4code/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as React from "react";
@@ -70,6 +70,7 @@ const testState = vi.hoisted(() => ({
   },
   primaryEnvironmentId: null as string | null,
   environmentHttpBaseUrl: null as string | null,
+  environment: null as Record<string, unknown> | null,
   preferredEditor: null as string | null,
   isPreviewSupported: true,
   isBrowserPreviewFile: (() => false) as (path: string) => boolean,
@@ -183,6 +184,7 @@ vi.mock("~/state/assets", () => ({
 }));
 
 vi.mock("~/state/environments", () => ({
+  useEnvironment: () => testState.environment,
   usePrimaryEnvironmentId: () => testState.primaryEnvironmentId,
   useEnvironmentHttpBaseUrl: () => testState.environmentHttpBaseUrl,
 }));
@@ -370,6 +372,7 @@ beforeEach(() => {
   testState.entriesQuery = { data: null, error: null, isPending: false, refresh: vi.fn() };
   testState.primaryEnvironmentId = environmentId;
   testState.environmentHttpBaseUrl = null;
+  testState.environment = null;
   testState.preferredEditor = null;
   testState.isPreviewSupported = true;
   testState.isBrowserPreviewFile = vi.fn(() => false);
@@ -1111,6 +1114,80 @@ describe("copy path", () => {
 });
 
 describe("add as project", () => {
+  it("uses the shared Codex model, effort, and fast defaults for the created default thread", async () => {
+    testState.environment = {
+      serverConfig: {
+        providers: [
+          {
+            instanceId: "codex",
+            driver: "codex",
+            models: [
+              {
+                slug: "gpt-5.4",
+                capabilities: {
+                  optionDescriptors: [
+                    {
+                      id: "reasoningEffort",
+                      label: "Reasoning",
+                      type: "select",
+                      options: [
+                        { id: "medium", label: "Medium", isDefault: true },
+                        { id: "high", label: "High" },
+                      ],
+                      currentValue: "medium",
+                    },
+                    {
+                      id: "serviceTier",
+                      label: "Service tier",
+                      type: "select",
+                      options: [
+                        { id: "default", label: "Default", isDefault: true },
+                        { id: "fast", label: "Fast" },
+                      ],
+                      currentValue: "default",
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+        settings: {
+          ...DEFAULT_SERVER_SETTINGS,
+          providerSessionDefaults: {
+            codex: {
+              model: "gpt-5.4",
+              options: [
+                { id: "reasoningEffort", value: "high" },
+                { id: "serviceTier", value: "fast" },
+              ],
+            },
+          },
+        },
+      },
+    };
+    setEntries([entry("packages/app", "directory")]);
+    renderPanel();
+    rowActionsFor("packages/app", "directory").onAddAsProject();
+    await flushPromises();
+
+    const call = testState.commandCalls.find((entry) => entry.label === "create");
+    expect(call?.input).toEqual(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          defaultModelSelection: {
+            instanceId: "codex",
+            model: "gpt-5.4",
+            options: [
+              { id: "reasoningEffort", value: "high" },
+              { id: "serviceTier", value: "fast" },
+            ],
+          },
+        }),
+      }),
+    );
+  });
+
   it("reports failures adding a directory as a project", async () => {
     setEntries([entry("packages/app", "directory")]);
     testState.commandResults["create"] = { _tag: "Failure", error: new Error("exists") };

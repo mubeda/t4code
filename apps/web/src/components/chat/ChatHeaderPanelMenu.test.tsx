@@ -7,6 +7,7 @@ const harness = vi.hoisted(() => ({
   tooltipReasons: [] as string[],
   providerTerminalActionsAvailable: true,
   providerTerminalActionDisabledReason: null as string | null,
+  providerTerminalFallback: null as Record<string, unknown> | null,
 }));
 
 vi.mock("~/providerInstances", () => ({
@@ -30,6 +31,9 @@ vi.mock("./providerTerminalActions", () => ({
                 label: `${entry.displayName} Terminal`,
               },
           disabledReason: harness.providerTerminalActionDisabledReason,
+          ...(harness.providerTerminalFallback
+            ? { fallback: harness.providerTerminalFallback }
+            : {}),
         }
       : null,
 }));
@@ -73,6 +77,7 @@ beforeEach(() => {
   harness.tooltipReasons.length = 0;
   harness.providerTerminalActionsAvailable = true;
   harness.providerTerminalActionDisabledReason = null;
+  harness.providerTerminalFallback = null;
 });
 
 function panelItem(overrides: Record<string, unknown> = {}) {
@@ -194,5 +199,27 @@ describe("ChatHeaderPanelMenu", () => {
     ]);
     (harness.menuItems[2]!.onClick as () => void)();
     expect(props.onOpenProviderTerminalPanel).not.toHaveBeenCalled();
+  });
+
+  it("emits the safe structured fallback diagnostic only when the terminal action launches", () => {
+    harness.items = [panelItem()];
+    harness.providerTerminalFallback = {
+      driver: "codex",
+      instanceId: "codex",
+      configuredModel: "retired-model",
+      resolvedModel: "gpt-5.4",
+      reason: "configured-model-unavailable",
+    };
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const { props } = render(true);
+    expect(warning).not.toHaveBeenCalled();
+    (harness.menuItems[2]!.onClick as () => void)();
+
+    expect(warning).toHaveBeenCalledWith(
+      "Provider session default fallback",
+      harness.providerTerminalFallback,
+    );
+    expect(props.onOpenProviderTerminalPanel).toHaveBeenCalledOnce();
   });
 });
