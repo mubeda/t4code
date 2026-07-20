@@ -51,6 +51,15 @@ const serviceTierDescriptor: ProviderOptionDescriptor = {
   currentValue: "default",
 };
 
+const partialServiceTierDescriptor: ProviderOptionDescriptor = {
+  id: "serviceTier",
+  label: "Live service tier",
+  description: "Live descriptor without the Codex Fast invariant.",
+  type: "select",
+  options: [{ id: "default", label: "Live Standard", isDefault: true }],
+  currentValue: "default",
+};
+
 const claudeEffortDescriptor: ProviderOptionDescriptor = {
   id: "effort",
   label: "Effort",
@@ -320,6 +329,30 @@ describe("getProviderSessionDefaultControls", () => {
     expect(controls.fastMode).toBe(true);
   });
 
+  it("augments a partial live Codex service tier while preserving explicit off", () => {
+    const controls = getProviderSessionDefaultControls({
+      driver: CODEX,
+      models: [
+        model("gpt-rich", [
+          reasoningEffortDescriptor,
+          partialServiceTierDescriptor,
+          contextWindowDescriptor,
+        ]),
+      ],
+      configuredDefault: {
+        model: "gpt-rich",
+        options: [
+          { id: "reasoningEffort", value: "high" },
+          { id: "serviceTier", value: "default" },
+        ],
+      },
+    });
+
+    expect(controls.effort).toBe("high");
+    expect(controls.fastModeSupported).toBe(true);
+    expect(controls.fastMode).toBe(false);
+  });
+
   it("accepts a configured Claude prompt-injected effort", () => {
     const controls = getProviderSessionDefaultControls({
       driver: CLAUDE,
@@ -411,6 +444,38 @@ describe("Codex-only serviceTier fast-mode binding", () => {
         change: { type: "fastMode", value: false },
       }),
     ).toEqual({ model: "tiered-model" });
+  });
+
+  it("does not augment a partial non-Codex serviceTier descriptor", () => {
+    const partialModels = [model("partial-tiered-model", [partialServiceTierDescriptor])];
+    const partialDefault: ProviderSessionDefault = {
+      model: "partial-tiered-model",
+      options: [{ id: "serviceTier", value: "fast" }],
+    };
+    const controls = getProviderSessionDefaultControls({
+      driver,
+      models: partialModels,
+      configuredDefault: partialDefault,
+    });
+    const resolved = resolveProviderSessionDefault({
+      driver,
+      instanceId,
+      models: partialModels,
+      configuredDefault: partialDefault,
+    });
+
+    expect(controls.fastModeSupported).toBe(false);
+    expect(controls.fastMode).toBeNull();
+    expect(resolved.fastMode).toBeNull();
+    expect(resolved.modelSelection.options).toEqual([{ id: "serviceTier", value: "default" }]);
+    expect(
+      updateProviderSessionDefault({
+        driver,
+        models: partialModels,
+        current: partialDefault,
+        change: { type: "fastMode", value: true },
+      }),
+    ).toEqual({ model: "partial-tiered-model" });
   });
 });
 
@@ -638,6 +703,67 @@ describe("resolveProviderSessionDefault", () => {
     expect(result.fastMode).toBe(true);
   });
 
+  it("resolves configured Fast through a partial live Codex service tier", () => {
+    const result = resolveProviderSessionDefault({
+      driver: CODEX,
+      instanceId: CODEX_ID,
+      models: [
+        model("gpt-rich", [
+          reasoningEffortDescriptor,
+          partialServiceTierDescriptor,
+          contextWindowDescriptor,
+        ]),
+      ],
+      configuredDefault: {
+        model: "gpt-rich",
+        options: [
+          { id: "reasoningEffort", value: "high" },
+          { id: "serviceTier", value: "fast" },
+        ],
+      },
+    });
+
+    expect(result.modelSelection.options).toEqual([
+      { id: "reasoningEffort", value: "high" },
+      { id: "serviceTier", value: "fast" },
+      { id: "contextWindow", value: "200k" },
+    ]);
+    expect(result.fastMode).toBe(true);
+  });
+
+  it("normalizes an incompatible live Codex service tier without replacing other descriptors", () => {
+    const result = resolveProviderSessionDefault({
+      driver: CODEX,
+      instanceId: CODEX_ID,
+      models: [
+        model("gpt-rich", [
+          reasoningEffortDescriptor,
+          {
+            id: "serviceTier",
+            label: "Broken live service tier",
+            type: "boolean",
+            currentValue: false,
+          },
+          contextWindowDescriptor,
+        ]),
+      ],
+      configuredDefault: {
+        model: "gpt-rich",
+        options: [
+          { id: "reasoningEffort", value: "high" },
+          { id: "serviceTier", value: "fast" },
+        ],
+      },
+    });
+
+    expect(result.modelSelection.options).toEqual([
+      { id: "reasoningEffort", value: "high" },
+      { id: "serviceTier", value: "fast" },
+      { id: "contextWindow", value: "200k" },
+    ]);
+    expect(result.fastMode).toBe(true);
+  });
+
   it("resolves a configured Claude prompt-injected effort into the native selection", () => {
     const result = resolveProviderSessionDefault({
       driver: CLAUDE,
@@ -742,6 +868,35 @@ describe("updateProviderSessionDefault", () => {
         current: {
           model: "gpt-rich",
           options: [{ id: "reasoningEffort", value: "high" }],
+        },
+        change: { type: "fastMode", value: true },
+      }),
+    ).toEqual({
+      model: "gpt-rich",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "fast" },
+      ],
+    });
+  });
+
+  it("persists Fast through a partial live Codex service tier", () => {
+    expect(
+      updateProviderSessionDefault({
+        driver: CODEX,
+        models: [
+          model("gpt-rich", [
+            reasoningEffortDescriptor,
+            partialServiceTierDescriptor,
+            contextWindowDescriptor,
+          ]),
+        ],
+        current: {
+          model: "gpt-rich",
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "default" },
+          ],
         },
         change: { type: "fastMode", value: true },
       }),

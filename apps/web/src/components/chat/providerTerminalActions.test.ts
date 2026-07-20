@@ -105,6 +105,14 @@ const serviceTierDescriptor: ProviderOptionDescriptor = {
   currentValue: "default",
 };
 
+const partialServiceTierDescriptor: ProviderOptionDescriptor = {
+  id: "serviceTier",
+  label: "Live service tier",
+  type: "select",
+  options: [{ id: "default", label: "Live Standard", isDefault: true }],
+  currentValue: "default",
+};
+
 describe("resolveProviderTerminalAction", () => {
   it.each([
     {
@@ -233,6 +241,35 @@ describe("resolveProviderTerminalAction", () => {
       DEFAULT_MODEL_BY_PROVIDER[CODEX_DRIVER],
       "--config",
       'model_reasoning_effort="xhigh"',
+      "--config",
+      'service_tier="fast"',
+    ]);
+  });
+
+  it("builds Codex Fast arguments through a partial live serviceTier descriptor", () => {
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerSessionDefaults: {
+        [CODEX_DRIVER]: {
+          model: "gpt-5.6-sol",
+          options: [{ id: "serviceTier", value: "fast" }],
+        },
+      },
+    } satisfies ServerSettings;
+
+    expect(
+      resolveProviderTerminalAction(
+        entry("codex", "codex", "Codex", [
+          model("gpt-5.6-sol", [effortDescriptor, partialServiceTierDescriptor]),
+        ]),
+        settings,
+      )?.command?.args,
+    ).toEqual([
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model",
+      "gpt-5.6-sol",
+      "--config",
+      'model_reasoning_effort="medium"',
       "--config",
       'service_tier="fast"',
     ]);

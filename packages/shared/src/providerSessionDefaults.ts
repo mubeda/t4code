@@ -106,6 +106,58 @@ function getCodexServiceTierDescriptor(
   };
 }
 
+function withCodexServiceTierInvariant(
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+  selections: ReadonlyArray<ProviderOptionSelection> | undefined,
+): ReadonlyArray<ProviderOptionDescriptor> {
+  const descriptorIndex = descriptors.findIndex(
+    (descriptor) => descriptor.id === SERVICE_TIER_OPTION_ID,
+  );
+  if (descriptorIndex === -1) {
+    return [...descriptors, getCodexServiceTierDescriptor(selections)];
+  }
+
+  const descriptor = descriptors[descriptorIndex]!;
+  if (descriptor.type !== "select") {
+    const invariantDescriptor = getCodexServiceTierDescriptor(selections);
+    return descriptors.map((candidate, index) =>
+      index === descriptorIndex
+        ? {
+            ...invariantDescriptor,
+            label: descriptor.label,
+            ...(descriptor.description ? { description: descriptor.description } : {}),
+          }
+        : candidate,
+    );
+  }
+
+  const hasCurrentOrDefault =
+    descriptor.currentValue !== undefined || descriptor.options.some((option) => option.isDefault);
+  const hasDefault = descriptor.options.some((option) => option.id === DEFAULT_SERVICE_TIER_VALUE);
+  const hasFast = descriptor.options.some((option) => option.id === FAST_SERVICE_TIER_VALUE);
+  if (hasDefault && hasFast) {
+    return descriptors;
+  }
+
+  const options = [
+    ...(hasDefault
+      ? descriptor.options
+      : [
+          {
+            id: DEFAULT_SERVICE_TIER_VALUE,
+            label: "Standard",
+            ...(!hasCurrentOrDefault ? { isDefault: true } : {}),
+          },
+          ...descriptor.options,
+        ]),
+    ...(hasFast ? [] : [{ id: FAST_SERVICE_TIER_VALUE, label: "Fast" }]),
+  ];
+
+  return descriptors.map((candidate, index) =>
+    index === descriptorIndex ? { ...descriptor, options } : candidate,
+  );
+}
+
 function getInvariantProviderModel(
   driver: ProviderDriverKind,
   model: string,
@@ -223,9 +275,8 @@ function normalizeProviderOptions(
 
   const liveDescriptors = model.capabilities?.optionDescriptors ?? [];
   const optionDescriptors =
-    driver === CODEX_DRIVER_KIND &&
-    !liveDescriptors.some((descriptor) => descriptor.id === SERVICE_TIER_OPTION_ID)
-      ? [...liveDescriptors, getCodexServiceTierDescriptor(selections ?? undefined)]
+    driver === CODEX_DRIVER_KIND
+      ? withCodexServiceTierInvariant(liveDescriptors, selections ?? undefined)
       : liveDescriptors;
   const descriptors = getProviderOptionDescriptors({
     caps: {

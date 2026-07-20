@@ -292,6 +292,41 @@ describe("ProviderSessionDefaultsControls", () => {
     });
   });
 
+  it("renders Codex Fast by default when live serviceTier only contains Standard", () => {
+    const markup = render(
+      baseProps({
+        models: [
+          model("gpt-rich", [
+            {
+              id: "reasoningEffort",
+              label: "Reasoning",
+              type: "select",
+              options: [{ id: "medium", label: "Medium", isDefault: true }],
+              currentValue: "medium",
+            },
+            {
+              id: "serviceTier",
+              label: "Live service tier",
+              type: "select",
+              options: [{ id: "default", label: "Live Standard", isDefault: true }],
+              currentValue: "default",
+            },
+          ]),
+        ],
+        value: {
+          model: "gpt-rich",
+          options: [{ id: "serviceTier", value: "default" }],
+        },
+      }),
+    );
+
+    expect(markup).toContain("Fast by default");
+    expect(entries("Switch")[0]).toMatchObject({
+      "aria-label": "Fast by default",
+      checked: false,
+    });
+  });
+
   it("gives each rendered defaults row unique control ids and local label targets", () => {
     const markup = renderToStaticMarkup(
       <>
