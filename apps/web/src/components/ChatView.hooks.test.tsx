@@ -2060,21 +2060,11 @@ describe("ChatView project script handlers", () => {
       ],
       currentValue: "medium",
     };
-    const serviceTier: ProviderOptionDescriptor = {
-      id: "serviceTier",
-      label: "Service tier",
-      type: "select",
-      options: [
-        { id: "default", label: "Standard", isDefault: true },
-        { id: "fast", label: "Fast" },
-      ],
-      currentValue: "default",
-    };
     const configuredModel = {
       slug: "gpt-configured",
       name: "Configured",
       isCustom: false,
-      capabilities: { optionDescriptors: [reasoningEffort, serviceTier] },
+      capabilities: { optionDescriptors: [reasoningEffort] },
     };
     seedEnvironment(makeEnvironmentPresentation());
     seedProject(makeProject({ defaultModelSelection: null, scripts: [script] }));
@@ -2127,6 +2117,65 @@ describe("ChatView project script handlers", () => {
             { id: "reasoningEffort", value: "high" },
             { id: "serviceTier", value: "fast" },
           ],
+        },
+      },
+    });
+  });
+
+  it("creates a Claude chat panel with a configured prompt-injected effort", async () => {
+    const claudeDriver = ProviderDriverKind.make("claudeAgent");
+    const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
+    const configuredModel = {
+      slug: "claude-sonnet-5",
+      name: "Claude Sonnet 5",
+      isCustom: false,
+      capabilities: {
+        optionDescriptors: [
+          {
+            id: "effort",
+            label: "Effort",
+            type: "select" as const,
+            options: [
+              { id: "high", label: "High", isDefault: true },
+              { id: "ultrathink", label: "Ultrathink" },
+            ],
+            promptInjectedValues: ["ultrathink"],
+          },
+        ],
+      },
+    };
+    seedEnvironment(makeEnvironmentPresentation());
+    seedProject(makeProject({ defaultModelSelection: null }));
+    seedServerThread(makeThread());
+    seedGitStatus(true);
+    h.settings = {
+      ...h.settings,
+      providerSessionDefaults: {
+        [claudeDriver]: {
+          model: "claude-sonnet-5",
+          options: [{ id: "effort", value: "ultrathink" }],
+        },
+      },
+    };
+    renderServerRoute();
+    const header = capturedProps("chatHeader");
+    const entry = {
+      instanceId: claudeInstanceId,
+      driverKind: claudeDriver,
+      displayName: "Claude",
+      models: [configuredModel],
+    } as unknown as ProviderInstanceEntry;
+
+    (header["onCreateChatPanel"] as (entry: ProviderInstanceEntry) => void)(entry);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(commandCallsFor("thread.create")[0]?.input).toMatchObject({
+      input: {
+        modelSelection: {
+          instanceId: claudeInstanceId,
+          model: "claude-sonnet-5",
+          options: [{ id: "effort", value: "ultrathink" }],
         },
       },
     });
@@ -2676,6 +2725,7 @@ describe("ChatView send flows", () => {
       expect(resolvedSelection).toEqual({
         instanceId: codexInstanceId,
         model: "gpt-5.4",
+        options: [{ id: "serviceTier", value: "default" }],
       });
       const promptRef = installComposerModelSelection(resolvedSelection, "medium");
       const onSend = capturedProps("chatComposer")["onSend"] as () => Promise<void>;

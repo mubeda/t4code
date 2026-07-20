@@ -258,6 +258,40 @@ describe("ProviderSessionDefaultsControls", () => {
     expect(entries("Switch")[0]?.["aria-label"]).toBe("Fast by default");
   });
 
+  it("renders Codex Fast by default when rich metadata omits serviceTier", () => {
+    const markup = render(
+      baseProps({
+        models: [
+          model("gpt-rich", [
+            {
+              id: "reasoningEffort",
+              label: "Reasoning",
+              type: "select",
+              options: [
+                { id: "medium", label: "Medium", isDefault: true },
+                { id: "high", label: "High" },
+              ],
+              currentValue: "medium",
+            },
+          ]),
+        ],
+        value: {
+          model: "gpt-rich",
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "fast" },
+          ],
+        },
+      }),
+    );
+
+    expect(markup).toContain("Fast by default");
+    expect(entries("Switch")[0]).toMatchObject({
+      "aria-label": "Fast by default",
+      checked: true,
+    });
+  });
+
   it("gives each rendered defaults row unique control ids and local label targets", () => {
     const markup = renderToStaticMarkup(
       <>

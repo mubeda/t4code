@@ -101,7 +101,7 @@ describe("resolveProviderTerminalAction", () => {
     {
       name: "Codex",
       driverKind: CODEX_DRIVER,
-      models: [model("gpt-5.4", [effortDescriptor, serviceTierDescriptor])],
+      models: [model("gpt-5.4", [effortDescriptor])],
       configuredDefault: {
         model: "gpt-5.4",
         options: [
@@ -318,7 +318,7 @@ describe("resolveProviderTerminalAction", () => {
     ).toEqual(["--permission-mode", "bypassPermissions", "--model", "grok-4"]);
   });
 
-  it("drops stale effort and fast selections after falling back to another model", () => {
+  it("drops stale effort but preserves the Codex service-tier invariant after fallback", () => {
     const settings = {
       ...DEFAULT_SERVER_SETTINGS,
       providerSessionDefaults: {
@@ -340,6 +340,8 @@ describe("resolveProviderTerminalAction", () => {
       "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5.4-mini",
+      "--config",
+      'service_tier="fast"',
     ]);
     expect(action).toMatchObject({
       fallback: {
