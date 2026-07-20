@@ -1,13 +1,15 @@
 import type {
   EnvironmentId,
   ServerProcessDiagnosticsResult,
-  ServerProcessResourceHistoryResult,
   ServerProviderUsageResult,
 } from "@t4code/contracts";
 import { RefreshCwIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { usePrimaryEnvironment } from "../../state/environments";
+import {
+  usePrimaryEnvironment,
+  usePrimaryLocalEnvironmentForSelected,
+} from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useKnownTerminalSessions } from "../../state/terminalSessions";
@@ -17,7 +19,7 @@ import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ProviderUsageSegment } from "./ProviderUsageSegment";
 import { ResourceUsageSegment } from "./ResourceUsageSegment";
-import { buildProviderUsageViewModel } from "./statusBarPresentation";
+import { buildProviderUsageViewModel, type LocalCoreResourceUsage } from "./statusBarPresentation";
 
 export const STATUS_BAR_USAGE_REFRESH_INTERVAL_MS = 30_000;
 export const STATUS_BAR_RESOURCE_REFRESH_INTERVAL_MS = 2_000;
@@ -53,7 +55,7 @@ export function createStatusBarRefreshHandler(input: {
   }) => Promise<unknown>;
   readonly refreshUsageQuery: () => void;
   readonly refreshProcessDiagnostics: () => void;
-  readonly refreshResourceHistory: () => void;
+  readonly refreshLocalProcessDiagnostics: (() => void) | null;
 }) {
   return async () => {
     if (input.environmentId === null) return;
@@ -62,7 +64,7 @@ export function createStatusBarRefreshHandler(input: {
       input: { providers: ["claude", "codex"] },
     });
     input.refreshProcessDiagnostics();
-    input.refreshResourceHistory();
+    input.refreshLocalProcessDiagnostics?.();
     try {
       await providerRefresh;
     } finally {
@@ -76,19 +78,19 @@ export function createStatusBarRefreshHandler(input: {
 export function createStatusBarResourceRefreshHandler(input: {
   readonly environmentId: EnvironmentId | null;
   readonly refreshProcessDiagnostics: () => void;
-  readonly refreshResourceHistory: () => void;
+  readonly refreshLocalProcessDiagnostics: (() => void) | null;
 }) {
   return () => {
     if (input.environmentId === null) return;
     input.refreshProcessDiagnostics();
-    input.refreshResourceHistory();
+    input.refreshLocalProcessDiagnostics?.();
   };
 }
 
 export function AppStatusBarView({
   usage,
   diagnostics,
-  resourceHistory,
+  localCore,
   terminalCount,
   isRefreshing = false,
   iconOnly = false,
@@ -96,7 +98,7 @@ export function AppStatusBarView({
 }: {
   readonly usage: ServerProviderUsageResult | null;
   readonly diagnostics: ServerProcessDiagnosticsResult | null;
-  readonly resourceHistory: ServerProcessResourceHistoryResult | null;
+  readonly localCore: LocalCoreResourceUsage | null;
   readonly terminalCount: number;
   readonly isRefreshing?: boolean;
   readonly iconOnly?: boolean;
@@ -133,7 +135,7 @@ export function AppStatusBarView({
       <div className="flex shrink-0 items-center gap-2">
         <ResourceUsageSegment
           diagnostics={diagnostics}
-          resourceHistory={resourceHistory}
+          localCore={localCore}
           terminalCount={terminalCount}
           iconOnly={iconOnly}
         />
@@ -145,6 +147,8 @@ export function AppStatusBarView({
 export function AppStatusBar() {
   const primaryEnvironment = usePrimaryEnvironment();
   const environmentId = primaryEnvironment?.environmentId ?? null;
+  const primaryLocalEnvironment = usePrimaryLocalEnvironmentForSelected(environmentId);
+  const primaryLocalEnvironmentId = primaryLocalEnvironment?.environmentId ?? null;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const refreshRef = useRef<() => Promise<unknown>>(async () => undefined);
   const resourceRefreshRef = useRef<() => void>(() => undefined);
@@ -161,12 +165,12 @@ export function AppStatusBar() {
       ? null
       : serverEnvironment.processDiagnostics({ environmentId, input: {} }),
   );
-  const resourceHistory = useEnvironmentQuery(
-    environmentId === null
+  const localDiagnostics = useEnvironmentQuery(
+    primaryLocalEnvironmentId === null
       ? null
-      : serverEnvironment.processResourceHistory({
-          environmentId,
-          input: { windowMs: 15 * 60_000, bucketMs: 60_000 },
+      : serverEnvironment.processDiagnostics({
+          environmentId: primaryLocalEnvironmentId,
+          input: {},
         }),
   );
   const terminalSessions = useKnownTerminalSessions({ environmentId, threadId: null });
@@ -179,13 +183,15 @@ export function AppStatusBar() {
       refreshProviderUsage,
       refreshUsageQuery: usage.refresh,
       refreshProcessDiagnostics: diagnostics.refresh,
-      refreshResourceHistory: resourceHistory.refresh,
+      refreshLocalProcessDiagnostics:
+        primaryLocalEnvironmentId === null ? null : localDiagnostics.refresh,
     }),
     [
       diagnostics.refresh,
       environmentId,
+      localDiagnostics.refresh,
+      primaryLocalEnvironmentId,
       refreshProviderUsage,
-      resourceHistory.refresh,
       usage.refresh,
     ],
   );
@@ -193,9 +199,10 @@ export function AppStatusBar() {
     createStatusBarResourceRefreshHandler({
       environmentId,
       refreshProcessDiagnostics: diagnostics.refresh,
-      refreshResourceHistory: resourceHistory.refresh,
+      refreshLocalProcessDiagnostics:
+        primaryLocalEnvironmentId === null ? null : localDiagnostics.refresh,
     }),
-    [diagnostics.refresh, environmentId, resourceHistory.refresh],
+    [diagnostics.refresh, environmentId, localDiagnostics.refresh, primaryLocalEnvironmentId],
   );
 
   useEffect(() => {
@@ -264,7 +271,14 @@ export function AppStatusBar() {
       <AppStatusBarView
         usage={usage.data}
         diagnostics={diagnostics.data}
-        resourceHistory={resourceHistory.data}
+        localCore={
+          localDiagnostics.data === null
+            ? null
+            : {
+                totals: localDiagnostics.data.totals.core,
+                uiCoverage: localDiagnostics.data.uiCoverage,
+              }
+        }
         terminalCount={terminalSessions.length}
         isRefreshing={usage.isPending}
         iconOnly={iconOnly}

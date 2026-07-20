@@ -4,7 +4,7 @@ import {
   type EnvironmentPresentation as BaseEnvironmentPresentation,
 } from "@t4code/client-runtime/connection";
 import { Discovery } from "@t4code/client-runtime/relay";
-import type { EnvironmentId } from "@t4code/contracts";
+import { EnvironmentId, PRIMARY_LOCAL_ENVIRONMENT_ID } from "@t4code/contracts";
 import * as Option from "effect/Option";
 import { useMemo } from "react";
 
@@ -20,6 +20,17 @@ export interface EnvironmentPresentation extends BaseEnvironmentPresentation {
   readonly label: string;
   readonly displayUrl: string | null;
   readonly relayManaged: boolean;
+}
+
+export function selectPrimaryLocalEnvironmentId(input: {
+  readonly client: "desktop" | "web";
+  readonly selectedEnvironmentId: EnvironmentId | null;
+}): EnvironmentId | null {
+  if (input.client !== "desktop" || input.selectedEnvironmentId === null) return null;
+  const primaryLocalEnvironmentId = EnvironmentId.make(PRIMARY_LOCAL_ENVIRONMENT_ID);
+  return input.selectedEnvironmentId === primaryLocalEnvironmentId
+    ? null
+    : primaryLocalEnvironmentId;
 }
 
 function projectEnvironmentPresentation(
@@ -75,6 +86,16 @@ export function useEnvironment(
 
 export function usePrimaryEnvironment(): EnvironmentPresentation | null {
   return useEnvironment(usePrimaryEnvironmentId());
+}
+
+export function usePrimaryLocalEnvironmentForSelected(
+  selectedEnvironmentId: EnvironmentId | null,
+): EnvironmentPresentation | null {
+  const primaryLocalEnvironmentId = selectPrimaryLocalEnvironmentId({
+    client: typeof window !== "undefined" && window.desktopBridge !== undefined ? "desktop" : "web",
+    selectedEnvironmentId,
+  });
+  return useEnvironment(primaryLocalEnvironmentId);
 }
 
 export function useEnvironmentHttpBaseUrl(environmentId: EnvironmentId | null): string | null {
