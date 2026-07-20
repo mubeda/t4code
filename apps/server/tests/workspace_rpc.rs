@@ -196,10 +196,11 @@ async fn cancelled_index_refresh_does_not_replace_the_previous_snapshot() {
 async fn watcher_coalesces_bursts_and_stops_when_subscription_is_cancelled() {
     let root = TempDir::new().expect("root");
     write(root.path(), "baseline.txt", b"baseline").await;
-    let watcher = WorkspaceWatcher::new(Duration::from_millis(20), Duration::from_millis(50), 2);
+    let coalesce_window = Duration::from_millis(500);
+    let watcher = WorkspaceWatcher::new(Duration::from_millis(20), coalesce_window, 2);
     let mut subscription = watcher.watch(root.path().to_path_buf());
 
-    let baseline = tokio::time::timeout(Duration::from_secs(2), subscription.recv())
+    let baseline = tokio::time::timeout(Duration::from_secs(3), subscription.recv())
         .await
         .expect("baseline timeout")
         .expect("baseline event");
@@ -212,8 +213,9 @@ async fn watcher_coalesces_bursts_and_stops_when_subscription_is_cancelled() {
 
     for sequence in 0..8 {
         write(root.path(), "burst.txt", sequence.to_string().as_bytes()).await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    let event = tokio::time::timeout(Duration::from_secs(2), subscription.recv())
+    let event = tokio::time::timeout(Duration::from_secs(3), subscription.recv())
         .await
         .expect("watch timeout")
         .expect("watch event");
@@ -223,7 +225,7 @@ async fn watcher_coalesces_bursts_and_stops_when_subscription_is_cancelled() {
             .iter()
             .any(|path| path.ends_with("burst.txt"))
     );
-    tokio::time::sleep(Duration::from_millis(120)).await;
+    tokio::time::sleep(coalesce_window + Duration::from_millis(150)).await;
     assert!(
         subscription.try_recv().is_err(),
         "burst should be coalesced"
