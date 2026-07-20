@@ -1,5 +1,6 @@
 use std::slice;
 use std::sync::mpsc;
+use std::thread::{self, ThreadId};
 use std::time::Duration;
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -13,8 +14,8 @@ use webview2_com::{
     ExecuteScriptCompletedHandler, take_pwstr,
 };
 use windows::Win32::Foundation::HGLOBAL;
-use windows::Win32::System::Com::IStream;
 use windows::Win32::System::Com::StructuredStorage::{CreateStreamOnHGlobal, GetHGlobalFromStream};
+use windows::Win32::System::Com::{IStream, STATFLAG_NONAME, STATSTG};
 use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 use windows::core::{BOOL, Interface, PCWSTR, PWSTR};
 
@@ -26,6 +27,20 @@ pub struct WindowsWebviewOps;
 
 fn unavailable(context: &str, error: impl std::fmt::Display) -> PreviewPlatformError {
     PreviewPlatformError::Unavailable(format!("{context}: {error}"))
+}
+
+fn completion_wait_guard(
+    caller_thread: ThreadId,
+    webview_thread: ThreadId,
+) -> Result<(), PreviewPlatformError> {
+    if caller_thread == webview_thread {
+        Err(PreviewPlatformError::Unavailable(
+            "completion-based preview platform calls cannot wait on the WebView2 UI thread"
+                .to_string(),
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 /// Run `f` with the CoreWebView2 on the UI thread and post the result back.
@@ -59,22 +74,18 @@ impl Drop for GlobalUnlockGuard {
 }
 
 fn read_png_stream(stream: &IStream) -> Result<Vec<u8>, PreviewPlatformError> {
+    let mut stat = STATSTG::default();
+    // SAFETY: `stat` is a valid out parameter. STATFLAG_NONAME ensures COM
+    // does not allocate a name that the caller would need to free.
+    unsafe { stream.Stat(&mut stat, STATFLAG_NONAME) }
+        .map_err(|error| unavailable("failed to inspect screenshot stream", error))?;
     // SAFETY: `stream` was created by CreateStreamOnHGlobal and remains alive
     // for this entire extraction.
     let hglobal = unsafe { GetHGlobalFromStream(stream) }
         .map_err(|error| unavailable("failed to get screenshot memory", error))?;
     // SAFETY: `hglobal` belongs to the live stream above.
-    let size = unsafe { GlobalSize(hglobal) };
-    if size == 0 {
-        return Err(PreviewPlatformError::Unavailable(
-            "screenshot stream was empty".to_string(),
-        ));
-    }
-    if size > isize::MAX as usize {
-        return Err(PreviewPlatformError::Unavailable(
-            "screenshot stream was too large".to_string(),
-        ));
-    }
+    let allocation_size = unsafe { GlobalSize(hglobal) };
+    let logical_size = checked_screenshot_length(stat.cbSize, allocation_size)?;
 
     // SAFETY: `hglobal` is valid and owned by the live stream.
     let data = unsafe { GlobalLock(hglobal) };
@@ -86,9 +97,34 @@ fn read_png_stream(stream: &IStream) -> Result<Vec<u8>, PreviewPlatformError> {
     }
     let _unlock = GlobalUnlockGuard(hglobal);
 
-    // SAFETY: GlobalLock returned a non-null pointer to a `GlobalSize`-byte
-    // allocation. The unlock guard keeps it locked while the bytes are copied.
-    Ok(unsafe { slice::from_raw_parts(data.cast::<u8>(), size) }.to_vec())
+    // SAFETY: GlobalLock returned a non-null pointer to an allocation at least
+    // `logical_size` bytes long. The guard keeps it locked during the copy.
+    Ok(unsafe { slice::from_raw_parts(data.cast::<u8>(), logical_size) }.to_vec())
+}
+
+fn checked_screenshot_length(
+    logical_size: u64,
+    allocation_size: usize,
+) -> Result<usize, PreviewPlatformError> {
+    if logical_size == 0 {
+        return Err(PreviewPlatformError::Unavailable(
+            "screenshot stream was empty".to_string(),
+        ));
+    }
+    let logical_size = usize::try_from(logical_size).map_err(|_| {
+        PreviewPlatformError::Unavailable("screenshot stream was too large".to_string())
+    })?;
+    if logical_size > isize::MAX as usize {
+        return Err(PreviewPlatformError::Unavailable(
+            "screenshot stream was too large".to_string(),
+        ));
+    }
+    if logical_size > allocation_size {
+        return Err(PreviewPlatformError::Unavailable(format!(
+            "screenshot stream length {logical_size} exceeds allocation {allocation_size}"
+        )));
+    }
+    Ok(logical_size)
 }
 
 fn browsing_data_kinds(kinds: ClearDataKinds) -> COREWEBVIEW2_BROWSING_DATA_KINDS {
@@ -111,6 +147,7 @@ impl PlatformWebviewOps for WindowsWebviewOps {
         js: &str,
         timeout: Duration,
     ) -> Result<String, PreviewPlatformError> {
+        let caller_thread = thread::current().id();
         let script_utf16: Vec<u16> = json_envelope(js)
             .encode_utf16()
             .chain(std::iter::once(0))
@@ -118,6 +155,10 @@ impl PlatformWebviewOps for WindowsWebviewOps {
         let (tx, rx) = mpsc::sync_channel::<Result<String, PreviewPlatformError>>(1);
         webview
             .with_webview(move |platform| {
+                if let Err(error) = completion_wait_guard(caller_thread, thread::current().id()) {
+                    let _ = tx.send(Err(error));
+                    return;
+                }
                 let schedule = (|| {
                     // SAFETY: Tauri provides the live controller on its owning
                     // UI thread for the duration of this closure.
@@ -214,9 +255,14 @@ impl PlatformWebviewOps for WindowsWebviewOps {
         webview: &tauri::Webview,
         timeout: Duration,
     ) -> Result<Vec<u8>, PreviewPlatformError> {
+        let caller_thread = thread::current().id();
         let (tx, rx) = mpsc::sync_channel::<Result<Vec<u8>, PreviewPlatformError>>(1);
         webview
             .with_webview(move |platform| {
+                if let Err(error) = completion_wait_guard(caller_thread, thread::current().id()) {
+                    let _ = tx.send(Err(error));
+                    return;
+                }
                 let schedule = (|| {
                     // SAFETY: Tauri provides the live controller on its owning
                     // UI thread for the duration of this closure.
@@ -262,10 +308,15 @@ impl PlatformWebviewOps for WindowsWebviewOps {
         webview: &tauri::Webview,
         kinds: ClearDataKinds,
     ) -> Result<(), PreviewPlatformError> {
+        let caller_thread = thread::current().id();
         let data_kinds = browsing_data_kinds(kinds);
         let (tx, rx) = mpsc::sync_channel::<Result<(), PreviewPlatformError>>(1);
         webview
             .with_webview(move |platform| {
+                if let Err(error) = completion_wait_guard(caller_thread, thread::current().id()) {
+                    let _ = tx.send(Err(error));
+                    return;
+                }
                 let schedule = (|| {
                     if data_kinds.0 == 0 {
                         return tx.send(Ok(())).map_err(|error| {
@@ -308,5 +359,74 @@ impl PlatformWebviewOps for WindowsWebviewOps {
             .map_err(|error| PreviewPlatformError::Unavailable(error.to_string()))?;
         rx.recv_timeout(PLATFORM_CALL_TIMEOUT)
             .map_err(|_| PreviewPlatformError::Timeout)?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::thread;
+
+    use super::{checked_screenshot_length, completion_wait_guard};
+    use crate::preview::platform::PreviewPlatformError;
+
+    #[test]
+    fn completion_wait_guard_rejects_the_webview_thread() {
+        let thread_id = thread::current().id();
+        let error = completion_wait_guard(thread_id, thread_id).unwrap_err();
+        assert!(matches!(
+            error,
+            PreviewPlatformError::Unavailable(message)
+                if message.contains("WebView2 UI thread")
+        ));
+    }
+
+    #[test]
+    fn completion_wait_guard_allows_a_worker_thread() {
+        let caller_thread = thread::current().id();
+        let (tx, rx) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            tx.send(thread::current().id()).unwrap();
+        })
+        .join()
+        .unwrap();
+
+        assert!(completion_wait_guard(caller_thread, rx.recv().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn screenshot_length_uses_stream_length_not_allocation_capacity() {
+        assert_eq!(checked_screenshot_length(8, 32).unwrap(), 8);
+    }
+
+    #[test]
+    fn screenshot_length_rejects_empty_streams() {
+        let error = checked_screenshot_length(0, 32).unwrap_err();
+        assert!(matches!(
+            error,
+            PreviewPlatformError::Unavailable(message)
+                if message.contains("empty")
+        ));
+    }
+
+    #[test]
+    fn screenshot_length_rejects_values_larger_than_the_allocation() {
+        let error = checked_screenshot_length(33, 32).unwrap_err();
+        assert!(matches!(
+            error,
+            PreviewPlatformError::Unavailable(message)
+                if message.contains("allocation")
+        ));
+    }
+
+    #[test]
+    fn screenshot_length_rejects_values_larger_than_a_slice() {
+        let logical_size = (isize::MAX as u64) + 1;
+        let error = checked_screenshot_length(logical_size, usize::MAX).unwrap_err();
+        assert!(matches!(
+            error,
+            PreviewPlatformError::Unavailable(message)
+                if message.contains("too large")
+        ));
     }
 }
