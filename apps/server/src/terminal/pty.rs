@@ -22,6 +22,8 @@ use crate::process::wrap_windows_pty_launch;
 #[cfg(windows)]
 use crate::process::{WindowsJob, WindowsPtyLaunchGate};
 
+const DEFAULT_TERMINAL_TYPE: &str = "xterm-256color";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PtyExit {
     pub exit_code: Option<i32>,
@@ -463,6 +465,13 @@ fn build_pty_command_from_launch(
     let mut command = CommandBuilder::new(launch.program);
     command.args(launch.args);
     command.cwd(&input.cwd);
+    if !input
+        .env
+        .keys()
+        .any(|key| key.eq_ignore_ascii_case("TERM"))
+    {
+        command.env("TERM", DEFAULT_TERMINAL_TYPE);
+    }
     for (key, value) in &input.env {
         command.env(key, value);
     }
@@ -500,14 +509,69 @@ fn resolve_pty_executable_on(
     )
 }
 
+fn decode_pty_output(
+    pending: &mut Vec<u8>,
+    bytes: &[u8],
+    end_of_stream: bool,
+) -> String {
+    pending.extend_from_slice(bytes);
+    let mut output = String::with_capacity(pending.len());
+    let mut consumed = 0;
+
+    while consumed < pending.len() {
+        let undecoded = &pending[consumed..];
+        match std::str::from_utf8(undecoded) {
+            Ok(text) => {
+                output.push_str(text);
+                consumed = pending.len();
+            }
+            Err(error) => {
+                let valid_len = error.valid_up_to();
+                if valid_len > 0 {
+                    let valid = std::str::from_utf8(&undecoded[..valid_len])
+                        .expect("Utf8Error::valid_up_to must identify valid UTF-8");
+                    output.push_str(valid);
+                    consumed += valid_len;
+                }
+
+                match error.error_len() {
+                    Some(invalid_len) => {
+                        output.push('\u{fffd}');
+                        consumed += invalid_len;
+                    }
+                    None if end_of_stream => {
+                        output.push('\u{fffd}');
+                        consumed = pending.len();
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+
+    if consumed > 0 {
+        pending.drain(..consumed);
+    }
+    output
+}
+
 fn read_output(reader: &mut dyn Read, sender: &broadcast::Sender<String>) {
     let mut buffer = [0u8; 8 * 1024];
+    let mut pending = Vec::with_capacity(4);
     loop {
         match reader.read(&mut buffer) {
-            Ok(0) | Err(_) => return,
+            Ok(0) | Err(_) => {
+                let text = decode_pty_output(&mut pending, &[], true);
+                if !text.is_empty() {
+                    let _ = sender.send(text);
+                }
+                return;
+            }
             Ok(read) => {
-                let text = String::from_utf8_lossy(&buffer[..read]).into_owned();
-                let _ = sender.send(text);
+                let text = decode_pty_output(&mut pending, &buffer[..read], false);
+                if !text.is_empty() {
+                    let _ = sender.send(text);
+                }
             }
         }
     }
@@ -653,6 +717,47 @@ mod tests {
     use std::io::{Error, ErrorKind};
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::time::Duration;
+
+    struct OneByteReader {
+        bytes: std::vec::IntoIter<u8>,
+    }
+
+    impl Read for OneByteReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let Some(byte) = self.bytes.next() else {
+                return Ok(0);
+            };
+            buffer[0] = byte;
+            Ok(1)
+        }
+    }
+
+    #[test]
+    fn pty_output_preserves_utf8_split_across_reads() {
+        let expected = "é◆😀─";
+        let (sender, mut receiver) = broadcast::channel(32);
+        let mut reader = OneByteReader {
+            bytes: expected.as_bytes().to_vec().into_iter(),
+        };
+
+        read_output(&mut reader, &sender);
+
+        let output: String = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn pty_output_replaces_invalid_and_truncated_utf8() {
+        let (sender, mut receiver) = broadcast::channel(8);
+        let mut reader = OneByteReader {
+            bytes: vec![b'a', 0x80, b'b', 0xe2, 0x97].into_iter(),
+        };
+
+        read_output(&mut reader, &sender);
+
+        let output: String = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
+        assert_eq!(output, "a\u{fffd}b\u{fffd}");
+    }
 
     #[derive(Clone, Debug)]
     struct FinishedPortableChild;
@@ -1374,6 +1479,49 @@ mod tests {
                 std::ffi::OsString::from("--direct"),
             ]
         );
+    }
+
+    #[test]
+    fn pty_launch_defaults_terminal_capabilities_for_direct_commands() {
+        let executable = std::env::current_exe().expect("current test executable");
+        let input = PtySpawnInput {
+            executable: executable.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            cwd: executable
+                .parent()
+                .expect("test executable directory")
+                .to_path_buf(),
+            cols: 80,
+            rows: 24,
+            env: BTreeMap::new(),
+        };
+
+        let command = build_pty_command_on(Platform::Unix, &input).unwrap();
+        assert_eq!(
+            command
+                .iter_extra_env_as_str()
+                .find(|(key, _)| *key == "TERM"),
+            Some(("TERM", "xterm-256color"))
+        );
+    }
+
+    #[test]
+    fn pty_launch_preserves_an_explicit_terminal_type() {
+        let executable = std::env::current_exe().expect("current test executable");
+        let input = PtySpawnInput {
+            executable: executable.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            cwd: executable
+                .parent()
+                .expect("test executable directory")
+                .to_path_buf(),
+            cols: 80,
+            rows: 24,
+            env: BTreeMap::from([("TERM".to_owned(), "dumb".to_owned())]),
+        };
+
+        let command = build_pty_command_on(Platform::Unix, &input).unwrap();
+        assert_eq!(command.get_env("TERM"), Some(OsStr::new("dumb")));
     }
 
     #[test]
