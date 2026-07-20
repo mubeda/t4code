@@ -105,10 +105,12 @@ usage is not included. It does not estimate UI usage or claim generic
 `WebContent`, browser, renderer, or executable-name matches. Core still includes
 the native server in this state.
 
-Provider, terminal, and eligible helper launchers register their root PID,
-scope, kind, and bounded label. Descendants inherit the nearest registered
-root's attribution. An unregistered descendant of the native server remains
-visible as External Tooling with `unknown` kind and fallback confidence; missing
+Production provider and terminal launchers register their root PID, scope,
+kind, and bounded label. The schema reserves the `helper` kind, but no
+production helper launcher currently registers it. Descendants inherit the
+nearest registered root's attribution. A process with no registered provider or
+terminal ancestor that remains descended from the native server is visible as
+External Tooling with `unknown` kind and fallback confidence; missing
 registration does not make it Core or remove it from the totals.
 
 Attribution and process actions use a stable process identity made from PID and
@@ -132,7 +134,8 @@ Use the Diagnostics UI or the corresponding typed RPC methods to:
 
 - inspect current process rows and resource history;
 - compare Combined, Core, and External current and historical usage;
-- identify attributed provider, terminal, helper, and fallback descendants;
+- identify registered provider and terminal roots, their inherited descendants,
+  and fallback descendants;
 - signal a supervised process when the UI permits it;
 - verify that shutdown leaves no owned child processes behind.
 
