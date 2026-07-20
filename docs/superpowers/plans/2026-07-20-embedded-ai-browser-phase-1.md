@@ -35,7 +35,7 @@ The current contract is Electron-shaped. Make it host-managed: add `setBounds`, 
 - Consumes: existing `DesktopPreviewTabState`, `DesktopPreviewScreenshotArtifact` (unchanged).
 - Produces: `DesktopPreviewBounds` type + `DesktopPreviewBoundsSchema`; `DesktopPreviewBridge.setBounds(tabId, bounds, visible)`; `registerWebview?` and `getPreviewConfig?` now optional. Tasks 8–9 implement/consume these exact signatures.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // packages/contracts/src/ipc.preview.test.ts
@@ -61,12 +61,12 @@ describe("DesktopPreviewBoundsSchema", () => {
 
 Note: match the Schema import/usage style used by the existing tests in `packages/contracts/src` (check a neighbouring `*.test.ts` for whether they import `Schema` from `"effect"` or `"effect/Schema"` and copy that idiom exactly).
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pnpm --filter @t4code/contracts test -- ipc.preview`
 Expected: FAIL — `DesktopPreviewBoundsSchema` is not exported.
 
-- [ ] **Step 3: Add the contract types**
+- [x] **Step 3: Add the contract types**
 
 In `packages/contracts/src/ipc.ts`, directly above `export interface DesktopPreviewWebviewConfig` (line ~617), add:
 
@@ -118,7 +118,7 @@ export interface DesktopPreviewBridge {
 
 (Only three edits inside the interface: `registerWebview` gains `?`, `setBounds` is inserted after it, `getPreviewConfig` gains `?`. Update the `getPreviewConfig` doc comment to note it is Electron-era and absent on Tauri.)
 
-- [ ] **Step 4: Fix compile fallout**
+- [x] **Step 4: Fix compile fallout**
 
 Run: `pnpm --filter @t4code/contracts typecheck && pnpm --filter @t4code/web typecheck`
 Expected: `previewWebviewConfigState.ts:44` fails — `Pick<DesktopPreviewBridge, "getPreviewConfig">` now yields an optional member. Fix `apps/web/src/browser/previewWebviewConfigState.ts` by guarding:
@@ -136,12 +136,12 @@ type PreviewConfigBridge = Pick<DesktopPreviewBridge, "getPreviewConfig">;
 
 (Adapt to the actual surrounding code — the intent is: optional member handled, same external behavior when absent as when rejecting. If other call sites of `registerWebview`/`getPreviewConfig` surface in typecheck, guard them the same way.)
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `pnpm --filter @t4code/contracts test -- ipc.preview && pnpm --filter @t4code/web typecheck`
 Expected: PASS / clean.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A packages/contracts apps/web/src/browser/previewWebviewConfigState.ts

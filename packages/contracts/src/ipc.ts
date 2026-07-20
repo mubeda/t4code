@@ -609,6 +609,25 @@ export const DesktopPreviewPointerEventSchema: Schema.Codec<DesktopPreviewPointe
   });
 
 /**
+ * Panel-relative bounds for a native preview webview, in logical (CSS)
+ * pixels relative to the main window's client area. The renderer measures
+ * these from `browserSurfaceStore` and forwards them verbatim.
+ */
+export interface DesktopPreviewBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export const DesktopPreviewBoundsSchema: Schema.Codec<DesktopPreviewBounds> = Schema.Struct({
+  x: Schema.Number,
+  y: Schema.Number,
+  width: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  height: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+
+/**
  * Static config a renderer needs to mount a preview `<webview>`. Returned
  * atomically by `DesktopPreviewBridge.getPreviewConfig()` so the renderer
  * doesn't have to wait on three separate IPC round-trips before the webview
@@ -1056,7 +1075,17 @@ export interface DesktopBridge {
 export interface DesktopPreviewBridge {
   createTab: (tabId: string) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
-  registerWebview: (tabId: string, webContentsId: number) => Promise<void>;
+  /**
+   * Electron-era API: associate a renderer-mounted `<webview>`. Absent on
+   * the Tauri host, which owns webview lifetime natively.
+   */
+  registerWebview?: (tabId: string, webContentsId: number) => Promise<void>;
+  /**
+   * Position/show the native webview over the right-panel rect. Bounds are
+   * logical pixels relative to the main window's client area. `visible:
+   * false` hides the webview without destroying it (tab switched away).
+   */
+  setBounds: (tabId: string, bounds: DesktopPreviewBounds, visible: boolean) => Promise<void>;
   navigate: (tabId: string, url: string) => Promise<void>;
   goBack: (tabId: string) => Promise<void>;
   goForward: (tabId: string) => Promise<void>;
@@ -1073,12 +1102,13 @@ export interface DesktopPreviewBridge {
   /** Drop the HTTP cache for the preview partition (all tabs). */
   clearCache: () => Promise<void>;
   /**
-   * One-shot config for mounting a preview `<webview>`. Replaces three
+   * Electron-era one-shot config for mounting a preview `<webview>`. Absent
+   * on the Tauri host, which owns webview configuration natively. Replaces three
    * earlier round-trip calls (`getBrowserPartition`, `getWebviewPreferences`,
    * `getPickPreloadPath`) so adding a new field here only requires touching
    * the contract + main, not the renderer's mount logic.
    */
-  getPreviewConfig: (environmentId: EnvironmentId) => Promise<DesktopPreviewWebviewConfig>;
+  getPreviewConfig?: (environmentId: EnvironmentId) => Promise<DesktopPreviewWebviewConfig>;
   setAnnotationTheme: (theme: DesktopPreviewAnnotationTheme) => Promise<void>;
   /**
    * Activate the in-page element picker for the given tab. Resolves with
