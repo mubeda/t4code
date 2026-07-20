@@ -75,11 +75,41 @@ struct ProviderCapabilities {
     agents: Vec<Value>,
 }
 
-pub(crate) async fn probe(settings: &Value, selected: Option<&str>, cwd: &Path) -> Vec<Value> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RichMetadataOutcome {
+    NotRequested,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ProviderProbeResult {
+    pub(crate) snapshot: Value,
+    pub(crate) rich_metadata: RichMetadataOutcome,
+}
+
+impl ProviderProbeResult {
+    fn new(snapshot: Value, rich_metadata: RichMetadataOutcome) -> Self {
+        Self {
+            snapshot,
+            rich_metadata,
+        }
+    }
+}
+
+pub(crate) async fn probe(
+    settings: &Value,
+    selected: Option<&str>,
+    cwd: &Path,
+) -> Vec<ProviderProbeResult> {
     probe_inner(settings, selected, cwd, false).await
 }
 
-pub(crate) async fn probe_full(settings: &Value, selected: Option<&str>, cwd: &Path) -> Vec<Value> {
+pub(crate) async fn probe_full(
+    settings: &Value,
+    selected: Option<&str>,
+    cwd: &Path,
+) -> Vec<ProviderProbeResult> {
     probe_inner(settings, selected, cwd, true).await
 }
 
@@ -88,7 +118,7 @@ async fn probe_inner(
     selected: Option<&str>,
     cwd: &Path,
     include_slow_capabilities: bool,
-) -> Vec<Value> {
+) -> Vec<ProviderProbeResult> {
     let mut snapshots = Vec::new();
     for definition in definitions(settings) {
         if selected.is_none_or(|selected| selected == definition.instance_id) {
@@ -284,52 +314,61 @@ async fn probe_one(
     definition: ProviderDefinition,
     cwd: &Path,
     include_slow_capabilities: bool,
-) -> Value {
+) -> ProviderProbeResult {
     let checked_at = super::control::now_iso();
     let default_models = provider_models_without_version(&definition);
     if !definition.available {
-        return snapshot(
-            &definition,
-            false,
-            None,
-            "disabled",
-            json!({ "status": "unknown" }),
-            default_models,
-            ProviderCapabilities::default(),
-            Some("Provider driver is unavailable in this build."),
-            checked_at,
-            "unavailable",
+        return ProviderProbeResult::new(
+            snapshot(
+                &definition,
+                false,
+                None,
+                "disabled",
+                json!({ "status": "unknown" }),
+                default_models,
+                ProviderCapabilities::default(),
+                Some("Provider driver is unavailable in this build."),
+                checked_at,
+                "unavailable",
+            ),
+            RichMetadataOutcome::NotRequested,
         );
     }
     if !definition.enabled {
-        return snapshot(
-            &definition,
-            false,
-            None,
-            "disabled",
-            json!({ "status": "unknown" }),
-            default_models,
-            ProviderCapabilities::default(),
-            None,
-            checked_at,
-            "available",
+        return ProviderProbeResult::new(
+            snapshot(
+                &definition,
+                false,
+                None,
+                "disabled",
+                json!({ "status": "unknown" }),
+                default_models,
+                ProviderCapabilities::default(),
+                None,
+                checked_at,
+                "available",
+            ),
+            RichMetadataOutcome::NotRequested,
         );
     }
     if !include_slow_capabilities
         && definition.driver == "opencode"
         && definition.endpoint.is_some()
     {
-        return snapshot(
-            &definition,
-            true,
-            None,
-            "ready",
-            json!({ "status": "unknown" }),
-            default_models,
-            ProviderCapabilities::default(),
-            None,
-            checked_at,
-            "available",
+        return ProviderProbeResult::new(
+            snapshot(
+                &definition,
+                true,
+                None,
+                "ready",
+                json!({ "status": "unknown" }),
+                default_models,
+                ProviderCapabilities::default(),
+                None,
+                checked_at,
+                "available",
+            ),
+            RichMetadataOutcome::NotRequested,
         );
     }
     if include_slow_capabilities
@@ -351,48 +390,62 @@ async fn probe_one(
             skills: Vec::new(),
             agents: inventory.agents,
         };
-        return snapshot(
-            &definition,
-            true,
-            None,
-            "ready",
-            inventory.auth,
-            models,
-            capabilities,
-            None,
-            checked_at,
-            "available",
+        return ProviderProbeResult::new(
+            snapshot(
+                &definition,
+                true,
+                None,
+                "ready",
+                inventory.auth,
+                models,
+                capabilities,
+                None,
+                checked_at,
+                "available",
+            ),
+            RichMetadataOutcome::Succeeded,
         );
     }
+    let mut rich_metadata = if include_slow_capabilities {
+        RichMetadataOutcome::Failed
+    } else {
+        RichMetadataOutcome::NotRequested
+    };
     let Some(executable) = resolve_provider_executable(&definition.binary_path) else {
-        return snapshot(
-            &definition,
-            false,
-            None,
-            "error",
-            json!({ "status": "unknown" }),
-            default_models,
-            ProviderCapabilities::default(),
-            Some("Provider executable was not found."),
-            checked_at,
-            "available",
+        return ProviderProbeResult::new(
+            snapshot(
+                &definition,
+                false,
+                None,
+                "error",
+                json!({ "status": "unknown" }),
+                default_models,
+                ProviderCapabilities::default(),
+                Some("Provider executable was not found."),
+                checked_at,
+                "available",
+            ),
+            rich_metadata,
         );
     };
     if !include_slow_capabilities {
-        return snapshot(
-            &definition,
-            true,
-            None,
-            "ready",
-            json!({ "status": "unknown" }),
-            default_models,
-            ProviderCapabilities {
-                slash_commands: built_in_slash_commands(&definition.driver),
-                ..ProviderCapabilities::default()
-            },
-            None,
-            checked_at,
-            "available",
+        return ProviderProbeResult::new(
+            snapshot(
+                &definition,
+                true,
+                None,
+                "ready",
+                json!({ "status": "unknown" }),
+                default_models,
+                ProviderCapabilities {
+                    slash_commands: built_in_slash_commands(&definition.driver),
+                    ..ProviderCapabilities::default()
+                },
+                None,
+                checked_at,
+                "available",
+            ),
+            rich_metadata,
         );
     }
 
@@ -432,6 +485,7 @@ async fn probe_one(
                 .await
             {
                 installed = true;
+                rich_metadata = RichMetadataOutcome::Succeeded;
                 (status, auth, message) = codex_probe_health(&inventory.account);
                 models = serde_json::to_value(inventory.models)
                     .ok()
@@ -473,25 +527,31 @@ async fn probe_one(
                     .await
                 {
                     models = discovered;
+                    rich_metadata = RichMetadataOutcome::Succeeded;
                 }
-                return snapshot_owned_message(
-                    &definition,
-                    installed,
-                    about.version.or(version),
-                    status,
-                    auth,
-                    models,
-                    capabilities,
-                    about.message,
-                    checked_at,
+                return ProviderProbeResult::new(
+                    snapshot_owned_message(
+                        &definition,
+                        installed,
+                        about.version.or(version),
+                        status,
+                        auth,
+                        models,
+                        capabilities,
+                        about.message,
+                        checked_at,
+                    ),
+                    rich_metadata,
                 );
             }
         }
         "claudeAgent" => {
+            let mut model_catalog_complete = false;
             if version_output.as_ref().is_some_and(|output| output.success)
                 && let Some(version) = version.as_deref()
             {
                 models = claude::model::models_for_version(version, &definition.custom_models);
+                model_catalog_complete = true;
             }
             if let Some(output) = run_command(
                 &executable,
@@ -517,6 +577,9 @@ async fn probe_one(
                     built_in_slash_commands(&definition.driver),
                 );
                 apply_agent_options(&mut models, &capabilities.agents);
+                if model_catalog_complete {
+                    rich_metadata = RichMetadataOutcome::Succeeded;
+                }
             }
         }
         "opencode" => {
@@ -529,6 +592,7 @@ async fn probe_one(
                 )
                 .await
             {
+                rich_metadata = RichMetadataOutcome::Succeeded;
                 status = "ready";
                 auth = inventory.auth;
                 models = serde_json::to_value(inventory.models)
@@ -540,20 +604,28 @@ async fn probe_one(
                 message = None;
             }
         }
+        "grok" => {
+            if version_output.as_ref().is_some_and(|output| output.success) {
+                rich_metadata = RichMetadataOutcome::Succeeded;
+            }
+        }
         _ => {}
     }
 
-    snapshot(
-        &definition,
-        installed,
-        version,
-        status,
-        auth,
-        models,
-        capabilities,
-        message,
-        checked_at,
-        "available",
+    ProviderProbeResult::new(
+        snapshot(
+            &definition,
+            installed,
+            version,
+            status,
+            auth,
+            models,
+            capabilities,
+            message,
+            checked_at,
+            "available",
+        ),
+        rich_metadata,
     )
 }
 
@@ -1353,6 +1425,19 @@ mod tests {
     use super::*;
 
     use axum::{Json, Router, routing::get};
+
+    #[tokio::test]
+    async fn quick_disabled_probe_marks_rich_metadata_not_requested() {
+        let settings = json!({
+            "providerInstances": {
+                "codex": { "driver": "codex", "enabled": false, "config": {} }
+            }
+        });
+        let result = probe(&settings, Some("codex"), Path::new(".")).await;
+
+        assert_eq!(result[0].rich_metadata, RichMetadataOutcome::NotRequested);
+        assert!(!result[0].snapshot["models"].as_array().unwrap().is_empty());
+    }
 
     #[test]
     fn provider_probe_timeouts_allow_slow_windows_cli_startup() {
