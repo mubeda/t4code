@@ -158,13 +158,13 @@ git commit -m "feat(contracts): host-managed DesktopPreviewBridge with setBounds
 **Interfaces:**
 - Produces: `tauri` with `unstable` + `devtools` features; per-platform webview crates available to `preview/platform/*` (Task 4–6).
 
-- [ ] **Step 1: Enable Tauri features (workspace root `Cargo.toml:36`)**
+- [x] **Step 1: Enable Tauri features (workspace root `Cargo.toml:36`)**
 
 ```toml
 tauri = { version = "2.11.5", features = ["unstable", "devtools", "image-png"] }
 ```
 
-- [ ] **Step 2: Add per-platform deps to `apps/desktop/src-tauri/Cargo.toml`**
+- [x] **Step 2: Add per-platform deps to `apps/desktop/src-tauri/Cargo.toml`**
 
 ```toml
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -188,12 +188,12 @@ cairo-rs = { version = "0.18", features = ["png"] }
 
 Run: `cargo tree -p t4code-desktop -i objc2-web-kit 2>/dev/null | head -5` (macOS) — if the version differs from wry's, change the dep spec to match wry's exactly (check `Cargo.lock` for wry's resolved versions of `objc2*`, `webview2-com`, `webkit2gtk`). Same check on each platform's CI later.
 
-- [ ] **Step 3: Compile**
+- [x] **Step 3: Compile**
 
 Run: `pnpm --filter @t4code/desktop typecheck`
 Expected: clean `cargo check` (features compile; `unstable` and `devtools` are additive).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add Cargo.toml Cargo.lock apps/desktop/src-tauri/Cargo.toml
