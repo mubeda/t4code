@@ -3,6 +3,7 @@ import type {
   ProviderSessionDefault,
   ServerProviderModel,
 } from "@t4code/contracts";
+import { useId } from "react";
 import {
   getProviderSessionDefaultControls,
   type ProviderSessionDefaultChange,
@@ -27,6 +28,10 @@ export function ProviderSessionDefaultsControls({
   disabled,
   onChange,
 }: ProviderSessionDefaultsControlsProps) {
+  const idPrefix = useId();
+  const modelId = `${idPrefix}-model`;
+  const effortId = `${idPrefix}-effort`;
+  const fastModeId = `${idPrefix}-fast-mode`;
   const controls = getProviderSessionDefaultControls({
     driver,
     models,
@@ -54,7 +59,7 @@ export function ProviderSessionDefaultsControls({
       data-testid="provider-session-defaults"
     >
       <div className="min-w-0 space-y-1">
-        <label className="text-sm font-medium" htmlFor="provider-default-model">
+        <label className="text-sm font-medium" htmlFor={modelId}>
           Default model
         </label>
         <Select
@@ -64,7 +69,7 @@ export function ProviderSessionDefaultsControls({
             if (next) change({ type: "model", value: next });
           }}
         >
-          <SelectTrigger aria-label="Default model" id="provider-default-model">
+          <SelectTrigger aria-label="Default model" id={modelId}>
             <SelectValue>{modelLabel}</SelectValue>
           </SelectTrigger>
           <SelectPopup>
@@ -89,7 +94,7 @@ export function ProviderSessionDefaultsControls({
 
       {controls.effortDescriptor ? (
         <div className="min-w-0 space-y-1">
-          <label className="text-sm font-medium" htmlFor="provider-default-effort">
+          <label className="text-sm font-medium" htmlFor={effortId}>
             Default effort
           </label>
           <Select
@@ -99,7 +104,7 @@ export function ProviderSessionDefaultsControls({
               if (next) change({ type: "effort", value: next });
             }}
           >
-            <SelectTrigger aria-label="Default effort" id="provider-default-effort">
+            <SelectTrigger aria-label="Default effort" id={effortId}>
               <SelectValue />
             </SelectTrigger>
             <SelectPopup>
@@ -115,14 +120,14 @@ export function ProviderSessionDefaultsControls({
 
       {controls.fastModeSupported ? (
         <div className="flex min-h-9 items-center gap-2 sm:pb-0.5">
-          <label className="text-sm font-medium" htmlFor="provider-default-fast-mode">
+          <label className="text-sm font-medium" htmlFor={fastModeId}>
             Fast by default
           </label>
           <Switch
             aria-label="Fast by default"
             checked={controls.fastMode ?? false}
             disabled={disabled}
-            id="provider-default-fast-mode"
+            id={fastModeId}
             onCheckedChange={(next) => change({ type: "fastMode", value: Boolean(next) })}
           />
         </div>
