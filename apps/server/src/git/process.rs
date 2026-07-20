@@ -1,5 +1,6 @@
 use std::{ffi::OsString, path::PathBuf, process::Stdio, time::Duration};
 
+use process_wrap::tokio::CommandWrap;
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
@@ -8,7 +9,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::process::configure_background_command;
+use crate::process::configure_supervised_background_command_wrap;
 
 const TRUNCATION_MARKER: &str = "\n\n[truncated]";
 
@@ -140,15 +141,15 @@ impl ProcessRunner {
     ) -> Result<ProcessOutput, ProcessError> {
         let command_label = request.command.to_string_lossy().into_owned();
         let mut command = Command::new(&request.command);
-        configure_background_command(&mut command);
         command
             .args(&request.args)
             .current_dir(&request.cwd)
             .envs(request.env.iter().cloned())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+            .stderr(Stdio::piped());
+        let mut command = CommandWrap::from(command);
+        configure_supervised_background_command_wrap(&mut command);
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(source) => {
@@ -159,7 +160,7 @@ impl ProcessRunner {
                 });
             }
         };
-        let stdout = match child.stdout.take() {
+        let stdout = match child.stdout().take() {
             Some(stdout) => stdout,
             None => {
                 return Err(ProcessError::Pipe {
@@ -168,7 +169,7 @@ impl ProcessRunner {
                 });
             }
         };
-        let stderr = match child.stderr.take() {
+        let stderr = match child.stderr().take() {
             Some(stderr) => stderr,
             None => {
                 return Err(ProcessError::Pipe {
@@ -181,7 +182,7 @@ impl ProcessRunner {
         let stderr_task = tokio::spawn(read_bounded(stderr, request.max_output_bytes));
 
         if let Some(input) = request.stdin.as_deref() {
-            let mut stdin = match child.stdin.take() {
+            let mut stdin = match child.stdin().take() {
                 Some(stdin) => stdin,
                 None => {
                     return Err(ProcessError::Pipe {
@@ -203,18 +204,18 @@ impl ProcessRunner {
                 });
             }
         } else {
-            drop(child.stdin.take());
+            drop(child.stdin().take());
         }
 
         let status = tokio::select! {
             biased;
             _ = cancellation.cancelled() => {
-                let _ = child.kill().await;
+                let _ = child.start_kill();
                 let _ = child.wait().await;
                 return Err(ProcessError::Cancelled { operation: request.operation });
             }
             _ = time::sleep(request.timeout) => {
-                let _ = child.kill().await;
+                let _ = child.start_kill();
                 let _ = child.wait().await;
                 return Err(ProcessError::Timeout {
                     operation: request.operation,

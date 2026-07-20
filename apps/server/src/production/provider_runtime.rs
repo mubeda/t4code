@@ -19,7 +19,8 @@ use crate::{
     },
     persistence::{ProviderSessionRuntime, Repositories},
     process::{
-        Platform, PreparedLaunch, configure_supervised_background_command_wrap,
+        Platform, PreparedLaunch, WindowsBatchLaunch,
+        configure_supervised_background_command_wrap,
         launch_executable_extensions, locate_executable, wrap_launch_program,
     },
     production::{
@@ -1482,7 +1483,10 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    Ok(wrap_launch_program(Platform::current(), executable, None)?.prepare(arguments))
+    Ok(
+        wrap_launch_program(Platform::current(), executable, WindowsBatchLaunch::Native)?
+            .prepare(arguments),
+    )
 }
 
 async fn kill_child(child: &SharedChild) {
@@ -4120,16 +4124,10 @@ done
             ["--flag", "&literal"],
         )
         .unwrap();
-        assert_eq!(launch.program, std::env::current_exe().unwrap());
+        assert_eq!(launch.program, std::path::PathBuf::from("provider.cmd"));
         assert_eq!(
             launch.args,
-            [
-                crate::process::WINDOWS_BATCH_TRAMPOLINE_ARG,
-                "provider.cmd",
-                "--flag",
-                "&literal",
-            ]
-            .map(std::ffi::OsString::from)
+            ["--flag", "&literal"].map(std::ffi::OsString::from)
         );
     }
 

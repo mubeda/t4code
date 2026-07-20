@@ -6,18 +6,19 @@ mod shell;
 mod windows_job;
 
 #[cfg(windows)]
-pub(crate) use windows_job::WindowsJob;
+pub(crate) use windows_job::{WindowsBatchLaunchGate, WindowsJob};
 
 pub use background::{
     configure_background_command, configure_background_std_command,
     configure_supervised_background_command_wrap,
 };
 pub(crate) use executable::{
-    PreparedLaunch, launch_executable_extensions, locate_executable, wrap_launch_program,
+    PreparedLaunch, WindowsBatchLaunch, launch_executable_extensions, locate_executable,
+    wrap_launch_program,
 };
-pub use executable::run_windows_batch_trampoline;
-#[cfg(test)]
-pub(crate) use executable::WINDOWS_BATCH_TRAMPOLINE_ARG;
+pub use executable::{WINDOWS_BATCH_TRAMPOLINE_ARG, run_windows_batch_trampoline};
+#[cfg(windows)]
+pub(crate) use executable::is_windows_batch_executable;
 pub use runner::{
     OutputMode, ProcessError, ProcessRunInput, ProcessRunOutput, ProcessRunner, TimeoutBehavior,
 };
