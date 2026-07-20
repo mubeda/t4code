@@ -13,6 +13,15 @@ import { formatCpuPercent, formatMemoryBytes } from "../status-bar/statusBarForm
 
 export type LiveProcessSortKey = "memory" | "cpu" | "name" | "scope";
 export type LiveProcessSortDirection = "asc" | "desc";
+export type HistoryProcessSortKey =
+  | "label"
+  | "scope"
+  | "kind"
+  | "cpuTime"
+  | "currentCpu"
+  | "averageCpu"
+  | "peakCpu"
+  | "maxMemory";
 export type HistoryMetric = "memory" | "cpu";
 
 export interface LiveProcessSort {
@@ -20,8 +29,18 @@ export interface LiveProcessSort {
   readonly direction: LiveProcessSortDirection;
 }
 
+export interface HistoryProcessSort {
+  readonly key: HistoryProcessSortKey;
+  readonly direction: LiveProcessSortDirection;
+}
+
 export const DEFAULT_LIVE_PROCESS_SORT: LiveProcessSort = {
   key: "memory",
+  direction: "desc",
+};
+
+export const DEFAULT_HISTORY_PROCESS_SORT: HistoryProcessSort = {
+  key: "maxMemory",
   direction: "desc",
 };
 
@@ -43,7 +62,6 @@ export const HISTORY_PROCESS_COLUMNS = [
   "Current CPU",
   "Average CPU",
   "Peak CPU",
-  "Current Memory",
   "Max Memory",
   "Command",
   "PID",
@@ -145,7 +163,6 @@ export interface ResourceHistoryProcessRowPresentation {
   readonly currentCpuLabel: string;
   readonly averageCpuLabel: string;
   readonly peakCpuLabel: string;
-  readonly currentMemoryLabel: string;
   readonly maxMemoryLabel: string;
 }
 
@@ -153,6 +170,7 @@ export interface ResourceHistoryPresentation {
   readonly checkedAt: ServerProcessResourceHistoryResult["readAt"] | null;
   readonly availability: "available" | "stale" | "unavailable";
   readonly metric: HistoryMetric;
+  readonly processSort: HistoryProcessSort;
   readonly summary: {
     readonly combined: ResourceHistorySummaryPresentation;
     readonly core: ResourceHistorySummaryPresentation;
@@ -266,22 +284,41 @@ function presentTotals(
   };
 }
 
-function currentServerDescendantPids(
+function currentServerDescendantProcessKeys(
   processes: ReadonlyArray<ServerProcessDiagnosticsEntry>,
   serverPid: number,
-): ReadonlySet<number> {
-  const processesByPid = new Map(processes.map((process) => [process.pid, process]));
-  const descendants = new Set<number>();
+): ReadonlySet<string> {
+  const processesByPid = new Map<number, Array<ServerProcessDiagnosticsEntry>>();
+  const processKeyCounts = new Map<string, number>();
+  for (const process of processes) {
+    const samePidProcesses = processesByPid.get(process.pid);
+    if (samePidProcesses === undefined) {
+      processesByPid.set(process.pid, [process]);
+    } else {
+      samePidProcesses.push(process);
+    }
+    processKeyCounts.set(process.processKey, (processKeyCounts.get(process.processKey) ?? 0) + 1);
+  }
+
+  if (processesByPid.get(serverPid)?.length !== 1) return new Set();
+
+  const descendants = new Set<string>();
   for (const process of processes) {
     if (process.pid === serverPid) continue;
+    if (processKeyCounts.get(process.processKey) !== 1) continue;
+    if (processesByPid.get(process.pid)?.length !== 1) continue;
+
     let current: ServerProcessDiagnosticsEntry | undefined = process;
     const visited = new Set<number>();
-    while (current && visited.add(current.pid)) {
+    while (current !== undefined && !visited.has(current.pid)) {
+      visited.add(current.pid);
       if (current.ppid === serverPid) {
-        descendants.add(process.pid);
+        descendants.add(process.processKey);
         break;
       }
-      current = processesByPid.get(current.ppid);
+      const parents = processesByPid.get(current.ppid);
+      if (parents?.length !== 1) break;
+      current = parents[0];
     }
   }
   return descendants;
@@ -327,6 +364,22 @@ export function toggleLiveProcessSort(
   };
 }
 
+export function toggleHistoryProcessSort(
+  current: HistoryProcessSort,
+  key: HistoryProcessSortKey,
+): HistoryProcessSort {
+  if (current.key === key) {
+    return {
+      key,
+      direction: current.direction === "asc" ? "desc" : "asc",
+    };
+  }
+  return {
+    key,
+    direction: key === "label" || key === "scope" || key === "kind" ? "asc" : "desc",
+  };
+}
+
 export function presentLiveProcesses(input: {
   readonly diagnostics: ServerProcessDiagnosticsResult | null;
   readonly queryError: string | null;
@@ -368,7 +421,10 @@ export function presentLiveProcesses(input: {
   }
 
   const diagnostics = input.diagnostics;
-  const descendantPids = currentServerDescendantPids(diagnostics.processes, diagnostics.serverPid);
+  const descendantProcessKeys = currentServerDescendantProcessKeys(
+    diagnostics.processes,
+    diagnostics.serverPid,
+  );
   return {
     checkedAt: diagnostics.readAt,
     availability: stale ? "stale" : "available",
@@ -392,7 +448,7 @@ export function presentLiveProcesses(input: {
         cpuLabel: formatCpuPercent(process.cpuPercent),
         rssBytes: process.rssBytes,
         memoryLabel: formatMemoryBytes(process.rssBytes),
-        canSignal: process.scope === "external" && descendantPids.has(process.pid),
+        canSignal: process.scope === "external" && descendantProcessKeys.has(process.processKey),
       })),
     sort,
     banners,
@@ -445,17 +501,54 @@ function presentHistoryProcess(
     currentCpuLabel: formatCpuPercent(process.currentCpuPercent),
     averageCpuLabel: formatCpuPercent(process.avgCpuPercent),
     peakCpuLabel: formatCpuPercent(process.maxCpuPercent),
-    currentMemoryLabel: formatMemoryBytes(process.currentRssBytes),
     maxMemoryLabel: formatMemoryBytes(process.maxRssBytes),
   };
+}
+
+function compareHistoryProcesses(
+  left: ServerProcessResourceHistorySummary,
+  right: ServerProcessResourceHistorySummary,
+  sort: HistoryProcessSort,
+): number {
+  let result: number;
+  switch (sort.key) {
+    case "label":
+      result = compareText(left.label, right.label);
+      break;
+    case "scope":
+      result = compareText(left.scope, right.scope);
+      break;
+    case "kind":
+      result = compareText(left.kind, right.kind);
+      break;
+    case "cpuTime":
+      result = left.cpuSecondsApprox - right.cpuSecondsApprox;
+      break;
+    case "currentCpu":
+      result = left.currentCpuPercent - right.currentCpuPercent;
+      break;
+    case "averageCpu":
+      result = left.avgCpuPercent - right.avgCpuPercent;
+      break;
+    case "peakCpu":
+      result = left.maxCpuPercent - right.maxCpuPercent;
+      break;
+    case "maxMemory":
+      result = left.maxRssBytes - right.maxRssBytes;
+      break;
+  }
+  if (result !== 0) return sort.direction === "asc" ? result : -result;
+  return compareText(left.processKey, right.processKey);
 }
 
 export function presentResourceHistory(input: {
   readonly history: ServerProcessResourceHistoryResult | null;
   readonly queryError: string | null;
   readonly metric?: HistoryMetric;
+  readonly processSort?: HistoryProcessSort;
 }): ResourceHistoryPresentation {
   const metric = input.metric ?? "memory";
+  const processSort = input.processSort ?? DEFAULT_HISTORY_PROCESS_SORT;
   const diagnosticMessage =
     input.history === null ? null : (Option.getOrNull(input.history.error)?.message ?? null);
   const hasDiagnosticError = diagnosticMessage !== null;
@@ -484,6 +577,7 @@ export function presentResourceHistory(input: {
       checkedAt: input.history?.readAt ?? null,
       availability: "unavailable",
       metric,
+      processSort,
       summary: null,
       sampleCountLabel: "...",
       sampleIntervalLabel: "...",
@@ -499,6 +593,7 @@ export function presentResourceHistory(input: {
     checkedAt: history.readAt,
     availability: stale ? "stale" : "available",
     metric,
+    processSort,
     summary: {
       combined: {
         title: "Combined",
@@ -520,7 +615,9 @@ export function presentResourceHistory(input: {
       bars,
       maximumAverage: Math.max(1, ...bars.map((bar) => bar.average.combined)),
     },
-    rows: history.processes.map(presentHistoryProcess),
+    rows: history.processes
+      .toSorted((left, right) => compareHistoryProcesses(left, right, processSort))
+      .map(presentHistoryProcess),
     banners,
   };
 }

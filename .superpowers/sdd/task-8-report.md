@@ -133,3 +133,91 @@ and Task 8 adds no schema declarations.
 - `.repos/` and `third_party/` were not modified.
 - The ignored, root-owned `.superpowers/sdd/progress.md` remains untouched and
   is not included in the commit.
+
+## Reviewer Correction
+
+The reviewer correction adds the omitted history-process sorting contract and
+makes live signal eligibility conservative when a diagnostics sample contains
+duplicate PID identities.
+
+- Added the closed `HistoryProcessSortKey` union for Label, Scope, Kind, CPU
+  time, Current CPU, Average CPU, Peak CPU, and Max memory.
+- History defaults to Max memory descending. Selecting a new text key defaults
+  ascending, selecting a new numeric key defaults descending, selecting the
+  active key toggles direction, and every comparison uses `processKey`
+  ascending as its deterministic final tie break.
+- The history table exposes sortable buttons and `aria-sort` on each supported
+  attribution/metric header. Command and PID remain visible and unsorted.
+- Removed Current Memory from the history table because the approved process
+  table requires CPU time, current/average/peak CPU, maximum memory, command,
+  and PID.
+- Signal eligibility is now represented by `processKey`, not PID. A duplicated
+  target PID, duplicated ancestor PID, duplicated server PID, ancestry cycle,
+  or reparented root makes the affected path unsignalable. The existing server
+  command still receives `{ pid, processKey, signal }` and revalidates the live
+  descendant identity before signaling.
+
+### Correction RED
+
+Focused pure tests failed as expected before implementation:
+
+```text
+duplicate target PID:
+expected signalEligibility["200:1"] false, received true
+
+ambiguous parent PID:
+expected signalEligibility["700:1"] false, received true
+
+history default:
+expected processSort { key: "maxMemory", direction: "desc" }, received undefined
+```
+
+The cycle regression also exposed an existing synchronous loop: `Set.add()`
+returns the Set rather than a membership boolean. The ancestry traversal now
+checks `Set.has()` before adding the PID.
+
+The component interaction RED failed because the history table still rendered
+static headings and had no `aria-sort="descending"` Max Memory control.
+
+### Correction Verification
+
+```text
+vp test apps/web/src/components/settings/resourceDiagnosticsPresentation.test.ts --run
+
+Test Files 1 passed (1)
+Tests 35 passed (35)
+
+vp test apps/web/src/components/settings/resourceDiagnosticsPresentation.test.ts \
+  apps/web/src/components/settings/ResourceDiagnosticsSections.test.tsx \
+  apps/web/src/components/settings/DiagnosticsSettings.test.tsx --run
+
+Test Files 3 passed (3)
+Tests 71 passed (71)
+
+vp test apps/web/src/components/settings --run
+
+Test Files 21 passed (21)
+Tests 317 passed (317)
+```
+
+The 71 focused tests include the original 56 cases plus the new pure and
+interaction regressions. The adjacent settings suite also passes. The test
+runner continues to emit its existing Node `ExperimentalWarning` about the
+missing `--localstorage-file`.
+
+Correction gates:
+
+```text
+vp check
+pass: All 1543 files are correctly formatted
+pass: Found no warnings or lint errors in 1163 files
+
+vp run typecheck
+exit 0
+
+git diff --check
+exit 0
+```
+
+Typecheck continues to emit the same repository-wide TS377098 suggestions
+documented above and reports no typecheck failure.
