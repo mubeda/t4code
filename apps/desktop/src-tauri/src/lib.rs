@@ -64,6 +64,7 @@ pub fn run() {
         .manage(ssh::SshEnvironmentManager::new())
         .manage(ssh::SshPasswordPromptManager::new())
         .manage(updates::DesktopUpdateManager::new())
+        .manage(preview::PreviewHostState::new())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build());
@@ -140,6 +141,7 @@ mod backend;
 mod bridge;
 mod config;
 mod context_menu;
+mod preview;
 mod security;
 mod shell_environment;
 pub mod ssh;

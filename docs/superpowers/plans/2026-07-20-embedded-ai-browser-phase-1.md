@@ -236,7 +236,7 @@ impl PreviewRegistry {
 }
 ```
 
-- [ ] **Step 1: Write failing tests in `registry.rs`**
+- [x] **Step 1: Write failing tests in `registry.rs`**
 
 ```rust
 // apps/desktop/src-tauri/src/preview/registry.rs  (tests at bottom of same file)
@@ -277,12 +277,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `pnpm --filter @t4code/desktop test`
 Expected: FAIL to compile — types not defined.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```rust
 // apps/desktop/src-tauri/src/preview/registry.rs
@@ -379,12 +379,12 @@ In `apps/desktop/src-tauri/src/lib.rs` add `mod preview;` to the module list (li
         .manage(preview::PreviewHostState::new())
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `pnpm --filter @t4code/desktop test`
 Expected: 4 new tests PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/desktop/src-tauri/src
