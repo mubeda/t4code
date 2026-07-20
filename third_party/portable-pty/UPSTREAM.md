@@ -21,13 +21,18 @@ upstream `LICENSE.md`, and the build-required source files:
 - `src/win/procthreadattr.rs`
 - `src/win/psuedocon.rs`
 
-## Local deviation
+## Local deviations
 
-The only intended source deviation from portable-pty 0.9.0 is Windows ConPTY
-support for supplying an existing Job Object through
-`PROC_THREAD_ATTRIBUTE_JOB_LIST` at process creation. This closes the interval
-in which a newly created ConPTY child could create descendants before T4Code
-assigned it to a Job.
+The intended source deviations from portable-pty 0.9.0 are limited to:
+
+- Windows ConPTY support for supplying an existing Job Object through
+  `PROC_THREAD_ATTRIBUTE_JOB_LIST` at process creation. This closes the
+  interval in which a newly created ConPTY child could create descendants
+  before T4Code assigned it to a Job.
+- Correct propagation of `TerminateProcess` success and failure from the
+  Windows child-killer implementations. Upstream 0.9.0 reverses the Win32
+  result check and `WinChild::kill` discards the result, which makes bounded
+  cleanup unable to distinguish a terminated child from a failed fallback.
 
 ## Updating
 
@@ -35,7 +40,7 @@ assigned it to a Job.
 2. Download and verify that exact crates.io release.
 3. Replace `Cargo.toml`, `LICENSE.md`, and `src/` from Cargo's verified registry
    source; do not copy examples, lockfiles, or Cargo registry metadata.
-4. Reapply only the JOB_LIST patch.
+4. Reapply only the deviations documented above.
 5. Update the version and checksum above from the workspace `Cargo.lock`.
 6. Run the Windows cross-compile harness, target-gated Windows tests, and all
    repository checks.
