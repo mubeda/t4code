@@ -108,9 +108,7 @@ impl SpawnedChildGuard {
         self.child.as_deref().expect("spawned child guard")
     }
 
-    fn handoff_child_to_waiter(
-        &mut self,
-    ) -> Box<dyn portable_pty::Child + Send + Sync> {
+    fn handoff_child_to_waiter(&mut self) -> Box<dyn portable_pty::Child + Send + Sync> {
         let root_killer = self.child().clone_killer();
         let child = self.child.take().expect("spawned child guard");
         self.root_killer = Some(root_killer);
@@ -260,10 +258,8 @@ impl PortablePtyBackend {
             Err(error) => return Err(error.to_string()),
         };
         #[cfg(unix)]
-        let mut child = SpawnedChildGuard::new_with_process_group(
-            child,
-            pair.master.process_group_leader(),
-        );
+        let mut child =
+            SpawnedChildGuard::new_with_process_group(child, pair.master.process_group_leader());
         #[cfg(not(unix))]
         let mut child = SpawnedChildGuard::new(child);
         drop(pair.slave);
@@ -394,13 +390,9 @@ fn build_pty_command(input: &PtySpawnInput) -> Result<PreparedPtyCommand, String
     }
     #[cfg(not(windows))]
     {
-        let command = build_pty_command_from_launch(
-            input,
-            prepare_pty_launch(platform, input, &executable)?,
-        );
-        Ok(PreparedPtyCommand {
-            command,
-        })
+        let command =
+            build_pty_command_from_launch(input, prepare_pty_launch(platform, input, &executable)?);
+        Ok(PreparedPtyCommand { command })
     }
 }
 
@@ -434,9 +426,7 @@ fn resolve_pty_executable_for_launch(
     platform: Platform,
     input: &PtySpawnInput,
 ) -> Result<PathBuf, String> {
-    match
-        resolve_pty_executable_on(platform, &input.executable, &input.cwd, &input.env)
-    {
+    match resolve_pty_executable_on(platform, &input.executable, &input.cwd, &input.env) {
         Some(executable) => Ok(executable),
         None => Err(format!(
             "terminal executable was not found: {}",

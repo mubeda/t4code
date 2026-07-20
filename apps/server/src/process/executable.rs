@@ -223,9 +223,12 @@ pub(crate) fn wrap_launch_program(
 
 fn is_windows_batch_executable(platform: Platform, executable: &Path) -> bool {
     platform == Platform::Windows
-        && executable.extension().and_then(OsStr::to_str).is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
-        })
+        && executable
+            .extension()
+            .and_then(OsStr::to_str)
+            .is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+            })
 }
 
 #[cfg(any(windows, test))]

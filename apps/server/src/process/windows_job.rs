@@ -45,7 +45,10 @@ impl WindowsPtyLaunchGate {
         );
         let name = identifier.clone();
         let ready_name = format!("{identifier}-ready");
-        let wide_name = name.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
+        let wide_name = name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
         // SAFETY: default security, a manual-reset nonsignalled event, and a
         // NUL-terminated name are valid CreateEventW inputs.
         let handle = unsafe { CreateEventW(std::ptr::null(), 1, 0, wide_name.as_ptr()) };
@@ -181,11 +184,7 @@ pub(crate) struct BackgroundJob {
 }
 
 impl CommandWrapper for BackgroundJob {
-    fn pre_spawn(
-        &mut self,
-        command: &mut Command,
-        core: &CommandWrap,
-    ) -> io::Result<()> {
+    fn pre_spawn(&mut self, command: &mut Command, core: &CommandWrap) -> io::Result<()> {
         let mut flags = windows::Win32::System::Threading::CREATE_SUSPENDED;
         if let Some(CreationFlags(user_flags)) = core.get_wrap::<CreationFlags>() {
             flags |= *user_flags;
@@ -262,8 +261,7 @@ fn resume_process_threads_from_snapshot(process_id: u32, snapshot: HANDLE) -> io
     while has_entry != 0 {
         if entry.th32OwnerProcessID == process_id {
             // SAFETY: the thread id came from the live snapshot.
-            let thread =
-                unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+            let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
             if thread.is_null() {
                 return Err(last_os_error());
             }

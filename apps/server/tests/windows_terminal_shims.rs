@@ -28,7 +28,10 @@ impl Drop for OwnedHandle {
 }
 
 fn create_gate(name: &str) -> OwnedHandle {
-    let name = name.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
+    let name = name
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
     // SAFETY: default security, a manual-reset nonsignalled event, and a
     // NUL-terminated name are valid CreateEventW inputs.
     let handle = unsafe { CreateEventW(std::ptr::null(), 1, 0, name.as_ptr()) };
@@ -84,10 +87,7 @@ fn descendant_spawning_powershell_command() -> String {
 
 async fn assert_terminal_kills_descendant(input: PtySpawnInput, child_pid_file: &Path) {
     let process = PortablePtyBackend
-        .spawn_with_windows_pty_trampoline(
-            &input,
-            Path::new(env!("CARGO_BIN_EXE_t4code")),
-        )
+        .spawn_with_windows_pty_trampoline(&input, Path::new(env!("CARGO_BIN_EXE_t4code")))
         .unwrap();
     let child_pid = wait_for_pid_file(child_pid_file).await;
 
@@ -251,7 +251,10 @@ fn pty_trampoline_waits_for_the_parent_supervision_gate() {
     // SAFETY: `gate` owns a live event handle.
     assert_ne!(unsafe { SetEvent(gate.0) }, 0);
     assert!(wait_for_child_exit(&mut child).success());
-    assert_eq!(std::fs::read_to_string(marker_file).unwrap().trim(), "started");
+    assert_eq!(
+        std::fs::read_to_string(marker_file).unwrap().trim(),
+        "started"
+    );
 }
 
 #[tokio::test]

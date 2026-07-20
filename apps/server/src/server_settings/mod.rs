@@ -554,7 +554,10 @@ mod tests {
     #[tokio::test]
     async fn filesystem_and_patch_boundaries_cover_settings_failure_contracts() {
         assert_eq!(
-            ProviderSettingsState::default().providers.cursor.binary_path,
+            ProviderSettingsState::default()
+                .providers
+                .cursor
+                .binary_path,
             "cursor-agent"
         );
 
