@@ -99,6 +99,7 @@ describe("FileEditingSessionRegistry StrictMode ownership", () => {
         root.render(
           <StrictMode>
             <RegistryOwner
+              key={lifetimeKey}
               lifetimeKey={lifetimeKey}
               openRelativePaths={openRelativePaths}
               activeRelativePath={activeRelativePath}
