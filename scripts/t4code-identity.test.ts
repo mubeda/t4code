@@ -6,6 +6,8 @@ import { describe, expect, it } from "vite-plus/test";
 
 const REPOSITORY_ROOT = NodePath.resolve(import.meta.dirname, "..");
 const SELF = "scripts/t4code-identity.test.ts";
+const ALLOWED_LEGACY_REFERENCE =
+  "T4Code is a minimal web GUI for coding agents. It is a different approach of T3 Code with some";
 const TEXT_EXTENSIONS = new Set([
   "",
   ".css",
@@ -73,6 +75,9 @@ describe("T4Code identity", () => {
       const absolutePath = NodePath.join(REPOSITORY_ROOT, path);
       const content = NodeFS.readFileSync(absolutePath, "utf8");
       for (const [index, line] of content.split(/\r?\n/u).entries()) {
+        if (normalizedPath === "README.md" && line === ALLOWED_LEGACY_REFERENCE) {
+          continue;
+        }
         const contentMatch = firstMatch(line);
         if (contentMatch) {
           findings.push(`${normalizedPath}:${String(index + 1)} matches /${contentMatch}/i`);

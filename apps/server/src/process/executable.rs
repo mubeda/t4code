@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
 };
@@ -31,7 +32,10 @@ pub(crate) fn launch_executable_extensions(
     let fallback = WINDOWS_LAUNCH_EXECUTABLE_EXTENSIONS
         .iter()
         .map(|extension| format!(".{extension}"));
-    let mut extensions = vec![String::new()];
+    // Bare Windows commands must follow PATHEXT semantics. Checking the exact
+    // name first can select npm's extensionless POSIX shim before its .cmd
+    // launcher, which CreateProcess rejects with ERROR_BAD_EXE_FORMAT.
+    let mut extensions: Vec<String> = Vec::new();
     for extension in configured.chain(fallback) {
         if !extensions
             .iter()
@@ -53,6 +57,7 @@ pub(crate) struct LaunchProgram {
 pub(crate) struct PreparedLaunch {
     pub(crate) program: PathBuf,
     pub(crate) args: Vec<OsString>,
+    pub(crate) raw_windows_args: Option<OsString>,
 }
 
 impl LaunchProgram {
@@ -72,106 +77,8 @@ impl LaunchProgram {
                         .map(|argument| argument.as_ref().to_owned()),
                 )
                 .collect(),
+            raw_windows_args: None,
         }
-    }
-}
-
-#[doc(hidden)]
-pub const WINDOWS_PTY_TRAMPOLINE_ARG: &str = "--t4code-internal-windows-pty-trampoline";
-
-/// Runs a Windows PTY target requested by an internal same-binary launch.
-///
-/// The parent attaches this trampoline to the terminal job before authorizing
-/// the prepared target. `std::process::Command` retains ownership of Windows
-/// `.cmd`/`.bat` quoting and invokes other targets with their structured argv.
-pub fn run_windows_pty_trampoline() -> Option<i32> {
-    #[cfg(not(windows))]
-    {
-        None
-    }
-    #[cfg(windows)]
-    {
-        let mut arguments = std::env::args_os().skip(1);
-        if arguments.next().as_deref() != Some(OsStr::new(WINDOWS_PTY_TRAMPOLINE_ARG)) {
-            return None;
-        }
-        let Some(gate_name) = arguments.next() else {
-            eprintln!("t4code: the internal Windows PTY launch is missing its gate.");
-            return Some(1);
-        };
-        let Some(ready_name) = arguments.next() else {
-            eprintln!("t4code: the internal Windows PTY launch is missing its ready event.");
-            return Some(1);
-        };
-        let Some(program) = arguments.next() else {
-            eprintln!("t4code: the internal Windows PTY launch is missing its target.");
-            return Some(1);
-        };
-        if wait_for_windows_pty_gate(&gate_name, &ready_name).is_err() {
-            eprintln!("t4code: the internal Windows PTY launch was not authorized.");
-            return Some(1);
-        }
-        match std::process::Command::new(program).args(arguments).status() {
-            Ok(status) => Some(status.code().unwrap_or(1)),
-            Err(_) => {
-                eprintln!("t4code: failed to start the requested Windows PTY target.");
-                Some(1)
-            }
-        }
-    }
-}
-
-#[cfg(windows)]
-fn wait_for_windows_pty_gate(gate_name: &OsStr, ready_name: &OsStr) -> Result<(), ()> {
-    use std::os::windows::ffi::OsStrExt;
-
-    use windows_sys::Win32::{
-        Foundation::{CloseHandle, WAIT_OBJECT_0},
-        System::Threading::{
-            EVENT_MODIFY_STATE, OpenEventW, SYNCHRONIZATION_SYNCHRONIZE, SetEvent,
-            WaitForSingleObject,
-        },
-    };
-
-    const GATE_TIMEOUT_MS: u32 = 30_000;
-
-    let gate_name = gate_name
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    // SAFETY: `gate_name` is NUL terminated and remains live for this call.
-    let gate = unsafe { OpenEventW(SYNCHRONIZATION_SYNCHRONIZE, 0, gate_name.as_ptr()) };
-    if gate.is_null() {
-        return Err(());
-    }
-    let ready_name = ready_name
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    // SAFETY: `ready_name` is NUL terminated and remains live for this call.
-    let ready = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, ready_name.as_ptr()) };
-    if ready.is_null() {
-        // SAFETY: this function owns the event handle returned by OpenEventW.
-        unsafe { CloseHandle(gate) };
-        return Err(());
-    }
-    // SAFETY: `ready` is a live event handle opened with modify access.
-    let ready_result = unsafe { SetEvent(ready) };
-    // SAFETY: this function owns the ready-event handle returned by OpenEventW.
-    unsafe { CloseHandle(ready) };
-    if ready_result == 0 {
-        // SAFETY: this function owns the gate handle returned by OpenEventW.
-        unsafe { CloseHandle(gate) };
-        return Err(());
-    }
-    // SAFETY: `gate` is a live event handle returned by OpenEventW.
-    let result = unsafe { WaitForSingleObject(gate, GATE_TIMEOUT_MS) };
-    // SAFETY: this function owns the event handle returned by OpenEventW.
-    unsafe { CloseHandle(gate) };
-    if result == WAIT_OBJECT_0 {
-        Ok(())
-    } else {
-        Err(())
     }
 }
 
@@ -231,25 +138,94 @@ fn is_windows_batch_executable(platform: Platform, executable: &Path) -> bool {
             })
 }
 
-#[cfg(any(windows, test))]
-pub(crate) fn wrap_windows_pty_launch(
+pub(crate) fn wrap_windows_batch_command(
+    platform: Platform,
     target: PreparedLaunch,
-    trampoline: &Path,
-    gate_name: &OsStr,
-    ready_name: &OsStr,
-) -> PreparedLaunch {
-    PreparedLaunch {
-        program: trampoline.to_path_buf(),
-        args: [
-            OsString::from(WINDOWS_PTY_TRAMPOLINE_ARG),
-            gate_name.to_owned(),
-            ready_name.to_owned(),
-            target.program.into_os_string(),
-        ]
-        .into_iter()
-        .chain(target.args)
-        .collect(),
+    environment: &BTreeMap<String, String>,
+) -> Result<PreparedLaunch, String> {
+    if !is_windows_batch_executable(platform, &target.program) {
+        return Ok(target);
     }
+
+    let command_processor = environment
+        .iter()
+        .find(|(key, value)| key.eq_ignore_ascii_case("ComSpec") && !value.trim().is_empty())
+        .map(|(_, value)| value.as_str())
+        .unwrap_or("cmd.exe");
+    let raw_windows_args = make_windows_batch_command_line(&target.program, &target.args)?;
+
+    Ok(PreparedLaunch {
+        program: PathBuf::from(command_processor),
+        args: vec![raw_windows_args.clone()],
+        raw_windows_args: Some(raw_windows_args),
+    })
+}
+
+fn make_windows_batch_command_line(
+    script: &Path,
+    arguments: &[OsString],
+) -> Result<OsString, String> {
+    let script = script.to_string_lossy();
+    if script.contains('"') || script.ends_with('\\') {
+        return Err(
+            "Windows batch executable paths cannot contain quotes or end with a backslash"
+                .to_owned(),
+        );
+    }
+
+    let mut command = String::from("/e:ON /v:OFF /d /c \"\"");
+    command.push_str(&script);
+    command.push('"');
+    for argument in arguments {
+        command.push(' ');
+        append_windows_batch_argument(&mut command, &argument.to_string_lossy())?;
+    }
+    command.push('"');
+    Ok(command.into())
+}
+
+fn append_windows_batch_argument(command: &mut String, argument: &str) -> Result<(), String> {
+    if argument
+        .chars()
+        .any(|character| matches!(character, '\r' | '\n'))
+    {
+        return Err("Windows batch executable arguments cannot contain line breaks".to_owned());
+    }
+
+    const SAFE_UNQUOTED: &str = r"#$*+-./:?@\_";
+    let quote = argument.is_empty()
+        || argument.ends_with('\\')
+        || argument.chars().any(|character| {
+            (character.is_ascii()
+                && !(character.is_ascii_alphanumeric() || SAFE_UNQUOTED.contains(character)))
+                || character.is_control()
+        });
+    if quote {
+        command.push('"');
+    }
+
+    let mut backslashes = 0;
+    for character in argument.chars() {
+        if character == '\\' {
+            backslashes += 1;
+        } else {
+            if character == '"' {
+                command.extend(std::iter::repeat_n('\\', backslashes));
+                command.push('"');
+            } else if character == '%' {
+                // Prevent `%VAR%` expansion with the same zero-length `%cd%`
+                // substring used by Rust's hardened batch launcher.
+                command.push_str("%%cd:~,%");
+            }
+            backslashes = 0;
+        }
+        command.push(character);
+    }
+    if quote {
+        command.extend(std::iter::repeat_n('\\', backslashes));
+        command.push('"');
+    }
+    Ok(())
 }
 
 pub(crate) fn locate_executable<E>(
@@ -279,6 +255,12 @@ where
             } else {
                 cwd?.join(directory)
             };
+            if command_path.extension().is_some() {
+                let candidate = directory.join(command);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
             extensions.iter().find_map(|extension| {
                 let extension = extension.as_ref().trim();
                 let candidate = if extension.is_empty() {

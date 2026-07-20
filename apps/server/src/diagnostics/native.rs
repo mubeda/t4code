@@ -399,7 +399,7 @@ fn platform_process_record(_pid: u32) -> std::io::Result<PlatformProcessRecord> 
     ))
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn platform_process_creation_identity(pid: u32) -> std::io::Result<u64> {
     platform_process_record(pid).map(|record| record.started_at)
 }
