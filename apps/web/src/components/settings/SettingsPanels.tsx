@@ -9,6 +9,7 @@ import {
   ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceId,
+  type ProviderSessionDefault,
   type ScopedThreadRef,
 } from "@t4code/contracts";
 import { scopeThreadRef } from "@t4code/client-runtime/environment";
@@ -1367,6 +1368,15 @@ export function ProviderSettingsPanel() {
     });
   };
 
+  const updateSessionDefaults = (driver: ProviderDriverKind, next: ProviderSessionDefault) => {
+    updateSettings({
+      providerSessionDefaults: {
+        ...settings.providerSessionDefaults,
+        [driver]: next,
+      },
+    });
+  };
+
   const updateProviderModelPreferences = (
     instanceId: ProviderInstanceId,
     next: {
@@ -1438,6 +1448,7 @@ export function ProviderSettingsPanel() {
     <SettingsPageContainer>
       <SettingsSection
         title="Providers"
+        contentVariant="stack"
         headerAction={
           <div className="flex items-center gap-1.5">
             <ProviderLastChecked lastCheckedAt={lastCheckedAt} />
@@ -1547,6 +1558,13 @@ export function ProviderSettingsPanel() {
               }}
               onDelete={row.isDefault ? undefined : () => deleteProviderInstance(row.instanceId)}
               headerAction={headerAction}
+              {...(row.isDefault
+                ? {
+                    sessionDefaults: settings.providerSessionDefaults[row.driver],
+                    onSessionDefaultsChange: (next: ProviderSessionDefault) =>
+                      updateSessionDefaults(row.driver, next),
+                  }
+                : {})}
               hiddenModels={modelPreferences.hiddenModels}
               favoriteModels={favoriteModels}
               modelOrder={modelPreferences.modelOrder}
