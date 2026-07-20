@@ -710,7 +710,7 @@ git commit -m "feat(preview): platform ops trait with macOS WKWebView implementa
 - Consumes: `PlatformWebviewOps`, `json_envelope`, `ClearDataKinds`, `PreviewPlatformError` from Task 4.
 - Produces: `WindowsWebviewOps` (selected as `Platform` on Windows).
 
-- [ ] **Step 1: Implement**
+- [x] **Step 1: Implement**
 
 On Windows, `platform.controller()` returns the `ICoreWebView2Controller`; get `ICoreWebView2` via `.CoreWebView2()`. Key mappings (all inside `webview.with_webview(...)` with the same mpsc/timeout pattern as macOS — copy `with_wk` into a `with_wv2` helper):
 
@@ -741,11 +741,11 @@ On Windows, `platform.controller()` returns the `ICoreWebView2Controller`; get `
 
 Write the full impl following those mappings; each method mirrors the macOS structure (channel + `with_webview` + completion handler). webview2-com provides typed callback handler builders (`ExecuteScriptCompletedHandler::create(Box::new(...))` etc.) — use them rather than hand-rolling COM vtables.
 
-- [ ] **Step 2: Cross-check compile**
+- [x] **Step 2: Cross-check compile**
 
 This machine is macOS, so `cargo check` skips the file locally. Verify: `cargo check -p t4code-desktop` still clean locally (module is cfg-gated), and rely on Windows CI — or run `cargo check --target x86_64-pc-windows-msvc` if the toolchain target is installed (it likely is, given `scripts/run-msvc-x64.mjs`; if `rustup target list --installed` lacks it, note it in the PR for Windows CI validation instead of blocking).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add apps/desktop/src-tauri/src/preview/platform/windows.rs
