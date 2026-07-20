@@ -4833,7 +4833,7 @@ dependencies = [
 
 [[package]]
 name = "t4code-desktop"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -4867,7 +4867,7 @@ dependencies = [
 
 [[package]]
 name = "t4code-server"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "axum",
  "base64 0.22.1",
