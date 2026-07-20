@@ -6,19 +6,28 @@ import {
   scopeThreadRef,
 } from "@t4code/client-runtime/environment";
 import {
+  DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_SERVER_SETTINGS,
+  defaultInstanceIdForDriver,
   EnvironmentId,
   ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
   ThreadId,
+  type ProviderOptionDescriptor,
   type ScopedProjectRef,
+  type ServerConfig,
+  type ServerProvider,
+  type ServerProviderModel,
 } from "@t4code/contracts";
+import { createModelSelection } from "@t4code/shared/model";
 import { act, type ReactElement, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const testState = vi.hoisted(() => ({
   projects: [] as Array<Record<string, unknown>>,
-  serverConfigs: new Map<string, { settings: typeof DEFAULT_SERVER_SETTINGS }>(),
+  serverConfigs: new Map<string, Pick<ServerConfig, "providers" | "settings">>(),
   routeParams: {} as Record<string, string | undefined>,
   router: {
     state: { matches: [{ params: {} as Record<string, string | undefined> }] },
@@ -67,6 +76,51 @@ import { useHandleNewThread, useNewThreadHandler } from "./useHandleNewThread";
 const environmentId = EnvironmentId.make("local-test");
 const projectId = ProjectId.make("project-test");
 const projectRef = scopeProjectRef(environmentId, projectId);
+const codexDriver = ProviderDriverKind.make("codex");
+const claudeDriver = ProviderDriverKind.make("claudeAgent");
+const codexInstanceId = defaultInstanceIdForDriver(codexDriver);
+const claudeWorkInstanceId = ProviderInstanceId.make("claude_work");
+
+const reasoningEffortDescriptor: ProviderOptionDescriptor = {
+  id: "reasoningEffort",
+  label: "Reasoning",
+  type: "select",
+  options: [
+    { id: "low", label: "Low" },
+    { id: "medium", label: "Medium", isDefault: true },
+    { id: "high", label: "High" },
+  ],
+  currentValue: "medium",
+};
+
+const serviceTierDescriptor: ProviderOptionDescriptor = {
+  id: "serviceTier",
+  label: "Service tier",
+  type: "select",
+  options: [
+    { id: "default", label: "Standard", isDefault: true },
+    { id: "fast", label: "Fast" },
+  ],
+  currentValue: "default",
+};
+
+const claudeEffortDescriptor: ProviderOptionDescriptor = {
+  id: "effort",
+  label: "Effort",
+  type: "select",
+  options: [
+    { id: "low", label: "Low", isDefault: true },
+    { id: "high", label: "High" },
+  ],
+  currentValue: "low",
+};
+
+const fastModeDescriptor: ProviderOptionDescriptor = {
+  id: "fastMode",
+  label: "Fast mode",
+  type: "boolean",
+  currentValue: false,
+};
 
 interface MountedTree {
   readonly container: HTMLDivElement;
@@ -87,12 +141,75 @@ function setRoute(params: Record<string, string | undefined>): void {
   testState.router.state.matches = [{ params }];
 }
 
-function project(id: ProjectId = projectId, environment: EnvironmentId = environmentId) {
+function project(
+  id: ProjectId = projectId,
+  environment: EnvironmentId = environmentId,
+  overrides: Record<string, unknown> = {},
+) {
   return {
     id,
     environmentId: environment,
     workspaceRoot: `X:\\repos\\${id}`,
+    defaultModelSelection: null,
+    ...overrides,
   };
+}
+
+function providerModel(
+  slug: string,
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+  options: { readonly isCustom?: boolean } = {},
+): ServerProviderModel {
+  return {
+    slug,
+    name: slug,
+    isCustom: options.isCustom ?? false,
+    capabilities: { optionDescriptors: [...descriptors] },
+  };
+}
+
+function serverProvider(input: {
+  readonly instanceId: ProviderInstanceId;
+  readonly driver: ProviderDriverKind;
+  readonly models: ReadonlyArray<ServerProviderModel>;
+}): ServerProvider {
+  return {
+    instanceId: input.instanceId,
+    driver: input.driver,
+    enabled: true,
+    installed: true,
+    version: null,
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: "2026-07-20T00:00:00.000Z",
+    models: [...input.models],
+    slashCommands: [],
+    skills: [],
+    agents: [],
+  };
+}
+
+function configureEnvironment(input: {
+  readonly providers: ReadonlyArray<ServerProvider>;
+  readonly settings?: Partial<typeof DEFAULT_SERVER_SETTINGS>;
+}): void {
+  testState.serverConfigs.set(environmentId, {
+    providers: [...input.providers],
+    settings: {
+      ...DEFAULT_SERVER_SETTINGS,
+      ...input.settings,
+    },
+  });
+}
+
+function createdDraftModelSelection() {
+  const draft = useComposerDraftStore.getState().getDraftSessionByProjectRef(projectRef);
+  expect(draft).not.toBeNull();
+  const composerDraft = useComposerDraftStore.getState().getComposerDraft(draft!.draftId);
+  expect(composerDraft).not.toBeNull();
+  const activeProvider = composerDraft!.activeProvider;
+  expect(activeProvider).not.toBeNull();
+  return composerDraft!.modelSelectionByProvider[activeProvider!];
 }
 
 function NewThreadHarness({
@@ -175,6 +292,7 @@ beforeEach(() => {
   testState.shellExists = false;
   testState.projectOrder = [];
   testState.logicalProjectKey = "logical:project";
+  vi.spyOn(console, "warn").mockImplementation(() => {});
   setRoute({});
 });
 
@@ -207,7 +325,372 @@ describe("useNewThreadHandler", () => {
       to: "/draft/$draftId",
       params: { draftId: draft!.draftId },
     });
-    expect(useComposerDraftStore.getState().getComposerDraft(draft!.draftId)).toBeNull();
+    expect(createdDraftModelSelection()).toMatchObject({
+      instanceId: codexInstanceId,
+      model: DEFAULT_MODEL_BY_PROVIDER[codexDriver],
+    });
+  });
+
+  it("seeds a normal new draft from the configured provider session default", async () => {
+    testState.projects = [project()];
+    configureEnvironment({
+      providers: [
+        serverProvider({
+          instanceId: codexInstanceId,
+          driver: codexDriver,
+          models: [
+            providerModel("gpt-configured", [reasoningEffortDescriptor, serviceTierDescriptor]),
+          ],
+        }),
+      ],
+      settings: {
+        providerSessionDefaults: {
+          [codexDriver]: {
+            model: "gpt-configured",
+            options: [
+              { id: "reasoningEffort", value: "high" },
+              { id: "serviceTier", value: "fast" },
+            ],
+          },
+        },
+      },
+    });
+
+    await mount(<NewThreadHarness />);
+    await clickNewThread();
+
+    expect(createdDraftModelSelection()).toEqual({
+      instanceId: codexInstanceId,
+      model: "gpt-configured",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "fast" },
+      ],
+    });
+  });
+
+  it("seeds a worktree new draft from the configured provider session default", async () => {
+    testState.projects = [project()];
+    configureEnvironment({
+      providers: [
+        serverProvider({
+          instanceId: codexInstanceId,
+          driver: codexDriver,
+          models: [
+            providerModel("gpt-worktree", [reasoningEffortDescriptor, serviceTierDescriptor]),
+          ],
+        }),
+      ],
+      settings: {
+        providerSessionDefaults: {
+          [codexDriver]: {
+            model: "gpt-worktree",
+            options: [
+              { id: "reasoningEffort", value: "low" },
+              { id: "serviceTier", value: "fast" },
+            ],
+          },
+        },
+      },
+    });
+
+    await mount(<NewThreadHarness options={{ envMode: "worktree" }} />);
+    await clickNewThread();
+
+    expect(createdDraftModelSelection()).toEqual({
+      instanceId: codexInstanceId,
+      model: "gpt-worktree",
+      options: [
+        { id: "reasoningEffort", value: "low" },
+        { id: "serviceTier", value: "fast" },
+      ],
+    });
+  });
+
+  it("lets the project default select the provider instance and retain every explicit option", async () => {
+    const projectSelection = createModelSelection(claudeWorkInstanceId, "claude-project", [
+      { id: "effort", value: "high" },
+      { id: "fastMode", value: true },
+    ]);
+    testState.projects = [
+      project(projectId, environmentId, { defaultModelSelection: projectSelection }),
+    ];
+    configureEnvironment({
+      providers: [
+        serverProvider({
+          instanceId: codexInstanceId,
+          driver: codexDriver,
+          models: [providerModel("gpt-configured", [reasoningEffortDescriptor])],
+        }),
+        serverProvider({
+          instanceId: claudeWorkInstanceId,
+          driver: claudeDriver,
+          models: [providerModel("claude-project", [claudeEffortDescriptor, fastModeDescriptor])],
+        }),
+      ],
+      settings: {
+        providerSessionDefaults: {
+          [codexDriver]: { model: "gpt-configured" },
+          [claudeDriver]: {
+            model: "claude-configured",
+            options: [
+              { id: "effort", value: "low" },
+              { id: "fastMode", value: false },
+            ],
+          },
+        },
+      },
+    });
+
+    await mount(<NewThreadHarness />);
+    await clickNewThread();
+
+    expect(createdDraftModelSelection()).toEqual(projectSelection);
+  });
+
+  it("keeps sticky provider routing but replaces sticky model options with shared defaults", async () => {
+    testState.projects = [project()];
+    configureEnvironment({
+      providers: [
+        serverProvider({
+          instanceId: claudeWorkInstanceId,
+          driver: claudeDriver,
+          models: [
+            providerModel("claude-sticky", [claudeEffortDescriptor, fastModeDescriptor]),
+            providerModel("claude-current", [claudeEffortDescriptor, fastModeDescriptor]),
+          ],
+        }),
+      ],
+      settings: {
+        providerInstances: {
+          [claudeWorkInstanceId]: { driver: claudeDriver },
+        },
+        providerSessionDefaults: {
+          [claudeDriver]: {
+            model: "claude-current",
+            options: [
+              { id: "effort", value: "low" },
+              { id: "fastMode", value: false },
+            ],
+          },
+        },
+      },
+    });
+    useComposerDraftStore.getState().setStickyModelSelection(
+      createModelSelection(claudeWorkInstanceId, "claude-sticky", [
+        { id: "effort", value: "high" },
+        { id: "fastMode", value: true },
+      ]),
+    );
+
+    await mount(<NewThreadHarness />);
+    await clickNewThread();
+
+    expect(createdDraftModelSelection()).toEqual({
+      instanceId: claudeWorkInstanceId,
+      model: "claude-current",
+      options: [
+        { id: "effort", value: "low" },
+        { id: "fastMode", value: false },
+      ],
+    });
+  });
+
+  it("falls back within the selected instance without mutating configured defaults", async () => {
+    const configuredDefault = {
+      model: "gpt-default-instance-only",
+      options: [{ id: "reasoningEffort", value: "high" }] as const,
+    };
+    const settings = {
+      providerInstances: {
+        [ProviderInstanceId.make("codex_work")]: { driver: codexDriver },
+      },
+      providerSessionDefaults: {
+        [codexDriver]: configuredDefault,
+      },
+    };
+    const codexWorkInstanceId = ProviderInstanceId.make("codex_work");
+    testState.projects = [project()];
+    configureEnvironment({
+      providers: [
+        serverProvider({
+          instanceId: codexInstanceId,
+          driver: codexDriver,
+          models: [providerModel("gpt-default-instance-only", [reasoningEffortDescriptor])],
+        }),
+        serverProvider({
+          instanceId: codexWorkInstanceId,
+          driver: codexDriver,
+          models: [
+            providerModel("custom-first", [reasoningEffortDescriptor], {
+              isCustom: true,
+            }),
+            providerModel("built-in-second", [reasoningEffortDescriptor]),
+          ],
+        }),
+      ],
+      settings,
+    });
+    useComposerDraftStore.setState({ stickyActiveProvider: codexWorkInstanceId });
+
+    await mount(<NewThreadHarness />);
+    await clickNewThread();
+
+    expect(createdDraftModelSelection()).toEqual({
+      instanceId: codexWorkInstanceId,
+      model: "built-in-second",
+      options: [{ id: "reasoningEffort", value: "high" }],
+    });
+    expect(
+      testState.serverConfigs.get(environmentId)?.settings.providerSessionDefaults[codexDriver],
+    ).toEqual(configuredDefault);
+    expect(console.warn).toHaveBeenCalledWith(
+      "Provider session default fallback",
+      expect.objectContaining({
+        driver: codexDriver,
+        instanceId: codexWorkInstanceId,
+        configuredModel: "gpt-default-instance-only",
+        resolvedModel: "built-in-second",
+        reason: "configured-model-unavailable",
+      }),
+    );
+  });
+
+  it("does not borrow provider discovery from another environment", async () => {
+    const remoteEnvironmentId = EnvironmentId.make("remote-test");
+    testState.projects = [project()];
+    configureEnvironment({
+      providers: [],
+      settings: {
+        providerInstances: {
+          [claudeWorkInstanceId]: { driver: claudeDriver },
+        },
+        providerSessionDefaults: {
+          [claudeDriver]: { model: "claude-configured" },
+        },
+      },
+    });
+    testState.serverConfigs.set(remoteEnvironmentId, {
+      providers: [
+        serverProvider({
+          instanceId: claudeWorkInstanceId,
+          driver: claudeDriver,
+          models: [providerModel("remote-only-model", [claudeEffortDescriptor])],
+        }),
+      ],
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerInstances: {
+          [claudeWorkInstanceId]: { driver: claudeDriver },
+        },
+        providerSessionDefaults: {
+          [claudeDriver]: { model: "remote-only-model" },
+        },
+      },
+    });
+    useComposerDraftStore.setState({ stickyActiveProvider: claudeWorkInstanceId });
+
+    await mount(<NewThreadHarness />);
+    await clickNewThread();
+
+    expect(createdDraftModelSelection()).toMatchObject({
+      instanceId: claudeWorkInstanceId,
+      model: DEFAULT_MODEL_BY_PROVIDER[claudeDriver],
+    });
+    expect(console.warn).toHaveBeenCalledWith(
+      "Provider session default fallback",
+      expect.objectContaining({
+        driver: claudeDriver,
+        instanceId: claudeWorkInstanceId,
+        configuredModel: "claude-configured",
+        reason: "models-unavailable",
+      }),
+    );
+  });
+
+  it("does not reseed an already-created reusable draft", async () => {
+    const draftId = "draft-with-selection" as never;
+    const currentSelection = createModelSelection(codexInstanceId, "gpt-user-choice", [
+      { id: "reasoningEffort", value: "low" },
+      { id: "serviceTier", value: "default" },
+    ]);
+    configureEnvironment({
+      providers: [
+        serverProvider({
+          instanceId: codexInstanceId,
+          driver: codexDriver,
+          models: [
+            providerModel("gpt-current-default", [
+              reasoningEffortDescriptor,
+              serviceTierDescriptor,
+            ]),
+          ],
+        }),
+      ],
+      settings: {
+        providerSessionDefaults: {
+          [codexDriver]: {
+            model: "gpt-current-default",
+            options: [
+              { id: "reasoningEffort", value: "high" },
+              { id: "serviceTier", value: "fast" },
+            ],
+          },
+        },
+      },
+    });
+    useComposerDraftStore
+      .getState()
+      .setLogicalProjectDraftThreadId(scopedProjectKey(projectRef), projectRef, draftId, {
+        threadId: ThreadId.make("thread-with-selection"),
+      });
+    useComposerDraftStore.getState().setModelSelection(draftId, currentSelection);
+    setRoute({ draftId });
+
+    await mount(<NewThreadHarness />);
+    await clickNewThread();
+
+    expect(
+      useComposerDraftStore.getState().getComposerDraft(draftId)?.modelSelectionByProvider[
+        codexInstanceId
+      ],
+    ).toEqual(currentSelection);
+  });
+
+  it("does not overwrite the composer state of an existing server thread", async () => {
+    const serverThreadId = ThreadId.make("thread-existing-server");
+    const serverThreadRef = scopeThreadRef(environmentId, serverThreadId);
+    const currentSelection = createModelSelection(codexInstanceId, "gpt-server-choice", [
+      { id: "reasoningEffort", value: "low" },
+    ]);
+    configureEnvironment({
+      providers: [
+        serverProvider({
+          instanceId: codexInstanceId,
+          driver: codexDriver,
+          models: [providerModel("gpt-current-default", [reasoningEffortDescriptor])],
+        }),
+      ],
+      settings: {
+        providerSessionDefaults: {
+          [codexDriver]: {
+            model: "gpt-current-default",
+            options: [{ id: "reasoningEffort", value: "high" }],
+          },
+        },
+      },
+    });
+    useComposerDraftStore.getState().setModelSelection(serverThreadRef, currentSelection);
+    setRoute({ environmentId, threadId: serverThreadId });
+
+    await mount(<NewThreadHarness />);
+    await clickNewThread();
+
+    expect(
+      useComposerDraftStore.getState().getComposerDraft(serverThreadRef)?.modelSelectionByProvider[
+        codexInstanceId
+      ],
+    ).toEqual(currentSelection);
   });
 
   it("uses project grouping, server configuration, and every explicit option", async () => {
@@ -218,6 +701,7 @@ describe("useNewThreadHandler", () => {
         defaultThreadEnvMode: "local",
         newWorktreesStartFromOrigin: false,
       },
+      providers: [],
     });
     await mount(
       <NewThreadHarness
