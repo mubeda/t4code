@@ -603,8 +603,8 @@ mod tests {
     fn stale_registry_claim_is_omitted_and_server_descendant_falls_back() {
         let registry = ProcessAttributionRegistry::new();
         let _registration = registry
-            .register_pid(
-                42,
+            .register_identity(
+                identity(42, 20),
                 ProcessRegistrationMetadata {
                     scope: AttributionScope::External,
                     kind: AttributionKind::Provider,

@@ -163,6 +163,7 @@ impl NativeResourceSampler {
         expected_identity: ProcessIdentity,
         signal: ProcessSignal,
     ) -> Result<(), SignalError> {
+        let sample_started_at = Instant::now();
         let observation = observe_ui_processes(self.ui_observer.clone());
         let rows = self.native.collect_rows();
         let (observation, rows) = tokio::join!(observation, rows);
@@ -177,7 +178,7 @@ impl NativeResourceSampler {
             .ok_or_else(|| {
                 SignalError::Read("current server process is absent from native rows".to_owned())
             })?;
-        let mut claims = self.registry.bind_and_snapshot(&rows, Instant::now());
+        let mut claims = self.registry.bind_and_snapshot(&rows, sample_started_at);
         append_ui_claims(&mut claims, &rows, &observation.identities);
         let attribution =
             ResourceAttributor::attribute(&rows, server_identity, &claims, observation.coverage);
@@ -210,6 +211,7 @@ impl ResourceSampler for NativeResourceSampler {
     ) -> Pin<Box<dyn Future<Output = Result<AttributedProcessSnapshot, SamplingError>> + Send + '_>>
     {
         Box::pin(async move {
+            let sample_started_at = Instant::now();
             let observation = observe_ui_processes(self.ui_observer.clone());
             let rows = self.native.collect_rows();
             let (observation, rows) = tokio::join!(observation, rows);
@@ -226,7 +228,7 @@ impl ResourceSampler for NativeResourceSampler {
                         "current server process is absent from native rows".into(),
                     )
                 })?;
-            let mut claims = self.registry.bind_and_snapshot(&rows, Instant::now());
+            let mut claims = self.registry.bind_and_snapshot(&rows, sample_started_at);
             append_ui_claims(&mut claims, &rows, &observation.identities);
             let attribution = ResourceAttributor::attribute(
                 &rows,
@@ -720,8 +722,8 @@ mod tests {
         let target_identity = identity(target_pid, 200);
         let external_registry = ProcessAttributionRegistry::new();
         let _registration = external_registry
-            .register_pid(
-                target_pid,
+            .register_identity(
+                target_identity,
                 ProcessRegistrationMetadata {
                     scope: AttributionScope::External,
                     kind: AttributionKind::Provider,
@@ -795,8 +797,8 @@ mod tests {
 
         let stale_registry = ProcessAttributionRegistry::new();
         let _stale_registration = stale_registry
-            .register_pid(
-                target_pid,
+            .register_identity(
+                target_identity,
                 ProcessRegistrationMetadata {
                     scope: AttributionScope::External,
                     kind: AttributionKind::Provider,
@@ -829,8 +831,8 @@ mod tests {
 
         let reparented_registry = ProcessAttributionRegistry::new();
         let _reparented_registration = reparented_registry
-            .register_pid(
-                target_pid,
+            .register_identity(
+                target_identity,
                 ProcessRegistrationMetadata {
                     scope: AttributionScope::External,
                     kind: AttributionKind::Provider,
@@ -886,8 +888,8 @@ mod tests {
         let replacement_identity = identity(target_pid, 201);
         let registry = ProcessAttributionRegistry::new();
         let _registration = registry
-            .register_pid(
-                target_pid,
+            .register_identity(
+                target_identity,
                 ProcessRegistrationMetadata {
                     scope: AttributionScope::External,
                     kind: AttributionKind::Provider,

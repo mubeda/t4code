@@ -347,15 +347,22 @@ impl TerminalManager {
             message: last_error,
         })?;
         let label = terminal_label(&input.terminal_id);
-        let attribution_registration = self.inner.attribution.register_pid(
-            process.pid(),
-            ProcessRegistrationMetadata {
-                scope: AttributionScope::External,
-                kind: AttributionKind::Terminal,
-                label: label.clone(),
-                source: RegistrationSource::Terminal,
-            },
-        );
+        let exit = process.subscribe_exit();
+        let process_has_exited = exit.borrow().is_some();
+        let attribution_registration = (!process_has_exited)
+            .then(|| process.process_identity())
+            .flatten()
+            .and_then(|identity| {
+                self.inner.attribution.register_identity(
+                    identity,
+                    ProcessRegistrationMetadata {
+                        scope: AttributionScope::External,
+                        kind: AttributionKind::Terminal,
+                        label: label.clone(),
+                        source: RegistrationSource::Terminal,
+                    },
+                )
+            });
         let history = TerminalHistory::new(self.inner.options.history_line_limit);
         debug_assert_eq!(
             history.line_limit(),
@@ -390,7 +397,7 @@ impl TerminalManager {
             .write()
             .await
             .insert(key, session.clone());
-        self.supervise(session.clone(), process);
+        self.supervise(session.clone(), process, exit);
         let snapshot = session.lock().await.snapshot();
         let event = if restarted {
             TerminalEvent::Restarted {
@@ -414,7 +421,12 @@ impl TerminalManager {
         Ok(snapshot)
     }
 
-    fn supervise(&self, session: Arc<Mutex<Session>>, process: Arc<dyn PtyProcess>) {
+    fn supervise(
+        &self,
+        session: Arc<Mutex<Session>>,
+        process: Arc<dyn PtyProcess>,
+        mut exit: tokio::sync::watch::Receiver<Option<PtyExit>>,
+    ) {
         let inner = self.inner.clone();
         let mut output = process.subscribe_output();
         let output_session = session.clone();
@@ -446,61 +458,61 @@ impl TerminalManager {
             }
         });
 
-        let mut exit = process.subscribe_exit();
         let exit_cancel = inner.cancellation.child_token();
         let exit_inner = inner.clone();
         let exit_session = session.clone();
         tokio::spawn(async move {
             loop {
-                tokio::select! {
-                    () = exit_cancel.cancelled() => return,
-                    result = exit.changed() => {
-                        if result.is_err() {
-                            return;
+                let observed_exit = exit.borrow().clone();
+                let Some(PtyExit { exit_code, signal }) = observed_exit else {
+                    tokio::select! {
+                        () = exit_cancel.cancelled() => return,
+                        result = exit.changed() => {
+                            if result.is_err() {
+                                return;
+                            }
                         }
-                        let Some(PtyExit { exit_code, signal }) = exit.borrow().clone() else {
-                            continue;
-                        };
-                        let _lifecycle = exit_inner.lifecycle.lock().await;
-                        let registered = {
-                            let sessions = exit_inner.sessions.read().await;
-                            let session = exit_session.lock().await;
-                            sessions
-                                .get(&(session.thread_id.clone(), session.terminal_id.clone()))
-                                .is_some_and(|current| Arc::ptr_eq(current, &exit_session))
-                        };
-                        if !registered {
-                            return;
-                        }
-                        let (event, summary) = {
-                            let mut session = exit_session.lock().await;
-                            session.status = TerminalStatus::Exited;
-                            session.attribution_registration.take();
-                            session.pid = None;
-                            session.process = None;
-                            session.exit_code = exit_code;
-                            session.exit_signal = signal;
-                            session.has_running_subprocess = false;
-                            session.child_command_label = None;
-                            let sequence = session.advance();
-                            (
-                                TerminalEvent::Exited {
-                                    thread_id: session.thread_id.clone(),
-                                    terminal_id: session.terminal_id.clone(),
-                                    sequence,
-                                    exit_code,
-                                    exit_signal: signal,
-                                },
-                                session.summary(),
-                            )
-                        };
-                        let _ = exit_inner.events.send(event);
-                        let _ = exit_inner.metadata.send(TerminalMetadataEvent::Upsert {
-                            terminal: summary,
-                        });
-                        return;
                     }
+                    continue;
+                };
+                let _lifecycle = exit_inner.lifecycle.lock().await;
+                let registered = {
+                    let sessions = exit_inner.sessions.read().await;
+                    let session = exit_session.lock().await;
+                    sessions
+                        .get(&(session.thread_id.clone(), session.terminal_id.clone()))
+                        .is_some_and(|current| Arc::ptr_eq(current, &exit_session))
+                };
+                if !registered {
+                    return;
                 }
+                let (event, summary) = {
+                    let mut session = exit_session.lock().await;
+                    session.status = TerminalStatus::Exited;
+                    session.attribution_registration.take();
+                    session.pid = None;
+                    session.process = None;
+                    session.exit_code = exit_code;
+                    session.exit_signal = signal;
+                    session.has_running_subprocess = false;
+                    session.child_command_label = None;
+                    let sequence = session.advance();
+                    (
+                        TerminalEvent::Exited {
+                            thread_id: session.thread_id.clone(),
+                            terminal_id: session.terminal_id.clone(),
+                            sequence,
+                            exit_code,
+                            exit_signal: signal,
+                        },
+                        session.summary(),
+                    )
+                };
+                let _ = exit_inner.events.send(event);
+                let _ = exit_inner
+                    .metadata
+                    .send(TerminalMetadataEvent::Upsert { terminal: summary });
+                return;
             }
         });
 
@@ -986,17 +998,26 @@ mod tests {
     #[derive(Debug)]
     struct HistoryTestPty {
         pid: u32,
+        process_identity: Option<crate::diagnostics::ProcessIdentity>,
+        exit_on_identity_read: std::sync::Mutex<Option<PtyExit>>,
         output: broadcast::Sender<String>,
         exit: tokio::sync::watch::Sender<Option<PtyExit>>,
         kill_error: std::sync::Mutex<Option<String>>,
     }
 
     impl HistoryTestPty {
-        fn new(pid: u32) -> Self {
+        fn new(
+            pid: u32,
+            expose_process_identity: bool,
+            exit_on_identity_read: Option<PtyExit>,
+        ) -> Self {
             let (output, _) = broadcast::channel(16);
             let (exit, _) = tokio::sync::watch::channel(None);
             Self {
                 pid,
+                process_identity: expose_process_identity
+                    .then_some(crate::diagnostics::ProcessIdentity { pid, started_at: 0 }),
+                exit_on_identity_read: std::sync::Mutex::new(exit_on_identity_read),
                 output,
                 exit,
                 kill_error: std::sync::Mutex::new(None),
@@ -1026,6 +1047,18 @@ mod tests {
             self.pid
         }
 
+        fn process_identity(&self) -> Option<crate::diagnostics::ProcessIdentity> {
+            if let Some(exit) = self
+                .exit_on_identity_read
+                .lock()
+                .expect("exit-on-identity-read lock")
+                .take()
+            {
+                self.exit.send_replace(Some(exit));
+            }
+            self.process_identity
+        }
+
         fn write(&self, _data: &str) -> Result<(), String> {
             Ok(())
         }
@@ -1051,9 +1084,21 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Default)]
+    #[derive(Debug)]
     struct HistoryTestBackend {
         processes: std::sync::Mutex<Vec<Arc<HistoryTestPty>>>,
+        expose_process_identity: bool,
+        exit_on_identity_read: Option<PtyExit>,
+    }
+
+    impl Default for HistoryTestBackend {
+        fn default() -> Self {
+            Self {
+                processes: std::sync::Mutex::new(Vec::new()),
+                expose_process_identity: true,
+                exit_on_identity_read: None,
+            }
+        }
     }
 
     impl HistoryTestBackend {
@@ -1070,7 +1115,11 @@ mod tests {
     impl PtyBackend for HistoryTestBackend {
         fn spawn(&self, _input: &PtySpawnInput) -> Result<Arc<dyn PtyProcess>, String> {
             let mut processes = self.processes.lock().expect("processes lock");
-            let process = Arc::new(HistoryTestPty::new(processes.len() as u32 + 1));
+            let process = Arc::new(HistoryTestPty::new(
+                processes.len() as u32 + 1,
+                self.expose_process_identity,
+                self.exit_on_identity_read.clone(),
+            ));
             processes.push(process.clone());
             Ok(process)
         }
@@ -1143,6 +1192,80 @@ mod tests {
         .await
         .expect("terminal exit event");
         assert!(terminal_claims(&registry, &[pid]).is_empty());
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn terminal_without_a_stable_process_identity_is_not_registered() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend {
+            processes: std::sync::Mutex::new(Vec::new()),
+            expose_process_identity: false,
+            exit_on_identity_read: None,
+        });
+        let registry = ProcessAttributionRegistry::new();
+        let manager = attributed_manager(backend, registry.clone());
+        let opened = manager
+            .open(TerminalOpenInput::new(
+                "thread-unattributed",
+                "term-unattributed",
+                root.path().to_path_buf(),
+                80,
+                24,
+            ))
+            .await
+            .unwrap();
+        let pid = opened.pid.expect("running terminal pid");
+
+        assert!(terminal_claims(&registry, &[pid]).is_empty());
+
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exit_between_registration_check_and_supervision_updates_session_and_releases_claim() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend {
+            processes: std::sync::Mutex::new(Vec::new()),
+            expose_process_identity: true,
+            exit_on_identity_read: Some(PtyExit {
+                exit_code: Some(17),
+                signal: None,
+            }),
+        });
+        let registry = ProcessAttributionRegistry::new();
+        let manager = attributed_manager(backend, registry.clone());
+        let mut events = manager.subscribe_events();
+        let opened = manager
+            .open(TerminalOpenInput::new(
+                "thread-exited-during-start",
+                "term-exited-during-start",
+                root.path().to_path_buf(),
+                80,
+                24,
+            ))
+            .await
+            .unwrap();
+        let pid = opened.pid.expect("spawned terminal pid");
+
+        let exit_event = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Ok(event @ TerminalEvent::Exited { .. }) = events.recv().await {
+                    break event;
+                }
+            }
+        })
+        .await
+        .expect("already-observed terminal exit must be supervised");
+        assert!(matches!(
+            exit_event,
+            TerminalEvent::Exited {
+                exit_code: Some(17),
+                ..
+            }
+        ));
+        assert!(terminal_claims(&registry, &[pid]).is_empty());
+
         manager.shutdown().await;
     }
 
