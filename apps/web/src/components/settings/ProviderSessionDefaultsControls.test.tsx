@@ -95,6 +95,10 @@ function model(
   };
 }
 
+function namedModel(slug: string, name: string): ServerProviderModel {
+  return { ...model(slug), name };
+}
+
 const richModels = [
   model("gpt-rich", [
     {
@@ -370,6 +374,26 @@ describe("ProviderSessionDefaultsControls", () => {
     expect([modelControl, effortControl, fastControl].every((control) => !control.disabled)).toBe(
       true,
     );
+  });
+
+  it("keeps committed model labels isolated by driver and slug", async () => {
+    const mounted = await mount(
+      baseProps({ models: [namedModel("first", "First Codex")], value: { model: "first" } }),
+    );
+    const modelControl = controlElement(mounted, "Default model");
+
+    expect(modelControl.textContent).toBe("First Codex");
+
+    await rerender(
+      baseProps({ models: [namedModel("second", "Second Codex")], value: { model: "second" } }),
+    );
+    expect(modelControl.textContent).toBe("Second Codex");
+
+    await rerender(baseProps({ models: [], value: { model: "second" } }));
+    expect(modelControl.textContent).toBe("Second Codex");
+
+    await rerender(baseProps({ driver: OPENCODE, models: [], value: { model: "second" } }));
+    expect(modelControl.textContent).toBe("second");
   });
 
   it("keeps an unavailable saved model selectable so the user can recover", () => {
