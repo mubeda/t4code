@@ -1,8 +1,63 @@
 #![cfg(windows)]
 
-use std::{collections::BTreeMap, path::Path, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::Path,
+    time::{Duration, Instant},
+};
 
-use t4code_server::terminal::{PortablePtyBackend, PtySpawnInput};
+use t4code_server::{
+    process::WINDOWS_BATCH_TRAMPOLINE_ARG,
+    terminal::{PortablePtyBackend, PtySpawnInput},
+};
+use windows_sys::Win32::{
+    Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, HANDLE, WAIT_OBJECT_0},
+    System::Threading::{
+        CreateEventW, OpenProcess, PROCESS_SYNCHRONIZE, SetEvent, WaitForSingleObject,
+    },
+};
+
+struct OwnedHandle(HANDLE);
+
+impl Drop for OwnedHandle {
+    fn drop(&mut self) {
+        // SAFETY: this type owns the handle and closes it exactly once.
+        unsafe { CloseHandle(self.0) };
+    }
+}
+
+fn create_gate(name: &str) -> OwnedHandle {
+    let name = name.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
+    // SAFETY: default security, a manual-reset nonsignalled event, and a
+    // NUL-terminated name are valid CreateEventW inputs.
+    let handle = unsafe { CreateEventW(std::ptr::null(), 1, 0, name.as_ptr()) };
+    assert!(!handle.is_null(), "failed to create test gate");
+    OwnedHandle(handle)
+}
+
+async fn wait_for_file(path: &Path) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !path.is_file() {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+fn wait_for_child_exit(child: &mut std::process::Child) -> std::process::ExitStatus {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("trampoline child did not exit");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
 
 async fn assert_shim_output(
     executable: &Path,
@@ -96,4 +151,106 @@ async fn portable_backend_runs_windows_command_and_powershell_shims() {
         "ps1:value with spaces:&literal:%PATH%:!literal!",
     )
     .await;
+}
+
+#[test]
+fn batch_trampoline_waits_for_the_parent_supervision_gate() {
+    let directory = tempfile::tempdir().unwrap();
+    let marker_file = directory.path().join("batch-started.txt");
+    let script = directory.path().join("gated provider.cmd");
+    std::fs::write(&script, "@echo off\r\necho started>\"%~1\"\r\n").unwrap();
+    let gate_name = format!(
+        "Local\\T4CodeBatchLaunch-test-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    );
+    let ready_name = format!("{gate_name}-ready");
+    let gate = create_gate(&gate_name);
+    let ready = create_gate(&ready_name);
+
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_t4code"))
+        .args([
+            std::ffi::OsStr::new(WINDOWS_BATCH_TRAMPOLINE_ARG),
+            std::ffi::OsStr::new(&gate_name),
+            std::ffi::OsStr::new(&ready_name),
+            script.as_os_str(),
+            marker_file.as_os_str(),
+        ])
+        .spawn()
+        .unwrap();
+    // SAFETY: `ready` owns a live synchronization handle. The trampoline
+    // signals it immediately before waiting on the supervision gate.
+    assert_eq!(
+        unsafe { WaitForSingleObject(ready.0, 10_000) },
+        WAIT_OBJECT_0,
+        "batch trampoline did not reach the supervision gate"
+    );
+    assert!(
+        !marker_file.exists(),
+        "batch script started before supervision was ready"
+    );
+
+    // SAFETY: `gate` owns a live event handle.
+    assert_ne!(unsafe { SetEvent(gate.0) }, 0);
+    assert!(wait_for_child_exit(&mut child).success());
+    assert_eq!(std::fs::read_to_string(marker_file).unwrap().trim(), "started");
+}
+
+#[tokio::test]
+async fn killing_a_batch_terminal_terminates_its_descendant_process() {
+    let directory = tempfile::tempdir().unwrap();
+    let child_pid_file = directory.path().join("child-pid.txt");
+    let script = directory.path().join("long running provider.cmd");
+    std::fs::write(
+        &script,
+        "@echo off\r\npowershell.exe -NoLogo -NoProfile -NonInteractive -Command \"[IO.File]::WriteAllText($env:T4CODE_TEST_CHILD_PID, [string]$PID); Start-Sleep -Seconds 30\"\r\n",
+    )
+    .unwrap();
+    let process = PortablePtyBackend
+        .spawn_with_windows_batch_trampoline(
+            &PtySpawnInput {
+                executable: script.to_string_lossy().into_owned(),
+                args: Vec::new(),
+                cwd: directory.path().to_path_buf(),
+                cols: 80,
+                rows: 24,
+                env: BTreeMap::from([(
+                    "T4CODE_TEST_CHILD_PID".to_owned(),
+                    child_pid_file.to_string_lossy().into_owned(),
+                )]),
+            },
+            Path::new(env!("CARGO_BIN_EXE_t4code")),
+        )
+        .unwrap();
+    wait_for_file(&child_pid_file).await;
+    let child_pid = std::fs::read_to_string(&child_pid_file)
+        .unwrap()
+        .trim()
+        .parse::<u32>()
+        .unwrap();
+
+    let mut exit = process.subscribe_exit();
+    process.kill().unwrap();
+    let already_exited = exit.borrow().is_some();
+    if !already_exited {
+        tokio::time::timeout(Duration::from_secs(10), exit.changed())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    // SAFETY: OpenProcess only inspects the process identified by the fixture PID.
+    let child = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, child_pid) };
+    if child.is_null() {
+        // A process that has already been reaped is also a successful outcome.
+        assert_eq!(unsafe { GetLastError() }, ERROR_INVALID_PARAMETER);
+        return;
+    }
+    let child = OwnedHandle(child);
+    // SAFETY: `child` owns a live synchronization handle.
+    assert_eq!(
+        unsafe { WaitForSingleObject(child.0, 10_000) },
+        WAIT_OBJECT_0,
+        "batch terminal descendant survived terminal kill"
+    );
 }
