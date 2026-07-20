@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    ffi::{OsStr, OsString},
+    ffi::OsStr,
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
@@ -19,8 +19,8 @@ use crate::{
     },
     persistence::{ProviderSessionRuntime, Repositories},
     process::{
-        Platform, configure_supervised_background_command_wrap, launch_executable_extensions,
-        locate_executable, wrap_launch_program,
+        Platform, PreparedLaunch, configure_supervised_background_command_wrap,
+        launch_executable_extensions, locate_executable, wrap_launch_program,
     },
     production::{
         connect_mcp::ConnectMcpService, operational_logs::ProviderOperationalLog,
@@ -1421,11 +1421,17 @@ fn spawn_child(
             detail: format!("provider executable was not found: {}", request.binary_path),
         }
     })?;
-    let (program, prefix_args) = provider_launch_program(&executable);
+    let launch = prepare_provider_launch(&executable, args).map_err(|detail| {
+        ProviderRuntimeError::Spawn {
+            provider: provider.clone(),
+            detail,
+        }
+    })?;
+    let program = launch.program;
+    let launch_args = launch.args;
     let mut command = CommandWrap::with_new(program, |command| {
         command
-            .args(prefix_args)
-            .args(args)
+            .args(launch_args)
             .current_dir(&request.cwd)
             .stdin(Stdio::piped())
             .stdout(if pipe_output {
@@ -1468,14 +1474,15 @@ pub(crate) fn resolve_provider_executable_in_path(
     locate_executable(input, cwd.as_deref(), search_path, &extensions)
 }
 
-pub(crate) fn provider_launch_program(executable: &Path) -> (PathBuf, Vec<OsString>) {
-    let command_processor = std::env::var_os("ComSpec");
-    let launch = wrap_launch_program(
-        Platform::current(),
-        executable,
-        command_processor.as_deref(),
-    );
-    (launch.program, launch.prefix_args)
+pub(crate) fn prepare_provider_launch<I, S>(
+    executable: &Path,
+    arguments: I,
+) -> Result<PreparedLaunch, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    Ok(wrap_launch_program(Platform::current(), executable, None)?.prepare(arguments))
 }
 
 async fn kill_child(child: &SharedChild) {
@@ -3968,10 +3975,10 @@ done
             ),
             None
         );
-        assert_eq!(
-            super::provider_launch_program(&executable),
-            (executable, Vec::new())
-        );
+        let launch =
+            super::prepare_provider_launch(&executable, std::iter::empty::<&str>()).unwrap();
+        assert_eq!(launch.program, executable);
+        assert!(launch.args.is_empty());
     }
 
     #[test]
@@ -4086,10 +4093,14 @@ done
     #[cfg(windows)]
     #[test]
     fn windows_launch_program_wraps_shell_scripts_without_profiles() {
-        let (program, args) = super::provider_launch_program(std::path::Path::new("provider.ps1"));
-        assert_eq!(program, std::path::PathBuf::from("powershell.exe"));
+        let launch = super::prepare_provider_launch(
+            std::path::Path::new("provider.ps1"),
+            ["--flag", "&literal"],
+        )
+        .unwrap();
+        assert_eq!(launch.program, std::path::PathBuf::from("powershell.exe"));
         assert_eq!(
-            args,
+            launch.args,
             [
                 "-NoLogo",
                 "-NoProfile",
@@ -4098,20 +4109,27 @@ done
                 "Bypass",
                 "-File",
                 "provider.ps1",
+                "--flag",
+                "&literal",
             ]
             .map(std::ffi::OsString::from)
         );
 
-        let (program, args) = super::provider_launch_program(std::path::Path::new("provider.cmd"));
+        let launch = super::prepare_provider_launch(
+            std::path::Path::new("provider.cmd"),
+            ["--flag", "&literal"],
+        )
+        .unwrap();
+        assert_eq!(launch.program, std::env::current_exe().unwrap());
         assert_eq!(
-            program,
-            std::env::var_os("ComSpec")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| std::path::PathBuf::from("cmd.exe"))
-        );
-        assert_eq!(
-            args,
-            ["/d", "/s", "/c", "provider.cmd"].map(std::ffi::OsString::from)
+            launch.args,
+            [
+                crate::process::WINDOWS_BATCH_TRAMPOLINE_ARG,
+                "provider.cmd",
+                "--flag",
+                "&literal",
+            ]
+            .map(std::ffi::OsString::from)
         );
     }
 

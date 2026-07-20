@@ -142,6 +142,42 @@ struct Session {
 type SessionKey = (String, String);
 type SharedSession = Arc<Mutex<Session>>;
 
+/// Owns a newly spawned PTY until a registered, supervised session takes responsibility for it.
+struct UncommittedPtyProcess {
+    process: Option<Arc<dyn PtyProcess>>,
+}
+
+impl UncommittedPtyProcess {
+    fn new(process: Arc<dyn PtyProcess>) -> Self {
+        Self {
+            process: Some(process),
+        }
+    }
+
+    fn process(&self) -> Arc<dyn PtyProcess> {
+        self.process.as_ref().expect("uncommitted process").clone()
+    }
+
+    fn commit(mut self) {
+        self.process = None;
+    }
+}
+
+impl Drop for UncommittedPtyProcess {
+    fn drop(&mut self) {
+        let Some(process) = self.process.take() else {
+            return;
+        };
+        if let Err(error) = process.kill() {
+            tracing::debug!(
+                %error,
+                pid = process.pid(),
+                "failed to kill uncommitted terminal process"
+            );
+        }
+    }
+}
+
 #[derive(Debug)]
 struct SessionGeneration {
     invalidated: std::sync::atomic::AtomicBool,
@@ -477,8 +513,9 @@ impl TerminalManager {
             attempted,
             message: last_error,
         })?;
+        let uncommitted_process = UncommittedPtyProcess::new(process);
+        let process = uncommitted_process.process();
         if generation.is_invalidated() {
-            kill_invalidated_process(&process);
             return Err(invalidated_creation_error(&input));
         }
         let history = TerminalHistory::new(self.inner.options.history_line_limit);
@@ -516,7 +553,6 @@ impl TerminalManager {
         }));
         let _publication = generation.publication.lock().await;
         if generation.is_invalidated() {
-            kill_invalidated_process(&process);
             return Err(invalidated_creation_error(&input));
         }
         self.inner
@@ -525,6 +561,7 @@ impl TerminalManager {
             .await
             .insert(key, session.clone());
         self.supervise(session.clone(), process, generation.clone());
+        uncommitted_process.commit();
         let snapshot = session.lock().await.snapshot();
         let event = if restarted {
             TerminalEvent::Restarted {
@@ -1096,16 +1133,6 @@ fn invalidated_creation_error(input: &TerminalOpenInput) -> TerminalError {
     }
 }
 
-fn kill_invalidated_process(process: &Arc<dyn PtyProcess>) {
-    if let Err(error) = process.kill() {
-        tracing::debug!(
-            %error,
-            pid = process.pid(),
-            "failed to kill invalidated terminal process"
-        );
-    }
-}
-
 async fn validate_cwd(cwd: &Path) -> Result<(), TerminalError> {
     match tokio::fs::metadata(cwd).await {
         Ok(metadata) if metadata.is_dir() => Ok(()),
@@ -1303,6 +1330,21 @@ mod tests {
                 .expect("release lock")
                 .recv_timeout(Duration::from_secs(2))
                 .expect("spawn release");
+            Ok(self.process.clone())
+        }
+    }
+
+    #[derive(Debug)]
+    struct ReturningSpawnBackend {
+        process: Arc<HistoryTestPty>,
+        spawned: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+
+    impl PtyBackend for ReturningSpawnBackend {
+        fn spawn(&self, _input: &PtySpawnInput) -> Result<Arc<dyn PtyProcess>, String> {
+            if let Some(spawned) = self.spawned.lock().expect("spawned lock").take() {
+                spawned.send(()).expect("spawned receiver");
+            }
             Ok(self.process.clone())
         }
     }
@@ -1628,6 +1670,10 @@ mod tests {
             },
         );
         let mut metadata = manager.subscribe_metadata().await;
+        let generation = manager.inner.generations.current(&(
+            "thread-spawn-close".to_owned(),
+            "term-spawn-close".to_owned(),
+        ));
         let attach_manager = manager.clone();
         let attach_root = root.path().to_path_buf();
         let attach_task = tokio::spawn(async move {
@@ -1653,17 +1699,19 @@ mod tests {
         .await
         .expect("spawn-start wait");
 
-        let close_started = Arc::new(tokio::sync::Notify::new());
         let close_manager = manager.clone();
-        let close_started_task = close_started.clone();
         let close_task = tokio::spawn(async move {
-            close_started_task.notify_one();
             close_manager
                 .close("thread-spawn-close", Some("term-spawn-close"))
                 .await;
         });
-        close_started.notified().await;
-        tokio::task::yield_now().await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !generation.is_invalidated() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("close did not invalidate the in-flight generation");
         spawn_release.send(()).expect("release spawn");
 
         let attach_result = attach_task.await.expect("attach task");
@@ -1685,6 +1733,68 @@ mod tests {
                 .await
                 .is_err(),
             "invalidated process published terminal metadata"
+        );
+    }
+
+    #[tokio::test]
+    async fn aborting_open_after_spawn_before_registration_kills_the_unowned_process() {
+        let root = tempfile::tempdir().unwrap();
+        let process = Arc::new(HistoryTestPty::new(42));
+        let (spawned, spawned_rx) = tokio::sync::oneshot::channel();
+        let manager = TerminalManager::new(
+            Arc::new(ReturningSpawnBackend {
+                process: process.clone(),
+                spawned: std::sync::Mutex::new(Some(spawned)),
+            }),
+            TerminalManagerOptions {
+                subprocess_poll_interval: Duration::ZERO,
+                ..TerminalManagerOptions::default()
+            },
+        );
+        let mut metadata = manager.subscribe_metadata().await;
+        let generation = manager.inner.generations.current(&(
+            "thread-aborted-open".to_owned(),
+            "term-aborted-open".to_owned(),
+        ));
+        let publication = generation.publication.lock().await;
+
+        let open_manager = manager.clone();
+        let open_task = tokio::spawn(async move {
+            open_manager
+                .open(TerminalOpenInput::new(
+                    "thread-aborted-open",
+                    "term-aborted-open",
+                    root.path().to_path_buf(),
+                    80,
+                    24,
+                ))
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), spawned_rx)
+            .await
+            .expect("spawn did not succeed")
+            .expect("spawned sender");
+
+        open_task.abort();
+        let join_error = open_task
+            .await
+            .expect_err("aborted open unexpectedly completed");
+        assert!(join_error.is_cancelled(), "open task was not cancelled");
+        drop(publication);
+
+        assert!(process.is_killed(), "abandoned process was not killed");
+        assert!(
+            manager
+                .require_session("thread-aborted-open", "term-aborted-open")
+                .await
+                .is_err(),
+            "aborted open registered a session"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), metadata.recv())
+                .await
+                .is_err(),
+            "aborted open published terminal metadata"
         );
     }
 
