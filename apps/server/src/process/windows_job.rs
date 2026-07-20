@@ -1,13 +1,10 @@
-use std::{fmt, future::Future, io, pin::Pin, process::ExitStatus};
+use std::{fmt, io};
 
-use process_wrap::tokio::{ChildWrapper, CommandWrap, CommandWrapper};
-use tokio::process::{Child, Command};
 use windows_sys::Win32::{
     Foundation::{CloseHandle, GetLastError, HANDLE},
     System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, TerminateJobObject,
+        CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
     },
 };
 
@@ -20,9 +17,20 @@ unsafe impl Send for WindowsJob {}
 unsafe impl Sync for WindowsJob {}
 
 impl WindowsJob {
-    pub(crate) fn attach(process: HANDLE) -> io::Result<Self> {
-        // SAFETY: null security attributes and name request an unnamed job.
-        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    pub(crate) fn new() -> io::Result<Self> {
+        Self::create(std::ptr::null())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_named(name: &[u16]) -> io::Result<Self> {
+        Self::create(name.as_ptr())
+    }
+
+    fn create(name: *const u16) -> io::Result<Self> {
+        // SAFETY: null security attributes request default security. `name` is
+        // either null or points to a caller-owned NUL-terminated slice that
+        // remains valid for this call.
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), name) };
         if handle.is_null() {
             return Err(last_os_error());
         }
@@ -45,16 +53,11 @@ impl WindowsJob {
             unsafe { CloseHandle(handle) };
             return Err(error);
         }
-
-        // SAFETY: both handles are valid and owned by the current process.
-        let assigned = unsafe { AssignProcessToJobObject(handle, process) };
-        if assigned == 0 {
-            let error = last_os_error();
-            // SAFETY: `handle` was created above and is still owned here.
-            unsafe { CloseHandle(handle) };
-            return Err(error);
-        }
         Ok(Self(handle))
+    }
+
+    pub(crate) fn raw_handle(&self) -> std::os::windows::io::RawHandle {
+        self.0.cast()
     }
 
     pub(crate) fn terminate(&self) -> io::Result<()> {
@@ -66,6 +69,7 @@ impl WindowsJob {
         }
     }
 
+    #[cfg(test)]
     fn into_raw(self) -> HANDLE {
         let handle = self.0;
         std::mem::forget(self);
@@ -86,80 +90,6 @@ impl fmt::Debug for WindowsJob {
     }
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct BackgroundJob {
-    pending: Option<WindowsJob>,
-}
-
-impl CommandWrapper for BackgroundJob {
-    fn post_spawn(
-        &mut self,
-        _command: &mut Command,
-        child: &mut Child,
-        _core: &CommandWrap,
-    ) -> io::Result<()> {
-        let process = child
-            .raw_handle()
-            .ok_or_else(|| io::Error::other("child process handle is unavailable"))?;
-        match WindowsJob::attach(process.cast()) {
-            Ok(job) => {
-                self.pending = Some(job);
-                Ok(())
-            }
-            Err(error) => {
-                let _ = child.start_kill();
-                Err(error)
-            }
-        }
-    }
-
-    fn wrap_child(
-        &mut self,
-        inner: Box<dyn ChildWrapper>,
-        _core: &CommandWrap,
-    ) -> io::Result<Box<dyn ChildWrapper>> {
-        let job = self
-            .pending
-            .take()
-            .ok_or_else(|| io::Error::other("background job was not attached after spawn"))?;
-        Ok(Box::new(BackgroundJobChild { inner, job }))
-    }
-}
-
-#[derive(Debug)]
-struct BackgroundJobChild {
-    inner: Box<dyn ChildWrapper>,
-    job: WindowsJob,
-}
-
-impl ChildWrapper for BackgroundJobChild {
-    fn inner(&self) -> &dyn ChildWrapper {
-        &*self.inner
-    }
-
-    fn inner_mut(&mut self) -> &mut dyn ChildWrapper {
-        &mut *self.inner
-    }
-
-    fn into_inner(self: Box<Self>) -> Box<dyn ChildWrapper> {
-        let Self { inner, job } = *self;
-        let _ = job.into_raw();
-        inner
-    }
-
-    fn start_kill(&mut self) -> io::Result<()> {
-        self.job.terminate()
-    }
-
-    fn wait(&mut self) -> Pin<Box<dyn Future<Output = io::Result<ExitStatus>> + Send + '_>> {
-        self.inner.wait()
-    }
-
-    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        self.inner.try_wait()
-    }
-}
-
 fn last_os_error() -> io::Error {
     // SAFETY: GetLastError has no preconditions and reads thread-local state.
     io::Error::from_raw_os_error(unsafe { GetLastError() } as i32)
@@ -170,29 +100,18 @@ mod tests {
     use super::*;
     use windows_sys::Win32::Foundation::CloseHandle;
 
-    #[tokio::test]
-    async fn job_handle_debug_raw_conversion_and_termination_are_operational() {
-        let mut child = Command::new("cmd.exe")
-            .args(["/D", "/C", "ping 127.0.0.1 -n 30 >nul"])
-            .spawn()
-            .expect("fixture child should start");
-        let process = child.raw_handle().expect("fixture child handle");
-        let job = WindowsJob::attach(process.cast()).expect("job should attach");
+    #[test]
+    fn job_handle_creation_debug_raw_conversion_and_termination_are_operational() {
+        let job = WindowsJob::new().expect("job should be created");
         assert!(format!("{job:?}").starts_with("WindowsJob("));
+        assert!(!job.raw_handle().is_null());
         job.terminate().expect("job should terminate");
-        child.wait().await.expect("terminated child should wait");
 
-        let mut child = Command::new("cmd.exe")
-            .args(["/D", "/C", "ping 127.0.0.1 -n 30 >nul"])
-            .spawn()
-            .expect("raw fixture child should start");
-        let process = child.raw_handle().expect("raw fixture child handle");
-        let raw = WindowsJob::attach(process.cast())
-            .expect("raw job should attach")
+        let raw = WindowsJob::new()
+            .expect("raw job should be created")
             .into_raw();
         // SAFETY: `into_raw` transfers the live job handle to this test.
         unsafe { CloseHandle(raw) };
-        child.wait().await.expect("closed job child should wait");
 
         let _ = last_os_error();
     }
