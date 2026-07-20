@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 use super::{ProcessCleanupReport, configure_supervised_background_command_wrap};
 
 const PROCESS_CLEANUP_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+const PROCESS_OUTPUT_READ_BUFFER_BYTES: usize = 8 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SupervisedOverflow {
@@ -187,7 +188,7 @@ async fn collect_output(
 ) -> Result<SupervisedStreamOutput, SupervisedRunError> {
     let mut bytes = Vec::with_capacity(max_bytes.min(64 * 1024));
     let mut observed_bytes = 0usize;
-    let mut buffer = [0u8; 8 * 1024];
+    let mut buffer = vec![0u8; PROCESS_OUTPUT_READ_BUFFER_BYTES];
     loop {
         let read = reader
             .read(&mut buffer)
@@ -604,6 +605,17 @@ mod tests {
         assert_eq!(truncated.bytes, b"abcd");
         assert_eq!(truncated.observed_bytes, 6);
         assert!(truncated.truncated());
+    }
+
+    #[test]
+    fn output_collection_future_keeps_read_buffer_off_stack() {
+        let future = collect_output(&b""[..], "stdout", 1, SupervisedOverflow::Error);
+        let future_size = std::mem::size_of_val(&future);
+
+        assert!(
+            future_size < PROCESS_OUTPUT_READ_BUFFER_BYTES,
+            "output collection future retained an inline 8 KiB read buffer ({future_size} bytes)"
+        );
     }
 
     #[cfg(unix)]

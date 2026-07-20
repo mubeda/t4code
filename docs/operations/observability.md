@@ -72,18 +72,77 @@ tests.
 
 ## Process Diagnostics
 
-The Rust server samples its own process tree directly. Diagnostics include the
-native server/Tauri root and supervised descendants, rather than whole-machine
-totals. Use the Diagnostics UI or the corresponding typed RPC methods to:
+Resource diagnostics are host-scoped. Each snapshot describes the selected
+environment on one machine; it is not a whole-machine total and never combines
+processes from different machines. The reported groups are:
+
+- **Combined**: the complete monitored total for that host, equal to T4Code Core
+  plus External Tooling for CPU, RSS, and process count.
+- **T4Code Core**: the native T4Code server or combined Tauri host/server root,
+  plus UI processes that a desktop adapter can associate reliably with that
+  T4Code instance.
+- **External Tooling**: provider CLIs, terminals, helpers, and other processes
+  launched or supervised by T4Code.
+
+For a remote selected environment, Combined, Core, and External describe only
+the remote host. A desktop client may also show the always-present local
+environment's Core usage separately as **This device**; that local value is not
+added to the remote total. Browser clients have no local desktop environment
+to report and omit **This device**.
+
+The UI coverage status qualifies whether co-located desktop UI processes are
+included in Core:
+
+- `available`: every UI process exposed by the supported platform mechanism was
+  sampled;
+- `partial`: some UI processes were sampled and a bounded failure explains the
+  incomplete coverage;
+- `unavailable`: the adapter could not associate any UI process reliably; and
+- `notApplicable`: the runtime is headless and has no co-located T4Code UI.
+
+The initial desktop observer reports `unavailable` and states that local UI
+usage is not included. It does not estimate UI usage or claim generic
+`WebContent`, browser, renderer, or executable-name matches. Core still includes
+the native server in this state.
+
+Provider, terminal, and eligible helper launchers register their root PID,
+scope, kind, and bounded label. Descendants inherit the nearest registered
+root's attribution. An unregistered descendant of the native server remains
+visible as External Tooling with `unknown` kind and fallback confidence; missing
+registration does not make it Core or remove it from the totals.
+
+Attribution and process actions use a stable process identity made from PID and
+operating-system start identity. A registration binds to that start identity
+on its first matching sample, and a reused PID does not inherit the previous
+process's ownership. The native sampler remains the source of CPU and memory
+values; attribution does not perform a second machine-wide process refresh.
+
+If refresh fails after a successful sample, the client retains the last good
+snapshot and its original timestamp, marks it stale, and displays the bounded
+failure. Before the first successful sample it shows unavailable placeholders,
+not healthy-looking zeroes. Partial and unavailable UI coverage likewise remain
+explicit rather than being encoded as zero usage.
+
+Resource Manager never offers Interrupt or Kill for a Core row. For an eligible
+External row, client state is only a request: immediately before signaling, the
+server resamples and revalidates the PID/start identity, current ancestry, and
+signal eligibility. Stale or reparented identities are rejected.
+
+Use the Diagnostics UI or the corresponding typed RPC methods to:
 
 - inspect current process rows and resource history;
-- identify provider, terminal, SSH, and relay descendants;
+- compare Combined, Core, and External current and historical usage;
+- identify attributed provider, terminal, helper, and fallback descendants;
 - signal a supervised process when the UI permits it;
 - verify that shutdown leaves no owned child processes behind.
 
 Packaged-runtime investigations should explicitly confirm that no `node`,
 Electron, TypeScript server, or removed native-helper process appears in the
-application tree.
+application tree. The desktop runtime measurement reports idle process count,
+private memory or its POSIX RSS approximation, working set, and highest-memory
+processes. Verify shutdown by checking that its recorded process IDs no longer
+exist. Use Resource Manager's attributed CPU display for active-load checks;
+the measurement script does not duplicate cross-platform CPU accounting.
 
 ## Analytics
 
