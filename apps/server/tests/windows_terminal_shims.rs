@@ -36,14 +36,19 @@ fn create_gate(name: &str) -> OwnedHandle {
     OwnedHandle(handle)
 }
 
-async fn wait_for_file(path: &Path) {
+async fn wait_for_pid_file(path: &Path) -> u32 {
     tokio::time::timeout(Duration::from_secs(10), async {
-        while !path.is_file() {
+        loop {
+            if let Ok(contents) = std::fs::read_to_string(path)
+                && let Ok(pid) = contents.trim().parse::<u32>()
+            {
+                return pid;
+            }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
     })
     .await
-    .unwrap();
+    .unwrap()
 }
 
 fn wait_for_child_exit(child: &mut std::process::Child) -> std::process::ExitStatus {
@@ -84,12 +89,7 @@ async fn assert_terminal_kills_descendant(input: PtySpawnInput, child_pid_file: 
             Path::new(env!("CARGO_BIN_EXE_t4code")),
         )
         .unwrap();
-    wait_for_file(child_pid_file).await;
-    let child_pid = std::fs::read_to_string(child_pid_file)
-        .unwrap()
-        .trim()
-        .parse::<u32>()
-        .unwrap();
+    let child_pid = wait_for_pid_file(child_pid_file).await;
 
     let mut exit = process.subscribe_exit();
     process.kill().unwrap();

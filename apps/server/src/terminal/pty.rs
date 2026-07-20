@@ -67,6 +67,27 @@ struct SpawnedChildGuard {
     job: Option<WindowsJob>,
 }
 
+struct WaiterChildHandoff {
+    child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
+}
+
+impl WaiterChildHandoff {
+    fn into_child(mut self) -> Box<dyn portable_pty::Child + Send + Sync> {
+        self.child.take().expect("waiter child handoff")
+    }
+}
+
+impl Drop for WaiterChildHandoff {
+    fn drop(&mut self) {
+        let Some(child) = self.child.as_mut() else {
+            return;
+        };
+        if let Err(error) = child.kill() {
+            tracing::debug!(%error, "failed to kill PTY child after waiter spawn failure");
+        }
+    }
+}
+
 impl SpawnedChildGuard {
     #[cfg(any(not(unix), test))]
     fn new(child: Box<dyn portable_pty::Child + Send + Sync>) -> Self {
@@ -94,8 +115,10 @@ impl SpawnedChildGuard {
         self.child.as_deref().expect("spawned child guard")
     }
 
-    fn take_child(&mut self) -> Box<dyn portable_pty::Child + Send + Sync> {
-        self.child.take().expect("spawned child guard")
+    fn handoff_child_to_waiter(&mut self) -> WaiterChildHandoff {
+        WaiterChildHandoff {
+            child: self.child.take(),
+        }
     }
 
     #[cfg(unix)]
@@ -115,6 +138,20 @@ impl SpawnedChildGuard {
             .take()
             .ok_or_else(|| "PTY child job was not retained during setup".to_owned())
     }
+}
+
+type PtyThreadTask = Box<dyn FnOnce() + Send + 'static>;
+
+fn spawn_pty_thread_with(
+    name: String,
+    task: PtyThreadTask,
+    spawn: impl FnOnce(thread::Builder, PtyThreadTask) -> std::io::Result<thread::JoinHandle<()>>,
+) -> std::io::Result<()> {
+    spawn(thread::Builder::new().name(name), task).map(drop)
+}
+
+fn spawn_pty_thread(name: String, task: PtyThreadTask) -> std::io::Result<()> {
+    spawn_pty_thread_with(name, task, |builder, task| builder.spawn(task))
 }
 
 impl Drop for SpawnedChildGuard {
@@ -247,13 +284,13 @@ impl PortablePtyBackend {
             return Err(error.to_string());
         }
         let exit_sender = exit.clone();
-        let wait_child = child.take_child();
-        if let Err(error) = thread::Builder::new()
-            .name(format!("t4code-pty-wait-{pid}"))
-            .spawn(move || {
+        let wait_child = child.handoff_child_to_waiter();
+        spawn_pty_thread(
+            format!("t4code-pty-wait-{pid}"),
+            Box::new(move || {
                 #[cfg(windows)]
                 let _launch_gate = launch_gate;
-                let mut child = wait_child;
+                let mut child = wait_child.into_child();
                 let event = match child.wait() {
                     Ok(status) => PtyExit {
                         exit_code: i32::try_from(status.exit_code()).ok(),
@@ -265,10 +302,9 @@ impl PortablePtyBackend {
                     },
                 };
                 let _ = exit_sender.send(Some(event));
-            })
-        {
-            return Err(error.to_string());
-        }
+            }),
+        )
+        .map_err(|error| error.to_string())?;
         #[cfg(unix)]
         let process_group = child.commit_process_group();
         #[cfg(windows)]
@@ -646,10 +682,30 @@ mod tests {
         let mut guard = SpawnedChildGuard::new(Box::new(SetupTestChild {
             killed: committed_killed.clone(),
         }));
-        let child = guard.take_child();
+        let handoff = guard.handoff_child_to_waiter();
+        let child = handoff.into_child();
         drop(guard);
         drop(child);
         assert!(!committed_killed.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn waiter_spawn_failure_keeps_the_root_child_fallback() {
+        let killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut guard = SpawnedChildGuard::new(Box::new(SetupTestChild {
+            killed: killed.clone(),
+        }));
+        let handoff = guard.handoff_child_to_waiter();
+
+        let error = spawn_pty_thread_with(
+            "injected-waiter-spawn-failure".to_owned(),
+            Box::new(move || drop(handoff.into_child())),
+            |_builder, _task| Err(std::io::Error::other("injected waiter spawn failure")),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "injected waiter spawn failure");
+        assert!(killed.load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[cfg(unix)]
