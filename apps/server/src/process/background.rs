@@ -3,9 +3,6 @@ use process_wrap::tokio::ProcessGroup;
 use process_wrap::tokio::{CommandWrap, KillOnDrop};
 use tokio::process::Command;
 
-#[cfg(windows)]
-use super::windows_job::BackgroundJob;
-
 /// Configures a non-interactive Tokio child process so a GUI parent does not
 /// flash a console window on Windows.
 pub fn configure_background_command(command: &mut Command) {
@@ -44,7 +41,7 @@ pub fn configure_supervised_background_command_wrap(command: &mut CommandWrap) {
     configure_background_command_wrap(command);
     command.wrap(KillOnDrop);
     #[cfg(windows)]
-    command.wrap(BackgroundJob::default());
+    command.wrap(process_wrap::tokio::JobObject);
     #[cfg(unix)]
     command.wrap(ProcessGroup::leader());
 }

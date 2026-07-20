@@ -14,3 +14,10 @@ pub fn redact_sensitive_text(input: &str) -> String {
 pub fn external_process_test_lock() -> &'static tokio::sync::Mutex<()> {
     &process::EXTERNAL_PROCESS_TEST_LOCK
 }
+
+pub async fn exercise_native_cleanup_for_harness(root_pid: u32) -> bool {
+    diagnostics::NativeProcessSampler::default()
+        .cleanup_descendants(root_pid)
+        .await
+        .is_ok()
+}

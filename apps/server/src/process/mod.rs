@@ -2,6 +2,7 @@ mod background;
 mod cleanup;
 mod runner;
 mod shell;
+pub(crate) mod supervised;
 #[cfg(windows)]
 mod windows_job;
 

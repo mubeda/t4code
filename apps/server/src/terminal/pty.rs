@@ -65,36 +65,41 @@ impl PtyBackend for PortablePtyBackend {
         for (key, value) in &input.env {
             command.env(key, value);
         }
+        #[cfg(windows)]
+        let job = WindowsJob::new().map_err(|error| error.to_string())?;
+        #[cfg(windows)]
+        command.job_list(&[job.raw_handle()]);
 
         let mut child = match pair.slave.spawn_command(command) {
             Ok(child) => child,
             Err(error) => return Err(error.to_string()),
         };
         drop(pair.slave);
-        let pid = match child.process_id() {
-            Some(pid) => pid,
-            None => return Err("PTY child did not expose a process id".to_string()),
-        };
         #[cfg(unix)]
         let process_group = pair.master.process_group_leader();
-        #[cfg(windows)]
-        let job = {
-            let raw_handle = match child.as_raw_handle() {
-                Some(raw_handle) => raw_handle,
-                None => return Err("PTY child did not expose a Windows process handle".to_owned()),
-            };
-            match WindowsJob::attach(raw_handle) {
-                Ok(job) => job,
-                Err(error) => return Err(error.to_string()),
-            }
+        macro_rules! fail_initialization {
+            ($error:expr) => {{
+                let error = $error.to_string();
+                #[cfg(windows)]
+                cleanup_failed_pty_initialization(&mut *child, &job, &error);
+                #[cfg(unix)]
+                cleanup_failed_pty_initialization(&mut *child, process_group, &error);
+                #[cfg(not(any(unix, windows)))]
+                cleanup_failed_pty_initialization(&mut *child, &error);
+                return Err(error);
+            }};
+        }
+        let pid = match child.process_id() {
+            Some(pid) => pid,
+            None => fail_initialization!("PTY child did not expose a process id"),
         };
         let mut reader = match pair.master.try_clone_reader() {
             Ok(reader) => reader,
-            Err(error) => return Err(error.to_string()),
+            Err(error) => fail_initialization!(error),
         };
         let writer = match pair.master.take_writer() {
             Ok(writer) => writer,
-            Err(error) => return Err(error.to_string()),
+            Err(error) => fail_initialization!(error),
         };
         #[cfg(not(windows))]
         let killer = child.clone_killer();
@@ -107,7 +112,7 @@ impl PtyBackend for PortablePtyBackend {
             .name(format!("t4code-pty-output-{pid}"))
             .spawn(move || read_output(&mut reader, &output_sender))
         {
-            return Err(error.to_string());
+            fail_initialization!(error);
         }
         if let Err(error) = thread::Builder::new()
             .name(format!("t4code-pty-resize-{pid}"))
@@ -117,12 +122,21 @@ impl PtyBackend for PortablePtyBackend {
                 }
             })
         {
-            return Err(error.to_string());
+            fail_initialization!(error);
         }
+        let child_slot = Arc::new(Mutex::new(Some(child)));
+        let wait_child_slot = Arc::clone(&child_slot);
         let exit_sender = exit.clone();
         if let Err(error) = thread::Builder::new()
             .name(format!("t4code-pty-wait-{pid}"))
             .spawn(move || {
+                let Some(mut child) = wait_child_slot
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take()
+                else {
+                    return;
+                };
                 let event = match child.wait() {
                     Ok(status) => PtyExit {
                         exit_code: i32::try_from(status.exit_code()).ok(),
@@ -136,7 +150,12 @@ impl PtyBackend for PortablePtyBackend {
                 let _ = exit_sender.send(Some(event));
             })
         {
-            return Err(error.to_string());
+            child = child_slot
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+                .expect("failed wait-worker spawn must retain the PTY child");
+            fail_initialization!(error);
         }
 
         Ok(Arc::new(PortablePtyProcess {
@@ -152,6 +171,89 @@ impl PtyBackend for PortablePtyBackend {
             #[cfg(windows)]
             job,
         }))
+    }
+}
+
+#[cfg(windows)]
+fn cleanup_failed_pty_initialization(
+    child: &mut dyn portable_pty::Child,
+    job: &WindowsJob,
+    primary_error: &str,
+) {
+    let mut report = crate::process::ProcessCleanupReport::default();
+    match job.terminate() {
+        Ok(()) => report.record_success(),
+        Err(error) => report.record_failure(format!("terminate job: {error}")),
+    }
+    match child.kill() {
+        Ok(()) => report.record_success(),
+        Err(error) => report.record_failure(format!("kill child: {error}")),
+    }
+    match child.wait() {
+        Ok(_) => report.record_success(),
+        Err(error) => report.record_failure(format!("wait child: {error}")),
+    }
+    log_failed_pty_initialization(primary_error, &report);
+}
+
+#[cfg(unix)]
+fn cleanup_failed_pty_initialization(
+    child: &mut dyn portable_pty::Child,
+    process_group: Option<i32>,
+    primary_error: &str,
+) {
+    let mut report = crate::process::ProcessCleanupReport::default();
+    if let Some(process_group) = process_group {
+        // SAFETY: a negative process-group leader targets the complete PTY
+        // process group, and signal 9 does not borrow any memory.
+        let result = unsafe { kill(-process_group, 9) };
+        if result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(3) {
+            report.record_success();
+        } else {
+            report.record_failure(format!(
+                "kill process group: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
+    match child.kill() {
+        Ok(()) => report.record_success(),
+        Err(error) => report.record_failure(format!("kill child: {error}")),
+    }
+    match child.wait() {
+        Ok(_) => report.record_success(),
+        Err(error) => report.record_failure(format!("wait child: {error}")),
+    }
+    log_failed_pty_initialization(primary_error, &report);
+}
+
+#[cfg(not(any(unix, windows)))]
+fn cleanup_failed_pty_initialization(child: &mut dyn portable_pty::Child, primary_error: &str) {
+    let mut report = crate::process::ProcessCleanupReport::default();
+    match child.kill() {
+        Ok(()) => report.record_success(),
+        Err(error) => report.record_failure(format!("kill child: {error}")),
+    }
+    match child.wait() {
+        Ok(_) => report.record_success(),
+        Err(error) => report.record_failure(format!("wait child: {error}")),
+    }
+    log_failed_pty_initialization(primary_error, &report);
+}
+
+fn log_failed_pty_initialization(
+    primary_error: &str,
+    report: &crate::process::ProcessCleanupReport,
+) {
+    if report.failure_count > 0 {
+        tracing::warn!(
+            primary_error = %crate::process::bound_process_cleanup_failure(primary_error),
+            attempted = report.attempted,
+            succeeded = report.succeeded,
+            failure_count = report.failure_count,
+            failures = ?report.failures,
+            "PTY initialization failed and cleanup was incomplete"
+        );
     }
 }
 
@@ -287,11 +389,329 @@ unsafe extern "C" {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    use std::ffi::OsStr;
+    #[cfg(windows)]
+    use std::fs;
     #[cfg(not(windows))]
     use std::io::{Error, ErrorKind};
+    #[cfg(windows)]
+    use std::os::windows::ffi::OsStrExt;
     #[cfg(not(windows))]
     use std::panic::{AssertUnwindSafe, catch_unwind};
+    #[cfg(windows)]
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
+
+    #[cfg(windows)]
+    const JOB_PROBE_NAME_ENV: &str = "T4CODE_PTY_JOB_PROBE_NAME";
+    #[cfg(windows)]
+    const JOB_PROBE_RESULT_ENV: &str = "T4CODE_PTY_JOB_PROBE_RESULT";
+    #[cfg(windows)]
+    const PTY_TREE_ROLE_ENV: &str = "T4CODE_PTY_TREE_ROLE";
+    #[cfg(windows)]
+    const PTY_TREE_ROOT_READY_ENV: &str = "T4CODE_PTY_TREE_ROOT_READY";
+    #[cfg(windows)]
+    const PTY_TREE_CHILD_READY_ENV: &str = "T4CODE_PTY_TREE_CHILD_READY";
+    #[cfg(windows)]
+    const PTY_TREE_GRANDCHILD_READY_ENV: &str = "T4CODE_PTY_TREE_GRANDCHILD_READY";
+    #[cfg(windows)]
+    const PTY_TREE_ROOT_SURVIVED_ENV: &str = "T4CODE_PTY_TREE_ROOT_SURVIVED";
+    #[cfg(windows)]
+    const PTY_TREE_CHILD_SURVIVED_ENV: &str = "T4CODE_PTY_TREE_CHILD_SURVIVED";
+    #[cfg(windows)]
+    const PTY_TREE_GRANDCHILD_SURVIVED_ENV: &str = "T4CODE_PTY_TREE_GRANDCHILD_SURVIVED";
+    #[cfg(windows)]
+    const PTY_TREE_RELEASE_ENV: &str = "T4CODE_PTY_TREE_RELEASE";
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_job_membership_probe() {
+        let Some(name) = std::env::var_os(JOB_PROBE_NAME_ENV) else {
+            return;
+        };
+        let result =
+            PathBuf::from(std::env::var_os(JOB_PROBE_RESULT_ENV).expect("job probe result path"));
+        let mut name = OsStr::new(&name).encode_wide().collect::<Vec<_>>();
+        name.push(0);
+        // SAFETY: the name is a valid NUL-terminated UTF-16 string. The
+        // returned handle is closed below.
+        let job = unsafe {
+            windows_sys::Win32::System::JobObjects::OpenJobObjectW(
+                0x0004, // JOB_OBJECT_QUERY
+                0,
+                name.as_ptr(),
+            )
+        };
+        assert!(!job.is_null(), "named job should be openable");
+        let mut is_member = 0;
+        // SAFETY: all handles are live and `is_member` is writable storage for
+        // the BOOL result.
+        let checked = unsafe {
+            windows_sys::Win32::System::JobObjects::IsProcessInJob(
+                windows_sys::Win32::System::Threading::GetCurrentProcess(),
+                job,
+                &mut is_member,
+            )
+        };
+        // SAFETY: `job` is the owned handle opened above.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(job) };
+        assert_ne!(checked, 0, "job membership query should succeed");
+        fs::write(result, if is_member != 0 { "member" } else { "outside" })
+            .expect("write job membership result");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn conpty_child_is_in_the_supplied_job_when_application_code_starts() {
+        let temp = tempfile::tempdir().expect("job membership fixture");
+        let result = temp.path().join("membership.txt");
+        let name = format!(
+            "Local\\T4Code-Pty-{}-{}",
+            std::process::id(),
+            result.as_os_str().len()
+        );
+        let mut wide_name = OsStr::new(&name).encode_wide().collect::<Vec<_>>();
+        wide_name.push(0);
+        let job = WindowsJob::new_named(&wide_name).expect("create named PTY job");
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("open ConPTY");
+        let mut command =
+            CommandBuilder::new(std::env::current_exe().expect("current test executable"));
+        command.args([
+            "--exact",
+            "terminal::pty::tests::windows_job_membership_probe",
+            "--nocapture",
+            "--test-threads=1",
+        ]);
+        command.env(JOB_PROBE_NAME_ENV, &name);
+        command.env(JOB_PROBE_RESULT_ENV, &result);
+        command.job_list(&[job.raw_handle()]);
+
+        let mut child = pair
+            .slave
+            .spawn_command(command)
+            .expect("spawn ConPTY job probe");
+        drop(pair.slave);
+        let status = child.wait().expect("wait for ConPTY job probe");
+        assert!(status.success(), "job probe failed: {status}");
+        assert_eq!(
+            fs::read_to_string(&result).expect("read job membership result"),
+            "member"
+        );
+    }
+
+    #[cfg(windows)]
+    #[derive(Clone, Debug)]
+    struct TrackingPortableChild {
+        kills: Arc<AtomicUsize>,
+        waits: Arc<AtomicUsize>,
+    }
+
+    #[cfg(windows)]
+    impl portable_pty::ChildKiller for TrackingPortableChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            self.kills.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[cfg(windows)]
+    impl portable_pty::Child for TrackingPortableChild {
+        fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+            Ok(None)
+        }
+
+        fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+            self.waits.fetch_add(1, Ordering::SeqCst);
+            Ok(portable_pty::ExitStatus::with_exit_code(1))
+        }
+
+        fn process_id(&self) -> Option<u32> {
+            Some(1)
+        }
+
+        fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+            None
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn injected_windows_initialization_failure_kills_and_waits() {
+        let kills = Arc::new(AtomicUsize::new(0));
+        let waits = Arc::new(AtomicUsize::new(0));
+        let mut child = TrackingPortableChild {
+            kills: Arc::clone(&kills),
+            waits: Arc::clone(&waits),
+        };
+        let job = WindowsJob::new().expect("create cleanup job");
+
+        cleanup_failed_pty_initialization(&mut child, &job, "injected initialization failure");
+
+        assert_eq!(kills.load(Ordering::SeqCst), 1);
+        assert_eq!(waits.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_pty_tree_fixture() {
+        let Some(role) = std::env::var_os(PTY_TREE_ROLE_ENV) else {
+            return;
+        };
+        let (ready, survived) = match role.to_string_lossy().as_ref() {
+            "root" => {
+                spawn_windows_pty_tree_role("child");
+                (PTY_TREE_ROOT_READY_ENV, PTY_TREE_ROOT_SURVIVED_ENV)
+            }
+            "child" => {
+                spawn_windows_pty_tree_role("grandchild");
+                (PTY_TREE_CHILD_READY_ENV, PTY_TREE_CHILD_SURVIVED_ENV)
+            }
+            "grandchild" => (
+                PTY_TREE_GRANDCHILD_READY_ENV,
+                PTY_TREE_GRANDCHILD_SURVIVED_ENV,
+            ),
+            other => panic!("unknown Windows PTY tree role: {other}"),
+        };
+        fs::write(
+            std::env::var_os(ready).expect("PTY tree ready path"),
+            "ready",
+        )
+        .expect("write PTY tree ready marker");
+        let release =
+            PathBuf::from(std::env::var_os(PTY_TREE_RELEASE_ENV).expect("PTY tree release path"));
+        while !release.is_file() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        fs::write(
+            std::env::var_os(survived).expect("PTY tree survived path"),
+            "survived",
+        )
+        .expect("write PTY tree survived marker");
+        loop {
+            std::thread::park();
+        }
+    }
+
+    #[cfg(windows)]
+    fn spawn_windows_pty_tree_role(role: &str) {
+        std::process::Command::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--exact",
+                "terminal::pty::tests::windows_pty_tree_fixture",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(PTY_TREE_ROLE_ENV, role)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn Windows PTY tree role");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn portable_backend_kills_windows_child_and_grandchild() {
+        let temp = tempfile::tempdir().expect("Windows PTY tree fixture");
+        let root_ready = temp.path().join("root.ready");
+        let child_ready = temp.path().join("child.ready");
+        let grandchild_ready = temp.path().join("grandchild.ready");
+        let root_survived = temp.path().join("root.survived");
+        let child_survived = temp.path().join("child.survived");
+        let grandchild_survived = temp.path().join("grandchild.survived");
+        let release = temp.path().join("release");
+        let env = BTreeMap::from([
+            (PTY_TREE_ROLE_ENV.to_string(), "root".to_string()),
+            (
+                PTY_TREE_ROOT_READY_ENV.to_string(),
+                root_ready.to_string_lossy().into_owned(),
+            ),
+            (
+                PTY_TREE_CHILD_READY_ENV.to_string(),
+                child_ready.to_string_lossy().into_owned(),
+            ),
+            (
+                PTY_TREE_GRANDCHILD_READY_ENV.to_string(),
+                grandchild_ready.to_string_lossy().into_owned(),
+            ),
+            (
+                PTY_TREE_ROOT_SURVIVED_ENV.to_string(),
+                root_survived.to_string_lossy().into_owned(),
+            ),
+            (
+                PTY_TREE_CHILD_SURVIVED_ENV.to_string(),
+                child_survived.to_string_lossy().into_owned(),
+            ),
+            (
+                PTY_TREE_GRANDCHILD_SURVIVED_ENV.to_string(),
+                grandchild_survived.to_string_lossy().into_owned(),
+            ),
+            (
+                PTY_TREE_RELEASE_ENV.to_string(),
+                release.to_string_lossy().into_owned(),
+            ),
+        ]);
+        let process = PortablePtyBackend
+            .spawn(&PtySpawnInput {
+                shell: std::env::current_exe()
+                    .expect("current test executable")
+                    .to_string_lossy()
+                    .into_owned(),
+                args: vec![
+                    "--exact".to_string(),
+                    "terminal::pty::tests::windows_pty_tree_fixture".to_string(),
+                    "--nocapture".to_string(),
+                    "--test-threads=1".to_string(),
+                ],
+                cwd: std::env::temp_dir(),
+                cols: 80,
+                rows: 24,
+                env,
+            })
+            .expect("spawn Windows PTY tree");
+        let mut exit = process.subscribe_exit();
+        wait_for_windows_pty_path(&root_ready).await;
+        wait_for_windows_pty_path(&child_ready).await;
+        wait_for_windows_pty_path(&grandchild_ready).await;
+
+        process.kill().expect("kill Windows PTY Job");
+        tokio::time::timeout(Duration::from_secs(5), exit.changed())
+            .await
+            .expect("PTY root should exit")
+            .expect("PTY exit sender should remain live");
+        fs::write(&release, "release").expect("write PTY tree release");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        for sentinel in [&root_survived, &child_survived, &grandchild_survived] {
+            assert!(
+                !sentinel.exists(),
+                "PTY descendant survived long enough to write {}",
+                sentinel.display()
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    async fn wait_for_windows_pty_path(path: &Path) {
+        for _ in 0..500 {
+            if path.is_file() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("timed out waiting for {}", path.display());
+    }
 
     #[cfg(not(windows))]
     #[derive(Debug)]
