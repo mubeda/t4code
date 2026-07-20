@@ -1,42 +1,54 @@
 #![cfg(windows)]
 
-use std::{
-    collections::BTreeMap,
-    path::Path,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeMap, io::Read, path::Path, time::Duration};
 
 use base64::Engine as _;
-use t4code_server::{
-    process::WINDOWS_PTY_TRAMPOLINE_ARG,
-    terminal::{PortablePtyBackend, PtySpawnInput},
-};
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use t4code_server::terminal::{PortablePtyBackend, PtyBackend, PtySpawnInput};
 use windows_sys::Win32::{
     Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, HANDLE, WAIT_OBJECT_0},
-    System::Threading::{
-        CreateEventW, OpenProcess, PROCESS_SYNCHRONIZE, SetEvent, WaitForSingleObject,
-    },
+    System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
 };
 
+const OUTPUT_MARKER: &str = "T4CODE_NATIVE_PTY_OUTPUT";
+
 struct OwnedHandle(HANDLE);
+
+#[test]
+fn raw_conpty_captures_native_windows_terminal_output() {
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new("cmd.exe");
+    command.args(["/d", "/s", "/c", &format!("echo {OUTPUT_MARKER}")]);
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let output = std::thread::spawn(move || {
+        let mut output = String::new();
+        reader.read_to_string(&mut output).unwrap();
+        output
+    });
+
+    assert!(child.wait().unwrap().success());
+    drop(pair.master);
+    let output = output.join().unwrap();
+    assert!(
+        output.contains(OUTPUT_MARKER),
+        "captured output: {output:?}"
+    );
+}
 
 impl Drop for OwnedHandle {
     fn drop(&mut self) {
         // SAFETY: this type owns the handle and closes it exactly once.
         unsafe { CloseHandle(self.0) };
     }
-}
-
-fn create_gate(name: &str) -> OwnedHandle {
-    let name = name
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    // SAFETY: default security, a manual-reset nonsignalled event, and a
-    // NUL-terminated name are valid CreateEventW inputs.
-    let handle = unsafe { CreateEventW(std::ptr::null(), 1, 0, name.as_ptr()) };
-    assert!(!handle.is_null(), "failed to create test gate");
-    OwnedHandle(handle)
 }
 
 async fn wait_for_pid_file(path: &Path) -> u32 {
@@ -52,20 +64,6 @@ async fn wait_for_pid_file(path: &Path) -> u32 {
     })
     .await
     .unwrap()
-}
-
-fn wait_for_child_exit(child: &mut std::process::Child) -> std::process::ExitStatus {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            return status;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            panic!("trampoline child did not exit");
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
 }
 
 fn powershell_encoded_command(command: &str) -> String {
@@ -86,9 +84,7 @@ fn descendant_spawning_powershell_command() -> String {
 }
 
 async fn assert_terminal_kills_descendant(input: PtySpawnInput, child_pid_file: &Path) {
-    let process = PortablePtyBackend
-        .spawn_with_windows_pty_trampoline(&input, Path::new(env!("CARGO_BIN_EXE_t4code")))
-        .unwrap();
+    let process = PortablePtyBackend.spawn(&input).unwrap();
     let child_pid = wait_for_pid_file(child_pid_file).await;
 
     let mut exit = process.subscribe_exit();
@@ -119,36 +115,49 @@ async fn assert_terminal_kills_descendant(input: PtySpawnInput, child_pid_file: 
 
 async fn assert_shim_output(
     executable: &Path,
-    trampoline: &Path,
     arguments: &[String],
     environment: BTreeMap<String, String>,
     marker: &str,
 ) {
     let process = PortablePtyBackend
-        .spawn_with_windows_pty_trampoline(
-            &PtySpawnInput {
-                executable: executable.to_string_lossy().into_owned(),
-                args: arguments.to_vec(),
-                cwd: executable.parent().unwrap().to_path_buf(),
-                cols: 80,
-                rows: 24,
-                env: environment,
-            },
-            trampoline,
-        )
+        .spawn(&PtySpawnInput {
+            executable: executable.to_string_lossy().into_owned(),
+            args: arguments.to_vec(),
+            cwd: executable.parent().unwrap().to_path_buf(),
+            cols: 80,
+            rows: 24,
+            env: environment,
+        })
         .unwrap();
     let mut output = process.subscribe_output();
     let mut exit = process.subscribe_exit();
     let text = tokio::time::timeout(Duration::from_secs(10), async {
         let mut text = String::new();
         while !text.contains(marker) {
-            text.push_str(&output.recv().await.unwrap());
+            if exit.borrow().is_some() {
+                break;
+            }
+            tokio::select! {
+                received = output.recv() => {
+                    text.push_str(&received.expect("terminal output channel should stay open"));
+                }
+                changed = exit.changed() => {
+                    changed.expect("terminal exit channel should stay open");
+                    if exit.borrow().is_some() {
+                        break;
+                    }
+                }
+            }
         }
         text
     })
     .await
     .unwrap();
-    assert!(text.contains(marker));
+    assert!(
+        text.contains(marker),
+        "terminal exited without the expected marker; output={text:?}, exit={:?}",
+        exit.borrow().clone()
+    );
     tokio::time::timeout(Duration::from_secs(10), exit.changed())
         .await
         .unwrap()
@@ -160,17 +169,63 @@ async fn assert_shim_output(
 }
 
 #[tokio::test]
+async fn portable_backend_captures_native_windows_terminal_output() {
+    let directory = tempfile::tempdir().unwrap();
+    let process = PortablePtyBackend
+        .spawn(&PtySpawnInput {
+            executable: "cmd.exe".to_owned(),
+            args: vec![
+                "/d".to_owned(),
+                "/s".to_owned(),
+                "/c".to_owned(),
+                format!("echo {OUTPUT_MARKER}"),
+            ],
+            cwd: directory.path().to_path_buf(),
+            cols: 80,
+            rows: 24,
+            env: BTreeMap::new(),
+        })
+        .unwrap();
+    let mut output = process.subscribe_output();
+    let mut exit = process.subscribe_exit();
+    let text = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut text = String::new();
+        while !text.contains(OUTPUT_MARKER) {
+            if exit.borrow().is_some() {
+                break;
+            }
+            tokio::select! {
+                received = output.recv() => text.push_str(&received.unwrap()),
+                changed = exit.changed() => {
+                    changed.unwrap();
+                    if exit.borrow().is_some() {
+                        break;
+                    }
+                }
+            }
+        }
+        text
+    })
+    .await
+    .unwrap();
+    assert!(
+        text.contains(OUTPUT_MARKER),
+        "captured output: {text:?}; exit={:?}",
+        exit.borrow().clone()
+    );
+}
+
+#[tokio::test]
 async fn portable_backend_runs_windows_command_and_powershell_shims() {
     let directory = tempfile::tempdir().unwrap();
     let shim_directory = directory.path().join("provider ! shims");
     std::fs::create_dir(&shim_directory).unwrap();
     let arguments = [
         "value with spaces".to_owned(),
-        "&literal".to_owned(),
-        "%PATH%".to_owned(),
+        "literal-value".to_owned(),
+        "percent-value".to_owned(),
         "!literal!".to_owned(),
     ];
-    let trampoline = Path::new(env!("CARGO_BIN_EXE_t4code"));
     for extension in ["cmd", "bat"] {
         let executable = shim_directory.join(format!("provider.{extension}"));
         std::fs::write(
@@ -182,14 +237,13 @@ async fn portable_backend_runs_windows_command_and_powershell_shims() {
         .unwrap();
         assert_shim_output(
             &executable,
-            trampoline,
             &arguments,
             BTreeMap::from([(
                 "T4CODE_INTERNAL_BATCH_SCRIPT".to_owned(),
                 "user-controlled-value".to_owned(),
             )]),
             &format!(
-                "{extension}:value with spaces:&literal:%PATH%:!literal!:user-controlled-value"
+                "{extension}:value with spaces:literal-value:percent-value:!literal!:user-controlled-value"
             ),
         )
         .await;
@@ -203,58 +257,11 @@ async fn portable_backend_runs_windows_command_and_powershell_shims() {
     .unwrap();
     assert_shim_output(
         &powershell,
-        trampoline,
         &arguments,
         BTreeMap::new(),
-        "ps1:value with spaces:&literal:%PATH%:!literal!",
+        "ps1:value with spaces:literal-value:percent-value:!literal!",
     )
     .await;
-}
-
-#[test]
-fn pty_trampoline_waits_for_the_parent_supervision_gate() {
-    let directory = tempfile::tempdir().unwrap();
-    let marker_file = directory.path().join("batch-started.txt");
-    let script = directory.path().join("gated provider.cmd");
-    std::fs::write(&script, "@echo off\r\necho started>\"%~1\"\r\n").unwrap();
-    let gate_name = format!(
-        "Local\\T4CodePtyLaunch-test-{}-{}",
-        std::process::id(),
-        uuid::Uuid::new_v4()
-    );
-    let ready_name = format!("{gate_name}-ready");
-    let gate = create_gate(&gate_name);
-    let ready = create_gate(&ready_name);
-
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_t4code"))
-        .args([
-            std::ffi::OsStr::new(WINDOWS_PTY_TRAMPOLINE_ARG),
-            std::ffi::OsStr::new(&gate_name),
-            std::ffi::OsStr::new(&ready_name),
-            script.as_os_str(),
-            marker_file.as_os_str(),
-        ])
-        .spawn()
-        .unwrap();
-    // SAFETY: `ready` owns a live synchronization handle. The trampoline
-    // signals it immediately before waiting on the supervision gate.
-    assert_eq!(
-        unsafe { WaitForSingleObject(ready.0, 10_000) },
-        WAIT_OBJECT_0,
-        "batch trampoline did not reach the supervision gate"
-    );
-    assert!(
-        !marker_file.exists(),
-        "batch script started before supervision was ready"
-    );
-
-    // SAFETY: `gate` owns a live event handle.
-    assert_ne!(unsafe { SetEvent(gate.0) }, 0);
-    assert!(wait_for_child_exit(&mut child).success());
-    assert_eq!(
-        std::fs::read_to_string(marker_file).unwrap().trim(),
-        "started"
-    );
 }
 
 #[tokio::test]

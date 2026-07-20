@@ -4207,6 +4207,24 @@ done
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_executable_resolution_prefers_pathext_shim_over_extensionless_posix_shim() {
+        let directory = tempfile::TempDir::new().expect("provider fixture directory");
+        let posix_shim = directory.path().join("codex");
+        let windows_shim = directory.path().join("codex.cmd");
+        std::fs::write(&posix_shim, b"#!/bin/sh\n").expect("write POSIX provider shim");
+        std::fs::write(&windows_shim, b"@echo off\r\n").expect("write Windows provider shim");
+
+        assert_eq!(
+            super::resolve_provider_executable_in_path(
+                "codex",
+                Some(directory.path().as_os_str())
+            ),
+            Some(windows_shim)
+        );
+    }
+
     #[test]
     fn executable_resolution_keeps_explicit_paths_independent_of_search_path() {
         let directory = tempfile::TempDir::new().unwrap();

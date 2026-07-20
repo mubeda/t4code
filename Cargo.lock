@@ -4903,7 +4903,6 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "windows 0.62.2",
  "windows-sys 0.61.2",
  "zip 8.6.0",
 ]

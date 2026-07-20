@@ -41,7 +41,7 @@ impl EnvEntry {
 
 #[cfg(unix)]
 fn get_shell() -> String {
-    use nix::unistd::{access, AccessFlags};
+    use nix::unistd::{AccessFlags, access};
     use std::ffi::CStr;
     use std::str;
 
@@ -105,7 +105,7 @@ fn get_base_env() -> BTreeMap<OsString, EnvEntry> {
     {
         use std::os::windows::ffi::OsStringExt;
         use winapi::um::processenv::ExpandEnvironmentStringsW;
-        use winreg::enums::{RegType, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+        use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RegType};
         use winreg::types::FromRegValue;
         use winreg::{RegKey, RegValue};
 
@@ -207,6 +207,9 @@ pub struct CommandBuilder {
     #[cfg(windows)]
     #[cfg_attr(feature = "serde_support", serde(skip))]
     job_list: Vec<isize>,
+    #[cfg(windows)]
+    #[cfg_attr(feature = "serde_support", serde(skip))]
+    raw_windows_args: Option<OsString>,
     #[cfg(unix)]
     pub(crate) umask: Option<libc::mode_t>,
     controlling_tty: bool,
@@ -222,6 +225,8 @@ impl CommandBuilder {
             cwd: None,
             #[cfg(windows)]
             job_list: Vec::new(),
+            #[cfg(windows)]
+            raw_windows_args: None,
             #[cfg(unix)]
             umask: None,
             controlling_tty: true,
@@ -236,6 +241,8 @@ impl CommandBuilder {
             cwd: None,
             #[cfg(windows)]
             job_list: Vec::new(),
+            #[cfg(windows)]
+            raw_windows_args: None,
             #[cfg(unix)]
             umask: None,
             controlling_tty: true,
@@ -265,6 +272,8 @@ impl CommandBuilder {
             cwd: None,
             #[cfg(windows)]
             job_list: Vec::new(),
+            #[cfg(windows)]
+            raw_windows_args: None,
             #[cfg(unix)]
             umask: None,
             controlling_tty: true,
@@ -302,6 +311,19 @@ impl CommandBuilder {
 
     pub fn get_argv_mut(&mut self) -> &mut Vec<OsString> {
         &mut self.args
+    }
+
+    /// Use a pre-escaped argument tail when constructing a Windows command
+    /// line. This is needed for command interpreters such as `cmd.exe`, whose
+    /// parsing rules are incompatible with the usual C-runtime argv quoting.
+    ///
+    /// The raw text begins after argv[0]. It must not contain a NUL.
+    #[cfg(windows)]
+    pub fn raw_windows_args<S: AsRef<OsStr>>(&mut self, args: S) {
+        if self.is_default_prog() {
+            panic!("attempted to set raw args on a default_prog builder");
+        }
+        self.raw_windows_args = Some(args.as_ref().to_owned());
     }
 
     /// Override the value of an environmental variable
@@ -423,7 +445,7 @@ impl CommandBuilder {
     }
 
     fn search_path(&self, exe: &OsStr, cwd: &OsStr) -> anyhow::Result<OsString> {
-        use nix::unistd::{access, AccessFlags};
+        use nix::unistd::{AccessFlags, access};
 
         let exe_path: &Path = exe.as_ref();
         if exe_path.is_relative() {
@@ -551,7 +573,7 @@ impl CommandBuilder {
     /// We take the contents of the $SHELL env var first, then
     /// fall back to looking it up from the password database.
     pub fn get_shell(&self) -> String {
-        use nix::unistd::{access, AccessFlags};
+        use nix::unistd::{AccessFlags, access};
 
         if let Some(shell) = self.get_env("SHELL").and_then(OsStr::to_str) {
             match access(shell, AccessFlags::X_OK) {
@@ -704,14 +726,24 @@ impl CommandBuilder {
         let mut exe: Vec<u16> = exe.encode_wide().collect();
         exe.push(0);
 
-        for arg in self.args.iter().skip(1) {
+        if let Some(raw_args) = &self.raw_windows_args {
             cmdline.push(' ' as u16);
             anyhow::ensure!(
-                !arg.encode_wide().any(|c| c == 0),
-                "invalid encoding for command line argument {:?}",
-                arg
+                !raw_args.encode_wide().any(|c| c == 0),
+                "invalid encoding for raw command line arguments {:?}",
+                raw_args
             );
-            Self::append_quoted(arg, &mut cmdline);
+            cmdline.extend(raw_args.encode_wide());
+        } else {
+            for arg in self.args.iter().skip(1) {
+                cmdline.push(' ' as u16);
+                anyhow::ensure!(
+                    !arg.encode_wide().any(|c| c == 0),
+                    "invalid encoding for command line argument {:?}",
+                    arg
+                );
+                Self::append_quoted(arg, &mut cmdline);
+            }
         }
         // Ensure that the command line is nul terminated too!
         cmdline.push(0);
@@ -849,5 +881,21 @@ mod tests {
         let handles = [1_isize as std::os::windows::io::RawHandle, 42_isize as _];
         cmd.job_list(&handles);
         assert_eq!(cmd.get_job_list(), &[1, 42]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn raw_windows_args_bypass_c_runtime_quoting() {
+        use std::os::windows::ffi::OsStringExt;
+
+        let mut cmd = CommandBuilder::new("dummy");
+        cmd.raw_windows_args(r#"/d /c ""script.cmd" "value with spaces"""#);
+
+        let (_, command_line) = cmd.cmdline().unwrap();
+        let command_line = OsString::from_wide(&command_line[..command_line.len() - 1]);
+        assert_eq!(
+            command_line,
+            OsString::from(r#""dummy" /d /c ""script.cmd" "value with spaces"""#)
+        );
     }
 }

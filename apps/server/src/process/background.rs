@@ -1,3 +1,5 @@
+#[cfg(windows)]
+use process_wrap::tokio::CommandWrapper;
 #[cfg(unix)]
 use process_wrap::tokio::ProcessGroup;
 use process_wrap::tokio::{CommandWrap, KillOnDrop};
@@ -25,23 +27,33 @@ pub fn configure_background_std_command(command: &mut std::process::Command) {
     let _ = command;
 }
 
-/// Applies the same policy through process-wrap's creation-flags shim.
-pub(crate) fn configure_background_command_wrap(command: &mut CommandWrap) {
-    #[cfg(windows)]
-    command.wrap(process_wrap::tokio::CreationFlags(
-        windows::Win32::System::Threading::CREATE_NO_WINDOW,
-    ));
-    #[cfg(not(windows))]
-    let _ = command;
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug)]
+struct WindowsSupervisedCreationFlags;
+
+#[cfg(windows)]
+impl CommandWrapper for WindowsSupervisedCreationFlags {
+    fn pre_spawn(&mut self, command: &mut Command, _core: &CommandWrap) -> std::io::Result<()> {
+        use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
+
+        // This wrapper must run after process-wrap's JobObject. JobObject
+        // overwrites Tokio's creation flags while preparing its suspended
+        // launch, so applying the complete flag set last preserves both the
+        // race-free Job assignment and the GUI no-window policy.
+        command.creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW);
+        Ok(())
+    }
 }
 
 /// Applies the platform process-tree supervision policy for a non-interactive
 /// background command.
 pub fn configure_supervised_background_command_wrap(command: &mut CommandWrap) {
-    configure_background_command_wrap(command);
     command.wrap(KillOnDrop);
     #[cfg(windows)]
-    command.wrap(process_wrap::tokio::JobObject);
+    {
+        command.wrap(process_wrap::tokio::JobObject);
+        command.wrap(WindowsSupervisedCreationFlags);
+    }
     #[cfg(unix)]
     command.wrap(ProcessGroup::leader());
 }
@@ -185,12 +197,7 @@ mod tests {
 
 #[cfg(all(test, not(windows)))]
 mod tests {
-    use process_wrap::tokio::CommandWrap;
-
-    use super::{
-        configure_background_command, configure_background_command_wrap,
-        configure_background_std_command,
-    };
+    use super::{configure_background_command, configure_background_std_command};
 
     #[test]
     fn background_configuration_is_a_noop_on_unix_commands() {
@@ -199,8 +206,5 @@ mod tests {
 
         let mut std_command = std::process::Command::new("true");
         configure_background_std_command(&mut std_command);
-
-        let mut wrapped_command = CommandWrap::with_new("true", |_| {});
-        configure_background_command_wrap(&mut wrapped_command);
     }
 }
