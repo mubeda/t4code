@@ -369,6 +369,42 @@ describe("useNewThreadHandler", () => {
     });
   });
 
+  it("uses the newest saved Codex defaults only for the next chat", async () => {
+    testState.projects = [project()];
+    configureEnvironment({
+      providers: [
+        serverProvider({
+          instanceId: codexInstanceId,
+          driver: codexDriver,
+          models: [providerModel("gpt-next", [reasoningEffortDescriptor, serviceTierDescriptor])],
+        }),
+      ],
+      settings: {
+        providerSessionDefaults: {
+          [codexDriver]: {
+            model: "gpt-next",
+            options: [
+              { id: "reasoningEffort", value: "high" },
+              { id: "serviceTier", value: "fast" },
+            ],
+          },
+        },
+      },
+    });
+
+    await mount(<NewThreadHarness />);
+    await clickNewThread();
+
+    expect(createdDraftModelSelection()).toEqual({
+      instanceId: codexInstanceId,
+      model: "gpt-next",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "fast" },
+      ],
+    });
+  });
+
   it("seeds a worktree new draft from the configured provider session default", async () => {
     testState.projects = [project()];
     configureEnvironment({

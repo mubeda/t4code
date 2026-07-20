@@ -1,4 +1,5 @@
 import {
+  DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -200,6 +201,57 @@ describe("resolveProviderTerminalAction", () => {
       ).toEqual(expected);
     },
   );
+
+  it("builds Codex terminal arguments from saved defaults during empty discovery", () => {
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerSessionDefaults: {
+        [CODEX_DRIVER]: {
+          model: "gpt-offline",
+          options: [
+            { id: "reasoningEffort", value: "xhigh" },
+            { id: "serviceTier", value: "fast" },
+          ],
+        },
+      },
+    } satisfies ServerSettings;
+
+    expect(
+      resolveProviderTerminalAction(entry("codex", "codex", "Codex", []), settings)?.command?.args,
+    ).toEqual([
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model",
+      DEFAULT_MODEL_BY_PROVIDER[CODEX_DRIVER],
+      "--config",
+      'model_reasoning_effort="xhigh"',
+      "--config",
+      'service_tier="fast"',
+    ]);
+  });
+
+  it("builds Claude model and effort arguments and omits unsupported fast mode", () => {
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerSessionDefaults: {
+        [CLAUDE_DRIVER]: {
+          model: "claude-opus-4-8",
+          options: [
+            { id: "effort", value: "high" },
+            { id: "fastMode", value: true },
+          ],
+        },
+      },
+    } satisfies ServerSettings;
+
+    expect(
+      resolveProviderTerminalAction(
+        entry("claudeAgent", "claudeAgent", "Claude", [
+          model("claude-opus-4-8", [claudeEffortDescriptor, fastModeDescriptor]),
+        ]),
+        settings,
+      )?.command?.args,
+    ).toEqual(["--dangerously-skip-permissions", "--model", "claude-opus-4-8", "--effort", "high"]);
+  });
 
   it('passes Codex fast mode off as an explicit service_tier="default" config', () => {
     const settings = {
