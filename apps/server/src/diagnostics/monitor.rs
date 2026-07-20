@@ -544,4 +544,45 @@ mod tests {
             Some("process diagnostics sampling failed: initial failure")
         );
     }
+
+    #[tokio::test]
+    async fn first_history_read_failure_returns_no_measurement_buckets() {
+        let sampler = Arc::new(FakeResourceSampler::new([FakeResponse::Failure(
+            "initial failure",
+        )]));
+        let (monitor, _clock) = monitor(sampler.clone());
+
+        let history = monitor.read_history(60_000, 1_000).await;
+
+        assert_eq!(sampler.calls(), 1);
+        assert_eq!(history.retained_sample_count, 0);
+        assert!(history.buckets.is_empty());
+        assert!(history.processes.is_empty());
+        assert_eq!(
+            history.error.as_deref(),
+            Some("process diagnostics sampling failed: initial failure")
+        );
+    }
+
+    #[tokio::test]
+    async fn history_read_failure_retains_prior_successful_measurements() {
+        let sampler = Arc::new(FakeResourceSampler::new([
+            FakeResponse::Snapshot(snapshot(1_000)),
+            FakeResponse::Failure("refresh failed"),
+        ]));
+        let (monitor, clock) = monitor(sampler.clone());
+        let first = monitor.read_history(60_000, 1_000).await;
+        clock.advance(Duration::from_secs(2));
+
+        let stale = monitor.read_history(60_000, 1_000).await;
+
+        assert_eq!(sampler.calls(), 2);
+        assert_eq!(first.retained_sample_count, 1);
+        assert_eq!(stale.retained_sample_count, 1);
+        assert!(!stale.buckets.is_empty());
+        assert_eq!(
+            stale.error.as_deref(),
+            Some("process diagnostics sampling failed: refresh failed")
+        );
+    }
 }
