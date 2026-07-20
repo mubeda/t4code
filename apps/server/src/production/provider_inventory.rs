@@ -730,13 +730,13 @@ fn parse_claude_initialization_response(response: &Value) -> ProviderCapabilitie
     }
 }
 
-fn parse_claude_skills_response(response: &Value) -> Vec<Value> {
+fn parse_claude_skills_response(response: &Value) -> Option<Vec<Value>> {
     let mut seen = HashSet::new();
-    response
-        .get("skills")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
+    Some(
+        response
+        .get("skills")?
+        .as_array()?
+        .iter()
         .filter_map(|skill| {
             let name = skill.get("name")?.as_str()?.trim().trim_start_matches('/');
             if name.is_empty() || !seen.insert(name.to_ascii_lowercase()) {
@@ -752,7 +752,8 @@ fn parse_claude_skills_response(response: &Value) -> Vec<Value> {
             copy_non_empty_string(skill, &mut result, "description");
             Some(result)
         })
-        .collect()
+        .collect(),
+    )
 }
 
 fn parse_command_values(value: Option<&Value>) -> Vec<Value> {
@@ -892,19 +893,24 @@ async fn probe_claude_capabilities(
     .flatten()?;
     let mut capabilities = parse_claude_initialization_response(&initialization);
 
-    if write_claude_control_request(&mut stdin, "t4code-skills", "reload_skills")
+    let skills = if write_claude_control_request(&mut stdin, "t4code-skills", "reload_skills")
         .await
         .is_ok()
-        && let Ok(Some(skills)) = timeout(
+    {
+        timeout(
             CLAUDE_SKILLS_TIMEOUT,
             read_claude_control_response(&mut lines, "t4code-skills"),
         )
         .await
-    {
-        capabilities.skills = parse_claude_skills_response(&skills);
-    }
+        .ok()
+        .flatten()
+        .and_then(|response| parse_claude_skills_response(&response))
+    } else {
+        None
+    };
     let _ = stdin.shutdown().await;
     stop_supervised_child(&mut *child).await;
+    capabilities.skills = skills?;
     Some(capabilities)
 }
 
@@ -1111,18 +1117,9 @@ async fn probe_opencode_with_timeout(
         get_opencode_json(&client, endpoint, "/agent", server_password),
         get_opencode_json(&client, endpoint, "/command", server_password),
     );
-    if providers.is_none() && agents.is_none() && commands.is_none() {
-        return None;
-    }
-    let providers = providers.unwrap_or_else(|| {
-        json!({
-            "all": [],
-            "connected": [],
-            "default": {}
-        })
-    });
-    let agents = agents.unwrap_or_else(|| json!([]));
-    let commands = commands.unwrap_or_else(|| json!([]));
+    let providers = providers?;
+    let agents = agents?;
+    let commands = commands?;
     Some(opencode::build_inventory_snapshot(
         &providers,
         &agents,
@@ -1640,12 +1637,25 @@ mod tests {
                 { "name": "loop", "description": "Run repeatedly", "argumentHint": "[interval] [prompt]" },
                 { "name": "loop", "description": "Duplicate lower-priority skill" }
             ]
-        }));
+        }))
+        .expect("valid skills response");
 
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0]["name"], "loop");
         assert_eq!(skills[0]["invocation"], "slash");
         assert_eq!(skills[0]["path"], "claude://skill/loop");
+    }
+
+    #[test]
+    fn claude_skills_probe_distinguishes_empty_inventory_from_parse_failure() {
+        assert_eq!(
+            parse_claude_skills_response(&json!({ "skills": [] })),
+            Some(Vec::new())
+        );
+        assert_eq!(
+            parse_claude_skills_response(&json!({ "skills": "invalid" })),
+            None
+        );
     }
 
     #[test]
@@ -1675,7 +1685,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn opencode_slow_command_inventory_does_not_erase_models_and_agents() {
+    async fn opencode_partial_inventory_is_not_authoritative() {
         let app = Router::new()
             .route(
                 "/provider",
@@ -1735,24 +1745,10 @@ mod tests {
             &["custom/model".to_owned()],
             Duration::from_millis(75),
         )
-        .await
-        .expect("partial OpenCode inventory");
+        .await;
         server.abort();
 
-        assert!(
-            inventory
-                .models
-                .iter()
-                .any(|model| model.slug == "openai/gpt-5")
-        );
-        assert!(
-            inventory
-                .models
-                .iter()
-                .any(|model| model.slug == "custom/model")
-        );
-        assert_eq!(inventory.agents[0]["name"], "build");
-        assert!(inventory.commands.is_empty());
+        assert!(inventory.is_none());
         assert!(
             probe_opencode("http://127.0.0.1:1", None, &[])
                 .await
