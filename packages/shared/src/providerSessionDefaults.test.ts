@@ -739,6 +739,29 @@ describe("updateProviderSessionDefault", () => {
     });
   });
 
+  it("canonicalizes Codex effort aliases during an offline effort change", () => {
+    expect(
+      updateProviderSessionDefault({
+        driver: CODEX,
+        models: [],
+        current: {
+          model: "gpt-offline",
+          options: [
+            { id: "effort", value: "high" },
+            { id: "serviceTier", value: "fast" },
+          ],
+        },
+        change: { type: "effort", value: "xhigh" },
+      }),
+    ).toEqual({
+      model: "gpt-offline",
+      options: [
+        { id: "reasoningEffort", value: "xhigh" },
+        { id: "serviceTier", value: "fast" },
+      ],
+    });
+  });
+
   it("preserves compatible values and resets incompatible values on model changes", () => {
     const current: ProviderSessionDefault = {
       model: "gpt-5.4",
