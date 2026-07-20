@@ -40,8 +40,8 @@ or require Node.js.
    creating a new local project.
 2. Pick the project's primary row to work in the live checkout, or use the
    project `+` action to create a worktree thread.
-3. Use the chat header `+` menu to open another AI chat panel, a terminal in the
-   same worktree, or a custom action.
+3. Use the chat header `+` menu to open another AI chat panel, a shell terminal
+   in the same worktree, a provider CLI terminal, or a custom action.
 4. Use Files and Source Control in the right panel for filesystem, staging,
    commits, history, pull/push, and PR actions.
 

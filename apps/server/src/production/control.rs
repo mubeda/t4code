@@ -427,7 +427,7 @@ fn apply_settings_defaults(settings: &mut Value) {
             "providers": {
                 "codex": { "enabled": true, "binaryPath": "codex", "homePath": "", "shadowHomePath": "", "customModels": [] },
                 "claudeAgent": { "enabled": true, "binaryPath": "claude", "homePath": "", "customModels": [], "launchArgs": "" },
-                "cursor": { "enabled": false, "binaryPath": "agent", "apiEndpoint": "", "customModels": [] },
+                "cursor": { "enabled": false, "binaryPath": "cursor-agent", "apiEndpoint": "", "customModels": [] },
                 "grok": { "enabled": true, "binaryPath": "grok", "customModels": [] },
                 "opencode": { "enabled": true, "binaryPath": "opencode", "serverUrl": "", "serverPassword": "", "customModels": [] },
             },

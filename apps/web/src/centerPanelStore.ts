@@ -17,10 +17,16 @@
  * Wave C task body) so exhaustive switches over the surface union stay clean.
  */
 import { scopedThreadKey } from "@t4code/client-runtime/environment";
-import type { ScopedThreadRef, ThreadId } from "@t4code/contracts";
+import {
+  TERMINAL_LAUNCH_LABEL_MAX_LENGTH,
+  type ScopedThreadRef,
+  type TerminalLaunchCommand,
+  type ThreadId,
+} from "@t4code/contracts";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
+import { decodeTerminalLaunchCommand } from "./lib/terminalLaunchCommand";
 import { resolveStorage } from "./lib/storage";
 
 export const HOST_SURFACE_ID = "chat:host" as const;
@@ -31,12 +37,23 @@ export type CenterPanelKind = (typeof CENTER_PANEL_KINDS)[number];
 export type CenterSurface =
   | { id: typeof HOST_SURFACE_ID; kind: "chat-host" }
   | { id: `chat:${string}`; kind: "chat"; threadId: ThreadId; providerLabel?: string }
-  | { id: `terminal:${string}`; kind: "terminal"; terminalId: string };
+  | {
+      id: `terminal:${string}`;
+      kind: "terminal";
+      terminalId: string;
+      label?: string;
+      command?: TerminalLaunchCommand;
+    };
+
+export interface OpenTerminalPanelOptions {
+  readonly label?: string;
+  readonly command?: TerminalLaunchCommand;
+}
 
 const HOST_SURFACE: CenterSurface = { id: HOST_SURFACE_ID, kind: "chat-host" };
 
 const CENTER_PANEL_STORAGE_KEY = "t4code:center-panel-state:v1";
-const CENTER_PANEL_STORAGE_VERSION = 1;
+const CENTER_PANEL_STORAGE_VERSION = 2;
 
 export interface ThreadCenterPanelState {
   activeSurfaceId: string | null;
@@ -46,7 +63,11 @@ export interface ThreadCenterPanelState {
 interface CenterPanelStoreState {
   byThreadKey: Record<string, ThreadCenterPanelState>;
   openChatPanel: (ref: ScopedThreadRef, threadId: ThreadId, providerLabel?: string) => void;
-  openTerminalPanel: (ref: ScopedThreadRef, terminalId: string) => void;
+  openTerminalPanel: (
+    ref: ScopedThreadRef,
+    terminalId: string,
+    options?: OpenTerminalPanelOptions,
+  ) => void;
   activateSurface: (ref: ScopedThreadRef, surfaceId: string) => void;
   closeSurface: (ref: ScopedThreadRef, surfaceId: string) => void;
   closeOtherSurfaces: (ref: ScopedThreadRef, surfaceId: string) => void;
@@ -69,16 +90,33 @@ const chatSurface = (threadId: ThreadId, providerLabel?: string): CenterSurface 
   ...(providerLabel !== undefined ? { providerLabel } : {}),
 });
 
-const terminalSurface = (terminalId: string): CenterSurface => ({
+const terminalSurface = (
+  terminalId: string,
+  options?: OpenTerminalPanelOptions,
+): CenterSurface => ({
   id: `terminal:${terminalId}`,
   kind: "terminal",
   terminalId,
+  ...(options?.label !== undefined ? { label: options.label } : {}),
+  ...(options?.command !== undefined ? { command: options.command } : {}),
 });
 
-// Guarantee the host surface sits at index 0 exactly once and drop duplicate
-// ids. Runtime actions never move the host, but migrate() relies on this to
-// repair arbitrary persisted arrays.
-const normalizeSurfaces = (surfaces: readonly CenterSurface[]): CenterSurface[] => {
+function boundedTrimmed(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed.length <= maxLength ? trimmed : undefined;
+}
+
+function sanitizeCommand(value: unknown): TerminalLaunchCommand | undefined {
+  return decodeTerminalLaunchCommand(value) ?? undefined;
+}
+
+// Keep the persisted host-presence bit while deduplicating surfaces. A missing
+// host is meaningful: users can close the host while sibling surfaces remain.
+const normalizeSurfaces = (
+  surfaces: readonly CenterSurface[],
+  hostWasPresent: boolean,
+): CenterSurface[] => {
   const seen = new Set<string>();
   const rest: CenterSurface[] = [];
   for (const surface of surfaces) {
@@ -87,7 +125,7 @@ const normalizeSurfaces = (surfaces: readonly CenterSurface[]): CenterSurface[] 
     seen.add(surface.id);
     rest.push(surface);
   }
-  return [HOST_SURFACE, ...rest];
+  return hostWasPresent ? [HOST_SURFACE, ...rest] : rest;
 };
 
 const isHostOnly = (state: ThreadCenterPanelState): boolean =>
@@ -141,9 +179,17 @@ const sanitizeSurface = (surface: unknown): CenterSurface[] => {
     ];
   }
   if (kind === "terminal") {
-    const terminalId = (surface as { terminalId?: unknown }).terminalId;
+    const candidate = surface as Record<string, unknown>;
+    const terminalId = candidate.terminalId;
     if (typeof terminalId !== "string") return [];
-    return [terminalSurface(terminalId)];
+    const label = boundedTrimmed(candidate.label, TERMINAL_LAUNCH_LABEL_MAX_LENGTH);
+    const command = sanitizeCommand(candidate.command);
+    return [
+      terminalSurface(terminalId, {
+        ...(label ? { label } : {}),
+        ...(command ? { command } : {}),
+      }),
+    ];
   }
   return [];
 };
@@ -164,17 +210,34 @@ export function migratePersistedCenterPanelState(persistedState: unknown): {
   for (const [threadKey, value] of Object.entries(raw)) {
     const threadState =
       value && typeof value === "object" ? (value as Record<string, unknown>) : null;
-    const rawSurfaces = Array.isArray(threadState?.surfaces) ? threadState.surfaces : [];
-    const surfaces = normalizeSurfaces(rawSurfaces.flatMap<CenterSurface>(sanitizeSurface));
+    if (!Array.isArray(threadState?.surfaces)) continue;
+    const rawSurfaces = threadState.surfaces;
+    const hostWasPresent = rawSurfaces.some(
+      (surface) =>
+        surface !== null &&
+        typeof surface === "object" &&
+        (surface as { kind?: unknown }).kind === "chat-host",
+    );
+    const surfaces = normalizeSurfaces(
+      rawSurfaces.flatMap<CenterSurface>(sanitizeSurface),
+      hostWasPresent,
+    );
     // Host-only entries are identical to EMPTY_THREAD_STATE — no need to persist.
-    if (surfaces.length === 1) continue;
-    const activeCandidate =
+    if (surfaces.length === 1 && surfaces[0]?.id === HOST_SURFACE_ID) continue;
+    if (surfaces.length === 0) {
+      if (threadState.activeSurfaceId === null) {
+        byThreadKey[threadKey] = { surfaces: [], activeSurfaceId: null };
+      }
+      continue;
+    }
+    const firstSurface = surfaces[0]!;
+    const activeCandidate: string =
       typeof threadState?.activeSurfaceId === "string"
         ? threadState.activeSurfaceId
-        : HOST_SURFACE_ID;
+        : firstSurface.id;
     const activeSurfaceId = surfaces.some((surface) => surface.id === activeCandidate)
       ? activeCandidate
-      : HOST_SURFACE_ID;
+      : firstSurface.id;
     byThreadKey[threadKey] = { surfaces, activeSurfaceId };
   }
   return { byThreadKey };
@@ -190,10 +253,10 @@ export const useCenterPanelStore = create<CenterPanelStoreState>()(
             upsertSurface(current, chatSurface(threadId, providerLabel)),
           ),
         })),
-      openTerminalPanel: (ref, terminalId) =>
+      openTerminalPanel: (ref, terminalId, options) =>
         set((state) => ({
           byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) =>
-            upsertSurface(current, terminalSurface(terminalId)),
+            upsertSurface(current, terminalSurface(terminalId, options)),
           ),
         })),
       activateSurface: (ref, surfaceId) =>

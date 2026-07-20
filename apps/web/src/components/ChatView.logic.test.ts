@@ -31,6 +31,7 @@ import {
   reconcileRetainedMountedThreadIds,
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
+  resolveCenterPanelLaunchContext,
   resolveSendEnvMode,
   shouldWriteThreadErrorToCurrentServerThread,
   threadHasStarted,
@@ -101,6 +102,59 @@ const readySession = {
 };
 
 describe("local draft and attachment helpers", () => {
+  it("keeps center panels unavailable for local drafts", () => {
+    expect(
+      resolveCenterPanelLaunchContext({
+        hasServerThread: false,
+        envMode: "local",
+        projectCwd: "/repo",
+        worktreePath: null,
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps center panels unavailable while a live thread is preparing a worktree", () => {
+    expect(
+      resolveCenterPanelLaunchContext({
+        hasServerThread: true,
+        envMode: "worktree",
+        projectCwd: "/repo",
+        worktreePath: null,
+      }),
+    ).toBeNull();
+  });
+
+  it.each([
+    {
+      name: "explicit project-root mode",
+      input: {
+        hasServerThread: true,
+        envMode: "local" as const,
+        projectCwd: "/repo",
+        worktreePath: null,
+      },
+      expected: { cwd: "/repo", worktreePath: null },
+    },
+    {
+      name: "resolved worktree mode",
+      input: {
+        hasServerThread: true,
+        envMode: "worktree" as const,
+        projectCwd: "/repo",
+        worktreePath: "/repo/.t4code/worktrees/feature",
+      },
+      expected: {
+        cwd: "/repo/.t4code/worktrees/feature",
+        worktreePath: "/repo/.t4code/worktrees/feature",
+      },
+    },
+  ])(
+    "resolves center-panel launch context for a ready live $name thread",
+    ({ input, expected }) => {
+      expect(resolveCenterPanelLaunchContext(input)).toEqual(expected);
+    },
+  );
+
   it("projects draft routing metadata into a local thread", () => {
     const result = buildLocalDraftThread(
       threadId,

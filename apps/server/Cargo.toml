@@ -1,6 +1,6 @@
 [package]
 name = "t4code-server"
-version = "0.2.2"
+version = "0.2.3"
 description = "T4Code Rust server runtime"
 edition.workspace = true
 rust-version.workspace = true
@@ -65,6 +65,7 @@ windows-sys = { workspace = true, features = [
   "Win32_Security_Authorization",
   "Win32_Storage_FileSystem",
   "Win32_System_Console",
+  "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_JobObjects",
   "Win32_System_Kernel",
   "Win32_System_Threading",

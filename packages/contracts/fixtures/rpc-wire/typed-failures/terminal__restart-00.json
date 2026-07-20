@@ -7,9 +7,24 @@
       {
         "_tag": "Fail",
         "error": {
-          "_tag": "TerminalSessionLookupError",
+          "_tag": "TerminalResizeError",
           "threadId": "caller",
-          "terminalId": ""
+          "terminalId": "",
+          "terminalPid": -3.4028212353202322e38,
+          "cols": 127,
+          "rows": 439,
+          "cause": {
+            "\"! m]": false,
+            "ll": {
+              "QDh": [-3.481570160257076e-258, 3329399560242575, 1.6410941989134328e-258],
+              "": {
+                "Sz~": "m>m~]lS",
+                "[\"zckC": true
+              },
+              "E4o.-g!A^S": true
+            },
+            "R4": true
+          }
         }
       }
     ]

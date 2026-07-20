@@ -21,7 +21,10 @@ use crate::{
         ProviderUsageStatus, ProviderUsageWindow,
     },
     rpc::{RpcRegistry, RpcResult, RpcStreamChunk},
-    terminal::{TerminalAttachInput, TerminalManager, TerminalMetadataEvent, TerminalOpenInput},
+    terminal::{
+        TerminalAttachInput, TerminalError, TerminalLaunchCommand, TerminalManager,
+        TerminalMetadataEvent, TerminalOpenInput,
+    },
 };
 
 const PROCESS_DIAGNOSTIC_MESSAGE_MAX_SCALARS: usize = 160;
@@ -337,7 +340,11 @@ fn register_terminal_rpcs(registry: &mut RpcRegistry, services: &ServerTerminalS
                 Ok(input) => input,
                 Err(error) => { let _ = sender.send(Err(error)).await; return; }
             };
-            let mut attachment = match terminal.attach(input.into_attach()).await {
+            let input = match input.into_attach() {
+                Ok(input) => input,
+                Err(error) => { let _ = sender.send(Err(error)).await; return; }
+            };
+            let mut attachment = match terminal.attach(input).await {
                 Ok(attachment) => attachment,
                 Err(error) => { let _ = sender.send(Err(terminal_error(error))).await; return; }
             };
@@ -497,6 +504,74 @@ where
     receiver
 }
 
+const TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH: usize = 4_096;
+const TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH: usize = 8_192;
+const TERMINAL_LAUNCH_ARGUMENT_MAX_COUNT: usize = 64;
+const TERMINAL_LAUNCH_LABEL_MAX_LENGTH: usize = 128;
+
+fn is_ecmascript_trim_character(character: char) -> bool {
+    matches!(
+        character,
+        '\u{0009}'
+            | '\u{000a}'
+            | '\u{000b}'
+            | '\u{000c}'
+            | '\u{000d}'
+            | '\u{0020}'
+            | '\u{00a0}'
+            | '\u{1680}'
+            | '\u{2000}'
+            ..='\u{200a}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202f}'
+                | '\u{205f}'
+                | '\u{3000}'
+                | '\u{feff}'
+    )
+}
+
+fn trim_ecmascript(value: &str) -> &str {
+    value.trim_matches(is_ecmascript_trim_character)
+}
+
+fn validate_terminal_launch_command(
+    command: Option<TerminalLaunchCommand>,
+) -> Result<Option<TerminalLaunchCommand>, Value> {
+    let Some(mut command) = command else {
+        return Ok(None);
+    };
+
+    command.executable = trim_ecmascript(&command.executable).to_owned();
+    if command.executable.is_empty() {
+        return Err(invalid_request("command executable must not be empty"));
+    }
+    if command.executable.encode_utf16().count() > TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH {
+        return Err(invalid_request("command executable is too long"));
+    }
+    if command.args.len() > TERMINAL_LAUNCH_ARGUMENT_MAX_COUNT {
+        return Err(invalid_request("command has too many arguments"));
+    }
+    if command
+        .args
+        .iter()
+        .any(|argument| argument.encode_utf16().count() > TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH)
+    {
+        return Err(invalid_request("command argument is too long"));
+    }
+    if let Some(label) = command.label.as_mut() {
+        *label = trim_ecmascript(label).to_owned();
+        if label.is_empty() {
+            return Err(invalid_request("command label must not be empty"));
+        }
+        if label.encode_utf16().count() > TERMINAL_LAUNCH_LABEL_MAX_LENGTH {
+            return Err(invalid_request("command label is too long"));
+        }
+    }
+
+    Ok(Some(command))
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TerminalStartPayload {
@@ -508,6 +583,7 @@ struct TerminalStartPayload {
     rows: Option<u16>,
     #[serde(default)]
     env: BTreeMap<String, String>,
+    command: Option<TerminalLaunchCommand>,
 }
 
 impl TerminalStartPayload {
@@ -528,6 +604,7 @@ impl TerminalStartPayload {
             cols,
             rows,
             env: self.env,
+            command: validate_terminal_launch_command(self.command)?,
         })
     }
 }
@@ -545,11 +622,12 @@ struct TerminalAttachPayload {
     env: BTreeMap<String, String>,
     #[serde(default)]
     restart_if_not_running: bool,
+    command: Option<TerminalLaunchCommand>,
 }
 
 impl TerminalAttachPayload {
-    fn into_attach(self) -> TerminalAttachInput {
-        TerminalAttachInput {
+    fn into_attach(self) -> Result<TerminalAttachInput, Value> {
+        Ok(TerminalAttachInput {
             thread_id: self.thread_id,
             terminal_id: self.terminal_id,
             cwd: self.cwd.map(PathBuf::from),
@@ -558,7 +636,8 @@ impl TerminalAttachPayload {
             rows: self.rows,
             env: self.env,
             restart_if_not_running: self.restart_if_not_running,
-        }
+            command: validate_terminal_launch_command(self.command)?,
+        })
     }
 }
 
@@ -912,34 +991,44 @@ fn terminal_metadata_to_wire(event: TerminalMetadataEvent) -> Value {
     serde_json::to_value(event).expect("terminal metadata event serializes")
 }
 
-fn terminal_error(error: impl ToString) -> Value {
-    let message = error.to_string();
-    if let Some(cwd) = message.strip_prefix("terminal cwd does not exist: ") {
-        return json!({ "_tag": "TerminalCwdNotFoundError", "cwd": cwd });
-    }
-    if let Some(cwd) = message.strip_prefix("terminal cwd is not a directory: ") {
-        return json!({ "_tag": "TerminalCwdNotDirectoryError", "cwd": cwd });
-    }
-    for (prefix, tag) in [
-        ("unknown terminal thread: ", "TerminalSessionLookupError"),
-        (
-            "terminal is not running for thread: ",
-            "TerminalNotRunningError",
-        ),
-    ] {
-        if let Some(details) = message.strip_prefix(prefix)
-            && let Some((thread_id, terminal_id)) = details.split_once(", terminal: ")
-        {
-            return json!({
-                "_tag": tag,
-                "threadId": thread_id,
-                "terminalId": terminal_id,
-            });
+fn terminal_error(error: TerminalError) -> Value {
+    match error {
+        TerminalError::Shutdown => json!({
+            "_tag": "TerminalSpawnError",
+            "reason": "Terminal manager is shut down.",
+        }),
+        TerminalError::CwdNotFound(cwd) => {
+            json!({ "_tag": "TerminalCwdNotFoundError", "cwd": cwd })
         }
+        TerminalError::CwdNotDirectory(cwd) => {
+            json!({ "_tag": "TerminalCwdNotDirectoryError", "cwd": cwd })
+        }
+        TerminalError::NotFound {
+            thread_id,
+            terminal_id,
+        } => json!({
+            "_tag": "TerminalSessionLookupError",
+            "threadId": thread_id,
+            "terminalId": terminal_id,
+        }),
+        TerminalError::NotRunning {
+            thread_id,
+            terminal_id,
+        } => json!({
+            "_tag": "TerminalNotRunningError",
+            "threadId": thread_id,
+            "terminalId": terminal_id,
+        }),
+        TerminalError::Spawn { .. } => json!({
+            "_tag": "TerminalSpawnError",
+            "reason": "Terminal process could not be started.",
+        }),
+        TerminalError::Io(message) => json!({
+            "_tag": "TerminalCwdStatError",
+            "cwd": "",
+            "cause": message,
+        }),
     }
-    json!({
-        "_tag": "TerminalCwdStatError", "cwd": "", "cause": message,
-    })
 }
 
 fn invalid_request(message: &str) -> Value {
@@ -983,10 +1072,192 @@ mod tests {
             ResourceSampler, SamplingError, SplitMetric, UiCoverage, UiCoverageStatus,
         },
         production::control::NativeServerControl,
-        terminal::{PortablePtyBackend, TerminalManagerOptions},
+        terminal::{PortablePtyBackend, TerminalLaunchCommand, TerminalManagerOptions},
     };
 
     use super::*;
+
+    fn terminal_start_payload(command: Value) -> TerminalStartPayload {
+        decode_payload(&json!({
+            "threadId": "thread-validation",
+            "terminalId": "term-validation",
+            "cwd": "/tmp",
+            "cols": 120,
+            "rows": 30,
+            "command": command,
+        }))
+        .expect("terminal start payload decodes")
+    }
+
+    fn terminal_attach_payload(command: Value) -> TerminalAttachPayload {
+        decode_payload(&json!({
+            "threadId": "thread-validation",
+            "terminalId": "term-validation",
+            "command": command,
+        }))
+        .expect("terminal attach payload decodes")
+    }
+
+    fn assert_invalid_terminal_launch_command(command: Value) {
+        for dimensions_required in [false, true] {
+            let error = terminal_start_payload(command.clone())
+                .into_open(dimensions_required)
+                .expect_err("start and restart must reject invalid commands");
+            assert_eq!(error["_tag"], "RpcRequestInvalid");
+        }
+
+        let error = terminal_attach_payload(command)
+            .into_attach()
+            .expect_err("attach must reject invalid commands");
+        assert_eq!(error["_tag"], "RpcRequestInvalid");
+    }
+
+    #[test]
+    fn terminal_spawn_errors_are_explicit_bounded_and_redacted() {
+        let error = terminal_error(TerminalError::Spawn {
+            attempted: vec!["/secret/provider".to_owned()],
+            message: "token=secret".to_owned(),
+        });
+
+        assert_eq!(
+            error,
+            json!({
+                "_tag": "TerminalSpawnError",
+                "reason": "Terminal process could not be started.",
+            })
+        );
+        let encoded = error.to_string();
+        assert!(!encoded.contains("/secret/provider"));
+        assert!(!encoded.contains("token=secret"));
+        assert!(error["reason"].as_str().unwrap().encode_utf16().count() <= 512);
+    }
+
+    #[test]
+    fn terminal_payload_conversions_reject_commands_outside_contract_bounds() {
+        for command in [
+            json!({ "executable": " \t ", "args": [] }),
+            json!({ "executable": "x".repeat(4_097), "args": [] }),
+            json!({ "executable": "codex", "args": vec!["x"; 65] }),
+            json!({ "executable": "codex", "args": ["x".repeat(8_193)] }),
+            json!({ "executable": "codex", "args": [], "label": " \n " }),
+            json!({
+                "executable": "codex",
+                "args": [],
+                "label": "x".repeat(129),
+            }),
+        ] {
+            assert_invalid_terminal_launch_command(command);
+        }
+    }
+
+    #[test]
+    fn terminal_payload_conversions_trim_command_names_without_trimming_arguments() {
+        let command = json!({
+            "executable": "  /opt/codex  ",
+            "args": ["  --dangerously-bypass-approvals-and-sandbox  "],
+            "label": "  Codex Terminal  ",
+        });
+
+        for dimensions_required in [false, true] {
+            let open = terminal_start_payload(command.clone())
+                .into_open(dimensions_required)
+                .expect("valid start and restart commands");
+            assert_eq!(
+                open.command,
+                Some(TerminalLaunchCommand {
+                    executable: "/opt/codex".to_owned(),
+                    args: vec!["  --dangerously-bypass-approvals-and-sandbox  ".to_owned()],
+                    label: Some("Codex Terminal".to_owned()),
+                })
+            );
+        }
+
+        let attach = terminal_attach_payload(command)
+            .into_attach()
+            .expect("valid attach command");
+        assert_eq!(
+            attach.command,
+            Some(TerminalLaunchCommand {
+                executable: "/opt/codex".to_owned(),
+                args: vec!["  --dangerously-bypass-approvals-and-sandbox  ".to_owned()],
+                label: Some("Codex Terminal".to_owned()),
+            })
+        );
+    }
+
+    #[test]
+    fn terminal_payload_conversions_measure_command_bounds_in_utf16_code_units() {
+        let astral = "😀";
+        let at_boundary = json!({
+            "executable": astral.repeat(TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH / 2),
+            "args": [astral.repeat(TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH / 2)],
+            "label": astral.repeat(TERMINAL_LAUNCH_LABEL_MAX_LENGTH / 2),
+        });
+        assert!(
+            terminal_start_payload(at_boundary).into_open(false).is_ok(),
+            "astral strings at the UTF-16 contract limits must be accepted"
+        );
+
+        for command in [
+            json!({
+                "executable": astral.repeat(TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH / 2 + 1),
+                "args": [],
+            }),
+            json!({
+                "executable": "codex",
+                "args": [astral.repeat(TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH / 2 + 1)],
+            }),
+            json!({
+                "executable": "codex",
+                "args": [],
+                "label": astral.repeat(TERMINAL_LAUNCH_LABEL_MAX_LENGTH / 2 + 1),
+            }),
+        ] {
+            assert_invalid_terminal_launch_command(command);
+        }
+    }
+
+    #[test]
+    fn terminal_payload_conversions_use_ecmascript_trim_semantics() {
+        let command = json!({
+            "executable": "\u{feff}codex\u{feff}",
+            "args": ["\u{feff}--model\u{feff}"],
+            "label": "\u{feff}Codex Terminal\u{feff}",
+        });
+        let open = terminal_start_payload(command)
+            .into_open(false)
+            .expect("ECMAScript whitespace is trimmed from command names");
+        assert_eq!(
+            open.command,
+            Some(TerminalLaunchCommand {
+                executable: "codex".to_owned(),
+                args: vec!["\u{feff}--model\u{feff}".to_owned()],
+                label: Some("Codex Terminal".to_owned()),
+            })
+        );
+
+        let non_ecmascript_whitespace = json!({
+            "executable": "\u{85}codex\u{85}",
+            "args": [],
+            "label": "\u{85}Codex Terminal\u{85}",
+        });
+        let open = terminal_start_payload(non_ecmascript_whitespace)
+            .into_open(false)
+            .expect("non-ECMAScript whitespace is retained");
+        assert_eq!(
+            open.command,
+            Some(TerminalLaunchCommand {
+                executable: "\u{85}codex\u{85}".to_owned(),
+                args: Vec::new(),
+                label: Some("\u{85}Codex Terminal\u{85}".to_owned()),
+            })
+        );
+
+        assert_invalid_terminal_launch_command(json!({
+            "executable": "\u{feff}",
+            "args": [],
+        }));
+    }
 
     #[derive(Debug)]
     struct StaticResourceSampler {
@@ -1698,11 +1969,24 @@ mod tests {
             "threadId":"thread-2",
             "terminalId":"terminal-2",
             "cwd":temp.path(),
-            "env":{}
+            "env":{},
+            "command": {
+                "executable": "/opt/codex",
+                "args": ["--dangerously-bypass-approvals-and-sandbox"],
+                "label": "Codex Terminal"
+            }
         }))
         .expect("terminal start payload");
         let open = start.into_open(false).expect("default dimensions");
         assert_eq!((open.cols, open.rows), (120, 30));
+        assert_eq!(
+            open.command,
+            Some(TerminalLaunchCommand {
+                executable: "/opt/codex".to_owned(),
+                args: vec!["--dangerously-bypass-approvals-and-sandbox".to_owned()],
+                label: Some("Codex Terminal".to_owned()),
+            })
+        );
         let missing_dimensions: TerminalStartPayload = decode_payload(&json!({
             "threadId":"thread-2",
             "terminalId":"terminal-2",
@@ -1718,12 +2002,25 @@ mod tests {
             "cols":80,
             "rows":24,
             "env":{"UNIT":"1"},
-            "restartIfNotRunning":true
+            "restartIfNotRunning":true,
+            "command": {
+                "executable": "/opt/codex",
+                "args": ["--dangerously-bypass-approvals-and-sandbox"],
+                "label": "Codex Terminal"
+            }
         }))
         .expect("terminal attach payload");
-        let attach = attach.into_attach();
+        let attach = attach.into_attach().expect("valid terminal attach payload");
         assert_eq!(attach.cols, Some(80));
         assert!(attach.restart_if_not_running);
+        assert_eq!(
+            attach.command,
+            Some(TerminalLaunchCommand {
+                executable: "/opt/codex".to_owned(),
+                args: vec!["--dangerously-bypass-approvals-and-sandbox".to_owned()],
+                label: Some("Codex Terminal".to_owned()),
+            })
+        );
         assert!(decode_payload::<TerminalStartPayload>(&json!({})).is_err());
 
         let now = OffsetDateTime::UNIX_EPOCH;

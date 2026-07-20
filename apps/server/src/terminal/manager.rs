@@ -125,6 +125,7 @@ pub enum TerminalError {
 
 #[derive(Debug)]
 struct Session {
+    generation: Arc<SessionGeneration>,
     thread_id: String,
     terminal_id: String,
     cwd: String,
@@ -147,6 +148,160 @@ struct Session {
 
 type SessionKey = (String, String);
 type SharedSession = Arc<Mutex<Session>>;
+
+/// Owns a newly spawned PTY until a registered, supervised session takes responsibility for it.
+struct UncommittedPtyProcess {
+    process: Option<Arc<dyn PtyProcess>>,
+}
+
+impl UncommittedPtyProcess {
+    fn new(process: Arc<dyn PtyProcess>) -> Self {
+        Self {
+            process: Some(process),
+        }
+    }
+
+    fn process(&self) -> Arc<dyn PtyProcess> {
+        self.process.as_ref().expect("uncommitted process").clone()
+    }
+
+    fn commit(mut self) {
+        self.process = None;
+    }
+}
+
+impl Drop for UncommittedPtyProcess {
+    fn drop(&mut self) {
+        let Some(process) = self.process.take() else {
+            return;
+        };
+        if let Err(error) = process.kill() {
+            tracing::debug!(
+                %error,
+                pid = process.pid(),
+                "failed to kill uncommitted terminal process"
+            );
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SessionGeneration {
+    invalidated: std::sync::atomic::AtomicBool,
+    cancellation: CancellationToken,
+    publication: Mutex<()>,
+    #[cfg(test)]
+    output_completed: CancellationToken,
+    #[cfg(test)]
+    activity_completed: CancellationToken,
+    #[cfg(test)]
+    output_barrier: std::sync::Mutex<Option<Arc<PublisherBarrier>>>,
+}
+
+impl SessionGeneration {
+    fn new() -> Self {
+        Self {
+            invalidated: std::sync::atomic::AtomicBool::new(false),
+            cancellation: CancellationToken::new(),
+            publication: Mutex::new(()),
+            #[cfg(test)]
+            output_completed: CancellationToken::new(),
+            #[cfg(test)]
+            activity_completed: CancellationToken::new(),
+            #[cfg(test)]
+            output_barrier: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn invalidate(&self) {
+        self.invalidated
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.cancellation.cancel();
+    }
+
+    fn is_invalidated(&self) -> bool {
+        self.invalidated.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+#[derive(Debug, Default)]
+struct SessionGenerationRegistry {
+    current: std::sync::Mutex<HashMap<SessionKey, std::sync::Weak<SessionGeneration>>>,
+}
+
+impl SessionGenerationRegistry {
+    fn current(&self, key: &SessionKey) -> Arc<SessionGeneration> {
+        let mut current = self.current.lock().expect("terminal generations lock");
+        current.retain(|_, generation| generation.strong_count() > 0);
+        if let Some(generation) = current.get(key).and_then(std::sync::Weak::upgrade)
+            && !generation.is_invalidated()
+        {
+            return generation;
+        }
+        let generation = Arc::new(SessionGeneration::new());
+        current.insert(key.clone(), Arc::downgrade(&generation));
+        generation
+    }
+
+    fn replace(&self, key: &SessionKey) -> Arc<SessionGeneration> {
+        let mut current = self.current.lock().expect("terminal generations lock");
+        current.retain(|_, generation| generation.strong_count() > 0);
+        if let Some(generation) = current.remove(key).and_then(|value| value.upgrade()) {
+            generation.invalidate();
+        }
+        let generation = Arc::new(SessionGeneration::new());
+        current.insert(key.clone(), Arc::downgrade(&generation));
+        generation
+    }
+
+    fn invalidate_matching(
+        &self,
+        thread_id: &str,
+        terminal_id: Option<&str>,
+    ) -> Vec<Arc<SessionGeneration>> {
+        let mut current = self.current.lock().expect("terminal generations lock");
+        current.retain(|_, generation| generation.strong_count() > 0);
+        let keys = current
+            .keys()
+            .filter(|(candidate_thread, candidate_terminal)| {
+                candidate_thread == thread_id
+                    && terminal_id.is_none_or(|value| candidate_terminal == value)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.into_iter()
+            .filter_map(|key| current.remove(&key).and_then(|value| value.upgrade()))
+            .inspect(|generation| generation.invalidate())
+            .collect()
+    }
+
+    fn invalidate_all(&self) {
+        let mut current = self.current.lock().expect("terminal generations lock");
+        for generation in current
+            .drain()
+            .filter_map(|(_, generation)| generation.upgrade())
+        {
+            generation.invalidate();
+        }
+    }
+}
+
+#[cfg(test)]
+struct CancelOnDrop(CancellationToken);
+
+#[cfg(test)]
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct PublisherBarrier {
+    started: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
 
 impl Session {
     fn snapshot(&self) -> TerminalSessionSnapshot {
@@ -208,6 +363,7 @@ struct Inner {
     options: TerminalManagerOptions,
     inspector: Arc<dyn TerminalSubprocessInspector>,
     lifecycle: Mutex<()>,
+    generations: SessionGenerationRegistry,
     sessions: RwLock<HashMap<SessionKey, SharedSession>>,
     events: broadcast::Sender<TerminalEvent>,
     metadata: broadcast::Sender<TerminalMetadataEvent>,
@@ -251,6 +407,7 @@ impl TerminalManager {
                 options,
                 inspector,
                 lifecycle: Mutex::new(()),
+                generations: SessionGenerationRegistry::default(),
                 sessions: RwLock::new(HashMap::new()),
                 events,
                 metadata,
@@ -263,17 +420,21 @@ impl TerminalManager {
         &self,
         input: TerminalOpenInput,
     ) -> Result<TerminalSessionSnapshot, TerminalError> {
+        let key = (input.thread_id.clone(), input.terminal_id.clone());
+        let generation = self.inner.generations.current(&key);
         let _lifecycle = self.inner.lifecycle.lock().await;
         if self.inner.cancellation.is_cancelled() {
             return Err(TerminalError::Shutdown);
         }
-        self.start(input, false).await
+        self.start(input, false, generation).await
     }
 
     pub async fn restart(
         &self,
         input: TerminalRestartInput,
     ) -> Result<TerminalSessionSnapshot, TerminalError> {
+        let key = (input.thread_id.clone(), input.terminal_id.clone());
+        let generation = self.inner.generations.replace(&key);
         let _lifecycle = self.inner.lifecycle.lock().await;
         if self.inner.cancellation.is_cancelled() {
             return Err(TerminalError::Shutdown);
@@ -282,16 +443,23 @@ impl TerminalManager {
             .close_sessions(&input.thread_id, Some(&input.terminal_id))
             .await;
         log_terminal_cleanup("restart", &cleanup);
-        self.start(input, true).await
+        self.start(input, true, generation).await
     }
 
     async fn start(
         &self,
         input: TerminalOpenInput,
         restarted: bool,
+        generation: Arc<SessionGeneration>,
     ) -> Result<TerminalSessionSnapshot, TerminalError> {
+        if generation.is_invalidated() {
+            return Err(invalidated_creation_error(&input));
+        }
         validate_cwd(&input.cwd).await?;
         validate_dimensions(input.cols, input.rows)?;
+        if generation.is_invalidated() {
+            return Err(invalidated_creation_error(&input));
+        }
         let key = (input.thread_id.clone(), input.terminal_id.clone());
         if let Some(existing) = self.inner.sessions.read().await.get(&key).cloned() {
             let (process, snapshot, needs_resize) = {
@@ -316,24 +484,47 @@ impl TerminalManager {
             }
         }
 
-        let candidates = resolve_shell_candidates(
-            Platform::current(),
-            self.inner.options.preferred_shell.as_deref(),
-            &input.env,
-        );
+        let spawn_candidates = if let Some(command) = input.command.as_ref() {
+            vec![(
+                PtySpawnInput {
+                    executable: command.executable.clone(),
+                    args: command.args.clone(),
+                    cwd: input.cwd.clone(),
+                    cols: input.cols,
+                    rows: input.rows,
+                    env: input.env.clone(),
+                },
+                format!("{} {:?}", command.executable, command.args),
+            )]
+        } else {
+            resolve_shell_candidates(
+                Platform::current(),
+                self.inner.options.preferred_shell.as_deref(),
+                &input.env,
+            )
+            .into_iter()
+            .map(|candidate| {
+                let attempted = format_shell_candidate(&candidate);
+                (
+                    PtySpawnInput {
+                        executable: candidate.command,
+                        args: candidate.args,
+                        cwd: input.cwd.clone(),
+                        cols: input.cols,
+                        rows: input.rows,
+                        env: input.env.clone(),
+                    },
+                    attempted,
+                )
+            })
+            .collect::<Vec<_>>()
+        };
+
         let mut attempted = Vec::new();
-        let mut last_error = "no shell candidates were available".to_string();
+        let mut last_error = "no terminal launch candidates were available".to_owned();
         let mut spawned = None;
-        for candidate in candidates {
-            attempted.push(format_shell_candidate(&candidate));
-            let spawn = PtySpawnInput {
-                shell: candidate.command,
-                args: candidate.args,
-                cwd: input.cwd.clone(),
-                cols: input.cols,
-                rows: input.rows,
-                env: input.env.clone(),
-            };
+        for (spawn, attempted_label) in spawn_candidates {
+            attempted.push(attempted_label);
             match self.inner.backend.spawn(&spawn) {
                 Ok(process) => {
                     spawned = Some(process);
@@ -346,7 +537,16 @@ impl TerminalManager {
             attempted,
             message: last_error,
         })?;
-        let label = terminal_label(&input.terminal_id);
+        let uncommitted_process = UncommittedPtyProcess::new(process);
+        let process = uncommitted_process.process();
+        if generation.is_invalidated() {
+            return Err(invalidated_creation_error(&input));
+        }
+        let label = input
+            .command
+            .as_ref()
+            .and_then(|command| command.label.clone())
+            .unwrap_or_else(|| terminal_label(&input.terminal_id));
         let exit = process.subscribe_exit();
         let process_has_exited = exit.borrow().is_some();
         let attribution_registration = (!process_has_exited)
@@ -370,6 +570,7 @@ impl TerminalManager {
             "session history must retain the manager's configured line limit"
         );
         let session = Arc::new(Mutex::new(Session {
+            generation: generation.clone(),
             thread_id: input.thread_id.clone(),
             terminal_id: input.terminal_id.clone(),
             cwd: input.cwd.to_string_lossy().into_owned(),
@@ -392,12 +593,17 @@ impl TerminalManager {
             process: Some(process.clone()),
             attribution_registration,
         }));
+        let _publication = generation.publication.lock().await;
+        if generation.is_invalidated() {
+            return Err(invalidated_creation_error(&input));
+        }
         self.inner
             .sessions
             .write()
             .await
             .insert(key, session.clone());
-        self.supervise(session.clone(), process, exit);
+        self.supervise(session.clone(), process, exit, generation.clone());
+        uncommitted_process.commit();
         let snapshot = session.lock().await.snapshot();
         let event = if restarted {
             TerminalEvent::Restarted {
@@ -426,18 +632,38 @@ impl TerminalManager {
         session: Arc<Mutex<Session>>,
         process: Arc<dyn PtyProcess>,
         mut exit: tokio::sync::watch::Receiver<Option<PtyExit>>,
+        generation: Arc<SessionGeneration>,
     ) {
         let inner = self.inner.clone();
         let mut output = process.subscribe_output();
         let output_session = session.clone();
         let output_cancel = inner.cancellation.child_token();
         let output_inner = inner.clone();
+        let output_generation = generation.clone();
         tokio::spawn(async move {
+            #[cfg(test)]
+            let _completion = CancelOnDrop(output_generation.output_completed.clone());
             loop {
                 tokio::select! {
                     () = output_cancel.cancelled() => return,
+                    () = output_generation.cancellation.cancelled() => return,
                     result = output.recv() => match result {
                         Ok(data) => {
+                            #[cfg(test)]
+                            let barrier = output_generation
+                                .output_barrier
+                                .lock()
+                                .expect("output barrier lock")
+                                .clone();
+                            #[cfg(test)]
+                            if let Some(barrier) = barrier {
+                                barrier.started.notify_one();
+                                barrier.release.notified().await;
+                            }
+                            let _publication = output_generation.publication.lock().await;
+                            if output_generation.is_invalidated() {
+                                return;
+                            }
                             let event = {
                                 let mut session = output_session.lock().await;
                                 session.history.push(&data);
@@ -461,12 +687,14 @@ impl TerminalManager {
         let exit_cancel = inner.cancellation.child_token();
         let exit_inner = inner.clone();
         let exit_session = session.clone();
+        let exit_generation = generation.clone();
         tokio::spawn(async move {
             loop {
                 let observed_exit = exit.borrow().clone();
                 let Some(PtyExit { exit_code, signal }) = observed_exit else {
                     tokio::select! {
                         () = exit_cancel.cancelled() => return,
+                        () = exit_generation.cancellation.cancelled() => return,
                         result = exit.changed() => {
                             if result.is_err() {
                                 return;
@@ -475,7 +703,10 @@ impl TerminalManager {
                     }
                     continue;
                 };
-                let _lifecycle = exit_inner.lifecycle.lock().await;
+                let _publication = exit_generation.publication.lock().await;
+                if exit_generation.is_invalidated() {
+                    return;
+                }
                 let registered = {
                     let sessions = exit_inner.sessions.read().await;
                     let session = exit_session.lock().await;
@@ -520,13 +751,17 @@ impl TerminalManager {
         let activity_session = session;
         let activity_inner = inner.clone();
         let activity_pid = process.pid();
+        let activity_generation = generation;
         tokio::spawn(async move {
+            #[cfg(test)]
+            let _completion = CancelOnDrop(activity_generation.activity_completed.clone());
             if activity_inner.options.subprocess_poll_interval.is_zero() {
                 return;
             }
             loop {
                 tokio::select! {
                     () = activity_cancel.cancelled() => return,
+                    () = activity_generation.cancellation.cancelled() => return,
                     () = tokio::time::sleep(activity_inner.options.subprocess_poll_interval) => {}
                 }
 
@@ -538,6 +773,10 @@ impl TerminalManager {
                     }
                 };
 
+                let _publication = activity_generation.publication.lock().await;
+                if activity_generation.is_invalidated() {
+                    return;
+                }
                 let activity = {
                     let mut session = activity_session.lock().await;
                     if session.status != TerminalStatus::Running
@@ -582,6 +821,7 @@ impl TerminalManager {
     ) -> Result<TerminalAttachment, TerminalError> {
         let events = self.inner.events.subscribe();
         let key = (input.thread_id.clone(), input.terminal_id.clone());
+        let request_generation = self.inner.generations.current(&key);
         let existing = {
             let sessions = self.inner.sessions.read().await;
             sessions.get(&key).cloned()
@@ -593,15 +833,21 @@ impl TerminalManager {
                     thread_id: input.thread_id.clone(),
                     terminal_id: input.terminal_id.clone(),
                 })?;
-                self.open(TerminalOpenInput {
-                    thread_id: input.thread_id.clone(),
-                    terminal_id: input.terminal_id.clone(),
-                    cwd,
-                    worktree_path: input.worktree_path.clone(),
-                    cols: input.cols.unwrap_or(120),
-                    rows: input.rows.unwrap_or(30),
-                    env: input.env.clone(),
-                })
+                let _lifecycle = self.inner.lifecycle.lock().await;
+                self.start(
+                    TerminalOpenInput {
+                        thread_id: input.thread_id.clone(),
+                        terminal_id: input.terminal_id.clone(),
+                        cwd,
+                        worktree_path: input.worktree_path.clone(),
+                        cols: input.cols.unwrap_or(120),
+                        rows: input.rows.unwrap_or(30),
+                        env: input.env.clone(),
+                        command: input.command.clone(),
+                    },
+                    false,
+                    request_generation.clone(),
+                )
                 .await?;
                 self.inner
                     .sessions
@@ -616,15 +862,24 @@ impl TerminalManager {
             }
         };
         tokio::task::yield_now().await;
-        let (process, status, current_cols, current_rows) = {
+        let (session_generation, process, status, current_cols, current_rows) = {
             let session = session.lock().await;
             (
+                session.generation.clone(),
                 session.process.clone(),
                 session.status,
                 session.cols,
                 session.rows,
             )
         };
+        if !Arc::ptr_eq(&request_generation, &session_generation)
+            || session_generation.is_invalidated()
+        {
+            return Err(TerminalError::NotFound {
+                thread_id: input.thread_id,
+                terminal_id: input.terminal_id,
+            });
+        }
         if status != TerminalStatus::Running && input.restart_if_not_running {
             let cwd = input.cwd.ok_or_else(|| TerminalError::NotRunning {
                 thread_id: input.thread_id.clone(),
@@ -638,6 +893,7 @@ impl TerminalManager {
                 cols: input.cols.unwrap_or(current_cols),
                 rows: input.rows.unwrap_or(current_rows),
                 env: input.env,
+                command: input.command,
             })
             .await?;
             session = self
@@ -651,6 +907,14 @@ impl TerminalManager {
             session.cols = cols;
             session.rows = rows;
             session.updated_at = now_iso();
+        }
+        let session_generation = session.lock().await.generation.clone();
+        let _publication = session_generation.publication.lock().await;
+        if session_generation.is_invalidated() {
+            return Err(TerminalError::NotFound {
+                thread_id: input.thread_id,
+                terminal_id: input.terminal_id,
+            });
         }
         let initial = session.lock().await.snapshot();
         Ok(TerminalAttachment {
@@ -669,6 +933,14 @@ impl TerminalManager {
         data: &str,
     ) -> Result<(), TerminalError> {
         let session = self.require_session(thread_id, terminal_id).await?;
+        let generation = session.lock().await.generation.clone();
+        let _publication = generation.publication.lock().await;
+        if generation.is_invalidated() {
+            return Err(TerminalError::NotFound {
+                thread_id: thread_id.to_owned(),
+                terminal_id: terminal_id.to_owned(),
+            });
+        }
         let (process, status) = {
             let session = session.lock().await;
             (session.process.clone(), session.status)
@@ -701,6 +973,11 @@ impl TerminalManager {
         else {
             return Ok(());
         };
+        let generation = session.lock().await.generation.clone();
+        let _publication = generation.publication.lock().await;
+        if generation.is_invalidated() {
+            return Ok(());
+        }
         let process = session.lock().await.process.clone();
         let Some(process) = process else {
             return Ok(());
@@ -715,6 +992,14 @@ impl TerminalManager {
 
     pub async fn clear(&self, thread_id: &str, terminal_id: &str) -> Result<(), TerminalError> {
         let session = self.require_session(thread_id, terminal_id).await?;
+        let generation = session.lock().await.generation.clone();
+        let _publication = generation.publication.lock().await;
+        if generation.is_invalidated() {
+            return Err(TerminalError::NotFound {
+                thread_id: thread_id.to_owned(),
+                terminal_id: terminal_id.to_owned(),
+            });
+        }
         let event = {
             let mut session = session.lock().await;
             session.history.clear();
@@ -730,6 +1015,10 @@ impl TerminalManager {
     }
 
     pub async fn close(&self, thread_id: &str, terminal_id: Option<&str>) {
+        let _invalidated_generations = self
+            .inner
+            .generations
+            .invalidate_matching(thread_id, terminal_id);
         let _lifecycle = self.inner.lifecycle.lock().await;
         let cleanup = self.close_sessions(thread_id, terminal_id).await;
         log_terminal_cleanup("close", &cleanup);
@@ -753,13 +1042,35 @@ impl TerminalManager {
                 .collect::<Vec<_>>()
         };
         for key in keys {
-            let Some(session) = self.inner.sessions.write().await.remove(&key) else {
+            let Some(session) = self.inner.sessions.read().await.get(&key).cloned() else {
+                continue;
+            };
+            let generation = session.lock().await.generation.clone();
+            generation.invalidate();
+            let _publication = generation.publication.lock().await;
+            let removed = {
+                let mut sessions = self.inner.sessions.write().await;
+                if sessions
+                    .get(&key)
+                    .is_some_and(|current| Arc::ptr_eq(current, &session))
+                {
+                    sessions.remove(&key)
+                } else {
+                    None
+                }
+            };
+            let Some(session) = removed else {
                 continue;
             };
             let (process, sequence) = {
                 let mut session = session.lock().await;
                 session.attribution_registration.take();
-                (session.process.take(), session.advance())
+                let process = session.process.take();
+                session.status = TerminalStatus::Exited;
+                session.pid = None;
+                session.has_running_subprocess = false;
+                session.child_command_label = None;
+                (process, session.advance())
             };
             if let Some(process) = process {
                 match process.kill() {
@@ -814,6 +1125,7 @@ impl TerminalManager {
     async fn shutdown_with_report(&self) -> ProcessCleanupReport {
         let _lifecycle = self.inner.lifecycle.lock().await;
         self.inner.cancellation.cancel();
+        self.inner.generations.invalidate_all();
         let keys = self
             .inner
             .sessions
@@ -900,6 +1212,13 @@ impl TerminalMetadataAttachment {
                 Err(broadcast::error::RecvError::Closed) => return None,
             }
         }
+    }
+}
+
+fn invalidated_creation_error(input: &TerminalOpenInput) -> TerminalError {
+    TerminalError::NotFound {
+        thread_id: input.thread_id.clone(),
+        terminal_id: input.terminal_id.clone(),
     }
 }
 
@@ -1002,30 +1321,38 @@ mod tests {
         exit_on_identity_read: std::sync::Mutex<Option<PtyExit>>,
         output: broadcast::Sender<String>,
         exit: tokio::sync::watch::Sender<Option<PtyExit>>,
+        killed: std::sync::atomic::AtomicBool,
         kill_error: std::sync::Mutex<Option<String>>,
     }
 
     impl HistoryTestPty {
-        fn new(
-            pid: u32,
-            expose_process_identity: bool,
-            exit_on_identity_read: Option<PtyExit>,
-        ) -> Self {
+        fn new(pid: u32) -> Self {
             let (output, _) = broadcast::channel(16);
             let (exit, _) = tokio::sync::watch::channel(None);
             Self {
                 pid,
-                process_identity: expose_process_identity
-                    .then_some(crate::diagnostics::ProcessIdentity { pid, started_at: 0 }),
-                exit_on_identity_read: std::sync::Mutex::new(exit_on_identity_read),
+                process_identity: None,
+                exit_on_identity_read: std::sync::Mutex::new(None),
                 output,
                 exit,
+                killed: std::sync::atomic::AtomicBool::new(false),
                 kill_error: std::sync::Mutex::new(None),
             }
         }
 
+        fn with_identity(pid: u32) -> Self {
+            let mut process = Self::new(pid);
+            process.process_identity =
+                Some(crate::diagnostics::ProcessIdentity { pid, started_at: 0 });
+            process
+        }
+
         fn emit(&self, data: &str) {
             self.output.send(data.to_owned()).expect("output receiver");
+        }
+
+        fn is_killed(&self) -> bool {
+            self.killed.load(std::sync::atomic::Ordering::Acquire)
         }
 
         fn exit(&self, exit_code: i32) {
@@ -1037,8 +1364,8 @@ mod tests {
                 .expect("exit receiver");
         }
 
-        fn fail_kill(&self, error: String) {
-            *self.kill_error.lock().expect("kill error") = Some(error);
+        fn fail_kill(&self, error: impl Into<String>) {
+            *self.kill_error.lock().expect("kill error") = Some(error.into());
         }
     }
 
@@ -1068,6 +1395,8 @@ mod tests {
         }
 
         fn kill(&self) -> Result<(), String> {
+            self.killed
+                .store(true, std::sync::atomic::Ordering::Release);
             self.kill_error
                 .lock()
                 .expect("kill error")
@@ -1084,21 +1413,13 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Default)]
     struct HistoryTestBackend {
         processes: std::sync::Mutex<Vec<Arc<HistoryTestPty>>>,
+        spawns: std::sync::Mutex<Vec<PtySpawnInput>>,
+        fail_spawns: bool,
         expose_process_identity: bool,
         exit_on_identity_read: Option<PtyExit>,
-    }
-
-    impl Default for HistoryTestBackend {
-        fn default() -> Self {
-            Self {
-                processes: std::sync::Mutex::new(Vec::new()),
-                expose_process_identity: true,
-                exit_on_identity_read: None,
-            }
-        }
     }
 
     impl HistoryTestBackend {
@@ -1110,398 +1431,710 @@ mod tests {
                 .cloned()
                 .expect("spawned process")
         }
+
+        fn spawns(&self) -> Vec<PtySpawnInput> {
+            self.spawns.lock().expect("spawns lock").clone()
+        }
     }
 
     impl PtyBackend for HistoryTestBackend {
-        fn spawn(&self, _input: &PtySpawnInput) -> Result<Arc<dyn PtyProcess>, String> {
+        fn spawn(&self, input: &PtySpawnInput) -> Result<Arc<dyn PtyProcess>, String> {
+            self.spawns.lock().expect("spawns lock").push(input.clone());
+            if self.fail_spawns {
+                return Err("provider spawn failed".to_owned());
+            }
             let mut processes = self.processes.lock().expect("processes lock");
-            let process = Arc::new(HistoryTestPty::new(
-                processes.len() as u32 + 1,
-                self.expose_process_identity,
-                self.exit_on_identity_read.clone(),
-            ));
+            let process = if self.expose_process_identity {
+                HistoryTestPty::with_identity(processes.len() as u32 + 1)
+            } else {
+                HistoryTestPty::new(processes.len() as u32 + 1)
+            };
+            *process
+                .exit_on_identity_read
+                .lock()
+                .expect("exit-on-identity-read lock") = self.exit_on_identity_read.clone();
+            let process = Arc::new(process);
             processes.push(process.clone());
             Ok(process)
         }
     }
 
-    fn terminal_claims(
-        registry: &ProcessAttributionRegistry,
-        pids: &[u32],
-    ) -> Vec<crate::diagnostics::ProcessClaim> {
-        let rows = pids
-            .iter()
-            .map(|pid| ProcessRow::fixture(*pid, 0, "shell"))
-            .collect::<Vec<_>>();
-        registry.bind_and_snapshot(&rows, Instant::now())
+    #[derive(Debug)]
+    struct BlockingSpawnBackend {
+        process: Arc<HistoryTestPty>,
+        started: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
     }
 
-    fn attributed_manager(
-        backend: Arc<HistoryTestBackend>,
-        registry: ProcessAttributionRegistry,
-    ) -> TerminalManager {
-        TerminalManager::with_process_attribution(
+    impl PtyBackend for BlockingSpawnBackend {
+        fn spawn(&self, _input: &PtySpawnInput) -> Result<Arc<dyn PtyProcess>, String> {
+            if let Some(started) = self.started.lock().expect("started lock").take() {
+                started.send(()).expect("spawn-started receiver");
+            }
+            self.release
+                .lock()
+                .expect("release lock")
+                .recv_timeout(Duration::from_secs(2))
+                .expect("spawn release");
+            Ok(self.process.clone())
+        }
+    }
+
+    #[derive(Debug)]
+    struct ReturningSpawnBackend {
+        process: Arc<HistoryTestPty>,
+        spawned: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+
+    impl PtyBackend for ReturningSpawnBackend {
+        fn spawn(&self, _input: &PtySpawnInput) -> Result<Arc<dyn PtyProcess>, String> {
+            if let Some(spawned) = self.spawned.lock().expect("spawned lock").take() {
+                spawned.send(()).expect("spawned receiver");
+            }
+            Ok(self.process.clone())
+        }
+    }
+
+    #[derive(Debug)]
+    struct ControllableSubprocessInspector {
+        started: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        inspection: SubprocessInspection,
+    }
+
+    impl TerminalSubprocessInspector for ControllableSubprocessInspector {
+        fn inspect(
+            &self,
+            _terminal_pid: u32,
+        ) -> Pin<Box<dyn Future<Output = Result<SubprocessInspection, String>> + Send + '_>>
+        {
+            Box::pin(async move {
+                self.started.notify_one();
+                self.release.notified().await;
+                Ok(self.inspection.clone())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn close_during_in_flight_subprocess_inspection_does_not_resurrect_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend::default());
+        let inspector = Arc::new(ControllableSubprocessInspector {
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            inspection: SubprocessInspection {
+                has_running_subprocess: true,
+                child_command_label: Some("codex".to_owned()),
+                process_ids: vec![1, 2],
+            },
+        });
+        let manager = TerminalManager::new(
             backend,
+            TerminalManagerOptions {
+                subprocess_poll_interval: Duration::from_millis(1),
+                subprocess_inspector: Some(inspector.clone()),
+                ..TerminalManagerOptions::default()
+            },
+        );
+        let mut events = manager.subscribe_events();
+        let mut metadata = manager.subscribe_metadata().await;
+
+        manager
+            .open(TerminalOpenInput::new(
+                "thread-race",
+                "term-race",
+                root.path().to_path_buf(),
+                80,
+                24,
+            ))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), inspector.started.notified())
+            .await
+            .expect("subprocess inspection did not start");
+        let activity_completed = manager
+            .require_session("thread-race", "term-race")
+            .await
+            .unwrap()
+            .lock()
+            .await
+            .generation
+            .activity_completed
+            .clone();
+
+        manager.close("thread-race", Some("term-race")).await;
+
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
+                .await
+                .expect("closed event timeout")
+                .expect("terminal event sender");
+            if matches!(
+                event,
+                TerminalEvent::Closed {
+                    ref thread_id,
+                    ref terminal_id,
+                    ..
+                } if thread_id == "thread-race" && terminal_id == "term-race"
+            ) {
+                break;
+            }
+        }
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(2), metadata.recv())
+                .await
+                .expect("metadata remove timeout")
+                .expect("metadata event sender");
+            if matches!(
+                event,
+                TerminalMetadataEvent::Remove {
+                    ref thread_id,
+                    ref terminal_id,
+                } if thread_id == "thread-race" && terminal_id == "term-race"
+            ) {
+                break;
+            }
+        }
+
+        inspector.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(2), activity_completed.cancelled())
+            .await
+            .expect("activity supervisor did not complete after inspection release");
+        let event_after_close = events.try_recv();
+        let metadata_after_close = metadata.events.try_recv();
+        assert!(
+            matches!(
+                event_after_close,
+                Err(broadcast::error::TryRecvError::Empty)
+            ),
+            "terminal event emitted after close: {event_after_close:?}"
+        );
+        assert!(
+            matches!(
+                metadata_after_close,
+                Err(broadcast::error::TryRecvError::Empty)
+            ),
+            "terminal metadata emitted after close: {metadata_after_close:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn structured_command_spawns_once_with_exact_program_args_cwd_and_env() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend::default());
+        let manager = TerminalManager::new(
+            backend.clone(),
             TerminalManagerOptions {
                 subprocess_poll_interval: Duration::ZERO,
                 ..TerminalManagerOptions::default()
             },
-            registry,
-        )
+        );
+        let mut input = TerminalOpenInput::new(
+            "thread-provider",
+            "term-provider",
+            root.path().to_path_buf(),
+            120,
+            30,
+        );
+        input.env.insert("T4CODE_TEST".to_owned(), "1".to_owned());
+        input.command = Some(crate::terminal::TerminalLaunchCommand {
+            executable: "/opt/Provider CLI/codex".to_owned(),
+            args: vec!["--dangerously-bypass-approvals-and-sandbox".to_owned()],
+            label: Some("Codex Terminal".to_owned()),
+        });
+
+        let first = manager.open(input.clone()).await.unwrap();
+        let second = manager.open(input).await.unwrap();
+
+        assert_eq!(first.pid, second.pid);
+        assert_eq!(first.label, "Codex Terminal");
+        let spawns = backend.spawns();
+        assert_eq!(spawns.len(), 1);
+        assert_eq!(spawns[0].executable, "/opt/Provider CLI/codex");
+        assert_eq!(
+            spawns[0].args,
+            vec!["--dangerously-bypass-approvals-and-sandbox"]
+        );
+        assert_eq!(spawns[0].cwd, root.path());
+        assert_eq!(
+            spawns[0].env.get("T4CODE_TEST").map(String::as_str),
+            Some("1")
+        );
     }
 
     #[tokio::test]
-    async fn terminal_registration_tracks_start_and_exit() {
+    async fn attach_creates_a_missing_structured_command_without_shell_fallback() {
         let root = tempfile::tempdir().unwrap();
         let backend = Arc::new(HistoryTestBackend::default());
-        let registry = ProcessAttributionRegistry::new();
-        let manager = attributed_manager(backend.clone(), registry.clone());
-        let opened = manager
-            .open(TerminalOpenInput::new(
-                "thread-attributed",
-                "term-attributed",
-                root.path().to_path_buf(),
-                80,
-                24,
-            ))
+        let manager = TerminalManager::new(
+            backend.clone(),
+            TerminalManagerOptions {
+                subprocess_poll_interval: Duration::ZERO,
+                ..TerminalManagerOptions::default()
+            },
+        );
+        let attachment = manager
+            .attach(TerminalAttachInput {
+                thread_id: "thread-provider".to_owned(),
+                terminal_id: "term-provider".to_owned(),
+                cwd: Some(root.path().to_path_buf()),
+                worktree_path: Some(root.path().to_path_buf()),
+                cols: Some(90),
+                rows: Some(28),
+                env: std::collections::BTreeMap::new(),
+                restart_if_not_running: false,
+                command: Some(crate::terminal::TerminalLaunchCommand {
+                    executable: "claude".to_owned(),
+                    args: vec!["--dangerously-skip-permissions".to_owned()],
+                    label: Some("Claude Terminal".to_owned()),
+                }),
+            })
             .await
             .unwrap();
-        let pid = opened.pid.expect("running terminal pid");
-        let claims = terminal_claims(&registry, &[pid]);
-        assert_eq!(claims.len(), 1);
-        assert_eq!(claims[0].scope, AttributionScope::External);
-        assert_eq!(claims[0].kind, AttributionKind::Terminal);
-        assert_eq!(claims[0].label, opened.label);
 
-        let mut events = manager.subscribe_events();
-        backend.latest().exit(0);
+        assert_eq!(attachment.initial.label, "Claude Terminal");
+        assert_eq!(backend.spawns().len(), 1);
+        assert_eq!(backend.spawns()[0].executable, "claude");
+    }
+
+    #[tokio::test]
+    async fn close_invalidates_an_older_missing_session_attach_before_creation() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend::default());
+        let manager = TerminalManager::new(
+            backend.clone(),
+            TerminalManagerOptions {
+                subprocess_poll_interval: Duration::ZERO,
+                ..TerminalManagerOptions::default()
+            },
+        );
+        let mut metadata = manager.subscribe_metadata().await;
+        let sessions_guard = manager.inner.sessions.write().await;
+
+        let attach_started = Arc::new(tokio::sync::Notify::new());
+        let attach_manager = manager.clone();
+        let attach_root = root.path().to_path_buf();
+        let attach_started_task = attach_started.clone();
+        let attach_task = tokio::spawn(async move {
+            attach_started_task.notify_one();
+            attach_manager
+                .attach(TerminalAttachInput {
+                    thread_id: "thread-attach-close".to_owned(),
+                    terminal_id: "term-attach-close".to_owned(),
+                    cwd: Some(attach_root.clone()),
+                    worktree_path: Some(attach_root),
+                    cols: Some(80),
+                    rows: Some(24),
+                    env: std::collections::BTreeMap::new(),
+                    restart_if_not_running: false,
+                    command: Some(crate::terminal::TerminalLaunchCommand {
+                        executable: "codex".to_owned(),
+                        args: vec!["--dangerously-bypass-approvals-and-sandbox".to_owned()],
+                        label: Some("Codex Terminal".to_owned()),
+                    }),
+                })
+                .await
+        });
+        attach_started.notified().await;
+
+        let close_started = Arc::new(tokio::sync::Notify::new());
+        let close_manager = manager.clone();
+        let close_started_task = close_started.clone();
+        let close_task = tokio::spawn(async move {
+            close_started_task.notify_one();
+            close_manager
+                .close("thread-attach-close", Some("term-attach-close"))
+                .await;
+        });
+        close_started.notified().await;
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                if matches!(
-                    events.recv().await,
-                    Ok(TerminalEvent::Exited {
-                        thread_id,
-                        terminal_id,
-                        ..
-                    }) if thread_id == "thread-attributed" && terminal_id == "term-attributed"
-                ) {
+                if manager.inner.lifecycle.try_lock().is_err() {
                     break;
                 }
+                tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("terminal exit event");
-        assert!(terminal_claims(&registry, &[pid]).is_empty());
-        manager.shutdown().await;
-    }
+        .expect("close did not acquire the lifecycle lock");
 
-    #[tokio::test]
-    async fn terminal_without_a_stable_process_identity_is_not_registered() {
-        let root = tempfile::tempdir().unwrap();
-        let backend = Arc::new(HistoryTestBackend {
-            processes: std::sync::Mutex::new(Vec::new()),
-            expose_process_identity: false,
-            exit_on_identity_read: None,
-        });
-        let registry = ProcessAttributionRegistry::new();
-        let manager = attributed_manager(backend, registry.clone());
-        let opened = manager
-            .open(TerminalOpenInput::new(
-                "thread-unattributed",
-                "term-unattributed",
-                root.path().to_path_buf(),
-                80,
-                24,
-            ))
-            .await
-            .unwrap();
-        let pid = opened.pid.expect("running terminal pid");
+        drop(sessions_guard);
+        close_task.await.expect("close task");
+        let attach_result = attach_task.await.expect("attach task");
 
-        assert!(terminal_claims(&registry, &[pid]).is_empty());
-
-        manager.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn exit_between_registration_check_and_supervision_updates_session_and_releases_claim() {
-        let root = tempfile::tempdir().unwrap();
-        let backend = Arc::new(HistoryTestBackend {
-            processes: std::sync::Mutex::new(Vec::new()),
-            expose_process_identity: true,
-            exit_on_identity_read: Some(PtyExit {
-                exit_code: Some(17),
-                signal: None,
-            }),
-        });
-        let registry = ProcessAttributionRegistry::new();
-        let manager = attributed_manager(backend, registry.clone());
-        let mut events = manager.subscribe_events();
-        let opened = manager
-            .open(TerminalOpenInput::new(
-                "thread-exited-during-start",
-                "term-exited-during-start",
-                root.path().to_path_buf(),
-                80,
-                24,
-            ))
-            .await
-            .unwrap();
-        let pid = opened.pid.expect("spawned terminal pid");
-
-        let exit_event = tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                if let Ok(event @ TerminalEvent::Exited { .. }) = events.recv().await {
-                    break event;
-                }
-            }
-        })
-        .await
-        .expect("already-observed terminal exit must be supervised");
-        assert!(matches!(
-            exit_event,
-            TerminalEvent::Exited {
-                exit_code: Some(17),
-                ..
-            }
-        ));
-        assert!(terminal_claims(&registry, &[pid]).is_empty());
-
-        manager.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn restart_close_and_shutdown_release_terminal_registrations() {
-        let root = tempfile::tempdir().unwrap();
-        let backend = Arc::new(HistoryTestBackend::default());
-        let registry = ProcessAttributionRegistry::new();
-        let manager = attributed_manager(backend.clone(), registry.clone());
-        let input = TerminalOpenInput::new(
-            "thread-lifecycle",
-            "term-lifecycle",
-            root.path().to_path_buf(),
-            80,
-            24,
+        assert!(
+            matches!(attach_result, Err(TerminalError::NotFound { .. })),
+            "older attach unexpectedly created a session"
+        );
+        assert!(backend.spawns().is_empty(), "invalidated attach spawned");
+        assert!(
+            manager
+                .require_session("thread-attach-close", "term-attach-close")
+                .await
+                .is_err(),
+            "invalidated attach registered a session"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), metadata.recv())
+                .await
+                .is_err(),
+            "invalidated attach published terminal metadata"
         );
 
-        let original_pid = manager
-            .open(input.clone())
+        let launched = manager
+            .open(TerminalOpenInput::new(
+                "thread-attach-close",
+                "term-attach-close",
+                root.path().to_path_buf(),
+                80,
+                24,
+            ))
             .await
-            .unwrap()
-            .pid
-            .expect("original terminal pid");
-        let replacement_pid = manager
-            .restart(input.clone())
-            .await
-            .unwrap()
-            .pid
-            .expect("replacement terminal pid");
-        let claims = terminal_claims(&registry, &[original_pid, replacement_pid]);
-        assert_eq!(claims.len(), 1);
-        assert_eq!(claims[0].identity.pid, replacement_pid);
+            .expect("a deliberate later launch must remain valid");
+        assert_eq!(launched.status, TerminalStatus::Running);
+        assert_eq!(backend.spawns().len(), 1);
+    }
 
-        manager
-            .close("thread-lifecycle", Some("term-lifecycle"))
-            .await;
-        assert!(terminal_claims(&registry, &[replacement_pid]).is_empty());
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn close_during_spawn_kills_the_invalidated_process_without_registering_it() {
+        let root = tempfile::tempdir().unwrap();
+        let process = Arc::new(HistoryTestPty::new(41));
+        let (spawn_started, spawn_started_rx) = std::sync::mpsc::channel();
+        let (spawn_release, spawn_release_rx) = std::sync::mpsc::channel();
+        let manager = TerminalManager::new(
+            Arc::new(BlockingSpawnBackend {
+                process: process.clone(),
+                started: std::sync::Mutex::new(Some(spawn_started)),
+                release: std::sync::Mutex::new(spawn_release_rx),
+            }),
+            TerminalManagerOptions {
+                subprocess_poll_interval: Duration::ZERO,
+                ..TerminalManagerOptions::default()
+            },
+        );
+        let mut metadata = manager.subscribe_metadata().await;
+        let generation = manager.inner.generations.current(&(
+            "thread-spawn-close".to_owned(),
+            "term-spawn-close".to_owned(),
+        ));
+        let attach_manager = manager.clone();
+        let attach_root = root.path().to_path_buf();
+        let attach_task = tokio::spawn(async move {
+            attach_manager
+                .attach(TerminalAttachInput {
+                    thread_id: "thread-spawn-close".to_owned(),
+                    terminal_id: "term-spawn-close".to_owned(),
+                    cwd: Some(attach_root),
+                    worktree_path: None,
+                    cols: Some(80),
+                    rows: Some(24),
+                    env: std::collections::BTreeMap::new(),
+                    restart_if_not_running: false,
+                    command: None,
+                })
+                .await
+        });
+        tokio::task::spawn_blocking(move || {
+            spawn_started_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("spawn did not start");
+        })
+        .await
+        .expect("spawn-start wait");
 
-        let shutdown_pid = manager
-            .open(input)
-            .await
-            .unwrap()
-            .pid
-            .expect("shutdown terminal pid");
-        assert_eq!(terminal_claims(&registry, &[shutdown_pid]).len(), 1);
-        manager.shutdown().await;
-        assert!(terminal_claims(&registry, &[shutdown_pid]).is_empty());
+        let close_manager = manager.clone();
+        let close_task = tokio::spawn(async move {
+            close_manager
+                .close("thread-spawn-close", Some("term-spawn-close"))
+                .await;
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !generation.is_invalidated() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("close did not invalidate the in-flight generation");
+        spawn_release.send(()).expect("release spawn");
+
+        let attach_result = attach_task.await.expect("attach task");
+        close_task.await.expect("close task");
+        assert!(
+            matches!(attach_result, Err(TerminalError::NotFound { .. })),
+            "invalidated in-flight spawn unexpectedly attached"
+        );
+        assert!(process.is_killed(), "invalidated process was not killed");
+        assert!(
+            manager
+                .require_session("thread-spawn-close", "term-spawn-close")
+                .await
+                .is_err(),
+            "invalidated process was registered"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), metadata.recv())
+                .await
+                .is_err(),
+            "invalidated process published terminal metadata"
+        );
     }
 
     #[tokio::test]
-    async fn shutdown_attempts_every_terminal_owner_and_bounds_failures() {
+    async fn aborting_open_after_spawn_before_registration_kills_the_unowned_process() {
         let root = tempfile::tempdir().unwrap();
-        let backend = Arc::new(HistoryTestBackend::default());
-        let registry = ProcessAttributionRegistry::new();
-        let manager = attributed_manager(backend.clone(), registry);
-        for index in 0..12 {
-            manager
+        let process = Arc::new(HistoryTestPty::new(42));
+        let (spawned, spawned_rx) = tokio::sync::oneshot::channel();
+        let manager = TerminalManager::new(
+            Arc::new(ReturningSpawnBackend {
+                process: process.clone(),
+                spawned: std::sync::Mutex::new(Some(spawned)),
+            }),
+            TerminalManagerOptions {
+                subprocess_poll_interval: Duration::ZERO,
+                ..TerminalManagerOptions::default()
+            },
+        );
+        let mut metadata = manager.subscribe_metadata().await;
+        let generation = manager.inner.generations.current(&(
+            "thread-aborted-open".to_owned(),
+            "term-aborted-open".to_owned(),
+        ));
+        let publication = generation.publication.lock().await;
+
+        let open_manager = manager.clone();
+        let open_task = tokio::spawn(async move {
+            open_manager
                 .open(TerminalOpenInput::new(
-                    "thread-cleanup",
-                    format!("term-{index}"),
+                    "thread-aborted-open",
+                    "term-aborted-open",
                     root.path().to_path_buf(),
                     80,
                     24,
                 ))
                 .await
-                .expect("terminal opens");
-            if index != 1 {
-                backend.latest().fail_kill("界".repeat(500));
-            }
-        }
+        });
+        tokio::time::timeout(Duration::from_secs(2), spawned_rx)
+            .await
+            .expect("spawn did not succeed")
+            .expect("spawned sender");
 
-        let report = manager.shutdown_with_report().await;
+        open_task.abort();
+        let join_error = open_task
+            .await
+            .expect_err("aborted open unexpectedly completed");
+        assert!(join_error.is_cancelled(), "open task was not cancelled");
+        drop(publication);
 
-        assert_eq!(report.attempted, 12);
-        assert_eq!(report.succeeded, 1);
-        assert_eq!(report.failure_count, 11);
-        assert!(report.failures.len() < report.failure_count);
+        assert!(process.is_killed(), "abandoned process was not killed");
         assert!(
-            report
-                .failures
-                .iter()
-                .all(|failure| failure.chars().count() <= 160)
+            manager
+                .require_session("thread-aborted-open", "term-aborted-open")
+                .await
+                .is_err(),
+            "aborted open registered a session"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), metadata.recv())
+                .await
+                .is_err(),
+            "aborted open published terminal metadata"
         );
     }
 
-    #[cfg(unix)]
     #[tokio::test]
-    async fn owner_shutdown_leaves_no_child_or_grandchild_processes() {
-        let root = tempfile::tempdir().expect("terminal process-tree directory");
-        let script = root.path().join("owned-process-tree.sh");
-        let child_ready = root.path().join("child.ready");
-        let grandchild_ready = root.path().join("grandchild.ready");
-        let child_survived = root.path().join("child.survived");
-        let grandchild_survived = root.path().join("grandchild.survived");
-        let release = root.path().join("release");
-        std::fs::write(
-            &script,
-            r#"child_ready=$1
-grandchild_ready=$2
-child_survived=$3
-grandchild_survived=$4
-release=$5
-printf ready > "$child_ready"
-sh -c 'printf ready > "$1"; while [ ! -f "$2" ]; do sleep 0.05; done; printf survived > "$3"; sleep 30' sh "$grandchild_ready" "$release" "$grandchild_survived" &
-while [ ! -f "$release" ]; do sleep 0.05; done
-printf survived > "$child_survived"
-sleep 30
-"#,
-        )
-        .expect("write process-tree script");
+    async fn stale_output_after_close_and_same_key_reopen_cannot_hide_replacement_output() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend::default());
         let manager = TerminalManager::new(
-            Arc::new(PortablePtyBackend),
+            backend.clone(),
+            TerminalManagerOptions {
+                subprocess_poll_interval: Duration::ZERO,
+                ..TerminalManagerOptions::default()
+            },
+        );
+        let input = TerminalOpenInput::new(
+            "thread-output-generation",
+            "term-output-generation",
+            root.path().to_path_buf(),
+            80,
+            24,
+        );
+        manager.open(input.clone()).await.unwrap();
+        let old_session = manager
+            .require_session("thread-output-generation", "term-output-generation")
+            .await
+            .unwrap();
+        let old_process = backend.latest();
+        old_process.emit("old-before-close");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if old_session
+                    .lock()
+                    .await
+                    .history
+                    .snapshot()
+                    .contains("old-before-close")
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("old output was not published");
+        let old_generation = old_session.lock().await.generation.clone();
+        let output_completed = old_generation.output_completed.clone();
+        let output_barrier = Arc::new(PublisherBarrier {
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        *old_generation
+            .output_barrier
+            .lock()
+            .expect("output barrier lock") = Some(output_barrier.clone());
+        old_process.emit("stale-after-reopen");
+        tokio::time::timeout(Duration::from_secs(2), output_barrier.started.notified())
+            .await
+            .expect("stale output publisher did not reach the barrier");
+
+        manager
+            .close("thread-output-generation", Some("term-output-generation"))
+            .await;
+        manager.open(input).await.unwrap();
+        let mut replacement = manager
+            .attach(TerminalAttachInput::existing(
+                "thread-output-generation",
+                "term-output-generation",
+            ))
+            .await
+            .unwrap();
+        let replacement_process = backend.latest();
+
+        output_barrier.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(2), output_completed.cancelled())
+            .await
+            .expect("stale output publisher did not complete");
+        replacement_process.emit("replacement-output");
+
+        let received = tokio::time::timeout(Duration::from_secs(2), replacement.recv())
+            .await
+            .expect("replacement output timeout")
+            .expect("terminal event sender");
+        assert!(
+            matches!(
+                received,
+                TerminalEvent::Output { ref data, .. } if data == "replacement-output"
+            ),
+            "replacement attachment accepted stale output: {received:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn structured_command_failure_does_not_fall_back_to_a_shell_candidate() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend {
+            fail_spawns: true,
+            ..HistoryTestBackend::default()
+        });
+        let manager = TerminalManager::new(
+            backend.clone(),
             TerminalManagerOptions {
                 preferred_shell: Some("/bin/sh".to_owned()),
                 subprocess_poll_interval: Duration::ZERO,
                 ..TerminalManagerOptions::default()
             },
         );
-        manager
-            .open(TerminalOpenInput::new(
-                "thread-owned-tree",
-                "term-owned-tree",
-                root.path().to_path_buf(),
-                80,
-                24,
-            ))
+        let mut input = TerminalOpenInput::new(
+            "thread-provider",
+            "term-provider",
+            root.path().to_path_buf(),
+            120,
+            30,
+        );
+        input.command = Some(crate::terminal::TerminalLaunchCommand {
+            executable: "missing-provider".to_owned(),
+            args: vec!["--direct".to_owned()],
+            label: Some("Provider Terminal".to_owned()),
+        });
+
+        let error = manager.open(input).await.unwrap_err();
+
+        assert!(matches!(
+            error,
+            TerminalError::Spawn {
+                ref attempted,
+                ref message,
+            } if attempted == &["missing-provider [\"--direct\"]"]
+                && message == "provider spawn failed"
+        ));
+        let spawns = backend.spawns();
+        assert_eq!(spawns.len(), 1);
+        assert_eq!(spawns[0].executable, "missing-provider");
+        assert_eq!(spawns[0].args, ["--direct"]);
+    }
+
+    #[tokio::test]
+    async fn structured_command_restart_if_not_running_preserves_the_direct_launch() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend::default());
+        let manager = TerminalManager::new(
+            backend.clone(),
+            TerminalManagerOptions {
+                subprocess_poll_interval: Duration::ZERO,
+                ..TerminalManagerOptions::default()
+            },
+        );
+        let command = crate::terminal::TerminalLaunchCommand {
+            executable: "claude".to_owned(),
+            args: vec!["--dangerously-skip-permissions".to_owned()],
+            label: Some("Claude Terminal".to_owned()),
+        };
+        let mut input = TerminalOpenInput::new(
+            "thread-provider",
+            "term-provider",
+            root.path().to_path_buf(),
+            90,
+            28,
+        );
+        input.command = Some(command.clone());
+        manager.open(input).await.unwrap();
+
+        let mut events = manager.subscribe_events();
+        backend
+            .latest()
+            .exit
+            .send(Some(PtyExit {
+                exit_code: Some(0),
+                signal: None,
+            }))
+            .unwrap();
+        let exited = tokio::time::timeout(Duration::from_secs(2), events.recv())
             .await
-            .expect("terminal opens");
-        let quote =
-            |path: &std::path::Path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
-        manager
-            .write(
-                "thread-owned-tree",
-                "term-owned-tree",
-                &format!(
-                    "/bin/sh {} {} {} {} {} {}\r",
-                    quote(&script),
-                    quote(&child_ready),
-                    quote(&grandchild_ready),
-                    quote(&child_survived),
-                    quote(&grandchild_survived),
-                    quote(&release),
-                ),
-            )
-            .await
-            .expect("launch owned process tree");
-        for ready in [&child_ready, &grandchild_ready] {
-            tokio::time::timeout(Duration::from_secs(3), async {
-                while !ready.is_file() {
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
+            .unwrap()
+            .unwrap();
+        assert!(matches!(exited, TerminalEvent::Exited { .. }));
+
+        let attachment = manager
+            .attach(TerminalAttachInput {
+                thread_id: "thread-provider".to_owned(),
+                terminal_id: "term-provider".to_owned(),
+                cwd: Some(root.path().to_path_buf()),
+                worktree_path: Some(root.path().to_path_buf()),
+                cols: Some(90),
+                rows: Some(28),
+                env: std::collections::BTreeMap::new(),
+                restart_if_not_running: true,
+                command: Some(command),
             })
             .await
-            .unwrap_or_else(|_| panic!("timed out waiting for {}", ready.display()));
-        }
+            .unwrap();
 
-        manager.shutdown().await;
-        std::fs::write(&release, "release").expect("release survivors");
-        tokio::time::sleep(Duration::from_secs(1)).await;
-
-        assert!(
-            !child_survived.exists(),
-            "owned child survived terminal-manager shutdown"
-        );
-        assert!(
-            !grandchild_survived.exists(),
-            "owned grandchild survived terminal-manager shutdown"
-        );
-    }
-
-    #[tokio::test]
-    async fn concurrent_open_waits_for_shutdown_and_cannot_spawn_a_session() {
-        let root = tempfile::tempdir().unwrap();
-        let backend = Arc::new(HistoryTestBackend::default());
-        let registry = ProcessAttributionRegistry::new();
-        let manager = attributed_manager(backend.clone(), registry.clone());
-        let lifecycle = manager.inner.lifecycle.lock().await;
-
-        let (shutdown_started_tx, shutdown_started_rx) = tokio::sync::oneshot::channel();
-        let shutdown_manager = manager.clone();
-        let shutdown = tokio::spawn(async move {
-            shutdown_started_tx.send(()).unwrap();
-            shutdown_manager.shutdown().await;
-        });
-        shutdown_started_rx.await.unwrap();
-        let (open_started_tx, open_started_rx) = tokio::sync::oneshot::channel();
-        let open_manager = manager.clone();
-        let cwd = root.path().to_path_buf();
-        let open = tokio::spawn(async move {
-            open_started_tx.send(()).unwrap();
-            open_manager
-                .open(TerminalOpenInput::new(
-                    "thread-shutdown-race",
-                    "term-shutdown-race",
-                    cwd,
-                    80,
-                    24,
-                ))
-                .await
-        });
-        open_started_rx.await.unwrap();
-        drop(lifecycle);
-
-        shutdown.await.unwrap();
-        assert!(matches!(open.await.unwrap(), Err(TerminalError::Shutdown)));
-        assert!(backend.processes.lock().unwrap().is_empty());
-        assert!(manager.inner.sessions.read().await.is_empty());
-        assert!(terminal_claims(&registry, &[1]).is_empty());
-    }
-
-    #[tokio::test]
-    async fn open_and_restart_fail_without_spawning_after_shutdown() {
-        let root = tempfile::tempdir().unwrap();
-        let backend = Arc::new(HistoryTestBackend::default());
-        let registry = ProcessAttributionRegistry::new();
-        let manager = attributed_manager(backend.clone(), registry.clone());
-        let input = TerminalOpenInput::new(
-            "thread-after-shutdown",
-            "term-after-shutdown",
-            root.path().to_path_buf(),
-            80,
-            24,
-        );
-        manager.shutdown().await;
-
-        assert!(matches!(
-            manager.open(input.clone()).await,
-            Err(TerminalError::Shutdown)
-        ));
-        assert!(matches!(
-            manager.restart(input).await,
-            Err(TerminalError::Shutdown)
-        ));
-        assert!(backend.processes.lock().unwrap().is_empty());
-        assert!(manager.inner.sessions.read().await.is_empty());
-        assert!(terminal_claims(&registry, &[1]).is_empty());
+        assert_eq!(attachment.initial.label, "Claude Terminal");
+        let spawns = backend.spawns();
+        assert_eq!(spawns.len(), 2);
+        assert_eq!(spawns[1].executable, "claude");
+        assert_eq!(spawns[1].args, ["--dangerously-skip-permissions"]);
     }
 
     #[tokio::test]
@@ -1638,6 +2271,174 @@ sleep 30
         assert_eq!(restarted.status, TerminalStatus::Running);
         manager.close("thread-unit", Some("term-unit")).await;
         manager.shutdown().await;
+    }
+
+    fn terminal_claims(
+        registry: &ProcessAttributionRegistry,
+        pids: &[u32],
+    ) -> Vec<crate::diagnostics::ProcessClaim> {
+        let rows = pids
+            .iter()
+            .map(|pid| ProcessRow::fixture(*pid, 0, "shell"))
+            .collect::<Vec<_>>();
+        registry.bind_and_snapshot(&rows, Instant::now())
+    }
+
+    fn attributed_manager(
+        backend: Arc<HistoryTestBackend>,
+        registry: ProcessAttributionRegistry,
+    ) -> TerminalManager {
+        TerminalManager::with_process_attribution(
+            backend,
+            TerminalManagerOptions {
+                subprocess_poll_interval: Duration::ZERO,
+                ..TerminalManagerOptions::default()
+            },
+            registry,
+        )
+    }
+
+    #[tokio::test]
+    async fn terminal_registration_tracks_start_and_exit() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend {
+            expose_process_identity: true,
+            ..HistoryTestBackend::default()
+        });
+        let registry = ProcessAttributionRegistry::new();
+        let manager = attributed_manager(backend.clone(), registry.clone());
+        let opened = manager
+            .open(TerminalOpenInput::new(
+                "thread-attributed",
+                "term-attributed",
+                root.path().to_path_buf(),
+                80,
+                24,
+            ))
+            .await
+            .unwrap();
+        let pid = opened.pid.expect("running terminal pid");
+        let claims = terminal_claims(&registry, &[pid]);
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].scope, AttributionScope::External);
+        assert_eq!(claims[0].kind, AttributionKind::Terminal);
+        assert_eq!(claims[0].label, opened.label);
+
+        let mut events = manager.subscribe_events();
+        backend.latest().exit(0);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if matches!(
+                    events.recv().await,
+                    Ok(TerminalEvent::Exited {
+                        thread_id,
+                        terminal_id,
+                        ..
+                    }) if thread_id == "thread-attributed" && terminal_id == "term-attributed"
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("terminal exit event");
+        assert!(terminal_claims(&registry, &[pid]).is_empty());
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exit_during_identity_registration_is_observed_and_releases_the_claim() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend {
+            expose_process_identity: true,
+            exit_on_identity_read: Some(PtyExit {
+                exit_code: Some(17),
+                signal: None,
+            }),
+            ..HistoryTestBackend::default()
+        });
+        let registry = ProcessAttributionRegistry::new();
+        let manager = attributed_manager(backend, registry.clone());
+        let mut events = manager.subscribe_events();
+        let opened = manager
+            .open(TerminalOpenInput::new(
+                "thread-exited-during-start",
+                "term-exited-during-start",
+                root.path().to_path_buf(),
+                80,
+                24,
+            ))
+            .await
+            .unwrap();
+        let pid = opened.pid.expect("spawned terminal pid");
+
+        let exit_event = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Ok(event @ TerminalEvent::Exited { .. }) = events.recv().await {
+                    break event;
+                }
+            }
+        })
+        .await
+        .expect("already-observed terminal exit must be supervised");
+        assert!(matches!(
+            exit_event,
+            TerminalEvent::Exited {
+                exit_code: Some(17),
+                ..
+            }
+        ));
+        assert!(terminal_claims(&registry, &[pid]).is_empty());
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_attempts_every_terminal_owner_and_bounds_failures() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend::default());
+        let manager = TerminalManager::new(
+            backend.clone(),
+            TerminalManagerOptions {
+                subprocess_poll_interval: Duration::ZERO,
+                ..TerminalManagerOptions::default()
+            },
+        );
+        for index in 0..12 {
+            manager
+                .open(TerminalOpenInput::new(
+                    "thread-cleanup",
+                    format!("term-{index}"),
+                    root.path().to_path_buf(),
+                    80,
+                    24,
+                ))
+                .await
+                .expect("terminal opens");
+        }
+        for (index, process) in backend
+            .processes
+            .lock()
+            .expect("processes lock")
+            .iter()
+            .enumerate()
+        {
+            if index != 1 {
+                process.fail_kill("界".repeat(500));
+            }
+        }
+
+        let report = manager.shutdown_with_report().await;
+
+        assert_eq!(report.attempted, 12);
+        assert_eq!(report.succeeded, 1);
+        assert_eq!(report.failure_count, 11);
+        assert!(report.failures.len() < report.failure_count);
+        assert!(
+            report
+                .failures
+                .iter()
+                .all(|failure| failure.chars().count() <= 160)
+        );
     }
 
     #[test]

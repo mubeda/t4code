@@ -32,7 +32,7 @@ async fn portable_pty_supports_input_output_resize_and_shutdown() {
         ("sh", Vec::new(), "echo T4CODE_PTY_READY\n")
     };
     let input = PtySpawnInput {
-        shell: shell.to_string(),
+        executable: shell.to_string(),
         args,
         cwd: std::env::current_dir().expect("cwd"),
         cols: 80,
@@ -455,6 +455,7 @@ async fn terminal_attach_restart_if_not_running_uses_fresh_session_snapshot() {
             rows: Some(24),
             env: BTreeMap::new(),
             restart_if_not_running: true,
+            command: None,
         })
         .await
         .expect("attach should restart stopped terminal");
