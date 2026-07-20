@@ -9,6 +9,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::{ProcessCleanupReport, configure_supervised_background_command_wrap};
 
+const PROCESS_CLEANUP_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SupervisedOverflow {
     Error,
@@ -211,20 +213,29 @@ async fn collect_output(
     })
 }
 
-async fn terminate_and_wait(child: &mut dyn ChildWrapper) -> ProcessCleanupReport {
+pub(crate) async fn terminate_and_wait(child: &mut dyn ChildWrapper) -> ProcessCleanupReport {
     let mut report = ProcessCleanupReport::default();
-    match child.start_kill() {
-        Ok(()) => report.record_success(),
-        Err(error) => report.record_failure(format!("kill: {error}")),
+    if let Err(error) = child.start_kill() {
+        report.record_failure(format!("kill ownership unit: {error}"));
+        match child.inner_mut().start_kill() {
+            Ok(()) => report.record_success(),
+            Err(error) => report.record_failure(format!("kill root child: {error}")),
+        }
+    } else {
+        report.record_success();
     }
-    match child.wait().await {
-        Ok(_) => report.record_success(),
-        Err(error) => report.record_failure(format!("wait: {error}")),
+    match tokio::time::timeout(PROCESS_CLEANUP_WAIT_TIMEOUT, child.wait()).await {
+        Ok(Ok(_)) => report.record_success(),
+        Ok(Err(error)) => report.record_failure(format!("wait: {error}")),
+        Err(_) => report.record_failure(format!(
+            "wait timed out after {} ms",
+            PROCESS_CLEANUP_WAIT_TIMEOUT.as_millis()
+        )),
     }
     report
 }
 
-fn log_cleanup_failures(operation: &'static str, report: &ProcessCleanupReport) {
+pub(crate) fn log_cleanup_failures(operation: &'static str, report: &ProcessCleanupReport) {
     if report.failure_count > 0 {
         tracing::warn!(
             operation,
@@ -368,6 +379,78 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct StubbornLiveChild {
+        child: Child,
+        kill_calls: Arc<AtomicUsize>,
+        wait_calls: Arc<AtomicUsize>,
+    }
+
+    impl ChildWrapper for StubbornLiveChild {
+        fn inner(&self) -> &dyn ChildWrapper {
+            self
+        }
+
+        fn inner_mut(&mut self) -> &mut dyn ChildWrapper {
+            self
+        }
+
+        fn into_inner(self: Box<Self>) -> Box<dyn ChildWrapper> {
+            Box::new(self.child)
+        }
+
+        fn start_kill(&mut self) -> io::Result<()> {
+            self.kill_calls.fetch_add(1, Ordering::SeqCst);
+            Err(io::Error::other("injected live-child kill failure"))
+        }
+
+        fn wait(&mut self) -> Pin<Box<dyn Future<Output = io::Result<ExitStatus>> + Send + '_>> {
+            self.wait_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(self.child.wait())
+        }
+    }
+
+    const LIVE_CHILD_FIXTURE_ENV: &str = "T4CODE_SUPERVISED_LIVE_CHILD_FIXTURE";
+
+    #[test]
+    fn live_child_cleanup_fixture() {
+        if std::env::var_os(LIVE_CHILD_FIXTURE_ENV).is_none() {
+            return;
+        }
+        loop {
+            std::thread::park();
+        }
+    }
+
+    fn stubborn_live_child() -> (Box<StubbornLiveChild>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        let mut command = Command::new(
+            std::env::current_exe().expect("current test executable should be available"),
+        );
+        command
+            .args([
+                "--exact",
+                "process::supervised::tests::live_child_cleanup_fixture",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(LIVE_CHILD_FIXTURE_ENV, "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let child = command.spawn().expect("live cleanup fixture should spawn");
+        let kill_calls = Arc::new(AtomicUsize::new(0));
+        let wait_calls = Arc::new(AtomicUsize::new(0));
+        (
+            Box::new(StubbornLiveChild {
+                child,
+                kill_calls: Arc::clone(&kill_calls),
+                wait_calls: Arc::clone(&wait_calls),
+            }),
+            kill_calls,
+            wait_calls,
+        )
+    }
+
     fn completed_command() -> Command {
         #[cfg(windows)]
         {
@@ -436,7 +519,7 @@ mod tests {
         let report = terminate_and_wait(&mut *child).await;
         assert_eq!(kill_calls.load(Ordering::SeqCst), 1);
         assert_eq!(wait_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(report.attempted, 2);
+        assert_eq!(report.attempted, 3);
         assert_eq!(report.failure_count, 1);
         assert!(report.failures[0].chars().count() <= 160);
 
@@ -448,6 +531,53 @@ mod tests {
         assert_eq!(bounded.failures.len(), 8);
         assert!(
             bounded
+                .failures
+                .iter()
+                .all(|failure| failure.chars().count() <= 160)
+        );
+    }
+
+    #[tokio::test]
+    async fn live_child_with_failed_owner_and_root_kills_returns_bounded_report() {
+        let (mut child, kill_calls, wait_calls) = stubborn_live_child();
+        assert!(
+            child
+                .child
+                .try_wait()
+                .expect("live fixture status should be readable")
+                .is_none()
+        );
+
+        let cleanup =
+            tokio::time::timeout(Duration::from_secs(3), terminate_and_wait(&mut *child)).await;
+        if cleanup.is_err() {
+            child
+                .child
+                .start_kill()
+                .expect("test fallback should kill live fixture");
+            child
+                .child
+                .wait()
+                .await
+                .expect("test fallback should reap live fixture");
+        }
+        let report = cleanup.expect("cleanup must return within its bounded wait deadline");
+        child
+            .child
+            .start_kill()
+            .expect("test cleanup should kill surviving fixture");
+        child
+            .child
+            .wait()
+            .await
+            .expect("test cleanup should reap surviving fixture");
+
+        assert_eq!(kill_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(wait_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(report.attempted, 3);
+        assert_eq!(report.failure_count, 3);
+        assert!(
+            report
                 .failures
                 .iter()
                 .all(|failure| failure.chars().count() <= 160)

@@ -11,7 +11,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     git::{OutputPolicy, ProcessRequest, ProcessRunner},
-    process::configure_supervised_background_command_wrap,
+    process::{
+        configure_supervised_background_command_wrap,
+        supervised::{log_cleanup_failures, terminate_and_wait},
+    },
     production::provider_runtime::{
         provider_launch_program, resolve_provider_executable,
         sanitize_provider_subprocess_environment,
@@ -1106,8 +1109,8 @@ fn supervised_command(command: Command) -> CommandWrap {
 }
 
 async fn stop_supervised_child(child: &mut dyn ChildWrapper) {
-    let _ = child.start_kill();
-    let _ = child.wait().await;
+    let report = terminate_and_wait(child).await;
+    log_cleanup_failures("provider inventory probe", &report);
 }
 
 fn first_line(stdout: &str, stderr: &str) -> Option<String> {

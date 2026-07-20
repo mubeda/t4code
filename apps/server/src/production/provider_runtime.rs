@@ -22,7 +22,10 @@ use crate::{
         load_snapshot,
     },
     persistence::{ProviderSessionRuntime, Repositories},
-    process::{bound_process_cleanup_failure, configure_supervised_background_command_wrap},
+    process::{
+        configure_supervised_background_command_wrap,
+        supervised::{log_cleanup_failures, terminate_and_wait},
+    },
     production::{
         connect_mcp::ConnectMcpService, operational_logs::ProviderOperationalLog,
         orchestration_effects::process_compatible_path,
@@ -65,7 +68,6 @@ pub type BoxRuntimeFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 const DEFAULT_QUEUE_CAPACITY: usize = 32;
 const DEFAULT_EVENT_QUEUE_CAPACITY: usize = 128;
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Prevent host diagnostics settings from turning provider stderr into a high-volume event stream.
 pub(crate) fn sanitize_provider_subprocess_environment(command: &mut tokio::process::Command) {
@@ -1633,24 +1635,8 @@ pub(crate) fn provider_launch_program(executable: &Path) -> (PathBuf, Vec<String
 
 async fn kill_child(child: &SharedChild) {
     let mut child = child.lock().await;
-    if let Err(error) = child.start_kill() {
-        let error = bound_process_cleanup_failure(error);
-        tracing::warn!(%error, "failed to start provider process-owner cleanup");
-        return;
-    }
-    match tokio::time::timeout(SHUTDOWN_TIMEOUT, child.wait()).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(error)) => {
-            let error = bound_process_cleanup_failure(error);
-            tracing::warn!(%error, "failed to wait for provider process-owner cleanup");
-        }
-        Err(_) => {
-            tracing::warn!(
-                timeout_ms = SHUTDOWN_TIMEOUT.as_millis(),
-                "provider process-owner cleanup timed out"
-            );
-        }
-    }
+    let report = terminate_and_wait(&mut **child).await;
+    log_cleanup_failures("provider process", &report);
 }
 
 fn runtime_mode(value: &str) -> CodexRuntimeMode {

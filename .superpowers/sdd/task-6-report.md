@@ -204,6 +204,131 @@ git diff --check
 exit 0
 ```
 
+## Fifth correction: bounded cleanup after termination failure
+
+Source baseline: `0f054caad24905647ef7f75303dfdb6abfd198e2`. The
+correction is recorded by the commit containing this section.
+
+### Root cause and bounded ownership cleanup
+
+The shared cleanup path attempted `ChildWrapper::start_kill` and then awaited
+`ChildWrapper::wait` without a deadline. If ownership-unit termination failed,
+a live child could therefore wedge cancellation, timeout, stdin, read, output
+limit, and provider shutdown paths indefinitely. Provider inventory contained
+the same unbounded process-wrap sequence.
+
+Cleanup now:
+
+1. attempts the Job/process-group ownership-unit kill;
+2. attempts direct-root kill through `ChildWrapper::inner_mut` if the owner
+   kill fails;
+3. waits for at most two seconds;
+4. preserves the primary operation error while recording bounded secondary
+   cleanup failures.
+
+Git, the shared runner, provider runtime, and provider inventory all consume
+this bounded process-wrap cleanup.
+
+The async RED regression launches a real non-exiting test process, injects
+failures for both kill attempts, and force-cleans the fixture after its outer
+guard proves the old wait did not return:
+
+```text
+RED
+cargo test -p t4code-server --lib process::supervised::tests::live_child_with_failed_owner_and_root_kills_returns_bounded_report -- --nocapture
+cleanup must return within its bounded wait deadline: Elapsed(())
+test result: FAILED. 0 passed; 1 failed; finished in 3.01s
+
+GREEN
+test process::supervised::tests::live_child_with_failed_owner_and_root_kills_returns_bounded_report ... ok
+test result: ok. 1 passed; 0 failed; finished in 2.01s
+```
+
+### Bounded PTY initialization cleanup
+
+PTY initialization cleanup called portable-pty's blocking `Child::wait` after
+Job/process-group/root termination attempts. On Windows, portable-pty 0.9.0
+also reversed the `TerminateProcess` result check and discarded
+`WinChild::do_kill` errors, so a failed Job termination plus failed root
+termination could enter its infinite wait while reporting the root kill as
+successful.
+
+PTY initialization cleanup now polls `Child::try_wait` for at most two seconds
+and never calls blocking `Child::wait`. The local fork makes both Windows
+child-killer implementations propagate the actual Win32 success or error.
+`UPSTREAM.md` records this second minimal fork deviation.
+
+The PTY RED regression launches a real `/bin/sh` portable-pty child, injects
+root kill failure, then externally kills and reaps the fixture after proving
+the old cleanup missed its deadline. It also verifies that the primary
+initialization error is preserved and secondary failure counts and strings are
+bounded.
+
+```text
+RED
+cargo test -p t4code-server --lib terminal::pty::tests::failed_live_pty_kill_cannot_block_initialization_cleanup -- --nocapture
+PTY cleanup did not return within its deadline: timed out waiting on channel
+test result: FAILED. 0 passed; 1 failed; finished in 3.01s
+
+GREEN
+test terminal::pty::tests::failed_live_pty_kill_cannot_block_initialization_cleanup ... ok
+test result: ok. 1 passed; 0 failed; finished in 2.01s
+```
+
+### Fifth-cycle verification
+
+```text
+cargo test -p t4code-server --lib process:: -- --nocapture
+test result: ok. 13 passed; 0 failed
+
+cargo test -p t4code-server --test process_runner -- --nocapture
+test result: ok. 13 passed; 0 failed
+
+cargo test -p t4code-server --test git_coverage -- --nocapture
+test result: ok. 19 passed; 0 failed
+
+cargo test -p t4code-server --test git_rpc -- --nocapture
+test result: ok. 21 passed; 0 failed
+
+cargo test -p t4code-server --lib terminal::pty::tests -- --nocapture
+test result: ok. 7 passed; 0 failed
+
+cargo test -p t4code-server --lib terminal::manager::tests -- --nocapture
+test result: ok. 9 passed; 0 failed
+
+cargo test -p t4code-server --lib production::provider_inventory::tests -- --nocapture
+test result: ok. 15 passed; 0 failed
+
+cargo test -p t4code-server --lib production::provider_runtime::tests -- --nocapture
+test result: ok. 19 passed; 0 failed
+
+cargo test --manifest-path apps/server/tests/fixtures/task8-harness/Cargo.toml -- --nocapture
+test result: ok. 103 library tests and 11 integration tests passed
+
+RUSTC=/Users/admin/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc \
+RUSTFLAGS='-A dead_code' \
+rustup run 1.97.1-aarch64-apple-darwin cargo check \
+  --manifest-path apps/server/tests/fixtures/task8-harness/Cargo.toml \
+  --tests --target x86_64-pc-windows-msvc
+Finished `dev` profile
+
+cargo fmt --all -- --check
+exit 0
+
+vp check
+pass: All 1538 files are correctly formatted
+pass: Found no warnings or lint errors in 1158 files
+
+vp run typecheck
+exit 0
+
+git diff --check
+exit 0
+```
+
+No helper sidecar or production Node runtime was added. Packaged Windows
+runtime verification remains explicitly deferred to Task 9.
+
 ## Fourth correction: race-free process ownership
 
 Source baseline: `dd76c8beacbb`. The correction is recorded by the commit that

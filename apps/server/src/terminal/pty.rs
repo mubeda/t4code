@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc},
     thread,
+    time::{Duration, Instant},
 };
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -12,6 +13,9 @@ use tokio::sync::{broadcast, watch};
 
 #[cfg(windows)]
 use crate::process::WindowsJob;
+
+const PTY_CLEANUP_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+const PTY_CLEANUP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PtyExit {
@@ -179,21 +183,15 @@ fn cleanup_failed_pty_initialization(
     child: &mut dyn portable_pty::Child,
     job: &WindowsJob,
     primary_error: &str,
-) {
+) -> crate::process::ProcessCleanupReport {
     let mut report = crate::process::ProcessCleanupReport::default();
     match job.terminate() {
         Ok(()) => report.record_success(),
         Err(error) => report.record_failure(format!("terminate job: {error}")),
     }
-    match child.kill() {
-        Ok(()) => report.record_success(),
-        Err(error) => report.record_failure(format!("kill child: {error}")),
-    }
-    match child.wait() {
-        Ok(_) => report.record_success(),
-        Err(error) => report.record_failure(format!("wait child: {error}")),
-    }
+    terminate_and_wait_for_pty_child(child, &mut report);
     log_failed_pty_initialization(primary_error, &report);
+    report
 }
 
 #[cfg(unix)]
@@ -201,7 +199,7 @@ fn cleanup_failed_pty_initialization(
     child: &mut dyn portable_pty::Child,
     process_group: Option<i32>,
     primary_error: &str,
-) {
+) -> crate::process::ProcessCleanupReport {
     let mut report = crate::process::ProcessCleanupReport::default();
     if let Some(process_group) = process_group {
         // SAFETY: a negative process-group leader targets the complete PTY
@@ -216,29 +214,56 @@ fn cleanup_failed_pty_initialization(
             ));
         }
     }
-    match child.kill() {
-        Ok(()) => report.record_success(),
-        Err(error) => report.record_failure(format!("kill child: {error}")),
-    }
-    match child.wait() {
-        Ok(_) => report.record_success(),
-        Err(error) => report.record_failure(format!("wait child: {error}")),
-    }
+    terminate_and_wait_for_pty_child(child, &mut report);
     log_failed_pty_initialization(primary_error, &report);
+    report
 }
 
 #[cfg(not(any(unix, windows)))]
-fn cleanup_failed_pty_initialization(child: &mut dyn portable_pty::Child, primary_error: &str) {
+fn cleanup_failed_pty_initialization(
+    child: &mut dyn portable_pty::Child,
+    primary_error: &str,
+) -> crate::process::ProcessCleanupReport {
     let mut report = crate::process::ProcessCleanupReport::default();
+    terminate_and_wait_for_pty_child(child, &mut report);
+    log_failed_pty_initialization(primary_error, &report);
+    report
+}
+
+fn terminate_and_wait_for_pty_child(
+    child: &mut dyn portable_pty::Child,
+    report: &mut crate::process::ProcessCleanupReport,
+) {
     match child.kill() {
         Ok(()) => report.record_success(),
         Err(error) => report.record_failure(format!("kill child: {error}")),
     }
-    match child.wait() {
-        Ok(_) => report.record_success(),
-        Err(error) => report.record_failure(format!("wait child: {error}")),
+    let deadline = Instant::now() + PTY_CLEANUP_WAIT_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                report.record_success();
+                break;
+            }
+            Ok(None) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    report.record_failure(format!(
+                        "wait child timed out after {} ms",
+                        PTY_CLEANUP_WAIT_TIMEOUT.as_millis()
+                    ));
+                    break;
+                }
+                thread::sleep(
+                    PTY_CLEANUP_POLL_INTERVAL.min(deadline.saturating_duration_since(now)),
+                );
+            }
+            Err(error) => {
+                report.record_failure(format!("wait child: {error}"));
+                break;
+            }
+        }
     }
-    log_failed_pty_initialization(primary_error, &report);
 }
 
 fn log_failed_pty_initialization(
@@ -529,12 +554,12 @@ mod tests {
     #[cfg(windows)]
     impl portable_pty::Child for TrackingPortableChild {
         fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
-            Ok(None)
+            self.waits.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(portable_pty::ExitStatus::with_exit_code(1)))
         }
 
         fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
-            self.waits.fetch_add(1, Ordering::SeqCst);
-            Ok(portable_pty::ExitStatus::with_exit_code(1))
+            panic!("PTY initialization cleanup must not call blocking wait")
         }
 
         fn process_id(&self) -> Option<u32> {
@@ -756,6 +781,116 @@ mod tests {
         fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
             Box::new(self.clone())
         }
+    }
+
+    #[cfg(unix)]
+    #[derive(Debug)]
+    struct FailingLivePortableChild {
+        child: Box<dyn portable_pty::Child + Send + Sync>,
+    }
+
+    #[cfg(unix)]
+    impl portable_pty::ChildKiller for FailingLivePortableChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            Err(Error::new(
+                ErrorKind::PermissionDenied,
+                "injected live-child kill failure",
+            ))
+        }
+
+        fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+            Box::new(TestKiller { fail: true })
+        }
+    }
+
+    #[cfg(unix)]
+    impl portable_pty::Child for FailingLivePortableChild {
+        fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+            self.child.try_wait()
+        }
+
+        fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+            self.child.wait()
+        }
+
+        fn process_id(&self) -> Option<u32> {
+            self.child.process_id()
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_live_pty_kill_cannot_block_initialization_cleanup() {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("live cleanup PTY should open");
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.args(["-c", "sleep 30"]);
+        let mut child = pair
+            .slave
+            .spawn_command(command)
+            .expect("live cleanup PTY child should spawn");
+        drop(pair.slave);
+        assert!(
+            child
+                .try_wait()
+                .expect("live PTY status should be readable")
+                .is_none()
+        );
+        let mut force_killer = child.clone_killer();
+        let child = FailingLivePortableChild { child };
+        let (completed_tx, completed_rx) = std::sync::mpsc::sync_channel(1);
+        let cleanup_thread = std::thread::spawn(move || {
+            let primary_error = "injected primary initialization failure".to_owned();
+            let mut child = child;
+            let report = cleanup_failed_pty_initialization(&mut child, None, &primary_error);
+            completed_tx
+                .send((child, primary_error, report))
+                .expect("cleanup test receiver should remain connected");
+        });
+
+        let completed = completed_rx.recv_timeout(Duration::from_secs(3));
+        if completed.is_err() {
+            force_killer
+                .kill()
+                .expect("test fallback should kill live PTY fixture");
+        }
+        let (mut child, primary_error, report) = match completed {
+            Ok(completed) => completed,
+            Err(error) => {
+                let completed = completed_rx
+                    .recv_timeout(Duration::from_secs(3))
+                    .expect("forced test cleanup should unblock PTY wait");
+                cleanup_thread
+                    .join()
+                    .expect("cleanup thread should finish after forced kill");
+                panic!("PTY cleanup did not return within its deadline: {error}; {completed:?}");
+            }
+        };
+        force_killer
+            .kill()
+            .expect("test cleanup should kill surviving PTY fixture");
+        child
+            .child
+            .wait()
+            .expect("test cleanup should reap surviving PTY fixture");
+        cleanup_thread
+            .join()
+            .expect("bounded cleanup thread should finish");
+        assert_eq!(primary_error, "injected primary initialization failure");
+        assert_eq!(report.attempted, 2);
+        assert_eq!(report.failure_count, 2);
+        assert!(
+            report
+                .failures
+                .iter()
+                .all(|failure| failure.chars().count() <= 160)
+        );
     }
 
     #[test]
