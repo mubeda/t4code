@@ -8,7 +8,7 @@ use std::{
     pin::Pin,
     process::Command,
     sync::{Arc, Mutex as StdMutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use axum::{
@@ -25,6 +25,7 @@ use provider_runtime::{
 use serde_json::{Value, json};
 use t4code_server::{
     RequestId, RpcExit, RpcRegistry, ServerConfig, ServerMessage, ServerRuntime,
+    diagnostics::{NativeProcessSampler, ProcessAttributionRegistry, ProcessRow, ProcessSampler},
     orchestration::{
         engine::{
             EngineOptions, OrchestrationCommand, OrchestrationEngine, SessionInput,
@@ -409,6 +410,7 @@ fn launch() -> ProviderLaunchRequest {
     ProviderLaunchRequest {
         thread_id: "t1".to_owned(),
         provider: "codex".to_owned(),
+        provider_label: "codex".to_owned(),
         provider_instance_id: Some("codex".to_owned()),
         binary_path: "codex".to_owned(),
         cwd: "C:/repo".into(),
@@ -953,13 +955,12 @@ async fn unsupported_live_capabilities_restart_the_runtime_with_updated_launch_s
         })]),
         ..DriverState::default()
     }));
+    let (_events_tx1, events_rx1) = mpsc::channel(1);
+    let (_events_tx2, events_rx2) = mpsc::channel(1);
+    let (_events_tx3, events_rx3) = mpsc::channel(1);
     let factory = Arc::new(FakeFactory {
         state: state.clone(),
-        events: StdMutex::new(VecDeque::from([
-            mpsc::channel(1).1,
-            mpsc::channel(1).1,
-            mpsc::channel(1).1,
-        ])),
+        events: StdMutex::new(VecDeque::from([events_rx1, events_rx2, events_rx3])),
     });
     let supervisor =
         ProviderRuntimeSupervisor::start(engine.clone(), factory, SupervisorOptions::default());
@@ -1040,9 +1041,10 @@ async fn interaction_mode_provider_failure_preserves_the_live_launch_state() {
         })]),
         ..DriverState::default()
     }));
+    let (_events_tx, events_rx) = mpsc::channel(1);
     let factory = Arc::new(FakeFactory {
         state: state.clone(),
-        events: StdMutex::new(VecDeque::from([mpsc::channel(1).1])),
+        events: StdMutex::new(VecDeque::from([events_rx])),
     });
     let supervisor =
         ProviderRuntimeSupervisor::start(engine.clone(), factory, SupervisorOptions::default());
@@ -2277,6 +2279,63 @@ async fn native_factory_routes_every_supported_provider_to_its_native_adapter() 
             "unexpected native adapter error for {provider}: {error:?}"
         );
     }
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn supervisor_reaps_a_naturally_exited_native_provider_without_an_explicit_stop() {
+    let engine = engine().await;
+    let temp = TempDir::new().unwrap();
+    let executable = executable_fixture(
+        &temp,
+        "naturally-exiting-claude",
+        "#!/bin/sh\nsleep 1\n",
+        "Start-Sleep -Seconds 1\n",
+    );
+    let registry = ProcessAttributionRegistry::new();
+    let factory = Arc::new(NativeProviderDriverFactory::with_process_attribution(
+        temp.path().join("attachments"),
+        registry.clone(),
+    ));
+    let supervisor =
+        ProviderRuntimeSupervisor::start(engine.clone(), factory, SupervisorOptions::default());
+    let mut request = launch();
+    request.provider = "claudeAgent".to_owned();
+    request.provider_label = "Naturally Exiting Claude".to_owned();
+    request.binary_path = executable.to_string_lossy().into_owned();
+    request.cwd = temp.path().to_path_buf();
+
+    supervisor.launch(request).await.unwrap();
+    let rows = NativeProcessSampler::default().sample().await.unwrap();
+    let claims = registry.bind_and_snapshot(&rows, Instant::now());
+    let claim = claims
+        .iter()
+        .find(|claim| claim.label == "Naturally Exiting Claude")
+        .expect("provider registration should bind while the child is alive");
+    let bound_row = rows
+        .into_iter()
+        .find(|row| row.pid == claim.identity.pid && row.started_at == claim.identity.started_at)
+        .expect("bound provider process row");
+
+    timeout(Duration::from_secs(3), async {
+        loop {
+            if registry
+                .bind_and_snapshot(
+                    std::slice::from_ref::<ProcessRow>(&bound_row),
+                    Instant::now(),
+                )
+                .is_empty()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("natural provider exit should release the registration lease");
+
+    supervisor.shutdown().await.unwrap();
+    engine.shutdown().await;
 }
 
 #[tokio::test]

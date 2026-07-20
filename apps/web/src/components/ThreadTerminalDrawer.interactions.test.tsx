@@ -2941,6 +2941,53 @@ describe("TerminalViewport mounted lifecycle", () => {
 });
 
 describe("ThreadTerminalDrawer mounted controls", () => {
+  it("forwards each split terminal's provider launch command to its own attachment", async () => {
+    const codexCommand = {
+      executable: "/opt/codex",
+      args: ["--dangerously-bypass-approvals-and-sandbox"],
+      label: "Codex Terminal",
+    };
+    const cursorCommand = {
+      executable: "/opt/cursor-agent",
+      args: ["--yolo"],
+      label: "Cursor Terminal",
+    };
+    await mount(
+      <ThreadTerminalDrawer
+        {...drawerProps({
+          threadRef: scopeThreadRef(EnvironmentId.make("environment-1"), THREAD_ID),
+          terminalIds: ["term-1", "term-2"],
+          terminalGroups: [{ id: "group-1", terminalIds: ["term-1", "term-2"] }],
+          terminalCommandsById: new Map([
+            ["term-1", codexCommand],
+            ["term-2", cursorCommand],
+          ]),
+        })}
+      />,
+    );
+
+    expect(testState.attachedSessionInputs).toEqual(
+      expect.arrayContaining([
+        {
+          environmentId: "environment-1",
+          terminal: expect.objectContaining({
+            terminalId: "term-1",
+            command: codexCommand,
+          }),
+          attach: true,
+        },
+        {
+          environmentId: "environment-1",
+          terminal: expect.objectContaining({
+            terminalId: "term-2",
+            command: cursorCommand,
+          }),
+          attach: true,
+        },
+      ]),
+    );
+  });
+
   it("passes visibility to every active split pane without retaining hidden xterms", async () => {
     const props = drawerProps({
       visible: false,

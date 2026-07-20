@@ -45,5 +45,6 @@ export function formatMemoryBytes(bytes: number): string {
 }
 
 export function formatCpuPercent(percent: number): string {
+  if (!Number.isFinite(percent)) return "Unavailable";
   return `${NUMBER_FORMAT.format(Math.max(0, percent))}%`;
 }

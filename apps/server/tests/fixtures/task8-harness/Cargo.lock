@@ -9,6 +9,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -369,8 +375,6 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 [[package]]
 name = "portable-pty"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4a596a2b3d2752d94f51fac2d4a96737b8705dddd311a32b9af47211f08671e"
 dependencies = [
  "anyhow",
  "bitflags 1.3.2",
@@ -565,6 +569,7 @@ dependencies = [
 name = "t4code-task8-harness"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "portable-pty",
  "process-wrap",
  "serde",
@@ -577,6 +582,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+ "windows 0.62.2",
  "windows-sys 0.61.2",
  "xpty",
 ]

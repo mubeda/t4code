@@ -14,6 +14,11 @@ import * as FastCheck from "fast-check";
 
 import { OrchestrationEvent, ORCHESTRATION_WS_METHODS } from "../src/orchestration.ts";
 import { WS_METHODS, WsRpcGroup } from "../src/rpc.ts";
+import {
+  ServerProcessDiagnosticsResult,
+  ServerProcessResourceHistoryResult,
+  ServerSignalProcessInput,
+} from "../src/server.ts";
 import { DEFAULT_SERVER_SETTINGS } from "../src/settings.ts";
 
 const StreamSchemaTypeId = "~effect/rpc/RpcSchema/StreamSchema";
@@ -179,6 +184,96 @@ const fixtureServerConfig = {
   settings: DEFAULT_SERVER_SETTINGS,
 } as const;
 const fixtureDate = Option.getOrThrow(DateTime.make(1_767_225_600_000));
+const fixtureProcessAttribution = {
+  processKey: "42:100",
+  scope: "external",
+  kind: "provider",
+  label: "Codex",
+  confidence: "exact",
+} as const;
+const fixtureProcessTotals = {
+  combined: { cpuPercent: 3, rssBytes: 30, processCount: 2 },
+  core: { cpuPercent: 1, rssBytes: 10, processCount: 1 },
+  external: { cpuPercent: 2, rssBytes: 20, processCount: 1 },
+} as const;
+const fixtureProcessDiagnostics = {
+  serverPid: 1,
+  readAt: fixtureDate,
+  totals: fixtureProcessTotals,
+  uiCoverage: { status: "notApplicable", message: Option.none<string>() },
+  processes: [
+    {
+      pid: 42,
+      ppid: 1,
+      pgid: Option.none<number>(),
+      status: "Run",
+      cpuPercent: 2,
+      rssBytes: 20,
+      elapsed: "00:00:01",
+      command: "codex",
+      depth: 0,
+      childPids: [],
+      ...fixtureProcessAttribution,
+    },
+  ],
+  error: Option.none<{ readonly message: string }>(),
+} as const;
+const fixtureProcessHistory = {
+  readAt: fixtureDate,
+  windowMs: 60_000,
+  bucketMs: 1_000,
+  sampleIntervalMs: 500,
+  retainedSampleCount: 2,
+  cpuSecondsApprox: { combined: 1.5, core: 1, external: 0.5 },
+  uiCoverage: { status: "partial", message: Option.some("UI coverage is partial.") },
+  buckets: [
+    {
+      startedAt: fixtureDate,
+      endedAt: fixtureDate,
+      cpuPercent: {
+        average: { combined: 3, core: 1, external: 2 },
+        peak: { combined: 6, core: 2, external: 4 },
+      },
+      rssBytes: {
+        average: { combined: 30, core: 10, external: 20 },
+        peak: { combined: 60, core: 20, external: 40 },
+      },
+      maxProcessCount: { combined: 2, core: 1, external: 1 },
+    },
+  ],
+  processes: [
+    {
+      pid: 42,
+      ppid: 1,
+      command: "codex",
+      depth: 0,
+      ...fixtureProcessAttribution,
+      firstSeenAt: fixtureDate,
+      lastSeenAt: fixtureDate,
+      currentCpuPercent: 2,
+      avgCpuPercent: 2,
+      maxCpuPercent: 4,
+      cpuSecondsApprox: 0.5,
+      currentRssBytes: 20,
+      maxRssBytes: 40,
+      sampleCount: 2,
+    },
+  ],
+  error: Option.none<{
+    readonly failureTag:
+      | "ProcessDiagnosticsQueryTimeoutError"
+      | "ProcessDiagnosticsQueryFailedError"
+      | "ProcessDiagnosticsServerProcessSignalError"
+      | "ProcessDiagnosticsNotDescendantError"
+      | "ProcessDiagnosticsSignalFailedError";
+    readonly message: string;
+  }>(),
+} as const;
+const fixtureSignalProcessInput = {
+  pid: 42,
+  processKey: "42:100",
+  signal: "SIGINT",
+} as const;
 const fixturePairingLink = {
   id: "fixture-pairing-link",
   credential: "23456789ABCD",
@@ -322,7 +417,51 @@ const serializeWireFixture = (message: unknown): unknown => {
   return JSON.parse(encoded) as unknown;
 };
 
+const stripEffectOptionIds = (value: unknown): unknown =>
+  JSON.parse(
+    JSON.stringify(value, (key, item: unknown) => {
+      if (key === "_id" && item === "Option") return undefined;
+      return item;
+    }),
+  ) as unknown;
+
 const dynamicFixtures = new Map<string, unknown>();
+dynamicFixtures.set(
+  "contract-shapes/server__getProcessDiagnostics-success.json",
+  stripEffectOptionIds(
+    serializeWireFixture({
+      _tag: "Exit",
+      requestId,
+      exit: {
+        _tag: "Success",
+        value: compileUnknownEncoder(ServerProcessDiagnosticsResult)(fixtureProcessDiagnostics),
+      },
+    } satisfies RpcMessage.ResponseExitEncoded),
+  ),
+);
+dynamicFixtures.set(
+  "contract-shapes/server__getProcessResourceHistory-success.json",
+  stripEffectOptionIds(
+    serializeWireFixture({
+      _tag: "Exit",
+      requestId,
+      exit: {
+        _tag: "Success",
+        value: compileUnknownEncoder(ServerProcessResourceHistoryResult)(fixtureProcessHistory),
+      },
+    } satisfies RpcMessage.ResponseExitEncoded),
+  ),
+);
+dynamicFixtures.set(
+  "contract-shapes/server__signalProcess-request.json",
+  serializeWireFixture({
+    _tag: "Request",
+    id: requestId,
+    tag: "server.signalProcess",
+    payload: compileUnknownEncoder(ServerSignalProcessInput)(fixtureSignalProcessInput),
+    headers: [],
+  } satisfies RpcMessage.RequestEncoded),
+);
 const schemaFingerprints: Record<string, string> = {};
 const streamShapeFixtures: Array<string> = [];
 const typedFailureFixtures: Array<string> = [];

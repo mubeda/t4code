@@ -14,6 +14,23 @@ use tempfile::TempDir;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
+#[cfg(windows)]
+const WINDOWS_STDIN_FIXTURE_ROLE: &str = "T4CODE_PROCESS_RUNNER_STDIN_ROLE";
+#[cfg(windows)]
+const WINDOWS_STDIN_ROOT_READY: &str = "T4CODE_PROCESS_RUNNER_STDIN_ROOT_READY";
+#[cfg(windows)]
+const WINDOWS_STDIN_CHILD_READY: &str = "T4CODE_PROCESS_RUNNER_STDIN_CHILD_READY";
+#[cfg(windows)]
+const WINDOWS_STDIN_GRANDCHILD_READY: &str = "T4CODE_PROCESS_RUNNER_STDIN_GRANDCHILD_READY";
+#[cfg(windows)]
+const WINDOWS_STDIN_ROOT_SURVIVED: &str = "T4CODE_PROCESS_RUNNER_STDIN_ROOT_SURVIVED";
+#[cfg(windows)]
+const WINDOWS_STDIN_CHILD_SURVIVED: &str = "T4CODE_PROCESS_RUNNER_STDIN_CHILD_SURVIVED";
+#[cfg(windows)]
+const WINDOWS_STDIN_GRANDCHILD_SURVIVED: &str = "T4CODE_PROCESS_RUNNER_STDIN_GRANDCHILD_SURVIVED";
+#[cfg(windows)]
+const WINDOWS_STDIN_RELEASE: &str = "T4CODE_PROCESS_RUNNER_STDIN_RELEASE";
+
 #[test]
 fn process_run_input_builders_preserve_defaults_and_apply_overrides() {
     let input = ProcessRunInput::new("demo-command", ["alpha", "beta"]);
@@ -327,8 +344,10 @@ async fn process_runner_cancels_in_flight_requests_and_cleans_up_children() {
     let script = write_process_tree_script(temp.path());
     let parent_ready_path = temp.path().join("parent.ready");
     let child_ready_path = temp.path().join("child.ready");
+    let grandchild_ready_path = temp.path().join("grandchild.ready");
     let parent_survived_path = temp.path().join("parent.survived");
     let child_survived_path = temp.path().join("child.survived");
+    let grandchild_survived_path = temp.path().join("grandchild.survived");
     let release_path = temp.path().join("release");
 
     let cancellation = CancellationToken::new();
@@ -339,8 +358,10 @@ async fn process_runner_cancels_in_flight_requests_and_cleans_up_children() {
             &[
                 parent_ready_path.to_string_lossy().as_ref(),
                 child_ready_path.to_string_lossy().as_ref(),
+                grandchild_ready_path.to_string_lossy().as_ref(),
                 parent_survived_path.to_string_lossy().as_ref(),
                 child_survived_path.to_string_lossy().as_ref(),
+                grandchild_survived_path.to_string_lossy().as_ref(),
                 release_path.to_string_lossy().as_ref(),
             ],
         );
@@ -353,6 +374,7 @@ async fn process_runner_cancels_in_flight_requests_and_cleans_up_children() {
 
     wait_for_file(&parent_ready_path).await;
     wait_for_file(&child_ready_path).await;
+    wait_for_file(&grandchild_ready_path).await;
 
     cancellation.cancel();
 
@@ -363,8 +385,11 @@ async fn process_runner_cancels_in_flight_requests_and_cleans_up_children() {
     assert!(error.is_cancelled());
     assert_cleanup_sentinels_remain_absent(
         &release_path,
-        &parent_survived_path,
-        &child_survived_path,
+        &[
+            &parent_survived_path,
+            &child_survived_path,
+            &grandchild_survived_path,
+        ],
     )
     .await;
 }
@@ -375,8 +400,10 @@ async fn process_runner_times_out_and_cleans_up_children() {
     let script = write_process_tree_script(temp.path());
     let parent_ready_path = temp.path().join("parent-timeout.ready");
     let child_ready_path = temp.path().join("child-timeout.ready");
+    let grandchild_ready_path = temp.path().join("grandchild-timeout.ready");
     let parent_survived_path = temp.path().join("parent-timeout.survived");
     let child_survived_path = temp.path().join("child-timeout.survived");
+    let grandchild_survived_path = temp.path().join("grandchild-timeout.survived");
     let release_path = temp.path().join("timeout.release");
 
     let mut input = script_input(
@@ -384,8 +411,10 @@ async fn process_runner_times_out_and_cleans_up_children() {
         &[
             parent_ready_path.to_string_lossy().as_ref(),
             child_ready_path.to_string_lossy().as_ref(),
+            grandchild_ready_path.to_string_lossy().as_ref(),
             parent_survived_path.to_string_lossy().as_ref(),
             child_survived_path.to_string_lossy().as_ref(),
+            grandchild_survived_path.to_string_lossy().as_ref(),
             release_path.to_string_lossy().as_ref(),
         ],
     );
@@ -394,6 +423,7 @@ async fn process_runner_times_out_and_cleans_up_children() {
     let task = tokio::spawn(async move { ProcessRunner.run(input).await });
     wait_for_file(&parent_ready_path).await;
     wait_for_file(&child_ready_path).await;
+    wait_for_file(&grandchild_ready_path).await;
 
     let error = task
         .await
@@ -405,8 +435,225 @@ async fn process_runner_times_out_and_cleans_up_children() {
     }
     assert_cleanup_sentinels_remain_absent(
         &release_path,
-        &parent_survived_path,
-        &child_survived_path,
+        &[
+            &parent_survived_path,
+            &child_survived_path,
+            &grandchild_survived_path,
+        ],
+    )
+    .await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn process_runner_cleans_up_tree_after_broken_stdin() {
+    let temp = TempDir::new().expect("temporary directory");
+    let script = write_broken_stdin_tree_script(temp.path());
+    let parent_ready_path = temp.path().join("stdin-parent.ready");
+    let child_ready_path = temp.path().join("stdin-child.ready");
+    let grandchild_ready_path = temp.path().join("stdin-grandchild.ready");
+    let parent_survived_path = temp.path().join("stdin-parent.survived");
+    let child_survived_path = temp.path().join("stdin-child.survived");
+    let grandchild_survived_path = temp.path().join("stdin-grandchild.survived");
+    let release_path = temp.path().join("stdin.release");
+
+    let mut input = script_input(
+        &script,
+        &[
+            parent_ready_path.to_string_lossy().as_ref(),
+            child_ready_path.to_string_lossy().as_ref(),
+            grandchild_ready_path.to_string_lossy().as_ref(),
+            parent_survived_path.to_string_lossy().as_ref(),
+            child_survived_path.to_string_lossy().as_ref(),
+            grandchild_survived_path.to_string_lossy().as_ref(),
+            release_path.to_string_lossy().as_ref(),
+        ],
+    );
+    input.stdin = Some("x".repeat(8 * 1024 * 1024));
+
+    let task = tokio::spawn(async move { ProcessRunner.run(input).await });
+    wait_for_file(&parent_ready_path).await;
+    wait_for_file(&child_ready_path).await;
+    wait_for_file(&grandchild_ready_path).await;
+
+    let error = task
+        .await
+        .expect("join broken-stdin task")
+        .expect_err("closed stdin should fail");
+    assert!(matches!(error, ProcessError::Stdin(_)));
+    assert_cleanup_sentinels_remain_absent(
+        &release_path,
+        &[
+            &parent_survived_path,
+            &child_survived_path,
+            &grandchild_survived_path,
+        ],
+    )
+    .await;
+}
+
+#[cfg(windows)]
+#[test]
+fn process_runner_windows_broken_stdin_fixture() {
+    let Some(role) = std::env::var_os(WINDOWS_STDIN_FIXTURE_ROLE) else {
+        return;
+    };
+    let (ready, survived) = match role.to_string_lossy().as_ref() {
+        "root" => {
+            spawn_windows_stdin_fixture_role("child");
+            wait_for_windows_stdin_fixture_path(WINDOWS_STDIN_CHILD_READY);
+            wait_for_windows_stdin_fixture_path(WINDOWS_STDIN_GRANDCHILD_READY);
+            (WINDOWS_STDIN_ROOT_READY, WINDOWS_STDIN_ROOT_SURVIVED)
+        }
+        "child" => {
+            spawn_windows_stdin_fixture_role("grandchild");
+            wait_for_windows_stdin_fixture_path(WINDOWS_STDIN_GRANDCHILD_READY);
+            (WINDOWS_STDIN_CHILD_READY, WINDOWS_STDIN_CHILD_SURVIVED)
+        }
+        "grandchild" => (
+            WINDOWS_STDIN_GRANDCHILD_READY,
+            WINDOWS_STDIN_GRANDCHILD_SURVIVED,
+        ),
+        other => panic!("unknown Windows stdin fixture role: {other}"),
+    };
+    fs::write(
+        std::env::var_os(ready).expect("Windows stdin fixture ready path"),
+        "ready",
+    )
+    .expect("write Windows stdin fixture ready");
+    if role == "root" {
+        // SAFETY: the standard-input handle belongs to this disposable fixture
+        // process. Closing it is the injected failure under test.
+        let stdin = unsafe {
+            windows_sys::Win32::System::Console::GetStdHandle(
+                windows_sys::Win32::System::Console::STD_INPUT_HANDLE,
+            )
+        };
+        assert!(!stdin.is_null(), "fixture stdin handle should exist");
+        // SAFETY: the fixture closes its standard-input handle exactly once.
+        assert_ne!(
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(stdin) },
+            0,
+            "fixture stdin handle should close"
+        );
+    }
+    let release = PathBuf::from(
+        std::env::var_os(WINDOWS_STDIN_RELEASE).expect("Windows stdin fixture release path"),
+    );
+    while !release.is_file() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    fs::write(
+        std::env::var_os(survived).expect("Windows stdin fixture survived path"),
+        "survived",
+    )
+    .expect("write Windows stdin fixture survived");
+    loop {
+        std::thread::park();
+    }
+}
+
+#[cfg(windows)]
+fn spawn_windows_stdin_fixture_role(role: &str) {
+    std::process::Command::new(std::env::current_exe().expect("current test executable"))
+        .args([
+            "--exact",
+            "process_runner_windows_broken_stdin_fixture",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(WINDOWS_STDIN_FIXTURE_ROLE, role)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn Windows stdin fixture role");
+}
+
+#[cfg(windows)]
+fn wait_for_windows_stdin_fixture_path(key: &str) {
+    let path = PathBuf::from(
+        std::env::var_os(key)
+            .unwrap_or_else(|| panic!("missing Windows stdin fixture path: {key}")),
+    );
+    for _ in 0..1_000 {
+        if path.is_file() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("timed out waiting for {}", path.display());
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn process_runner_cleans_up_windows_tree_after_broken_stdin() {
+    let temp = TempDir::new().expect("Windows stdin fixture directory");
+    let root_ready = temp.path().join("root.ready");
+    let child_ready = temp.path().join("child.ready");
+    let grandchild_ready = temp.path().join("grandchild.ready");
+    let root_survived = temp.path().join("root.survived");
+    let child_survived = temp.path().join("child.survived");
+    let grandchild_survived = temp.path().join("grandchild.survived");
+    let release = temp.path().join("release");
+    let mut environment = std::env::vars().collect::<BTreeMap<_, _>>();
+    environment.extend([
+        (WINDOWS_STDIN_FIXTURE_ROLE.to_string(), "root".to_string()),
+        (
+            WINDOWS_STDIN_ROOT_READY.to_string(),
+            root_ready.to_string_lossy().into_owned(),
+        ),
+        (
+            WINDOWS_STDIN_CHILD_READY.to_string(),
+            child_ready.to_string_lossy().into_owned(),
+        ),
+        (
+            WINDOWS_STDIN_GRANDCHILD_READY.to_string(),
+            grandchild_ready.to_string_lossy().into_owned(),
+        ),
+        (
+            WINDOWS_STDIN_ROOT_SURVIVED.to_string(),
+            root_survived.to_string_lossy().into_owned(),
+        ),
+        (
+            WINDOWS_STDIN_CHILD_SURVIVED.to_string(),
+            child_survived.to_string_lossy().into_owned(),
+        ),
+        (
+            WINDOWS_STDIN_GRANDCHILD_SURVIVED.to_string(),
+            grandchild_survived.to_string_lossy().into_owned(),
+        ),
+        (
+            WINDOWS_STDIN_RELEASE.to_string(),
+            release.to_string_lossy().into_owned(),
+        ),
+    ]);
+    let mut input = ProcessRunInput::new(
+        std::env::current_exe()
+            .expect("current test executable")
+            .to_string_lossy()
+            .into_owned(),
+        [
+            "--exact",
+            "process_runner_windows_broken_stdin_fixture",
+            "--nocapture",
+            "--test-threads=1",
+        ],
+    );
+    input.env = Some(environment);
+    input.stdin = Some("x".repeat(8 * 1024 * 1024));
+
+    let task = tokio::spawn(async move { ProcessRunner.run(input).await });
+    wait_for_file(&root_ready).await;
+    let error = tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .expect("broken-stdin runner should finish")
+        .expect("join Windows broken-stdin runner")
+        .expect_err("closed stdin should fail");
+    assert!(matches!(error, ProcessError::Stdin(_)));
+    assert_cleanup_sentinels_remain_absent(
+        &release,
+        &[&root_survived, &child_survived, &grandchild_survived],
     )
     .await;
 }
@@ -579,14 +826,20 @@ fn write_process_tree_script(directory: &Path) -> PathBuf {
 param(
     [string]$parentReadyPath,
     [string]$childReadyPath,
+    [string]$grandchildReadyPath,
     [string]$parentSurvivedPath,
     [string]$childSurvivedPath,
+    [string]$grandchildSurvivedPath,
     [string]$releasePath
 )
 $env:T4CODE_PROCESS_RUNNER_CHILD_READY = $childReadyPath
+$env:T4CODE_PROCESS_RUNNER_GRANDCHILD_READY = $grandchildReadyPath
 $env:T4CODE_PROCESS_RUNNER_CHILD_SURVIVED = $childSurvivedPath
+$env:T4CODE_PROCESS_RUNNER_GRANDCHILD_SURVIVED = $grandchildSurvivedPath
 $env:T4CODE_PROCESS_RUNNER_RELEASE = $releasePath
-$childCommand = 'Set-Content -LiteralPath $env:T4CODE_PROCESS_RUNNER_CHILD_READY -Value ready -NoNewline; while (-not (Test-Path -LiteralPath $env:T4CODE_PROCESS_RUNNER_RELEASE)) {{ Start-Sleep -Milliseconds 25 }}; Set-Content -LiteralPath $env:T4CODE_PROCESS_RUNNER_CHILD_SURVIVED -Value survived -NoNewline; Start-Sleep -Seconds 30'
+$grandchildCommand = 'Set-Content -LiteralPath $env:T4CODE_PROCESS_RUNNER_GRANDCHILD_READY -Value ready -NoNewline; while (-not (Test-Path -LiteralPath $env:T4CODE_PROCESS_RUNNER_RELEASE)) {{ Start-Sleep -Milliseconds 25 }}; Set-Content -LiteralPath $env:T4CODE_PROCESS_RUNNER_GRANDCHILD_SURVIVED -Value survived -NoNewline; Start-Sleep -Seconds 30'
+$childCommand = '$grandchild = Start-Process -FilePath ''{}'' -ArgumentList @(''-NoProfile'', ''-NonInteractive'', ''-Command'', $env:T4CODE_PROCESS_RUNNER_GRANDCHILD_COMMAND) -PassThru -WindowStyle Hidden; Set-Content -LiteralPath $env:T4CODE_PROCESS_RUNNER_CHILD_READY -Value ready -NoNewline; while (-not (Test-Path -LiteralPath $env:T4CODE_PROCESS_RUNNER_RELEASE)) {{ Start-Sleep -Milliseconds 25 }}; Set-Content -LiteralPath $env:T4CODE_PROCESS_RUNNER_CHILD_SURVIVED -Value survived -NoNewline; Start-Sleep -Seconds 30'
+$env:T4CODE_PROCESS_RUNNER_GRANDCHILD_COMMAND = $grandchildCommand
 $child = Start-Process -FilePath '{}' -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', $childCommand) -PassThru -WindowStyle Hidden
 Set-Content -LiteralPath $parentReadyPath -Value ready -NoNewline
 while (-not (Test-Path -LiteralPath $releasePath)) {{
@@ -597,6 +850,7 @@ while ($true) {{
     Start-Sleep -Milliseconds 100
 }}
 "#,
+        escape_powershell_single_quoted(platform_interpreter().to_string_lossy().as_ref()),
         escape_powershell_single_quoted(platform_interpreter().to_string_lossy().as_ref())
     );
     write_script(directory, "process-tree", &windows, "")
@@ -604,12 +858,43 @@ while ($true) {{
 
 #[cfg(unix)]
 fn write_process_tree_script(directory: &Path) -> PathBuf {
-    let unix = r#"parent_ready_path=$1
+    let grandchild = write_script(
+        directory,
+        "process-tree-grandchild",
+        "",
+        r#"printf ready > "$1"
+while [ ! -f "$3" ]; do
+    sleep 0.05
+done
+printf survived > "$2"
+sleep 30
+"#,
+    );
+    let child = write_script(
+        directory,
+        "process-tree-child",
+        "",
+        &format!(
+            r#"sh '{}' "$3" "$4" "$5" </dev/null &
+printf ready > "$1"
+while [ ! -f "$5" ]; do
+    sleep 0.05
+done
+printf survived > "$2"
+sleep 30
+"#,
+            grandchild.display()
+        ),
+    );
+    let unix = format!(
+        r#"parent_ready_path=$1
 child_ready_path=$2
-parent_survived_path=$3
-child_survived_path=$4
-release_path=$5
-sh -c 'printf ready > "$1"; while [ ! -f "$2" ]; do sleep 0.05; done; printf survived > "$3"; sleep 30' sh "$child_ready_path" "$release_path" "$child_survived_path" &
+grandchild_ready_path=$3
+parent_survived_path=$4
+child_survived_path=$5
+grandchild_survived_path=$6
+release_path=$7
+sh '{}' "$child_ready_path" "$child_survived_path" "$grandchild_ready_path" "$grandchild_survived_path" "$release_path" </dev/null &
 printf ready > "$parent_ready_path"
 while [ ! -f "$release_path" ]; do
     sleep 0.05
@@ -618,8 +903,27 @@ printf survived > "$parent_survived_path"
 while true; do
     sleep 0.1
 done
-"#;
-    write_script(directory, "process-tree", "", unix)
+"#,
+        child.display()
+    );
+    write_script(directory, "process-tree", "", &unix)
+}
+
+#[cfg(unix)]
+fn write_broken_stdin_tree_script(directory: &Path) -> PathBuf {
+    let process_tree = write_process_tree_script(directory);
+    let unix = format!(
+        r#"sh '{}' "$@" </dev/null &
+tree_pid=$!
+while [ ! -f "$1" ] || [ ! -f "$2" ] || [ ! -f "$3" ]; do
+    sleep 0.01
+done
+exec 0<&-
+wait "$tree_pid"
+"#,
+        process_tree.display()
+    );
+    write_script(directory, "broken-stdin-tree", "", &unix)
 }
 
 #[cfg(windows)]
@@ -694,19 +998,16 @@ async fn wait_for_file(path: &Path) {
     panic!("timed out waiting for {}", path.display());
 }
 
-async fn assert_cleanup_sentinels_remain_absent(release: &Path, parent: &Path, child: &Path) {
+async fn assert_cleanup_sentinels_remain_absent(release: &Path, sentinels: &[&Path]) {
     fs::write(release, "release").expect("write survivor release file");
     sleep(Duration::from_secs(1)).await;
-    assert!(
-        !parent.exists(),
-        "parent remained alive long enough to write {}",
-        parent.display()
-    );
-    assert!(
-        !child.exists(),
-        "child remained alive long enough to write {}",
-        child.display()
-    );
+    for sentinel in sentinels {
+        assert!(
+            !sentinel.exists(),
+            "process remained alive long enough to write {}",
+            sentinel.display()
+        );
+    }
 }
 
 fn parse_environment(stdout: &str) -> BTreeMap<String, String> {

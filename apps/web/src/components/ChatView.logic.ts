@@ -55,6 +55,23 @@ export function buildLocalDraftThread(
   };
 }
 
+export function resolveCenterPanelLaunchContext(input: {
+  readonly hasServerThread: boolean;
+  readonly envMode: DraftThreadEnvMode;
+  readonly projectCwd: string | null;
+  readonly worktreePath: string | null;
+}): { readonly cwd: string; readonly worktreePath: string | null } | null {
+  if (!input.hasServerThread || input.projectCwd === null) {
+    return null;
+  }
+  if (input.envMode === "worktree") {
+    return input.worktreePath === null
+      ? null
+      : { cwd: input.worktreePath, worktreePath: input.worktreePath };
+  }
+  return { cwd: input.projectCwd, worktreePath: null };
+}
+
 export function shouldWriteThreadErrorToCurrentServerThread(input: {
   serverThread:
     | {

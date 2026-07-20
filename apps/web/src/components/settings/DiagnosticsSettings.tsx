@@ -1,7 +1,5 @@
 import {
   AlertTriangleIcon,
-  ChevronDownIcon,
-  ChevronRightIcon,
   CopyIcon,
   DownloadIcon,
   FolderOpenIcon,
@@ -13,12 +11,8 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t4code/client-runtime/state/runtime";
-import { useCallback, useMemo, useState, type ReactNode } from "react";
-import type {
-  ServerProcessDiagnosticsEntry,
-  ServerProcessResourceHistorySummary,
-  ServerProcessSignal,
-} from "@t4code/contracts";
+import { useCallback, useState, type ReactNode } from "react";
+import type { ServerProcessSignal } from "@t4code/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
@@ -47,6 +41,8 @@ import {
   useRelativeTimeTick,
 } from "./settingsLayout";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { ResourceDiagnosticsSections } from "./ResourceDiagnosticsSections";
+import { RESOURCE_HISTORY_WINDOWS } from "./resourceDiagnosticsPresentation";
 
 const NUMBER_FORMAT = new Intl.NumberFormat();
 
@@ -57,18 +53,6 @@ function formatCount(value: number): string {
 function formatDuration(value: number): string {
   if (value < 1_000) return `${Math.round(value)} ms`;
   return `${(value / 1_000).toFixed(value >= 10_000 ? 1 : 2)} s`;
-}
-
-function formatBytes(value: number): string {
-  if (value < 1024) return `${value} B`;
-  const units = ["KB", "MB", "GB"] as const;
-  let unitIndex = -1;
-  let next = value;
-  do {
-    next /= 1024;
-    unitIndex += 1;
-  } while (next >= 1024 && unitIndex < units.length - 1);
-  return `${next.toFixed(next >= 10 ? 1 : 2)} ${units[unitIndex]}`;
 }
 
 function formatRelative(value: DateTime.Utc | null): string {
@@ -296,478 +280,6 @@ function TraceIdCell({ traceId }: { traceId: string }) {
   );
 }
 
-function formatProcessName(command: string): string {
-  const firstToken = command.trim().split(/\s+/)[0];
-  if (!firstToken) return command;
-  const normalized = firstToken.replace(/^['"]|['"]$/g, "");
-  const segments = normalized.split(/[\\/]/).filter(Boolean);
-  return segments.at(-1) ?? normalized;
-}
-
-function formatProcessType(process: ServerProcessDiagnosticsEntry): string {
-  if (process.depth > 0) return "Subprocess";
-  if (/\b(codex|claude|opencode|cursor)\b/i.test(process.command)) return "Agent";
-  return "Process";
-}
-
-function ProcessNameCell({
-  process,
-  isExpanded,
-  onToggle,
-}: {
-  process: ServerProcessDiagnosticsEntry;
-  isExpanded: boolean;
-  onToggle: (pid: number) => void;
-}) {
-  const name = formatProcessName(process.command);
-  const hasChildren = process.childPids.length > 0;
-  const ChevronIcon = isExpanded ? ChevronDownIcon : ChevronRightIcon;
-
-  return (
-    <div
-      className="grid min-w-0 grid-cols-[1.25rem_0.375rem_minmax(0,1fr)] items-center gap-2"
-      style={{ paddingLeft: `${Math.min(process.depth, 6) * 10}px` }}
-    >
-      {hasChildren ? (
-        <button
-          type="button"
-          className="inline-flex size-5 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-          aria-label={isExpanded ? `Collapse ${name}` : `Expand ${name}`}
-          onClick={() => onToggle(process.pid)}
-        >
-          <ChevronIcon className="size-3.5" />
-        </button>
-      ) : (
-        <span className="size-5 shrink-0" aria-hidden="true" />
-      )}
-      <span className="size-1.5 shrink-0 rounded-full bg-emerald-500/80" />
-      <Tooltip>
-        <TooltipTrigger
-          render={<span className="min-w-0 truncate font-medium text-foreground">{name}</span>}
-        />
-        <TooltipPopup
-          side="top"
-          className="max-w-[min(440px,calc(100vw-2rem))] whitespace-normal break-words text-left font-mono text-[11px] leading-relaxed text-wrap"
-        >
-          {process.command}
-        </TooltipPopup>
-      </Tooltip>
-    </div>
-  );
-}
-
-function ProcessSignalActions({
-  process,
-  isSignaling,
-  supportsInterrupt,
-  onSignal,
-}: {
-  process: ServerProcessDiagnosticsEntry;
-  isSignaling: boolean;
-  supportsInterrupt: boolean;
-  onSignal: (pid: number, signal: ServerProcessSignal) => void;
-}) {
-  return (
-    <div className="flex items-center justify-end gap-1.5">
-      {supportsInterrupt ? (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <button
-                type="button"
-                disabled={isSignaling}
-                className="text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50"
-                onClick={() => onSignal(process.pid, "SIGINT")}
-              >
-                INT
-              </button>
-            }
-          />
-          <TooltipPopup side="top">Send SIGINT</TooltipPopup>
-        </Tooltip>
-      ) : null}
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <button
-              type="button"
-              disabled={isSignaling}
-              className="text-[11px] font-medium text-destructive underline-offset-2 hover:underline disabled:pointer-events-none disabled:opacity-50"
-              onClick={() => onSignal(process.pid, "SIGKILL")}
-            >
-              KILL
-            </button>
-          }
-        />
-        <TooltipPopup side="top">Send SIGKILL</TooltipPopup>
-      </Tooltip>
-    </div>
-  );
-}
-
-function ProcessDiagnosticsTable({
-  processes,
-  signalingPid,
-  supportsInterrupt,
-  onSignal,
-  emptyLabel,
-}: {
-  processes: ReadonlyArray<ServerProcessDiagnosticsEntry>;
-  signalingPid: number | null;
-  supportsInterrupt: boolean;
-  onSignal: (pid: number, signal: ServerProcessSignal) => void;
-  emptyLabel?: string;
-}) {
-  const [collapsedPids, setCollapsedPids] = useState<ReadonlySet<number>>(() => new Set());
-  const visibleProcesses = useMemo(() => {
-    const visible: ServerProcessDiagnosticsEntry[] = [];
-    let hiddenChildDepth: number | null = null;
-
-    for (const process of processes) {
-      if (hiddenChildDepth !== null) {
-        if (process.depth > hiddenChildDepth) continue;
-        hiddenChildDepth = null;
-      }
-
-      visible.push(process);
-      if (collapsedPids.has(process.pid)) {
-        hiddenChildDepth = process.depth;
-      }
-    }
-
-    return visible;
-  }, [collapsedPids, processes]);
-
-  const toggleProcess = useCallback((pid: number) => {
-    setCollapsedPids((previous) => {
-      const next = new Set(previous);
-      if (next.has(pid)) {
-        next.delete(pid);
-      } else {
-        next.add(pid);
-      }
-      return next;
-    });
-  }, []);
-
-  return (
-    <ScrollArea
-      chainVerticalScroll
-      scrollFade
-      hideScrollbars
-      className="max-h-[min(64vh,44rem)] w-full max-w-full rounded-none border-t border-border/60"
-    >
-      <table className="w-full min-w-[1040px] table-fixed text-left text-xs">
-        <colgroup>
-          <col className="w-[24%]" />
-          <col className="w-[8%]" />
-          <col className="w-[10%]" />
-          <col className="w-[33%]" />
-          <col className="w-[8%]" />
-          <col className="w-[11%]" />
-          <col className="w-[6%]" />
-        </colgroup>
-        <thead className="sticky top-0 z-10 border-b border-border/60 bg-card text-[11px] uppercase tracking-[0.08em] text-muted-foreground/70">
-          <tr>
-            <th className="px-4 py-2 font-semibold sm:pl-5">Name</th>
-            <th className="px-3 py-2 text-right font-semibold">CPU</th>
-            <th className="px-3 py-2 text-right font-semibold">Memory</th>
-            <th className="px-3 py-2 font-semibold">Command</th>
-            <th className="px-3 py-2 text-right font-semibold">PID</th>
-            <th className="px-3 py-2 font-semibold">Type</th>
-            <th className="p-2 text-right font-semibold sm:pr-4">Kill</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-border/50">
-          {visibleProcesses.length === 0 ? (
-            <tr>
-              <td colSpan={7} className="px-4 py-4 text-xs text-muted-foreground sm:px-5">
-                {emptyLabel ?? "No live descendant processes found."}
-              </td>
-            </tr>
-          ) : null}
-          {visibleProcesses.map((process) => (
-            <tr key={process.pid} className="hover:bg-muted/20">
-              <td className="px-4 py-2 align-middle sm:pl-5">
-                <ProcessNameCell
-                  process={process}
-                  isExpanded={!collapsedPids.has(process.pid)}
-                  onToggle={toggleProcess}
-                />
-              </td>
-              <td className="px-3 py-2 text-right align-middle font-mono tabular-nums">
-                {process.cpuPercent.toFixed(1)}%
-              </td>
-              <td className="px-3 py-2 text-right align-middle font-mono tabular-nums">
-                {formatBytes(process.rssBytes)}
-              </td>
-              <td className="px-3 py-2 align-middle text-muted-foreground">
-                <Tooltip>
-                  <TooltipTrigger
-                    render={<span className="block truncate">{process.command}</span>}
-                  />
-                  <TooltipPopup
-                    side="top"
-                    className="max-w-[min(440px,calc(100vw-2rem))] whitespace-normal break-words text-left font-mono text-[11px] leading-relaxed text-wrap"
-                  >
-                    {process.command}
-                  </TooltipPopup>
-                </Tooltip>
-              </td>
-              <td className="px-3 py-2 text-right align-middle font-mono tabular-nums text-muted-foreground">
-                {process.pid}
-              </td>
-              <td className="truncate px-3 py-2 align-middle text-muted-foreground">
-                {formatProcessType(process)}
-              </td>
-              <td className="p-2 align-middle sm:pr-4">
-                <ProcessSignalActions
-                  process={process}
-                  isSignaling={signalingPid === process.pid}
-                  supportsInterrupt={supportsInterrupt}
-                  onSignal={onSignal}
-                />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </ScrollArea>
-  );
-}
-
-const RESOURCE_HISTORY_WINDOWS = [
-  { label: "5m", windowMs: 5 * 60_000, bucketMs: 30_000 },
-  { label: "15m", windowMs: 15 * 60_000, bucketMs: 60_000 },
-  { label: "30m", windowMs: 30 * 60_000, bucketMs: 2 * 60_000 },
-  { label: "1h", windowMs: 60 * 60_000, bucketMs: 5 * 60_000 },
-] as const;
-
-function formatCpuTime(seconds: number): string {
-  if (seconds < 60) return `${seconds.toFixed(seconds >= 10 ? 1 : 2)}s`;
-  const minutes = seconds / 60;
-  if (minutes < 60) return `${minutes.toFixed(minutes >= 10 ? 1 : 2)}m`;
-  return `${(minutes / 60).toFixed(2)}h`;
-}
-
-function formatShortProcessName(command: string): string {
-  const name = formatProcessName(command);
-  return name.length > 42 ? `${name.slice(0, 39)}...` : name;
-}
-
-function ResourceHistoryProcessNameCell({
-  process,
-  visualDepth,
-}: {
-  process: ServerProcessResourceHistorySummary;
-  visualDepth: number;
-}) {
-  const name = formatShortProcessName(process.command);
-
-  return (
-    <div
-      className="grid min-w-0 grid-cols-[1.25rem_0.375rem_minmax(0,1fr)] items-center gap-2"
-      style={{ paddingLeft: `${Math.min(visualDepth, 6) * 10}px` }}
-      aria-label={`${process.isServerRoot ? "Root" : "Child"} process ${name}`}
-    >
-      <span className="size-5 shrink-0" aria-hidden="true" />
-      <span
-        className={cn(
-          "size-1.5 shrink-0 rounded-full",
-          process.isServerRoot ? "bg-amber-500/90" : "bg-emerald-500/80",
-        )}
-      />
-      <Tooltip>
-        <TooltipTrigger
-          render={<span className="min-w-0 truncate font-medium text-foreground">{name}</span>}
-        />
-        <TooltipPopup
-          side="top"
-          className="max-w-[min(440px,calc(100vw-2rem))] whitespace-normal break-words text-left font-mono text-[11px] leading-relaxed text-wrap"
-        >
-          {process.command}
-        </TooltipPopup>
-      </Tooltip>
-    </div>
-  );
-}
-
-function ProcessResourceHistoryChart({
-  buckets,
-}: {
-  buckets: ReadonlyArray<{
-    readonly startedAt: DateTime.Utc;
-    readonly avgCpuPercent: number;
-    readonly maxCpuPercent: number;
-  }>;
-}) {
-  const maxCpuPercent = Math.max(1, ...buckets.map((bucket) => bucket.maxCpuPercent));
-
-  return (
-    <div className="border-t border-border/60 px-4 py-3 sm:px-5">
-      <div className="flex h-28 items-end gap-1 overflow-hidden rounded-sm bg-muted/10 p-2">
-        {buckets.map((bucket) => {
-          const peakHeight = Math.max(2, (bucket.maxCpuPercent / maxCpuPercent) * 100);
-          const averageHeight = Math.max(2, (bucket.avgCpuPercent / maxCpuPercent) * 100);
-          return (
-            <Tooltip key={DateTime.formatIso(bucket.startedAt)}>
-              <TooltipTrigger
-                render={
-                  <div className="flex h-full min-w-1 flex-1 items-end">
-                    <div
-                      className="relative h-full w-full"
-                      aria-label={`Average CPU ${bucket.avgCpuPercent.toFixed(1)}%, peak CPU ${bucket.maxCpuPercent.toFixed(1)}%`}
-                    >
-                      <div
-                        className="absolute inset-x-0 bottom-0 rounded-t-sm bg-foreground/15 transition-colors"
-                        style={{ height: `${peakHeight}%` }}
-                      />
-                      <div
-                        className="absolute inset-x-0 bottom-0 rounded-t-sm bg-foreground/60 transition-colors"
-                        style={{ height: `${averageHeight}%` }}
-                      />
-                    </div>
-                  </div>
-                }
-              />
-              <TooltipPopup side="top">
-                Avg {bucket.avgCpuPercent.toFixed(1)}%, peak {bucket.maxCpuPercent.toFixed(1)}%
-              </TooltipPopup>
-            </Tooltip>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function ResourceHistoryWindowSelector({
-  selectedWindowMs,
-  onSelect,
-}: {
-  selectedWindowMs: number;
-  onSelect: (windowMs: number) => void;
-}) {
-  return (
-    <div className="flex items-center rounded-md border border-border/60 p-0.5">
-      {RESOURCE_HISTORY_WINDOWS.map((option) => (
-        <button
-          key={option.windowMs}
-          type="button"
-          className={cn(
-            "h-6 rounded-sm px-2 text-[11px] font-medium text-muted-foreground hover:text-foreground",
-            selectedWindowMs === option.windowMs && "bg-muted text-foreground",
-          )}
-          onClick={() => onSelect(option.windowMs)}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function ProcessResourceHistoryTable({
-  processes,
-  emptyLabel,
-}: {
-  processes: ReadonlyArray<ServerProcessResourceHistorySummary>;
-  emptyLabel: string;
-}) {
-  const shallowestChildDepth = processes.reduce<number | null>((minDepth, process) => {
-    if (process.isServerRoot) return minDepth;
-    return minDepth === null ? process.depth : Math.min(minDepth, process.depth);
-  }, null);
-
-  return (
-    <ScrollArea
-      chainVerticalScroll
-      scrollFade
-      hideScrollbars
-      className="max-h-[min(64vh,44rem)] w-full max-w-full border-t border-border/60"
-    >
-      <table className="w-full min-w-[980px] table-fixed text-left text-xs">
-        <colgroup>
-          <col className="w-[24%]" />
-          <col className="w-[10%]" />
-          <col className="w-[10%]" />
-          <col className="w-[10%]" />
-          <col className="w-[10%]" />
-          <col className="w-[10%]" />
-          <col className="w-[16%]" />
-          <col className="w-[10%]" />
-        </colgroup>
-        <thead className="sticky top-0 z-10 border-b border-border/60 bg-card text-[11px] uppercase tracking-[0.08em] text-muted-foreground/70">
-          <tr>
-            <th className="px-4 py-2 font-semibold sm:pl-5">Process</th>
-            <th className="px-3 py-2 text-right font-semibold">CPU Time</th>
-            <th className="px-3 py-2 text-right font-semibold">Current</th>
-            <th className="px-3 py-2 text-right font-semibold">Average</th>
-            <th className="px-3 py-2 text-right font-semibold">Peak</th>
-            <th className="px-3 py-2 text-right font-semibold">Max Mem</th>
-            <th className="px-3 py-2 font-semibold">Command</th>
-            <th className="px-3 py-2 text-right font-semibold sm:pr-5">PID</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-border/50">
-          {processes.length === 0 ? (
-            <tr>
-              <td colSpan={8} className="px-4 py-4 text-xs text-muted-foreground sm:px-5">
-                {emptyLabel}
-              </td>
-            </tr>
-          ) : null}
-          {processes.map((process) => (
-            <tr key={process.processKey} className="hover:bg-muted/20">
-              <td className="px-4 py-2 align-middle sm:pl-5">
-                <ResourceHistoryProcessNameCell
-                  process={process}
-                  visualDepth={
-                    process.isServerRoot || shallowestChildDepth === null
-                      ? 0
-                      : Math.max(1, process.depth - shallowestChildDepth + 1)
-                  }
-                />
-              </td>
-              <td className="px-3 py-2 text-right align-middle font-mono tabular-nums">
-                {formatCpuTime(process.cpuSecondsApprox)}
-              </td>
-              <td className="px-3 py-2 text-right align-middle font-mono tabular-nums">
-                {process.currentCpuPercent.toFixed(1)}%
-              </td>
-              <td className="px-3 py-2 text-right align-middle font-mono tabular-nums">
-                {process.avgCpuPercent.toFixed(1)}%
-              </td>
-              <td className="px-3 py-2 text-right align-middle font-mono tabular-nums">
-                {process.maxCpuPercent.toFixed(1)}%
-              </td>
-              <td className="px-3 py-2 text-right align-middle font-mono tabular-nums">
-                {formatBytes(process.maxRssBytes)}
-              </td>
-              <td className="px-3 py-2 align-middle text-muted-foreground">
-                <Tooltip>
-                  <TooltipTrigger
-                    render={<span className="block truncate">{process.command}</span>}
-                  />
-                  <TooltipPopup
-                    side="top"
-                    className="max-w-[min(440px,calc(100vw-2rem))] whitespace-normal break-words text-left font-mono text-[11px] leading-relaxed text-wrap"
-                  >
-                    {process.command}
-                  </TooltipPopup>
-                </Tooltip>
-              </td>
-              <td className="px-3 py-2 text-right align-middle font-mono tabular-nums text-muted-foreground sm:pr-5">
-                {process.pid}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </ScrollArea>
-  );
-}
-
 function DiagnosticsLastChecked({ checkedAt }: { checkedAt: DateTime.Utc | null }) {
   useRelativeTimeTick();
   const relative = checkedAt ? formatRelativeTime(DateTime.formatIso(checkedAt)) : null;
@@ -906,9 +418,8 @@ export function DiagnosticsSettingsPanel() {
   }, [availableEditors, environmentId, observability?.logsDirectoryPath, openInEditor]);
 
   const isInitialLoading = isPending && data === null;
-  const isProcessInitialLoading = isProcessPending && processData === null;
   const signalProcess = useCallback(
-    (pid: number, signal: ServerProcessSignal) => {
+    (pid: number, processKey: string, signal: ServerProcessSignal) => {
       if (
         signal === "SIGKILL" &&
         !window.confirm(`Send SIGKILL to process ${pid}? This cannot be handled by the process.`)
@@ -923,7 +434,7 @@ export function DiagnosticsSettingsPanel() {
       void (async () => {
         const result = await signalServerProcess({
           environmentId,
-          input: { pid, signal },
+          input: { pid, processKey, signal },
         });
         setSignalingPid(null);
         if (result._tag !== "Success") {
@@ -963,8 +474,6 @@ export function DiagnosticsSettingsPanel() {
     [environmentId, refreshProcesses, signalServerProcess],
   );
 
-  const processDiagnosticsError = processData ? Option.getOrNull(processData.error) : null;
-  const processResourceError = resourceData ? Option.getOrNull(resourceData.error) : null;
   const traceDiagnosticsError = data ? Option.getOrNull(data.error) : null;
   const traceDiagnosticsPartialFailure = data
     ? Option.getOrElse(data.partialFailure, () => false)
@@ -1003,9 +512,14 @@ export function DiagnosticsSettingsPanel() {
 
   return (
     <SettingsPageContainer className="pb-12">
-      <SettingsSection
-        title="Live Processes"
-        headerAction={
+      <ResourceDiagnosticsSections
+        processData={processData}
+        processError={processError}
+        isProcessPending={isProcessPending}
+        signalingPid={signalingPid}
+        supportsInterrupt={supportsInterrupt}
+        onSignal={signalProcess}
+        liveHeaderAction={
           <div className="flex items-center gap-1.5">
             <DiagnosticsLastChecked checkedAt={processData?.readAt ?? null} />
             <DiagnosticsRefreshButton
@@ -1015,119 +529,22 @@ export function DiagnosticsSettingsPanel() {
             />
           </div>
         }
-      >
-        <StatsGrid>
-          <StatBlock
-            label="Child Processes"
-            value={processData ? formatCount(processData.processCount) : "..."}
-          />
-          <StatBlock
-            label="CPU"
-            value={processData ? `${processData.totalCpuPercent.toFixed(1)}%` : "..."}
-            tooltip="Total CPU across live child processes of the current server process. The desktop shell and other parent processes are not included."
-          />
-          <StatBlock
-            label="Memory"
-            value={processData ? formatBytes(processData.totalRssBytes) : "..."}
-            tooltip="Total resident memory across live child processes of the current server process. The desktop shell and other parent processes are not included."
-          />
-          <StatBlock
-            label="Server PID"
-            value={processData ? String(processData.serverPid) : "..."}
-          />
-        </StatsGrid>
-        {processDiagnosticsError || processError ? (
-          <div className="space-y-2 border-t border-border/60 px-4 py-3 text-xs text-muted-foreground sm:px-5">
-            {processDiagnosticsError ? (
-              <div className="flex items-start gap-2 text-destructive">
-                <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0" />
-                <span>{processDiagnosticsError.message}</span>
-              </div>
-            ) : null}
-            {processError ? (
-              <div className="flex items-start gap-2 text-destructive">
-                <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0" />
-                <span>{processError}</span>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-        <ProcessDiagnosticsTable
-          processes={processData?.processes ?? []}
-          signalingPid={signalingPid}
-          supportsInterrupt={supportsInterrupt}
-          onSignal={signalProcess}
-          emptyLabel={
-            isProcessInitialLoading
-              ? "Loading live processes..."
-              : "No live descendant processes found."
-          }
-        />
-      </SettingsSection>
-
-      <SettingsSection
-        title="Resource History"
-        headerAction={
-          <div className="flex items-center gap-1.5">
-            <ResourceHistoryWindowSelector
-              selectedWindowMs={resourceWindowMs}
-              onSelect={setResourceWindowMs}
-            />
+        resourceData={resourceData}
+        resourceError={resourceError}
+        isResourcePending={isResourcePending}
+        resourceWindowMs={resourceWindowMs}
+        onSelectResourceWindow={setResourceWindowMs}
+        historyHeaderAction={
+          <>
             <DiagnosticsLastChecked checkedAt={resourceData?.readAt ?? null} />
             <DiagnosticsRefreshButton
               isPending={isResourcePending}
               label="Refresh resource history"
               onClick={refreshResources}
             />
-          </div>
+          </>
         }
-      >
-        <StatsGrid>
-          <StatBlock
-            label="CPU Time"
-            value={resourceData ? formatCpuTime(resourceData.totalCpuSecondsApprox) : "..."}
-            tooltip="Approximate active CPU time for the T4 server root process and its descendants during the selected window. It grows only while sampled processes use CPU and older samples leave as the window moves."
-          />
-          <StatBlock
-            label="Samples"
-            value={resourceData ? formatCount(resourceData.retainedSampleCount) : "..."}
-            tooltip="In-memory process samples retained by the server. This resets when the server restarts."
-          />
-          <StatBlock
-            label="Interval"
-            value={resourceData ? formatDuration(resourceData.sampleIntervalMs) : "..."}
-          />
-          <StatBlock
-            label="Processes"
-            value={resourceData ? formatCount(resourceData.topProcesses.length) : "..."}
-          />
-        </StatsGrid>
-        {processResourceError || resourceError ? (
-          <div className="space-y-2 border-t border-border/60 px-4 py-3 text-xs text-muted-foreground sm:px-5">
-            {processResourceError ? (
-              <div className="flex items-start gap-2 text-destructive">
-                <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0" />
-                <span>{processResourceError.message}</span>
-              </div>
-            ) : null}
-            {resourceError ? (
-              <div className="flex items-start gap-2 text-destructive">
-                <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0" />
-                <span>{resourceError}</span>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-        <ProcessResourceHistoryChart buckets={resourceData?.buckets ?? []} />
-        <ProcessResourceHistoryTable
-          processes={resourceData?.topProcesses ?? []}
-          emptyLabel={
-            isResourcePending && resourceData === null
-              ? "Collecting process resource samples..."
-              : "No process resource samples found for this window."
-          }
-        />
-      </SettingsSection>
+      />
 
       <SettingsSection
         title="Trace Diagnostics"

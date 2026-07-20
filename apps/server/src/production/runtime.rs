@@ -18,7 +18,10 @@ use crate::{
     auth::AuthService,
     crypto::sha256_hex,
     diagnostic_bundle::DiagnosticBundleService,
-    diagnostics::{DiagnosticsMonitor, NativeProcessSampler, TraceDiagnosticsStore},
+    diagnostics::{
+        DesktopUiProcessObserver, DiagnosticsMonitor, NativeProcessSampler, NativeResourceSampler,
+        ProcessAttributionRegistry, TraceDiagnosticsStore, bound_diagnostic_string,
+    },
     git::GitRepository,
     mcp::preview_automation::PreviewAutomationBroker,
     observability::BrowserTraceCollector,
@@ -54,7 +57,7 @@ use crate::{
         ReviewSource,
     },
     rpc::RpcRegistry,
-    terminal::TerminalManager,
+    terminal::{PortablePtyBackend, TerminalManager, TerminalManagerOptions},
     workspace::{AssetContextResolver, WorkspaceRpc, WorkspaceRpcDependencies, WorkspaceService},
 };
 
@@ -70,6 +73,7 @@ pub struct ProductionRuntime {
     trace_collector: BrowserTraceCollector,
     trace_diagnostics: TraceDiagnosticsStore,
     diagnostic_bundle: DiagnosticBundleService,
+    _resource_sampler: Arc<NativeResourceSampler>,
 }
 
 impl ProductionRuntime {
@@ -82,6 +86,7 @@ impl ProductionRuntime {
         database: Database,
         auth: AuthService,
         asset_secret: Vec<u8>,
+        ui_process_observer: Arc<dyn DesktopUiProcessObserver>,
     ) -> Result<Self, String> {
         let orchestration = OrchestrationEngine::start(
             database,
@@ -96,7 +101,18 @@ impl ProductionRuntime {
         reconcile_abandoned_provider_sessions(&orchestration)
             .await
             .map_err(|error| error.to_string())?;
-        let terminal_manager = TerminalManager::default();
+        let process_attribution = ProcessAttributionRegistry::new();
+        let process_sampler = Arc::new(NativeProcessSampler::default());
+        let resource_sampler = Arc::new(NativeResourceSampler::new(
+            process_sampler.clone(),
+            process_attribution.clone(),
+            ui_process_observer,
+        ));
+        let terminal_manager = TerminalManager::with_process_attribution(
+            Arc::new(PortablePtyBackend),
+            TerminalManagerOptions::default(),
+            process_attribution.clone(),
+        );
         let state_paths = StatePaths::from_config(config);
         let diagnostic_bundle = DiagnosticBundleService::new(&state_paths.logs_dir);
         let operational_logs = OperationalLogs::start(
@@ -107,8 +123,9 @@ impl ProductionRuntime {
         .await?;
         let provider_runtime = Arc::new(ProviderRuntimeSupervisor::start_with_operational_log(
             orchestration.clone(),
-            Arc::new(NativeProviderDriverFactory::new(
+            Arc::new(NativeProviderDriverFactory::with_process_attribution(
                 state_paths.attachments_dir.clone(),
+                process_attribution.clone(),
             )),
             SupervisorOptions::default(),
             operational_logs.provider(),
@@ -131,9 +148,8 @@ impl ProductionRuntime {
         let workspace_preview =
             WorkspacePreviewRpcServices::new(workspace, preview, preview_automation.clone());
 
-        let process_sampler = Arc::new(NativeProcessSampler::default());
         let process_monitor = Arc::new(DiagnosticsMonitor::new(
-            process_sampler.clone(),
+            resource_sampler.clone(),
             Duration::from_secs(2),
         ));
         let provider_usage =
@@ -152,6 +168,7 @@ impl ProductionRuntime {
         let terminal_services = ServerTerminalServices::new(
             terminal_manager,
             process_sampler,
+            resource_sampler.clone(),
             process_monitor,
             provider_usage,
             relay,
@@ -195,6 +212,7 @@ impl ProductionRuntime {
             trace_collector,
             trace_diagnostics,
             diagnostic_bundle,
+            _resource_sampler: resource_sampler,
         })
     }
 
@@ -309,7 +327,10 @@ impl ProductionRuntime {
 
     pub async fn shutdown(&self) {
         self.orchestration_effects.shutdown().await;
-        let _ = self.provider_runtime.shutdown().await;
+        if let Err(error) = self.provider_runtime.shutdown().await {
+            let error = bound_diagnostic_string(&error.to_string(), 160);
+            tracing::warn!(%error, "provider process-owner cleanup completed with failures");
+        }
         self.terminal_services.shutdown().await;
         if let Err(error) = self.operational_logs.shutdown().await {
             tracing::warn!(%error, "failed to shut down operational logs cleanly");
@@ -745,9 +766,23 @@ mod tests {
             .await
             .expect("database should migrate");
         let auth = AuthService::new(&config, vec![7_u8; 32]);
-        let runtime = ProductionRuntime::start(&config, database, auth, vec![9_u8; 32])
-            .await
-            .expect("production runtime should start");
+        let runtime = ProductionRuntime::start(
+            &config,
+            database,
+            auth,
+            vec![9_u8; 32],
+            Arc::new(crate::diagnostics::NotApplicableUiProcessObserver),
+        )
+        .await
+        .expect("production runtime should start");
+        let resources =
+            crate::diagnostics::ResourceSampler::sample(runtime._resource_sampler.as_ref())
+                .await
+                .expect("attributed resources should sample");
+        assert_eq!(
+            resources.ui_coverage.status,
+            crate::diagnostics::UiCoverageStatus::NotApplicable
+        );
 
         let snapshot = runtime
             .json(JsonOperation::OrchestrationSnapshot, None, route_context())

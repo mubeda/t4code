@@ -19,16 +19,18 @@ export interface DependencyInventoryEntry {
   readonly dependencyKind?: "registry" | "path";
 }
 
+export interface DependencyInventorySummary {
+  readonly javascriptDirect: number;
+  readonly javascriptLedger: number;
+  readonly rustRegistry: number;
+  readonly rustPath: number;
+  readonly actions: number;
+  readonly toolchains: number;
+}
+
 export interface DependencyInventory {
   readonly entries: ReadonlyArray<DependencyInventoryEntry>;
-  readonly summary: {
-    readonly javascriptDirect: number;
-    readonly javascriptLedger: number;
-    readonly rustRegistry: number;
-    readonly rustPath: number;
-    readonly actions: number;
-    readonly toolchains: number;
-  };
+  readonly summary: DependencyInventorySummary;
 }
 
 export interface DependencyLedgerEntry {
@@ -48,6 +50,7 @@ export interface DependencyLedgerEntry {
 export interface DependencyLedger {
   readonly schemaVersion: number;
   readonly auditDate: string;
+  readonly inventorySummary: DependencyInventorySummary;
   readonly baseline: {
     readonly originMainSha: string;
     readonly implementationHead: string;
@@ -74,6 +77,14 @@ const DEPENDENCY_SECTIONS = [
   "optionalDependencies",
   "peerDependencies",
 ] as const;
+const INVENTORY_SUMMARY_FIELDS = [
+  "javascriptDirect",
+  "javascriptLedger",
+  "rustRegistry",
+  "rustPath",
+  "actions",
+  "toolchains",
+] as const satisfies ReadonlyArray<keyof DependencyInventorySummary>;
 const CARGO_DEPENDENCY_TABLES = new Set(["dependencies", "dev-dependencies", "build-dependencies"]);
 export const DEPENDENCY_AUDIT_IGNORED_DIRECTORIES: ReadonlySet<string> = new Set([
   ".git",
@@ -514,6 +525,16 @@ export function validateDependencyLedger(
   ledger: DependencyLedger,
 ): Array<string> {
   const errors: Array<string> = [];
+  for (const field of INVENTORY_SUMMARY_FIELDS) {
+    const declared = ledger.inventorySummary?.[field];
+    const discovered = inventory.summary[field];
+    if (declared !== discovered) {
+      errors.push(
+        `inventory summary ${field} does not match discovered count: ${String(declared)} != ${discovered}`,
+      );
+    }
+  }
+
   const ledgerByKey = new Map<string, DependencyLedgerEntry>();
   for (const entry of ledger.dependencies) {
     if (ledgerByKey.has(entry.key)) errors.push(`duplicate ledger key ${entry.key}`);

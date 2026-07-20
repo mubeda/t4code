@@ -74,6 +74,9 @@ version = "3.27.0"
 [workspace.lints.rust]
 warnings = "deny"
 
+[patch.crates-io]
+portable-pty = { path = "third_party/portable-pty" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

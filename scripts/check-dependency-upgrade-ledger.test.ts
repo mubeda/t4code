@@ -145,6 +145,7 @@ function completeLedger(inventory: DependencyInventory): DependencyLedger {
   return {
     schemaVersion: 1,
     auditDate: "2026-07-17",
+    inventorySummary: { ...inventory.summary },
     baseline: {
       originMainSha: "a".repeat(40),
       implementationHead: "b".repeat(40),
@@ -307,6 +308,24 @@ describe("dependency upgrade ledger discovery", () => {
 });
 
 describe("dependency upgrade ledger validation", () => {
+  it("rejects every stale authoritative inventory summary field", () => {
+    const inventory = discoverDependencyInventory(createRepositoryFixture());
+    const summaryFields = Object.keys(inventory.summary) as Array<keyof typeof inventory.summary>;
+
+    for (const field of summaryFields) {
+      const ledger = Object.assign(completeLedger(inventory), {
+        inventorySummary: {
+          ...inventory.summary,
+          [field]: inventory.summary[field] + 1,
+        },
+      });
+
+      expect(validateDependencyLedger(inventory, ledger)).toContain(
+        `inventory summary ${field} does not match discovered count: ${inventory.summary[field] + 1} != ${inventory.summary[field]}`,
+      );
+    }
+  });
+
   it("rejects duplicate keys and missing required fields", () => {
     const inventory = discoverDependencyInventory(createRepositoryFixture());
     const ledger = completeLedger(inventory);
@@ -378,9 +397,6 @@ describe("dependency upgrade ledger validation", () => {
     ) as DependencyLedger;
 
     expect(validateDependencyLedger(inventory, ledger)).toEqual([]);
-    expect(inventory.summary.javascriptDirect).toBe(79);
-    expect(inventory.summary.rustRegistry).toBe(51);
-    expect(inventory.summary.rustPath).toBe(1);
-    expect(inventory.summary.actions).toBe(9);
+    expect(ledger.inventorySummary).toEqual(inventory.summary);
   });
 });

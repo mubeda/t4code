@@ -8,7 +8,8 @@ use std::{
 
 use t4code_task8_harness::{
     diagnostics::{
-        DiagnosticsMonitor, ProcessRow, ProcessSampler, SamplingError, build_descendant_entries,
+        AttributedProcessSnapshot, DiagnosticsMonitor, ProcessAttributionTotals, ProcessIdentity,
+        ProcessRow, ResourceSampler, SamplingError, UiCoverage, build_descendant_entries,
     },
     process::{
         OutputMode, Platform, ProcessRunInput, ProcessRunner, TimeoutBehavior,
@@ -31,7 +32,7 @@ async fn portable_pty_supports_input_output_resize_and_shutdown() {
         ("sh", Vec::new(), "echo T4CODE_PTY_READY\n")
     };
     let input = PtySpawnInput {
-        shell: shell.to_string(),
+        executable: shell.to_string(),
         args,
         cwd: std::env::current_dir().expect("cwd"),
         cols: 80,
@@ -116,9 +117,14 @@ fn windows_shell_resolution_prefers_powershell_then_absolute_fallbacks() {
             "cmd.exe",
         ]
     );
-    assert_eq!(candidates[1].args, ["-NoLogo"]);
-    assert_eq!(candidates[2].args, ["-NoLogo"]);
-    assert_eq!(candidates[3].args, ["-NoLogo"]);
+    for candidate in &candidates[1..=3] {
+        assert_eq!(
+            &candidate.args[..3],
+            ["-NoLogo", "-NoExit", "-EncodedCommand"]
+        );
+        assert_eq!(candidate.args.len(), 4);
+        assert!(!candidate.args[3].is_empty());
+    }
 }
 
 #[tokio::test]
@@ -449,6 +455,7 @@ async fn terminal_attach_restart_if_not_running_uses_fresh_session_snapshot() {
             rows: Some(24),
             env: BTreeMap::new(),
             restart_if_not_running: true,
+            command: None,
         })
         .await
         .expect("attach should restart stopped terminal");
@@ -556,33 +563,43 @@ struct CountingSampler {
     calls: Mutex<usize>,
 }
 
-impl ProcessSampler for CountingSampler {
+impl ResourceSampler for CountingSampler {
     fn sample(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<ProcessRow>, SamplingError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<AttributedProcessSnapshot, SamplingError>> + Send + '_>>
+    {
         Box::pin(async move {
             *self.calls.lock().expect("calls lock") += 1;
-            Ok(vec![ProcessRow::fixture(std::process::id(), 0, "server")])
+            Ok(AttributedProcessSnapshot {
+                sampled_at_ms: 1_000,
+                server_identity: ProcessIdentity {
+                    pid: std::process::id(),
+                    started_at: 1,
+                },
+                native_rows: Arc::from([]),
+                processes: Vec::new(),
+                totals: ProcessAttributionTotals::default(),
+                ui_coverage: UiCoverage::default(),
+            })
         })
     }
 }
 
 #[tokio::test(start_paused = true)]
-async fn diagnostics_sampling_only_runs_for_live_consumers() {
+async fn diagnostics_sampling_is_on_demand_and_has_no_background_timer() {
     let sampler = Arc::new(CountingSampler::default());
     let monitor = DiagnosticsMonitor::new(sampler.clone(), Duration::from_secs(5));
     tokio::time::advance(Duration::from_secs(20)).await;
     assert_eq!(*sampler.calls.lock().expect("calls lock"), 0);
 
-    let lease = monitor.subscribe();
-    tokio::task::yield_now().await;
+    let current = monitor.sample_current().await;
+    assert!(current.snapshot.is_some());
     assert_eq!(*sampler.calls.lock().expect("calls lock"), 1);
+    let history = monitor.read_history(60_000, 1_000).await;
+    assert_eq!(history.retained_sample_count, 1);
+    assert_eq!(*sampler.calls.lock().expect("calls lock"), 1);
+
     tokio::time::advance(Duration::from_secs(5)).await;
     tokio::task::yield_now().await;
-    assert_eq!(*sampler.calls.lock().expect("calls lock"), 2);
-
-    drop(lease);
-    tokio::time::advance(Duration::from_secs(20)).await;
-    assert_eq!(*sampler.calls.lock().expect("calls lock"), 2);
-    monitor.shutdown();
+    assert_eq!(*sampler.calls.lock().expect("calls lock"), 1);
 }

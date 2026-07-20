@@ -313,26 +313,82 @@ export type ServerTraceDiagnosticsResult = typeof ServerTraceDiagnosticsResult.T
 export const ServerProcessSignal = Schema.Literals(["SIGINT", "SIGKILL"]);
 export type ServerProcessSignal = typeof ServerProcessSignal.Type;
 
+export const ServerProcessAttributionScope = Schema.Literals(["core", "external"]);
+export type ServerProcessAttributionScope = typeof ServerProcessAttributionScope.Type;
+
+export const ServerProcessAttributionKind = Schema.Literals([
+  "server",
+  "ui",
+  "provider",
+  "terminal",
+  "helper",
+  "unknown",
+]);
+export type ServerProcessAttributionKind = typeof ServerProcessAttributionKind.Type;
+
+export const ServerProcessAttributionConfidence = Schema.Literals([
+  "exact",
+  "inherited",
+  "fallback",
+]);
+export type ServerProcessAttributionConfidence = typeof ServerProcessAttributionConfidence.Type;
+
+export const ServerProcessResourceTotals = Schema.Struct({
+  cpuPercent: Schema.Finite,
+  rssBytes: NonNegativeInt,
+  processCount: NonNegativeInt,
+});
+export type ServerProcessResourceTotals = typeof ServerProcessResourceTotals.Type;
+
+export const ServerProcessAttributionTotals = Schema.Struct({
+  combined: ServerProcessResourceTotals,
+  core: ServerProcessResourceTotals,
+  external: ServerProcessResourceTotals,
+});
+export type ServerProcessAttributionTotals = typeof ServerProcessAttributionTotals.Type;
+
+export const ServerProcessUiCoverage = Schema.Struct({
+  status: Schema.Literals(["available", "partial", "unavailable", "notApplicable"]),
+  message: Schema.Option(TrimmedNonEmptyString),
+});
+export type ServerProcessUiCoverage = typeof ServerProcessUiCoverage.Type;
+
+const ServerProcessCpuSplitMetric = Schema.Struct({
+  combined: Schema.Number,
+  core: Schema.Number,
+  external: Schema.Number,
+});
+
+const ServerProcessCountSplitMetric = Schema.Struct({
+  combined: NonNegativeInt,
+  core: NonNegativeInt,
+  external: NonNegativeInt,
+});
+
 export const ServerProcessDiagnosticsEntry = Schema.Struct({
   pid: PositiveInt,
   ppid: NonNegativeInt,
   pgid: Schema.Option(Schema.Int),
   status: TrimmedNonEmptyString,
-  cpuPercent: Schema.Number,
+  cpuPercent: Schema.Finite,
   rssBytes: NonNegativeInt,
   elapsed: TrimmedNonEmptyString,
   command: TrimmedNonEmptyString,
   depth: NonNegativeInt,
   childPids: Schema.Array(PositiveInt),
+  processKey: TrimmedNonEmptyString,
+  scope: ServerProcessAttributionScope,
+  kind: ServerProcessAttributionKind,
+  label: TrimmedNonEmptyString,
+  confidence: ServerProcessAttributionConfidence,
 });
 export type ServerProcessDiagnosticsEntry = typeof ServerProcessDiagnosticsEntry.Type;
 
 export const ServerProcessDiagnosticsResult = Schema.Struct({
   serverPid: PositiveInt,
   readAt: Schema.DateTimeUtc,
-  processCount: NonNegativeInt,
-  totalRssBytes: NonNegativeInt,
-  totalCpuPercent: Schema.Number,
+  totals: ServerProcessAttributionTotals,
+  uiCoverage: ServerProcessUiCoverage,
   processes: Schema.Array(ServerProcessDiagnosticsEntry),
   error: Schema.Option(
     Schema.Struct({
@@ -351,10 +407,15 @@ export type ServerProcessResourceHistoryInput = typeof ServerProcessResourceHist
 export const ServerProcessResourceHistoryBucket = Schema.Struct({
   startedAt: Schema.DateTimeUtc,
   endedAt: Schema.DateTimeUtc,
-  avgCpuPercent: Schema.Number,
-  maxCpuPercent: Schema.Number,
-  maxRssBytes: NonNegativeInt,
-  maxProcessCount: NonNegativeInt,
+  cpuPercent: Schema.Struct({
+    average: ServerProcessCpuSplitMetric,
+    peak: ServerProcessCpuSplitMetric,
+  }),
+  rssBytes: Schema.Struct({
+    average: ServerProcessCountSplitMetric,
+    peak: ServerProcessCountSplitMetric,
+  }),
+  maxProcessCount: ServerProcessCountSplitMetric,
 });
 export type ServerProcessResourceHistoryBucket = typeof ServerProcessResourceHistoryBucket.Type;
 
@@ -364,7 +425,10 @@ export const ServerProcessResourceHistorySummary = Schema.Struct({
   ppid: NonNegativeInt,
   command: TrimmedNonEmptyString,
   depth: NonNegativeInt,
-  isServerRoot: Schema.Boolean,
+  scope: ServerProcessAttributionScope,
+  kind: ServerProcessAttributionKind,
+  label: TrimmedNonEmptyString,
+  confidence: ServerProcessAttributionConfidence,
   firstSeenAt: Schema.DateTimeUtc,
   lastSeenAt: Schema.DateTimeUtc,
   currentCpuPercent: Schema.Number,
@@ -393,9 +457,10 @@ export const ServerProcessResourceHistoryResult = Schema.Struct({
   bucketMs: NonNegativeInt,
   sampleIntervalMs: NonNegativeInt,
   retainedSampleCount: NonNegativeInt,
-  totalCpuSecondsApprox: Schema.Number,
+  cpuSecondsApprox: ServerProcessCpuSplitMetric,
+  uiCoverage: ServerProcessUiCoverage,
   buckets: Schema.Array(ServerProcessResourceHistoryBucket),
-  topProcesses: Schema.Array(ServerProcessResourceHistorySummary),
+  processes: Schema.Array(ServerProcessResourceHistorySummary),
   error: Schema.Option(
     Schema.Struct({
       failureTag: ServerProcessResourceHistoryFailureTag,
@@ -407,6 +472,7 @@ export type ServerProcessResourceHistoryResult = typeof ServerProcessResourceHis
 
 export const ServerSignalProcessInput = Schema.Struct({
   pid: PositiveInt,
+  processKey: TrimmedNonEmptyString,
   signal: ServerProcessSignal,
 });
 export type ServerSignalProcessInput = typeof ServerSignalProcessInput.Type;

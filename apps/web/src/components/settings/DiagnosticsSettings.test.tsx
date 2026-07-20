@@ -311,8 +311,9 @@ const LONG_CAUSE =
 function entry(
   overrides: Partial<ServerProcessDiagnosticsEntry> = {},
 ): ServerProcessDiagnosticsEntry {
+  const pid = overrides.pid ?? 100;
   return {
-    pid: 100,
+    pid,
     ppid: 1,
     pgid: Option.none(),
     status: "running",
@@ -322,6 +323,11 @@ function entry(
     command: "/usr/bin/codex run",
     depth: 0,
     childPids: [],
+    processKey: `${pid}:${pid}`,
+    scope: "external",
+    kind: "provider",
+    label: "Codex",
+    confidence: "exact",
     ...overrides,
   } as ServerProcessDiagnosticsEntry;
 }
@@ -332,15 +338,45 @@ function processData(
   return {
     serverPid: 4242,
     readAt: T0,
-    processCount: 3,
-    totalRssBytes: 5_000_000,
-    totalCpuPercent: 12.5,
+    totals: {
+      combined: { processCount: 4, rssBytes: 6_000_000, cpuPercent: 12.5 },
+      core: { processCount: 1, rssBytes: 1_000_000, cpuPercent: 2.5 },
+      external: { processCount: 3, rssBytes: 5_000_000, cpuPercent: 10 },
+    },
+    uiCoverage: { status: "notApplicable", message: Option.none() },
     processes: [
-      entry({ pid: 100, depth: 0, childPids: [101], command: "/usr/bin/codex run" }),
-      entry({ pid: 101, depth: 1, childPids: [], command: "node worker.js", rssBytes: 500 }),
+      entry({
+        pid: 4242,
+        ppid: 1,
+        processKey: "4242:4242",
+        depth: 0,
+        childPids: [100, 102],
+        command: "t4code server",
+        scope: "core",
+        kind: "server",
+        label: "T4Code Server",
+        cpuPercent: 2.5,
+        rssBytes: 1_000_000,
+      }),
+      entry({
+        pid: 100,
+        ppid: 4242,
+        depth: 1,
+        childPids: [101],
+        command: "/usr/bin/codex run",
+      }),
+      entry({
+        pid: 101,
+        ppid: 100,
+        depth: 2,
+        childPids: [],
+        command: "node worker.js",
+        rssBytes: 500,
+      }),
       entry({
         pid: 102,
-        depth: 0,
+        ppid: 4242,
+        depth: 1,
         childPids: [],
         command: "'C:\\Program Files\\tool.exe' --flag",
         cpuPercent: 0,
@@ -361,7 +397,10 @@ function summary(
     ppid: 1,
     command: "t4 server",
     depth: 0,
-    isServerRoot: true,
+    scope: "core",
+    kind: "server",
+    label: "T4Code Server",
+    confidence: "exact",
     firstSeenAt: T0,
     lastSeenAt: T0,
     currentCpuPercent: 2,
@@ -384,31 +423,44 @@ function resourceData(
     bucketMs: 60_000,
     sampleIntervalMs: 2_000,
     retainedSampleCount: 120,
-    totalCpuSecondsApprox: 75,
+    cpuSecondsApprox: { combined: 75, core: 65, external: 10 },
+    uiCoverage: { status: "notApplicable", message: Option.none() },
     buckets: [
       {
         startedAt: T0,
         endedAt: T1,
-        avgCpuPercent: 10,
-        maxCpuPercent: 40,
-        maxRssBytes: 1000,
-        maxProcessCount: 2,
+        cpuPercent: {
+          average: { combined: 10, core: 6, external: 4 },
+          peak: { combined: 40, core: 25, external: 15 },
+        },
+        rssBytes: {
+          average: { combined: 800, core: 500, external: 300 },
+          peak: { combined: 1000, core: 600, external: 400 },
+        },
+        maxProcessCount: { combined: 2, core: 1, external: 1 },
       },
       {
         startedAt: T1,
         endedAt: T1,
-        avgCpuPercent: 5,
-        maxCpuPercent: 20,
-        maxRssBytes: 800,
-        maxProcessCount: 1,
+        cpuPercent: {
+          average: { combined: 5, core: 3, external: 2 },
+          peak: { combined: 20, core: 12, external: 8 },
+        },
+        rssBytes: {
+          average: { combined: 600, core: 400, external: 200 },
+          peak: { combined: 800, core: 500, external: 300 },
+        },
+        maxProcessCount: { combined: 1, core: 1, external: 0 },
       },
     ],
-    topProcesses: [
-      summary({ processKey: "root", pid: 100, isServerRoot: true, depth: 0, cpuSecondsApprox: 65 }),
+    processes: [
+      summary({ processKey: "root", pid: 100, kind: "server", depth: 0, cpuSecondsApprox: 65 }),
       summary({
         processKey: "child",
         pid: 101,
-        isServerRoot: false,
+        scope: "external",
+        kind: "provider",
+        confidence: "inherited",
         depth: 2,
         command: "node child.js",
         cpuSecondsApprox: 0.5,
@@ -416,7 +468,9 @@ function resourceData(
       summary({
         processKey: "hours",
         pid: 102,
-        isServerRoot: false,
+        scope: "external",
+        kind: "helper",
+        confidence: "inherited",
         depth: 2,
         command: "this-is-a-really-long-process-name-that-clearly-exceeds-forty-two-characters",
         cpuSecondsApprox: 7_200,
@@ -549,11 +603,11 @@ describe("DiagnosticsSettingsPanel rendering", () => {
     expect(markup).toContain("12.5%");
     expect(markup).toContain("MB");
     expect(markup).toContain("4242"); // server pid rendered verbatim
-    // Process name/type formatting.
-    expect(markup).toContain(">codex</span>");
-    expect(markup).toContain("Agent");
-    expect(markup).toContain("Subprocess");
-    expect(markup).toContain("Process");
+    // Attributed process labels.
+    expect(markup).toContain("T4Code Core");
+    expect(markup).toContain("External Tooling");
+    expect(markup).toContain(">Codex</span>");
+    expect(markup).toContain(">Provider</td>");
     expect(markup).toContain("node worker.js");
     // Trace id shortening (ellipsis) for long ids.
     expect(markup).toContain("...");
@@ -567,6 +621,17 @@ describe("DiagnosticsSettingsPanel rendering", () => {
     expect(markup).toContain("span.a");
     expect(markup).toContain("span.log");
     // Expandable long cause offers the show-more affordance.
+    expect(markup).toContain("Show full error");
+  });
+
+  it("keeps trace diagnostics and latest-failure rendering intact", () => {
+    seedAll();
+    const markup = render();
+
+    expect(markup).toContain('data-section-title="Trace Diagnostics"');
+    expect(markup).toContain("span.fail");
+    expect(markup).toContain("span.slow");
+    expect(markup).toContain("span.log");
     expect(markup).toContain("Show full error");
   });
 
@@ -606,14 +671,14 @@ describe("DiagnosticsSettingsPanel rendering", () => {
       refresh: vi.fn(),
     };
     h.resourceQuery = {
-      data: resourceData({ topProcesses: [] }),
+      data: resourceData({ processes: [] }),
       error: null,
       isPending: false,
       refresh: vi.fn(),
     };
     const markup = render();
 
-    expect(markup).toContain("No live descendant processes found.");
+    expect(markup).toContain("No live processes found.");
     expect(markup).toContain("No process resource samples found for this window.");
     expect(markup).toContain("No failed spans found.");
     expect(markup).toContain("No repeated failures found.");
@@ -629,18 +694,14 @@ describe("DiagnosticsSettingsPanel rendering", () => {
     expect(markup).toContain("Copied");
   });
 
-  it("hides a collapsed process subtree when its pid is in the collapsed set", () => {
+  it("renders every attributed live row after the resource section extraction", () => {
     seedAll();
-    // Seed ProcessDiagnosticsTable's collapsedPids with the codex parent (pid 100).
-    h.stateSeeds.push({
-      match: (initial) => initial instanceof Set,
-      value: new Set<number>([100]),
-    });
     const markup = render();
-    // The child worker under the collapsed parent is filtered out of the table.
-    expect(markup).not.toContain("node worker.js");
-    // The sibling root process is still visible.
-    expect(markup).toContain("Process");
+
+    expect(markup).toContain("T4Code Server");
+    expect(markup).toContain("Codex");
+    expect(markup).toContain("node worker.js");
+    expect(markup).toContain("External");
   });
 });
 
@@ -731,9 +792,7 @@ describe("DiagnosticsSettingsPanel process signals", () => {
   function clickSignal(kind: "INT" | "KILL") {
     seedAll();
     render();
-    const button = findTrigger(
-      (props) => props.children === kind && typeof props.onClick === "function",
-    );
+    const button = findButton(`Send SIG${kind === "INT" ? "INT" : "KILL"} to Codex`);
     (button.onClick as () => void)();
   }
 
@@ -741,7 +800,9 @@ describe("DiagnosticsSettingsPanel process signals", () => {
     clickSignal("INT");
     await flush();
     expect(h.signalCalls).toHaveLength(1);
-    expect(h.signalCalls[0]).toMatchObject({ input: { signal: "SIGINT" } });
+    expect(h.signalCalls[0]).toMatchObject({
+      input: { pid: 100, processKey: "100:100", signal: "SIGINT" },
+    });
     expect(h.processQuery.refresh).toHaveBeenCalled();
     expect(h.toasts).toHaveLength(0);
   });
@@ -754,8 +815,12 @@ describe("DiagnosticsSettingsPanel process signals", () => {
     seedAll();
     render();
 
-    expect(h.triggers.some(({ props }) => props.children === "INT")).toBe(false);
-    expect(h.triggers.some(({ props }) => props.children === "KILL")).toBe(true);
+    expect(h.buttons.some(({ props }) => props["aria-label"] === "Send SIGINT to Codex")).toBe(
+      false,
+    );
+    expect(h.buttons.some(({ props }) => props["aria-label"] === "Send SIGKILL to Codex")).toBe(
+      true,
+    );
   });
 
   it("surfaces an info toast when the process already exited (stale descendant)", async () => {
@@ -768,6 +833,21 @@ describe("DiagnosticsSettingsPanel process signals", () => {
     expect(h.toasts).toContainEqual(
       expect.objectContaining({ type: "info", title: "Process already exited" }),
     );
+    expect(h.processQuery.refresh).toHaveBeenCalled();
+  });
+
+  it("refreshes live data when process identity became stale", async () => {
+    h.signalResult = {
+      _tag: "Success",
+      value: {
+        signaled: false,
+        message: Option.some("process 100 no longer has the expected identity"),
+      },
+    };
+    clickSignal("INT");
+    await flush();
+
+    expect(h.processQuery.refresh).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces an error toast when the signal reports an unhandled failure message", async () => {
@@ -803,7 +883,9 @@ describe("DiagnosticsSettingsPanel process signals", () => {
     clickSignal("KILL");
     await flush();
     expect(h.signalCalls).toHaveLength(1);
-    expect(h.signalCalls[0]).toMatchObject({ input: { signal: "SIGKILL" } });
+    expect(h.signalCalls[0]).toMatchObject({
+      input: { pid: 100, processKey: "100:100", signal: "SIGKILL" },
+    });
   });
 
   it("aborts SIGKILL when the confirmation is dismissed", async () => {

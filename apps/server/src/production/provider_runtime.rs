@@ -10,6 +10,10 @@ use std::{
 };
 
 use crate::{
+    diagnostics::{
+        AttributionKind, AttributionScope, NativeProcessSampler, ProcessAttributionRegistry,
+        ProcessRegistration, ProcessRegistrationMetadata, RegistrationSource,
+    },
     orchestration::{
         engine::{
             ActivityInput, OrchestrationCommand, OrchestrationEngine, ProposedPlanInput,
@@ -18,7 +22,12 @@ use crate::{
         load_snapshot,
     },
     persistence::{ProviderSessionRuntime, Repositories},
-    process::configure_supervised_background_command_wrap,
+    process::{
+        Platform, PreparedLaunch, configure_supervised_background_command_wrap,
+        launch_executable_extensions, locate_executable,
+        supervised::{log_cleanup_failures, terminate_and_wait},
+        wrap_launch_program,
+    },
     production::{
         connect_mcp::ConnectMcpService, operational_logs::ProviderOperationalLog,
         orchestration_effects::process_compatible_path,
@@ -61,7 +70,6 @@ pub type BoxRuntimeFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 const DEFAULT_QUEUE_CAPACITY: usize = 32;
 const DEFAULT_EVENT_QUEUE_CAPACITY: usize = 128;
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Prevent host diagnostics settings from turning provider stderr into a high-volume event stream.
 pub(crate) fn sanitize_provider_subprocess_environment(command: &mut tokio::process::Command) {
@@ -72,6 +80,7 @@ pub(crate) fn sanitize_provider_subprocess_environment(command: &mut tokio::proc
 pub struct ProviderLaunchRequest {
     pub thread_id: String,
     pub provider: String,
+    pub provider_label: String,
     pub provider_instance_id: Option<String>,
     pub binary_path: String,
     pub cwd: PathBuf,
@@ -595,6 +604,12 @@ async fn launch_request_for_command(
     Ok(ProviderLaunchRequest {
         thread_id: thread_id.clone(),
         provider: provider.to_owned(),
+        provider_label: instance
+            .and_then(|value| value.display_name.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(provider)
+            .to_owned(),
         provider_instance_id: Some(instance_id),
         binary_path: binary.binary_path.clone(),
         cwd: process_compatible_path(
@@ -1016,7 +1031,17 @@ fn spawn_event_pump(
             tokio::select! {
                 () = cancellation.cancelled() => return,
                 event = driver.next_event() => {
-                    let Some(event) = event else { return; };
+                    let Some(event) = event else {
+                        if let Err(error) = driver.shutdown().await {
+                            tracing::debug!(
+                                %error,
+                                provider = %launch.provider,
+                                thread_id = %launch.thread_id,
+                                "failed to shut down provider after its event stream ended"
+                            );
+                        }
+                        return;
+                    };
                     if let Some(log) = &operational_log {
                         let _ = log.record(&event);
                     }
@@ -1361,13 +1386,23 @@ fn now() -> String {
 #[derive(Clone, Debug)]
 pub struct NativeProviderDriverFactory {
     attachments: AttachmentMaterializer,
+    attribution: ProcessAttributionRegistry,
 }
 
 impl NativeProviderDriverFactory {
     #[must_use]
     pub fn new(attachments_dir: PathBuf) -> Self {
+        Self::with_process_attribution(attachments_dir, ProcessAttributionRegistry::new())
+    }
+
+    #[must_use]
+    pub fn with_process_attribution(
+        attachments_dir: PathBuf,
+        attribution: ProcessAttributionRegistry,
+    ) -> Self {
         Self {
             attachments: AttachmentMaterializer::new(attachments_dir),
+            attribution,
         }
     }
 }
@@ -1379,22 +1414,37 @@ impl ProviderDriverFactory for NativeProviderDriverFactory {
     ) -> BoxRuntimeFuture<'_, Result<Arc<dyn ProviderDriver>, ProviderRuntimeError>> {
         Box::pin(async move {
             match request.provider.as_str() {
-                "codex" => Ok(
-                    Arc::new(CodexDriver::spawn(request, self.attachments.clone()).await?)
-                        as Arc<dyn ProviderDriver>,
-                ),
-                "cursor" => Ok(Arc::new(
-                    CursorDriver::spawn(request, self.attachments.clone()).await?,
+                "codex" => Ok(Arc::new(
+                    CodexDriver::spawn(request, self.attachments.clone(), self.attribution.clone())
+                        .await?,
                 ) as Arc<dyn ProviderDriver>),
-                "grok" => Ok(
-                    Arc::new(GrokDriver::spawn(request, self.attachments.clone()).await?)
-                        as Arc<dyn ProviderDriver>,
-                ),
+                "cursor" => Ok(Arc::new(
+                    CursorDriver::spawn(
+                        request,
+                        self.attachments.clone(),
+                        self.attribution.clone(),
+                    )
+                    .await?,
+                ) as Arc<dyn ProviderDriver>),
+                "grok" => Ok(Arc::new(
+                    GrokDriver::spawn(request, self.attachments.clone(), self.attribution.clone())
+                        .await?,
+                ) as Arc<dyn ProviderDriver>),
                 "opencode" => Ok(Arc::new(
-                    OpenCodeDriver::spawn(request, self.attachments.clone()).await?,
+                    OpenCodeDriver::spawn(
+                        request,
+                        self.attachments.clone(),
+                        self.attribution.clone(),
+                    )
+                    .await?,
                 ) as Arc<dyn ProviderDriver>),
                 "claude" | "claudeAgent" => Ok(Arc::new(
-                    ClaudeDriver::spawn(request, self.attachments.clone()).await?,
+                    ClaudeDriver::spawn(
+                        request,
+                        self.attachments.clone(),
+                        self.attribution.clone(),
+                    )
+                    .await?,
                 ) as Arc<dyn ProviderDriver>),
                 provider => Err(ProviderRuntimeError::UnsupportedProvider {
                     provider: provider.to_owned(),
@@ -1406,10 +1456,50 @@ impl ProviderDriverFactory for NativeProviderDriverFactory {
 
 type SharedChild = Arc<Mutex<Box<dyn ChildWrapper>>>;
 
+#[derive(Debug)]
+struct AttributedChild {
+    inner: Box<dyn ChildWrapper>,
+    registration: Option<ProcessRegistration>,
+}
+
+impl ChildWrapper for AttributedChild {
+    fn inner(&self) -> &dyn ChildWrapper {
+        self.inner.as_ref()
+    }
+
+    fn inner_mut(&mut self) -> &mut dyn ChildWrapper {
+        self.inner.as_mut()
+    }
+
+    fn into_inner(self: Box<Self>) -> Box<dyn ChildWrapper> {
+        let Self { inner, .. } = *self;
+        inner
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        let status = self.inner.try_wait()?;
+        if status.is_some() {
+            self.registration.take();
+        }
+        Ok(status)
+    }
+
+    fn wait(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = std::io::Result<std::process::ExitStatus>> + Send + '_>> {
+        Box::pin(async move {
+            let status = self.inner.wait().await?;
+            self.registration.take();
+            Ok(status)
+        })
+    }
+}
+
 fn spawn_child(
     request: &ProviderLaunchRequest,
     args: &[String],
     pipe_output: bool,
+    attribution: ProcessAttributionRegistry,
 ) -> Result<Box<dyn ChildWrapper>, ProviderRuntimeError> {
     let provider = request.provider.clone();
     let executable = resolve_provider_executable(&request.binary_path).ok_or_else(|| {
@@ -1418,11 +1508,17 @@ fn spawn_child(
             detail: format!("provider executable was not found: {}", request.binary_path),
         }
     })?;
-    let (program, prefix_args) = provider_launch_program(&executable);
+    let launch = prepare_provider_launch(&executable, args).map_err(|detail| {
+        ProviderRuntimeError::Spawn {
+            provider: provider.clone(),
+            detail,
+        }
+    })?;
+    let program = launch.program;
+    let launch_args = launch.args;
     let mut command = CommandWrap::with_new(program, |command| {
         command
-            .args(prefix_args)
-            .args(args)
+            .args(launch_args)
             .current_dir(&request.cwd)
             .stdin(Stdio::piped())
             .stdout(if pipe_output {
@@ -1439,12 +1535,31 @@ fn spawn_child(
         sanitize_provider_subprocess_environment(command);
     });
     configure_supervised_background_command_wrap(&mut command);
-    command
+    let mut inner = command
         .spawn()
         .map_err(|error| ProviderRuntimeError::Spawn {
             provider,
             detail: error.to_string(),
-        })
+        })?;
+    let registration = inner
+        .id()
+        .and_then(|pid| NativeProcessSampler::process_identity(pid).ok())
+        .filter(|_| matches!(inner.try_wait(), Ok(None)))
+        .and_then(|identity| {
+            attribution.register_identity(
+                identity,
+                ProcessRegistrationMetadata {
+                    scope: AttributionScope::External,
+                    kind: AttributionKind::Provider,
+                    label: request.provider_label.clone(),
+                    source: RegistrationSource::Provider,
+                },
+            )
+        });
+    Ok(Box::new(AttributedChild {
+        inner,
+        registration,
+    }))
 }
 
 pub(crate) fn resolve_provider_executable(input: &str) -> Option<PathBuf> {
@@ -1460,80 +1575,26 @@ pub(crate) fn resolve_provider_executable_in_path(
     if path.is_file() {
         return Some(path);
     }
-    if path.components().count() > 1 {
-        return None;
-    }
-    let extensions = provider_executable_extensions();
-    search_path
-        .into_iter()
-        .flat_map(|value| std::env::split_paths(value).collect::<Vec<_>>())
-        .find_map(|directory| {
-            extensions.iter().find_map(|extension| {
-                let candidate = if extension.is_empty() {
-                    directory.join(input)
-                } else {
-                    directory.join(format!("{input}.{extension}"))
-                };
-                candidate.is_file().then_some(candidate)
-            })
-        })
+    let cwd = std::env::current_dir().ok();
+    let extensions = launch_executable_extensions(Platform::current(), None);
+    locate_executable(input, cwd.as_deref(), search_path, &extensions)
 }
 
-#[cfg(windows)]
-const WINDOWS_PROVIDER_EXECUTABLE_EXTENSIONS: &[&str] = &["exe", "com", "cmd", "bat", "ps1"];
-
-#[cfg(windows)]
-fn provider_executable_extensions() -> &'static [&'static str] {
-    WINDOWS_PROVIDER_EXECUTABLE_EXTENSIONS
-}
-
-#[cfg(not(windows))]
-fn provider_executable_extensions() -> &'static [&'static str] {
-    &[""]
-}
-
-pub(crate) fn provider_launch_program(executable: &Path) -> (PathBuf, Vec<String>) {
-    let extension = executable
-        .extension()
-        .and_then(|extension| extension.to_str());
-    if cfg!(windows) && extension.is_some_and(|extension| extension.eq_ignore_ascii_case("ps1")) {
-        return (
-            PathBuf::from("powershell.exe"),
-            vec![
-                "-NoLogo".to_owned(),
-                "-NoProfile".to_owned(),
-                "-NonInteractive".to_owned(),
-                "-ExecutionPolicy".to_owned(),
-                "Bypass".to_owned(),
-                "-File".to_owned(),
-                executable.to_string_lossy().into_owned(),
-            ],
-        );
-    }
-    if cfg!(windows)
-        && extension.is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
-        })
-    {
-        return (
-            std::env::var_os("ComSpec")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("cmd.exe")),
-            vec![
-                "/d".to_owned(),
-                "/s".to_owned(),
-                "/c".to_owned(),
-                executable.to_string_lossy().into_owned(),
-            ],
-        );
-    }
-    (executable.to_path_buf(), Vec::new())
+pub(crate) fn prepare_provider_launch<I, S>(
+    executable: &Path,
+    arguments: I,
+) -> Result<PreparedLaunch, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    Ok(wrap_launch_program(Platform::current(), executable)?.prepare(arguments))
 }
 
 async fn kill_child(child: &SharedChild) {
     let mut child = child.lock().await;
-    let _ = child.start_kill();
-    let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, child.wait()).await;
+    let report = terminate_and_wait(&mut **child).await;
+    log_cleanup_failures("provider process", &report);
 }
 
 fn runtime_mode(value: &str) -> CodexRuntimeMode {
@@ -1554,6 +1615,7 @@ impl CodexDriver {
     async fn spawn(
         mut request: ProviderLaunchRequest,
         attachments: AttachmentMaterializer,
+        attribution: ProcessAttributionRegistry,
     ) -> Result<Self, ProviderRuntimeError> {
         if let Some(layout) = request.codex_home.as_ref() {
             materialize_codex_shadow_home(layout)
@@ -1583,7 +1645,7 @@ impl CodexDriver {
             ]);
         }
         args.push("app-server".to_owned());
-        let mut child = spawn_child(&request, &args, true)?;
+        let mut child = spawn_child(&request, &args, true, attribution)?;
         let stdout = child
             .stdout()
             .take()
@@ -1757,13 +1819,14 @@ impl CursorDriver {
     async fn spawn(
         request: ProviderLaunchRequest,
         attachments: AttachmentMaterializer,
+        attribution: ProcessAttributionRegistry,
     ) -> Result<Self, ProviderRuntimeError> {
         let mut args = Vec::new();
         if let Some(endpoint) = request.endpoint.as_ref() {
             args.extend(["-e".to_owned(), endpoint.clone()]);
         }
         args.push("acp".to_owned());
-        let mut child = spawn_child(&request, &args, true)?;
+        let mut child = spawn_child(&request, &args, true, attribution)?;
         let stdout = child
             .stdout()
             .take()
@@ -1932,6 +1995,7 @@ impl GrokDriver {
     async fn spawn(
         mut request: ProviderLaunchRequest,
         attachments: AttachmentMaterializer,
+        attribution: ProcessAttributionRegistry,
     ) -> Result<Self, ProviderRuntimeError> {
         request
             .environment
@@ -1948,7 +2012,7 @@ impl GrokDriver {
         }
         .to_owned();
         let args = vec!["agent".to_owned(), "stdio".to_owned()];
-        let mut child = spawn_child(&request, &args, true)?;
+        let mut child = spawn_child(&request, &args, true, attribution)?;
         let stdout = child
             .stdout()
             .take()
@@ -2121,6 +2185,7 @@ impl OpenCodeDriver {
     async fn spawn(
         mut request: ProviderLaunchRequest,
         attachments: AttachmentMaterializer,
+        attribution: ProcessAttributionRegistry,
     ) -> Result<Self, ProviderRuntimeError> {
         if let Some(endpoint) = request.endpoint.as_ref() {
             let runtime = OpenCodeSessionRuntime::new_with_options(
@@ -2159,7 +2224,12 @@ impl OpenCodeDriver {
             "--hostname=127.0.0.1".to_owned(),
             format!("--port={port}"),
         ];
-        let child = Arc::new(Mutex::new(spawn_child(&request, &args, false)?));
+        let child = Arc::new(Mutex::new(spawn_child(
+            &request,
+            &args,
+            false,
+            attribution,
+        )?));
         wait_for_endpoint(&endpoint, &child).await?;
         let runtime = OpenCodeSessionRuntime::new_with_options(
             &endpoint,
@@ -2331,6 +2401,7 @@ impl ClaudeDriver {
     async fn spawn(
         mut request: ProviderLaunchRequest,
         attachments: AttachmentMaterializer,
+        attribution: ProcessAttributionRegistry,
     ) -> Result<Self, ProviderRuntimeError> {
         let mode = claude_mode(&request.runtime_mode, &request.interaction_mode);
         let session_id = request
@@ -2377,7 +2448,7 @@ impl ClaudeDriver {
             });
             args.extend(["--mcp-config".to_owned(), config.to_string()]);
         }
-        let mut child = spawn_child(&request, &args, true)?;
+        let mut child = spawn_child(&request, &args, true, attribution)?;
         let stdout = child
             .stdout()
             .take()
@@ -2810,6 +2881,10 @@ async fn wait_for_endpoint(
 mod tests {
     use super::{ProviderDriver, ProviderDriverFactory};
     use crate::{
+        diagnostics::{
+            AttributionKind, AttributionScope, NativeProcessSampler, ProcessAttributionRegistry,
+            ProcessSampler,
+        },
         orchestration::engine::{EngineOptions, OrchestrationCommand},
         persistence::{Database, ProviderSessionRuntime, run_migrations},
         server_settings::{
@@ -2822,9 +2897,30 @@ mod tests {
         routing::{get, post},
     };
     use serde_json::{Value, json};
-    use std::sync::{Arc, Mutex as StdMutex};
+    use std::{
+        sync::{Arc, Mutex as StdMutex},
+        time::Instant,
+    };
     use tempfile::TempDir;
     use tokio::{net::TcpListener, sync::mpsc, time::timeout};
+
+    struct CurrentDirectoryGuard {
+        original: std::path::PathBuf,
+    }
+
+    impl CurrentDirectoryGuard {
+        fn enter(path: &std::path::Path) -> Self {
+            let original = std::env::current_dir().expect("read original current directory");
+            std::env::set_current_dir(path).expect("enter fixture current directory");
+            Self { original }
+        }
+    }
+
+    impl Drop for CurrentDirectoryGuard {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.original).expect("restore original current directory");
+        }
+    }
 
     #[derive(Default)]
     struct SupervisorDriverState {
@@ -3008,6 +3104,7 @@ mod tests {
         super::ProviderLaunchRequest {
             thread_id: "native-test-thread".to_owned(),
             provider: provider.to_owned(),
+            provider_label: provider.to_owned(),
             provider_instance_id: Some(provider.to_owned()),
             binary_path: format!("missing-{provider}"),
             cwd: temp.path().to_path_buf(),
@@ -3190,6 +3287,62 @@ done
     #[cfg(windows)]
     const ACP_FIXTURE: &str = "acp";
 
+    async fn live_claims(
+        registry: &ProcessAttributionRegistry,
+    ) -> Vec<crate::diagnostics::ProcessClaim> {
+        let rows = NativeProcessSampler::default()
+            .sample()
+            .await
+            .expect("native process sample");
+        registry.bind_and_snapshot(&rows, Instant::now())
+    }
+
+    #[tokio::test]
+    async fn native_factory_attributes_provider_until_child_exit() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let temp = TempDir::new().expect("provider fixture directory");
+        let registry = ProcessAttributionRegistry::new();
+        let factory = super::NativeProviderDriverFactory::with_process_attribution(
+            temp.path().join("attachments"),
+            registry.clone(),
+        );
+        let fixture = executable_fixture(&temp, "attributed-claude", CLAUDE_FIXTURE);
+        let mut request = native_launch(&temp, "claudeAgent");
+        request.provider_label = "Configured Claude".to_owned();
+        request.binary_path = fixture.to_string_lossy().into_owned();
+
+        let driver = factory
+            .create(request)
+            .await
+            .expect("native provider should spawn");
+        let claims = live_claims(&registry).await;
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].scope, AttributionScope::External);
+        assert_eq!(claims[0].kind, AttributionKind::Provider);
+        assert_eq!(claims[0].label, "Configured Claude");
+
+        driver.shutdown().await.expect("provider should shut down");
+        assert!(live_claims(&registry).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn consuming_attributed_child_releases_provider_registration() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let temp = TempDir::new().expect("provider fixture directory");
+        let registry = ProcessAttributionRegistry::new();
+        let fixture = executable_fixture(&temp, "consumed-claude", CLAUDE_FIXTURE);
+        let mut request = native_launch(&temp, "claudeAgent");
+        request.binary_path = fixture.to_string_lossy().into_owned();
+        let child = super::spawn_child(&request, &[], false, registry.clone())
+            .expect("provider child should spawn");
+        assert_eq!(live_claims(&registry).await.len(), 1);
+
+        let mut inner = child.into_inner();
+        assert!(live_claims(&registry).await.is_empty());
+        let _ = inner.start_kill();
+        let _ = inner.wait().await;
+    }
+
     #[tokio::test]
     async fn unit_supervisor_covers_complete_command_routing_and_shutdown_lifecycle() {
         let engine = supervisor_engine().await;
@@ -3307,6 +3460,7 @@ done
             resolved_launch.provider_instance_id.as_deref(),
             Some("codex-custom")
         );
+        assert_eq!(resolved_launch.provider_label, "Custom Codex");
         assert_eq!(
             resolved_launch.environment.get("UNIT_ENV"),
             Some(&"enabled".to_owned())
@@ -3324,6 +3478,23 @@ done
         );
         assert!(resolved_launch.codex_home.is_some());
         assert!(resolved_launch.resume_cursor.is_none());
+        settings
+            .provider_instances
+            .get_mut("codex-custom")
+            .unwrap()
+            .display_name = Some("   ".to_owned());
+        std::fs::write(
+            settings_root.join("settings.json"),
+            serde_json::to_vec(&settings).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            super::launch_request_for_command(&engine, &settings_root, &launch_command)
+                .await
+                .unwrap()
+                .provider_label,
+            "codex"
+        );
         engine
             .repositories()
             .upsert_provider_session_runtime(ProviderSessionRuntime {
@@ -3437,9 +3608,13 @@ done
         claude_request.model = Some("claude-sonnet".to_owned());
         claude_request.agent = Some("reviewer".to_owned());
         claude_request.resume_cursor = Some(json!({"sessionId":"claude-session"}));
-        let claude = super::ClaudeDriver::spawn(claude_request, factory.attachments.clone())
-            .await
-            .expect("Claude driver should create");
+        let claude = super::ClaudeDriver::spawn(
+            claude_request,
+            factory.attachments.clone(),
+            factory.attribution.clone(),
+        )
+        .await
+        .expect("Claude driver should create");
         assert_eq!(
             claude
                 .start()
@@ -3501,10 +3676,13 @@ done
 
         let mut fresh_claude_request = native_launch(&temp, "claudeAgent");
         fresh_claude_request.binary_path = claude_fixture.to_string_lossy().into_owned();
-        let fresh_claude =
-            super::ClaudeDriver::spawn(fresh_claude_request, factory.attachments.clone())
-                .await
-                .expect("fresh Claude driver should create");
+        let fresh_claude = super::ClaudeDriver::spawn(
+            fresh_claude_request,
+            factory.attachments.clone(),
+            factory.attribution.clone(),
+        )
+        .await
+        .expect("fresh Claude driver should create");
         fresh_claude
             .shutdown()
             .await
@@ -4002,10 +4180,10 @@ done
             ),
             None
         );
-        assert_eq!(
-            super::provider_launch_program(&executable),
-            (executable, Vec::new())
-        );
+        let launch =
+            super::prepare_provider_launch(&executable, std::iter::empty::<&str>()).unwrap();
+        assert_eq!(launch.program, executable);
+        assert!(launch.args.is_empty());
     }
 
     #[test]
@@ -4044,13 +4222,90 @@ done
         );
     }
 
+    #[tokio::test]
+    async fn provider_executable_resolution_keeps_one_component_file_in_process_cwd() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let directory = tempfile::TempDir::new().expect("provider fixture directory");
+        let search_directory = tempfile::TempDir::new().expect("provider search directory");
+        let executable_name = if cfg!(windows) {
+            "provider-fixture.exe"
+        } else {
+            "provider-fixture"
+        };
+        std::fs::write(directory.path().join(executable_name), b"fixture")
+            .expect("write provider fixture");
+        let _current_directory = CurrentDirectoryGuard::enter(directory.path());
+
+        assert_eq!(
+            super::resolve_provider_executable_in_path(
+                executable_name,
+                Some(search_directory.path().as_os_str())
+            ),
+            Some(std::path::PathBuf::from(executable_name))
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn provider_executable_resolution_keeps_absolute_file_when_cwd_is_inaccessible() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let directory = tempfile::TempDir::new().expect("provider fixture directory");
+        let executable = directory.path().join("provider-fixture");
+        std::fs::write(&executable, b"fixture").expect("write provider fixture");
+        let inaccessible_cwd = directory.path().join("removed-cwd");
+        std::fs::create_dir(&inaccessible_cwd).expect("create temporary current directory");
+        let _current_directory = CurrentDirectoryGuard::enter(&inaccessible_cwd);
+        std::fs::remove_dir(&inaccessible_cwd).expect("remove current directory");
+        assert!(
+            std::env::current_dir().is_err(),
+            "fixture must make the process cwd inaccessible"
+        );
+
+        assert_eq!(
+            super::resolve_provider_executable_in_path(
+                &executable.to_string_lossy(),
+                Some(std::ffi::OsStr::new(""))
+            ),
+            Some(executable)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn provider_executable_resolution_finds_bare_command_when_cwd_is_inaccessible() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let directory = tempfile::TempDir::new().expect("provider fixture directory");
+        let executable = directory.path().join("provider-fixture");
+        std::fs::write(&executable, b"fixture").expect("write provider fixture");
+        let inaccessible_cwd = directory.path().join("removed-cwd");
+        std::fs::create_dir(&inaccessible_cwd).expect("create temporary current directory");
+        let _current_directory = CurrentDirectoryGuard::enter(&inaccessible_cwd);
+        std::fs::remove_dir(&inaccessible_cwd).expect("remove current directory");
+        assert!(
+            std::env::current_dir().is_err(),
+            "fixture must make the process cwd inaccessible"
+        );
+
+        assert_eq!(
+            super::resolve_provider_executable_in_path(
+                "provider-fixture",
+                Some(directory.path().as_os_str())
+            ),
+            Some(executable)
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_launch_program_wraps_shell_scripts_without_profiles() {
-        let (program, args) = super::provider_launch_program(std::path::Path::new("provider.ps1"));
-        assert_eq!(program, std::path::PathBuf::from("powershell.exe"));
+        let launch = super::prepare_provider_launch(
+            std::path::Path::new("provider.ps1"),
+            ["--flag", "&literal"],
+        )
+        .unwrap();
+        assert_eq!(launch.program, std::path::PathBuf::from("powershell.exe"));
         assert_eq!(
-            args,
+            launch.args,
             [
                 "-NoLogo",
                 "-NoProfile",
@@ -4059,17 +4314,22 @@ done
                 "Bypass",
                 "-File",
                 "provider.ps1",
+                "--flag",
+                "&literal",
             ]
+            .map(std::ffi::OsString::from)
         );
 
-        let (program, args) = super::provider_launch_program(std::path::Path::new("provider.cmd"));
+        let launch = super::prepare_provider_launch(
+            std::path::Path::new("provider.cmd"),
+            ["--flag", "&literal"],
+        )
+        .unwrap();
+        assert_eq!(launch.program, std::path::PathBuf::from("provider.cmd"));
         assert_eq!(
-            program,
-            std::env::var_os("ComSpec")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| std::path::PathBuf::from("cmd.exe"))
+            launch.args,
+            ["--flag", "&literal"].map(std::ffi::OsString::from)
         );
-        assert_eq!(args, ["/d", "/s", "/c", "provider.cmd"]);
     }
 
     #[tokio::test]
@@ -4130,19 +4390,24 @@ done
     #[cfg(not(windows))]
     #[test]
     fn non_windows_executable_resolution_uses_exact_name() {
-        assert_eq!(super::provider_executable_extensions(), &[""]);
+        assert_eq!(
+            crate::process::launch_executable_extensions(crate::process::Platform::current(), None),
+            [""]
+        );
     }
 
     #[cfg(windows)]
     #[test]
     fn windows_executable_resolution_prefers_cmd_over_powershell_shims() {
-        let cmd_index = super::WINDOWS_PROVIDER_EXECUTABLE_EXTENSIONS
+        let extensions =
+            crate::process::launch_executable_extensions(crate::process::Platform::Windows, None);
+        let cmd_index = extensions
             .iter()
-            .position(|extension| *extension == "cmd")
+            .position(|extension| extension.eq_ignore_ascii_case(".cmd"))
             .expect("cmd extension");
-        let powershell_index = super::WINDOWS_PROVIDER_EXECUTABLE_EXTENSIONS
+        let powershell_index = extensions
             .iter()
-            .position(|extension| *extension == "ps1")
+            .position(|extension| extension.eq_ignore_ascii_case(".ps1"))
             .expect("PowerShell extension");
 
         assert!(cmd_index < powershell_index);

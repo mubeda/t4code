@@ -14,7 +14,7 @@ use tokio::{
 use crate::{
     process::configure_background_command,
     production::provider_runtime::{
-        provider_launch_program, resolve_provider_executable,
+        prepare_provider_launch, resolve_provider_executable,
         sanitize_provider_subprocess_environment,
     },
 };
@@ -342,12 +342,15 @@ async fn fetch_codex_usage() -> Result<ProviderUsageSnapshot, ProviderUsageFetch
     let executable = resolve_provider_executable(&binary).ok_or_else(|| {
         ProviderUsageFetchError::new(format!("Codex executable was not found: {binary}"))
     })?;
-    let (program, prefix_args) = provider_launch_program(&executable);
-    let mut command = Command::new(program);
+    let launch = prepare_provider_launch(
+        &executable,
+        ["-s", "read-only", "-a", "untrusted", "app-server"],
+    )
+    .map_err(ProviderUsageFetchError::new)?;
+    let mut command = Command::new(launch.program);
     configure_background_command(&mut command);
     command
-        .args(prefix_args)
-        .args(["-s", "read-only", "-a", "untrusted", "app-server"])
+        .args(launch.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

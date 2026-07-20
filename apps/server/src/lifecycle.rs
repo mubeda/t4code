@@ -6,7 +6,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     auth::{AuthService, SecretStore},
-    config::ServerConfig,
+    config::{ServerConfig, ServerMode},
+    diagnostics::{
+        DesktopUiProcessObserver, NotApplicableUiProcessObserver,
+        UnavailableDesktopUiProcessObserver,
+    },
     http, logging,
     persistence::{Database, Repositories, StatePaths, run_migrations},
     production::http_routes::{HttpRouteError, HttpRoutesState},
@@ -70,19 +74,29 @@ pub enum ServerError {
 
 impl ServerRuntime {
     pub async fn start(config: ServerConfig) -> Result<ServerHandle, ServerError> {
-        Self::start_internal(config, None).await
+        let ui_process_observer = default_ui_process_observer(config.mode);
+        Self::start_internal(config, None, ui_process_observer).await
+    }
+
+    pub async fn start_with_ui_process_observer(
+        config: ServerConfig,
+        ui_process_observer: Arc<dyn DesktopUiProcessObserver>,
+    ) -> Result<ServerHandle, ServerError> {
+        Self::start_internal(config, None, ui_process_observer).await
     }
 
     pub async fn start_with_registry(
         config: ServerConfig,
         rpc_registry: RpcRegistry,
     ) -> Result<ServerHandle, ServerError> {
-        Self::start_internal(config, Some(rpc_registry)).await
+        let ui_process_observer = default_ui_process_observer(config.mode);
+        Self::start_internal(config, Some(rpc_registry), ui_process_observer).await
     }
 
     async fn start_internal(
         config: ServerConfig,
         custom_registry: Option<RpcRegistry>,
+        ui_process_observer: Arc<dyn DesktopUiProcessObserver>,
     ) -> Result<ServerHandle, ServerError> {
         tokio::fs::create_dir_all(&config.base_dir)
             .await
@@ -149,9 +163,15 @@ impl ServerRuntime {
             }
             None => {
                 let runtime = Arc::new(
-                    ProductionRuntime::start(&config, database.clone(), auth.clone(), asset_secret)
-                        .await
-                        .map_err(ServerError::ProductionInitialize)?,
+                    ProductionRuntime::start(
+                        &config,
+                        database.clone(),
+                        auth.clone(),
+                        asset_secret,
+                        ui_process_observer,
+                    )
+                    .await
+                    .map_err(ServerError::ProductionInitialize)?,
                 );
                 let jwt = PersistentJwtCodec::open(state_directory.join("environment-jwt.json"))
                     .await
@@ -316,6 +336,13 @@ fn core_http_routes(
     HttpRoutesState::new(authorize, json, diagnostic_logs, assets, mcp)
 }
 
+fn default_ui_process_observer(mode: ServerMode) -> Arc<dyn DesktopUiProcessObserver> {
+    match mode {
+        ServerMode::Web => Arc::new(NotApplicableUiProcessObserver),
+        ServerMode::Desktop => Arc::new(UnavailableDesktopUiProcessObserver),
+    }
+}
+
 fn authorize_handler(auth: AuthService) -> crate::production::http_routes::AuthorizeHandler {
     Arc::new(move |headers, method, uri, scope, _cancellation| {
         let auth = auth.clone();
@@ -440,6 +467,30 @@ impl Drop for ServerHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn default_ui_observers_match_the_server_runtime_mode() {
+        let web = default_ui_process_observer(crate::config::ServerMode::Web)
+            .observe()
+            .await;
+        assert_eq!(
+            web.coverage.status,
+            crate::diagnostics::UiCoverageStatus::NotApplicable
+        );
+        assert!(web.coverage.message.is_none());
+
+        let desktop = default_ui_process_observer(crate::config::ServerMode::Desktop)
+            .observe()
+            .await;
+        assert_eq!(
+            desktop.coverage.status,
+            crate::diagnostics::UiCoverageStatus::Unavailable
+        );
+        let message = desktop.coverage.message.expect("unavailable explanation");
+        assert!(message.contains("Native server usage is included"));
+        assert!(message.contains("local UI/WebView usage"));
+        assert!(message.chars().count() <= 160);
+    }
 
     #[tokio::test]
     async fn server_runtime_covers_production_fallback_startup_access_and_shutdown_paths() {
