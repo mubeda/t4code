@@ -24,7 +24,7 @@ use windows_sys::Win32::{
     },
 };
 
-pub(crate) struct WindowsBatchLaunchGate {
+pub(crate) struct WindowsPtyLaunchGate {
     handle: HANDLE,
     ready_handle: HANDLE,
     name: OsString,
@@ -32,14 +32,14 @@ pub(crate) struct WindowsBatchLaunchGate {
 }
 
 // SAFETY: event handles can be signalled, waited on, and closed from any thread.
-unsafe impl Send for WindowsBatchLaunchGate {}
+unsafe impl Send for WindowsPtyLaunchGate {}
 // SAFETY: SetEvent is thread-safe for a live event handle.
-unsafe impl Sync for WindowsBatchLaunchGate {}
+unsafe impl Sync for WindowsPtyLaunchGate {}
 
-impl WindowsBatchLaunchGate {
+impl WindowsPtyLaunchGate {
     pub(crate) fn new() -> io::Result<Self> {
         let identifier = format!(
-            "Local\\T4CodeBatchLaunch-{}-{}",
+            "Local\\T4CodePtyLaunch-{}-{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         );
@@ -92,7 +92,7 @@ impl WindowsBatchLaunchGate {
     }
 }
 
-impl Drop for WindowsBatchLaunchGate {
+impl Drop for WindowsPtyLaunchGate {
     fn drop(&mut self) {
         // SAFETY: this type owns both handles and closes each exactly once.
         unsafe { CloseHandle(self.ready_handle) };

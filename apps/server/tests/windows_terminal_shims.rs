@@ -7,7 +7,7 @@ use std::{
 };
 
 use t4code_server::{
-    process::WINDOWS_BATCH_TRAMPOLINE_ARG,
+    process::WINDOWS_PTY_TRAMPOLINE_ARG,
     terminal::{PortablePtyBackend, PtySpawnInput},
 };
 use windows_sys::Win32::{
@@ -67,7 +67,7 @@ async fn assert_shim_output(
     marker: &str,
 ) {
     let process = PortablePtyBackend
-        .spawn_with_windows_batch_trampoline(
+        .spawn_with_windows_pty_trampoline(
             &PtySpawnInput {
                 executable: executable.to_string_lossy().into_owned(),
                 args: arguments.to_vec(),
@@ -170,7 +170,7 @@ fn batch_trampoline_waits_for_the_parent_supervision_gate() {
 
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_t4code"))
         .args([
-            std::ffi::OsStr::new(WINDOWS_BATCH_TRAMPOLINE_ARG),
+            std::ffi::OsStr::new(WINDOWS_PTY_TRAMPOLINE_ARG),
             std::ffi::OsStr::new(&gate_name),
             std::ffi::OsStr::new(&ready_name),
             script.as_os_str(),
@@ -207,7 +207,7 @@ async fn killing_a_batch_terminal_terminates_its_descendant_process() {
     )
     .unwrap();
     let process = PortablePtyBackend
-        .spawn_with_windows_batch_trampoline(
+        .spawn_with_windows_pty_trampoline(
             &PtySpawnInput {
                 executable: script.to_string_lossy().into_owned(),
                 args: Vec::new(),

@@ -13,12 +13,13 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tokio::sync::{broadcast, watch};
 
 use crate::process::{
-    Platform, WindowsBatchLaunch, launch_executable_extensions, locate_executable,
-    wrap_launch_program,
+    Platform, launch_executable_extensions, locate_executable, wrap_launch_program,
 };
 
+#[cfg(any(windows, test))]
+use crate::process::wrap_windows_pty_launch;
 #[cfg(windows)]
-use crate::process::{WindowsBatchLaunchGate, WindowsJob, is_windows_batch_executable};
+use crate::process::{WindowsJob, WindowsPtyLaunchGate};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PtyExit {
@@ -55,7 +56,7 @@ pub struct PortablePtyBackend;
 struct PreparedPtyCommand {
     command: CommandBuilder,
     #[cfg(windows)]
-    batch_gate: Option<WindowsBatchLaunchGate>,
+    launch_gate: WindowsPtyLaunchGate,
 }
 
 struct SpawnedChildGuard {
@@ -90,24 +91,24 @@ impl Drop for SpawnedChildGuard {
 impl PortablePtyBackend {
     #[cfg(windows)]
     #[doc(hidden)]
-    pub fn spawn_with_windows_batch_trampoline(
+    pub fn spawn_with_windows_pty_trampoline(
         &self,
         input: &PtySpawnInput,
         trampoline: &Path,
     ) -> Result<Arc<dyn PtyProcess>, String> {
-        let batch_gate = WindowsBatchLaunchGate::new().map_err(|error| error.to_string())?;
+        let launch_gate = WindowsPtyLaunchGate::new().map_err(|error| error.to_string())?;
         let command = build_pty_command_on_with_trampoline(
             Platform::Windows,
             input,
             trampoline,
-            batch_gate.name(),
-            batch_gate.ready_name(),
+            launch_gate.name(),
+            launch_gate.ready_name(),
         )?;
         self.spawn_command(
             input,
             PreparedPtyCommand {
                 command,
-                batch_gate: Some(batch_gate),
+                launch_gate,
             },
         )
     }
@@ -119,7 +120,7 @@ impl PortablePtyBackend {
     ) -> Result<Arc<dyn PtyProcess>, String> {
         let command = prepared.command;
         #[cfg(windows)]
-        let batch_gate = prepared.batch_gate;
+        let launch_gate = prepared.launch_gate;
         let pair = match native_pty_system().openpty(PtySize {
             rows: input.rows,
             cols: input.cols,
@@ -153,9 +154,7 @@ impl PortablePtyBackend {
             }
         };
         #[cfg(windows)]
-        if let Some(gate) = batch_gate.as_ref()
-            && let Err(error) = gate.signal()
-        {
+        if let Err(error) = launch_gate.signal() {
             return Err(error.to_string());
         }
         let mut reader = match pair.master.try_clone_reader() {
@@ -194,7 +193,7 @@ impl PortablePtyBackend {
             .name(format!("t4code-pty-wait-{pid}"))
             .spawn(move || {
                 #[cfg(windows)]
-                let _batch_gate = batch_gate;
+                let _launch_gate = launch_gate;
                 let mut child = child.into_child();
                 let event = match child.wait() {
                     Ok(status) => PtyExit {
@@ -239,36 +238,31 @@ fn build_pty_command(input: &PtySpawnInput) -> Result<PreparedPtyCommand, String
     let platform = Platform::current();
     let executable = resolve_pty_executable_for_launch(platform, input)?;
     #[cfg(windows)]
-    if is_windows_batch_executable(platform, &executable) {
-        let batch_gate = WindowsBatchLaunchGate::new().map_err(|error| error.to_string())?;
+    {
+        let launch_gate = WindowsPtyLaunchGate::new().map_err(|error| error.to_string())?;
         let trampoline = std::env::current_exe().map_err(|error| {
-            format!("failed to resolve the Windows batch launch trampoline: {error}")
+            format!("failed to resolve the Windows PTY launch trampoline: {error}")
         })?;
-        let command = build_pty_command_for_executable(
-            platform,
-            input,
-            &executable,
-            WindowsBatchLaunch::Trampoline {
-                executable: trampoline,
-                gate_name: batch_gate.name().to_owned(),
-                ready_name: batch_gate.ready_name().to_owned(),
-            },
-        )?;
+        let target = prepare_pty_launch(platform, input, &executable)?;
+        let launch = wrap_windows_pty_launch(
+            target,
+            &trampoline,
+            launch_gate.name(),
+            launch_gate.ready_name(),
+        );
+        let command = build_pty_command_from_launch(input, launch);
         return Ok(PreparedPtyCommand {
             command,
-            batch_gate: Some(batch_gate),
+            launch_gate,
         });
     }
-    let command = build_pty_command_for_executable(
-        platform,
+    #[cfg(not(windows))]
+    let command = build_pty_command_from_launch(
         input,
-        &executable,
-        WindowsBatchLaunch::Native,
-    )?;
+        prepare_pty_launch(platform, input, &executable)?,
+    );
     Ok(PreparedPtyCommand {
         command,
-        #[cfg(windows)]
-        batch_gate: None,
     })
 }
 
@@ -278,12 +272,10 @@ fn build_pty_command_on(
     input: &PtySpawnInput,
 ) -> Result<CommandBuilder, String> {
     let executable = resolve_pty_executable_for_launch(platform, input)?;
-    build_pty_command_for_executable(
-        platform,
+    Ok(build_pty_command_from_launch(
         input,
-        &executable,
-        WindowsBatchLaunch::Native,
-    )
+        prepare_pty_launch(platform, input, &executable)?,
+    ))
 }
 
 #[cfg(any(test, windows))]
@@ -295,16 +287,9 @@ fn build_pty_command_on_with_trampoline(
     ready_name: &OsStr,
 ) -> Result<CommandBuilder, String> {
     let executable = resolve_pty_executable_for_launch(platform, input)?;
-    build_pty_command_for_executable(
-        platform,
-        input,
-        &executable,
-        WindowsBatchLaunch::Trampoline {
-            executable: trampoline.to_path_buf(),
-            gate_name: gate_name.to_owned(),
-            ready_name: ready_name.to_owned(),
-        },
-    )
+    let target = prepare_pty_launch(platform, input, &executable)?;
+    let launch = wrap_windows_pty_launch(target, trampoline, gate_name, ready_name);
+    Ok(build_pty_command_from_launch(input, launch))
 }
 
 fn resolve_pty_executable_for_launch(
@@ -322,21 +307,25 @@ fn resolve_pty_executable_for_launch(
     }
 }
 
-fn build_pty_command_for_executable(
+fn prepare_pty_launch(
     platform: Platform,
     input: &PtySpawnInput,
     executable: &Path,
-    windows_batch_launch: WindowsBatchLaunch,
-) -> Result<CommandBuilder, String> {
-    let launch =
-        wrap_launch_program(platform, executable, windows_batch_launch)?.prepare(&input.args);
+) -> Result<crate::process::PreparedLaunch, String> {
+    Ok(wrap_launch_program(platform, executable)?.prepare(&input.args))
+}
+
+fn build_pty_command_from_launch(
+    input: &PtySpawnInput,
+    launch: crate::process::PreparedLaunch,
+) -> CommandBuilder {
     let mut command = CommandBuilder::new(launch.program);
     command.args(launch.args);
     command.cwd(&input.cwd);
     for (key, value) in &input.env {
         command.env(key, value);
     }
-    Ok(command)
+    command
 }
 
 fn resolve_pty_executable_on(
@@ -744,7 +733,7 @@ mod tests {
             let expected = std::iter::once(trampoline.clone().into_os_string())
                 .chain(
                     [
-                        crate::process::WINDOWS_BATCH_TRAMPOLINE_ARG,
+                        crate::process::WINDOWS_PTY_TRAMPOLINE_ARG,
                         gate_name.to_str().unwrap(),
                         ready_name.to_str().unwrap(),
                         executable.to_str().unwrap(),
@@ -803,6 +792,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let executable = directory.path().join("provider.ps1");
         std::fs::write(&executable, b"fixture").unwrap();
+        let trampoline = directory.path().join("t4code.exe");
+        let gate_name = OsStr::new("Local\\T4CodePtyLaunch-test");
+        let ready_name = OsStr::new("Local\\T4CodePtyLaunch-test-ready");
         let arguments = vec![
             "--flag".to_owned(),
             "value with spaces".to_owned(),
@@ -827,8 +819,24 @@ mod tests {
             ]),
         };
 
-        let command = build_pty_command_on(Platform::Windows, &input).unwrap();
-        let expected = std::iter::once(std::ffi::OsString::from("powershell.exe"))
+        let command = build_pty_command_on_with_trampoline(
+            Platform::Windows,
+            &input,
+            &trampoline,
+            gate_name,
+            ready_name,
+        )
+        .unwrap();
+        let expected = std::iter::once(trampoline.into_os_string())
+            .chain(
+                [
+                    crate::process::WINDOWS_PTY_TRAMPOLINE_ARG,
+                    gate_name.to_str().unwrap(),
+                    ready_name.to_str().unwrap(),
+                    "powershell.exe",
+                ]
+                .map(std::ffi::OsString::from),
+            )
             .chain(
                 [
                     "-NoLogo",
@@ -841,6 +849,47 @@ mod tests {
                 .map(std::ffi::OsString::from),
             )
             .chain(std::iter::once(executable.into_os_string()))
+            .chain(arguments.iter().map(std::ffi::OsString::from))
+            .collect::<Vec<_>>();
+        assert_eq!(command.get_argv(), &expected);
+    }
+
+    #[test]
+    fn windows_pty_launch_gates_native_executables() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("provider.exe");
+        std::fs::write(&executable, b"fixture").unwrap();
+        let trampoline = directory.path().join("t4code.exe");
+        let gate_name = OsStr::new("Local\\T4CodePtyLaunch-test");
+        let ready_name = OsStr::new("Local\\T4CodePtyLaunch-test-ready");
+        let arguments = vec!["--flag".to_owned(), "value with spaces".to_owned()];
+        let input = PtySpawnInput {
+            executable: executable.to_string_lossy().into_owned(),
+            args: arguments.clone(),
+            cwd: directory.path().to_path_buf(),
+            cols: 80,
+            rows: 24,
+            env: BTreeMap::new(),
+        };
+
+        let command = build_pty_command_on_with_trampoline(
+            Platform::Windows,
+            &input,
+            &trampoline,
+            gate_name,
+            ready_name,
+        )
+        .unwrap();
+        let expected = std::iter::once(trampoline.into_os_string())
+            .chain(
+                [
+                    crate::process::WINDOWS_PTY_TRAMPOLINE_ARG,
+                    gate_name.to_str().unwrap(),
+                    ready_name.to_str().unwrap(),
+                    executable.to_str().unwrap(),
+                ]
+                .map(std::ffi::OsString::from),
+            )
             .chain(arguments.iter().map(std::ffi::OsString::from))
             .collect::<Vec<_>>();
         assert_eq!(command.get_argv(), &expected);
