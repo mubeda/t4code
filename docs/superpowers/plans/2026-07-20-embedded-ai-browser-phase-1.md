@@ -762,7 +762,7 @@ git commit -m "feat(preview): WebView2 platform ops"
 **Interfaces:**
 - Consumes/Produces: same trait; `LinuxWebviewOps`.
 
-- [ ] **Step 1: Implement**
+- [x] **Step 1: Implement**
 
 On Linux `platform.inner()` is the `webkit2gtk::WebView`. Mappings (same channel pattern; GTK calls must run on the GTK main thread, which `with_webview` guarantees):
 
@@ -785,9 +785,9 @@ On Linux `platform.inner()` is the `webkit2gtk::WebView`. Mappings (same channel
 
 Write the full impl. Add `gio` / `glib` to the Linux dependency block if the compiler asks for them explicitly (they're re-exported through webkit2gtk in most versions).
 
-- [ ] **Step 2: Compile check** — cfg-gated; local `cargo check` stays clean. Flag for Linux CI validation in the PR.
+- [x] **Step 2: Compile check** — cfg-gated; local `cargo check` stays clean. Flag for Linux CI validation in the PR.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add apps/desktop/src-tauri/src/preview/platform/linux.rs
