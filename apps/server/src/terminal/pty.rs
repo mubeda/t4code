@@ -61,24 +61,76 @@ struct PreparedPtyCommand {
 
 struct SpawnedChildGuard {
     child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
+    #[cfg(unix)]
+    process_group: Option<i32>,
+    #[cfg(windows)]
+    job: Option<WindowsJob>,
 }
 
 impl SpawnedChildGuard {
+    #[cfg(any(not(unix), test))]
     fn new(child: Box<dyn portable_pty::Child + Send + Sync>) -> Self {
-        Self { child: Some(child) }
+        Self {
+            child: Some(child),
+            #[cfg(unix)]
+            process_group: None,
+            #[cfg(windows)]
+            job: None,
+        }
+    }
+
+    #[cfg(unix)]
+    fn new_with_process_group(
+        child: Box<dyn portable_pty::Child + Send + Sync>,
+        process_group: Option<i32>,
+    ) -> Self {
+        Self {
+            child: Some(child),
+            process_group,
+        }
     }
 
     fn child(&self) -> &(dyn portable_pty::Child + Send + Sync) {
         self.child.as_deref().expect("spawned child guard")
     }
 
-    fn into_child(mut self) -> Box<dyn portable_pty::Child + Send + Sync> {
+    fn take_child(&mut self) -> Box<dyn portable_pty::Child + Send + Sync> {
         self.child.take().expect("spawned child guard")
+    }
+
+    #[cfg(unix)]
+    fn commit_process_group(mut self) -> Option<i32> {
+        self.process_group.take()
+    }
+
+    #[cfg(windows)]
+    fn own_job(&mut self, job: WindowsJob) {
+        debug_assert!(self.job.is_none(), "PTY child job already attached");
+        self.job = Some(job);
+    }
+
+    #[cfg(windows)]
+    fn commit_job(mut self) -> Result<WindowsJob, String> {
+        self.job
+            .take()
+            .ok_or_else(|| "PTY child job was not retained during setup".to_owned())
     }
 }
 
 impl Drop for SpawnedChildGuard {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(process_group) = self.process_group
+            && let Err(error) = kill_unix_process_group(process_group)
+        {
+            tracing::debug!(%error, process_group, "failed to kill PTY process group after spawn setup failure");
+        }
+        #[cfg(windows)]
+        if let Some(job) = self.job.as_ref()
+            && let Err(error) = job.terminate()
+        {
+            tracing::debug!(%error, "failed to kill PTY job after spawn setup failure");
+        }
         let Some(child) = self.child.as_mut() else {
             return;
         };
@@ -132,27 +184,33 @@ impl PortablePtyBackend {
         };
 
         let child = match pair.slave.spawn_command(command) {
-            Ok(child) => SpawnedChildGuard::new(child),
+            Ok(child) => child,
             Err(error) => return Err(error.to_string()),
         };
+        #[cfg(unix)]
+        let mut child = SpawnedChildGuard::new_with_process_group(
+            child,
+            pair.master.process_group_leader(),
+        );
+        #[cfg(not(unix))]
+        let mut child = SpawnedChildGuard::new(child);
         drop(pair.slave);
         let pid = match child.child().process_id() {
             Some(pid) => pid,
             None => return Err("PTY child did not expose a process id".to_string()),
         };
-        #[cfg(unix)]
-        let process_group = pair.master.process_group_leader();
         #[cfg(windows)]
-        let job = {
+        {
             let raw_handle = match child.child().as_raw_handle() {
                 Some(raw_handle) => raw_handle,
                 None => return Err("PTY child did not expose a Windows process handle".to_owned()),
             };
-            match WindowsJob::attach(raw_handle) {
+            let job = match WindowsJob::attach(raw_handle) {
                 Ok(job) => job,
                 Err(error) => return Err(error.to_string()),
-            }
-        };
+            };
+            child.own_job(job);
+        }
         #[cfg(windows)]
         if let Err(error) = launch_gate.signal() {
             return Err(error.to_string());
@@ -189,12 +247,13 @@ impl PortablePtyBackend {
             return Err(error.to_string());
         }
         let exit_sender = exit.clone();
+        let wait_child = child.take_child();
         if let Err(error) = thread::Builder::new()
             .name(format!("t4code-pty-wait-{pid}"))
             .spawn(move || {
                 #[cfg(windows)]
                 let _launch_gate = launch_gate;
-                let mut child = child.into_child();
+                let mut child = wait_child;
                 let event = match child.wait() {
                     Ok(status) => PtyExit {
                         exit_code: i32::try_from(status.exit_code()).ok(),
@@ -210,6 +269,10 @@ impl PortablePtyBackend {
         {
             return Err(error.to_string());
         }
+        #[cfg(unix)]
+        let process_group = child.commit_process_group();
+        #[cfg(windows)]
+        let job = child.commit_job()?;
 
         Ok(Arc::new(PortablePtyProcess {
             pid,
@@ -431,14 +494,7 @@ impl PtyProcess for PortablePtyProcess {
     fn kill(&self) -> Result<(), String> {
         #[cfg(unix)]
         if let Some(process_group) = self.process_group {
-            // Negative PIDs target the complete process group created by the PTY.
-            let result = unsafe { kill(-process_group, 9) };
-            if result != 0 {
-                let error = std::io::Error::last_os_error();
-                if error.raw_os_error() != Some(3) {
-                    return Err(error.to_string());
-                }
-            }
+            kill_unix_process_group(process_group).map_err(|error| error.to_string())?;
         }
         #[cfg(windows)]
         {
@@ -469,6 +525,21 @@ impl PtyProcess for PortablePtyProcess {
 #[cfg(unix)]
 unsafe extern "C" {
     fn kill(pid: i32, signal: i32) -> i32;
+}
+
+#[cfg(unix)]
+fn kill_unix_process_group(process_group: i32) -> std::io::Result<()> {
+    // Negative PIDs target the complete process group created by the PTY.
+    let result = unsafe { kill(-process_group, 9) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(3) {
+        Ok(())
+    } else {
+        Err(error)
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -570,12 +641,72 @@ mod tests {
         assert!(failed_setup_killed.load(std::sync::atomic::Ordering::Acquire));
 
         let committed_killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let child = SpawnedChildGuard::new(Box::new(SetupTestChild {
+        let mut guard = SpawnedChildGuard::new(Box::new(SetupTestChild {
             killed: committed_killed.clone(),
-        }))
-        .into_child();
+        }));
+        let child = guard.take_child();
+        drop(guard);
         drop(child);
         assert!(!committed_killed.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn setup_failure_kills_the_unix_process_group() {
+        let directory = tempfile::tempdir().unwrap();
+        let child_pid_file = directory.path().join("descendant-pid.txt");
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.args([
+            "-c",
+            "trap '' HUP; /bin/sh -c 'trap \"\" HUP; echo $$ > \"$T4CODE_CHILD_PID\"; exec sleep 30' & wait",
+        ]);
+        command.env("T4CODE_CHILD_PID", child_pid_file.as_os_str());
+        let child = pair.slave.spawn_command(command).unwrap();
+        let process_group = pair
+            .master
+            .process_group_leader()
+            .expect("fixture PTY should expose its process group");
+        let guard = SpawnedChildGuard::new_with_process_group(child, Some(process_group));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !child_pid_file.is_file() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture descendant did not publish its process id"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let descendant_pid = std::fs::read_to_string(&child_pid_file)
+            .unwrap()
+            .trim()
+            .parse::<i32>()
+            .unwrap();
+        assert_ne!(descendant_pid, process_group);
+
+        drop(guard);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            // SAFETY: signal zero only checks whether the fixture PID still exists.
+            let result = unsafe { kill(descendant_pid, 0) };
+            if result != 0 && std::io::Error::last_os_error().raw_os_error() == Some(3) {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                // SAFETY: the PID came from this test's fixture descendant.
+                unsafe { kill(descendant_pid, 9) };
+                panic!("PTY descendant survived post-spawn setup failure");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[test]
