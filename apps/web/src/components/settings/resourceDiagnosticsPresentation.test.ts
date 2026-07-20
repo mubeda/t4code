@@ -638,6 +638,69 @@ describe("presentLiveProcesses", () => {
 });
 
 describe("presentResourceHistory", () => {
+  it("treats a first sampling failure as unavailable even when the server supplies zero buckets", () => {
+    const zeroBucket = historyFixture().buckets[0]!;
+    const presentation = presentResourceHistory({
+      history: historyFixture({
+        retainedSampleCount: 0,
+        cpuSecondsApprox: { combined: 0, core: 0, external: 0 },
+        buckets: [
+          {
+            ...zeroBucket,
+            cpuPercent: {
+              average: { combined: 0, core: 0, external: 0 },
+              peak: { combined: 0, core: 0, external: 0 },
+            },
+            rssBytes: {
+              average: { combined: 0, core: 0, external: 0 },
+              peak: { combined: 0, core: 0, external: 0 },
+            },
+            maxProcessCount: { combined: 0, core: 0, external: 0 },
+          },
+        ],
+        processes: [],
+        error: Option.some({
+          failureTag: "ProcessDiagnosticsQueryFailedError",
+          message: "process diagnostics sampling failed: initial failure",
+        }),
+      }),
+      queryError: null,
+    });
+
+    expect(presentation.availability).toBe("unavailable");
+    expect(presentation.summary).toBeNull();
+    expect(presentation.chart.bars).toEqual([]);
+    expect(presentation.rows).toEqual([]);
+    expect(presentation.banners[0]).toMatchObject({
+      tone: "danger",
+      statusLabel: "Resource data unavailable",
+      message: "process diagnostics sampling failed: initial failure",
+    });
+  });
+
+  it("keeps retained successful history visible and stale after a later sampling failure", () => {
+    const presentation = presentResourceHistory({
+      history: historyFixture({
+        error: Option.some({
+          failureTag: "ProcessDiagnosticsQueryFailedError",
+          message: "process diagnostics sampling failed: refresh failed",
+        }),
+      }),
+      queryError: null,
+    });
+
+    expect(presentation.availability).toBe("stale");
+    expect(presentation.summary?.combined.valueLabel).toBe("1.25m");
+    expect(presentation.chart.bars).toHaveLength(1);
+    expect(presentation.rows).toHaveLength(2);
+    expect(presentation.banners[0]).toMatchObject({
+      tone: "warning",
+      statusLabel: "Showing stale resource data",
+      message:
+        "Showing the last successful server sample. process diagnostics sampling failed: refresh failed",
+    });
+  });
+
   it("defaults to Memory and stacks additive Core and External bucket averages", () => {
     const presentation = presentResourceHistory({
       history: historyFixture(),

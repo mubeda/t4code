@@ -587,14 +587,7 @@ export function presentResourceHistory(input: {
   const diagnosticMessage =
     input.history === null ? null : (Option.getOrNull(input.history.error)?.message ?? null);
   const hasDiagnosticError = diagnosticMessage !== null;
-  const hasGoodSample =
-    input.history !== null &&
-    !(
-      hasDiagnosticError &&
-      input.history.retainedSampleCount === 0 &&
-      input.history.buckets.length === 0 &&
-      input.history.processes.length === 0
-    );
+  const hasGoodSample = input.history !== null && input.history.retainedSampleCount > 0;
   const stale = hasGoodSample && (hasDiagnosticError || input.queryError !== null);
   const coverage = input.history === null ? null : coverageBanner(input.history.uiCoverage);
   const banners = [

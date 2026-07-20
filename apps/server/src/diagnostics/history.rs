@@ -162,7 +162,11 @@ pub(crate) fn aggregate_history(
             .last()
             .map(|sample| sample.ui_coverage.clone())
             .unwrap_or_default(),
-        buckets: build_buckets(&samples, read_at_ms, window_ms, bucket_ms),
+        buckets: if retained.is_empty() {
+            Vec::new()
+        } else {
+            build_buckets(&samples, read_at_ms, window_ms, bucket_ms)
+        },
         processes: summarize_processes(&samples, interval_seconds),
         error,
     }

@@ -114,10 +114,11 @@ External Tooling with `unknown` kind and fallback confidence; missing
 registration does not make it Core or remove it from the totals.
 
 Attribution and process actions use a stable process identity made from PID and
-operating-system start identity. A registration binds to that start identity
-on its first matching sample, and a reused PID does not inherit the previous
-process's ownership. The native sampler remains the source of CPU and memory
-values; attribution does not perform a second machine-wide process refresh.
+operating-system start identity captured at launch. Registration fails closed
+when that identity cannot be captured; sampling only validates the exact
+captured identity, so a reused PID does not inherit the previous process's
+ownership. The native sampler remains the source of CPU and memory values;
+attribution does not perform a second machine-wide process refresh.
 
 If refresh fails after a successful sample, the client retains the last good
 snapshot and its original timestamp, marks it stale, and displays the bounded
