@@ -61,31 +61,15 @@ struct PreparedPtyCommand {
 
 struct SpawnedChildGuard {
     child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
+    root_killer: Option<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
+    #[cfg(unix)]
+    root_process_id: Option<i32>,
     #[cfg(unix)]
     process_group: Option<i32>,
     #[cfg(windows)]
     job: Option<WindowsJob>,
-}
-
-struct WaiterChildHandoff {
-    child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
-}
-
-impl WaiterChildHandoff {
-    fn into_child(mut self) -> Box<dyn portable_pty::Child + Send + Sync> {
-        self.child.take().expect("waiter child handoff")
-    }
-}
-
-impl Drop for WaiterChildHandoff {
-    fn drop(&mut self) {
-        let Some(child) = self.child.as_mut() else {
-            return;
-        };
-        if let Err(error) = child.kill() {
-            tracing::debug!(%error, "failed to kill PTY child after waiter spawn failure");
-        }
-    }
+    #[cfg(test)]
+    tree_cleanup_observer: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl SpawnedChildGuard {
@@ -93,10 +77,15 @@ impl SpawnedChildGuard {
     fn new(child: Box<dyn portable_pty::Child + Send + Sync>) -> Self {
         Self {
             child: Some(child),
+            root_killer: None,
+            #[cfg(unix)]
+            root_process_id: None,
             #[cfg(unix)]
             process_group: None,
             #[cfg(windows)]
             job: None,
+            #[cfg(test)]
+            tree_cleanup_observer: None,
         }
     }
 
@@ -107,7 +96,11 @@ impl SpawnedChildGuard {
     ) -> Self {
         Self {
             child: Some(child),
+            root_killer: None,
+            root_process_id: None,
             process_group,
+            #[cfg(test)]
+            tree_cleanup_observer: None,
         }
     }
 
@@ -115,14 +108,32 @@ impl SpawnedChildGuard {
         self.child.as_deref().expect("spawned child guard")
     }
 
-    fn handoff_child_to_waiter(&mut self) -> WaiterChildHandoff {
-        WaiterChildHandoff {
-            child: self.child.take(),
-        }
+    fn handoff_child_to_waiter(
+        &mut self,
+    ) -> Box<dyn portable_pty::Child + Send + Sync> {
+        let root_killer = self.child().clone_killer();
+        let child = self.child.take().expect("spawned child guard");
+        self.root_killer = Some(root_killer);
+        child
+    }
+
+    #[cfg(unix)]
+    fn remember_root_process_id(&mut self, process_id: u32) -> Result<(), String> {
+        let process_id = i32::try_from(process_id)
+            .map_err(|_| "PTY child process id exceeded the Unix PID range".to_owned())?;
+        self.root_process_id = Some(process_id);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn observe_tree_cleanup(&mut self, observer: impl FnOnce() + Send + 'static) {
+        self.tree_cleanup_observer = Some(Box::new(observer));
     }
 
     #[cfg(unix)]
     fn commit_process_group(mut self) -> Option<i32> {
+        self.root_killer.take();
+        self.root_process_id.take();
         self.process_group.take()
     }
 
@@ -134,9 +145,12 @@ impl SpawnedChildGuard {
 
     #[cfg(windows)]
     fn commit_job(mut self) -> Result<WindowsJob, String> {
-        self.job
+        let job = self
+            .job
             .take()
-            .ok_or_else(|| "PTY child job was not retained during setup".to_owned())
+            .ok_or_else(|| "PTY child job was not retained during setup".to_owned())?;
+        self.root_killer.take();
+        Ok(job)
     }
 }
 
@@ -168,11 +182,32 @@ impl Drop for SpawnedChildGuard {
         {
             tracing::debug!(%error, "failed to kill PTY job after spawn setup failure");
         }
-        let Some(child) = self.child.as_mut() else {
+        #[cfg(test)]
+        if let Some(observer) = self.tree_cleanup_observer.take() {
+            observer();
+        }
+        if let Some(child) = self.child.as_mut() {
+            if let Err(error) = child.kill() {
+                tracing::debug!(%error, "failed to kill PTY child after spawn setup failure");
+            }
             return;
-        };
-        if let Err(error) = child.kill() {
-            tracing::debug!(%error, "failed to kill PTY child after spawn setup failure");
+        }
+        #[cfg(unix)]
+        let root_killed = self.root_process_id.is_some_and(|process_id| {
+            if let Err(error) = kill_unix_process(process_id) {
+                tracing::debug!(%error, process_id, "failed to SIGKILL PTY root after waiter spawn failure");
+                false
+            } else {
+                true
+            }
+        });
+        #[cfg(not(unix))]
+        let root_killed = false;
+        if !root_killed
+            && let Some(root_killer) = self.root_killer.as_mut()
+            && let Err(error) = root_killer.kill()
+        {
+            tracing::debug!(%error, "failed to kill PTY root after waiter spawn failure");
         }
     }
 }
@@ -236,6 +271,8 @@ impl PortablePtyBackend {
             Some(pid) => pid,
             None => return Err("PTY child did not expose a process id".to_string()),
         };
+        #[cfg(unix)]
+        child.remember_root_process_id(pid)?;
         #[cfg(windows)]
         {
             let raw_handle = match child.child().as_raw_handle() {
@@ -290,7 +327,7 @@ impl PortablePtyBackend {
             Box::new(move || {
                 #[cfg(windows)]
                 let _launch_gate = launch_gate;
-                let mut child = wait_child.into_child();
+                let mut child = wait_child;
                 let event = match child.wait() {
                     Ok(status) => PtyExit {
                         exit_code: i32::try_from(status.exit_code()).ok(),
@@ -565,10 +602,25 @@ unsafe extern "C" {
     fn kill(pid: i32, signal: i32) -> i32;
 }
 
+#[cfg(all(test, unix))]
+unsafe extern "C" {
+    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
+}
+
 #[cfg(unix)]
 fn kill_unix_process_group(process_group: i32) -> std::io::Result<()> {
     // Negative PIDs target the complete process group created by the PTY.
-    let result = unsafe { kill(-process_group, 9) };
+    kill_unix_target(-process_group)
+}
+
+#[cfg(unix)]
+fn kill_unix_process(process_id: i32) -> std::io::Result<()> {
+    kill_unix_target(process_id)
+}
+
+#[cfg(unix)]
+fn kill_unix_target(target: i32) -> std::io::Result<()> {
+    let result = unsafe { kill(target, 9) };
     if result == 0 {
         return Ok(());
     }
@@ -584,7 +636,6 @@ mod tests {
     use super::*;
     #[cfg(not(windows))]
     use std::io::{Error, ErrorKind};
-    #[cfg(not(windows))]
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::time::Duration;
 
@@ -636,6 +687,7 @@ mod tests {
     #[derive(Clone, Debug)]
     struct SetupTestChild {
         killed: Arc<std::sync::atomic::AtomicBool>,
+        panic_on_clone: bool,
     }
 
     impl portable_pty::ChildKiller for SetupTestChild {
@@ -646,6 +698,7 @@ mod tests {
         }
 
         fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+            assert!(!self.panic_on_clone, "injected child killer clone failure");
             Box::new(self.clone())
         }
     }
@@ -669,24 +722,64 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Debug)]
+    struct OrderedSetupTestChild {
+        cleanup_order: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl portable_pty::ChildKiller for OrderedSetupTestChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            self.cleanup_order.lock().unwrap().push("root");
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+            Box::new(self.clone())
+        }
+    }
+
+    impl portable_pty::Child for OrderedSetupTestChild {
+        fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+            Ok(None)
+        }
+
+        fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+            Ok(portable_pty::ExitStatus::with_exit_code(0))
+        }
+
+        fn process_id(&self) -> Option<u32> {
+            Some(42)
+        }
+
+        #[cfg(windows)]
+        fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+            None
+        }
+    }
+
     #[test]
-    fn spawned_child_guard_kills_on_setup_failure_until_waiter_owns_child() {
+    fn spawned_child_guard_kills_on_setup_failure_until_process_ownership_commits() {
         let failed_setup_killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let guard = SpawnedChildGuard::new(Box::new(SetupTestChild {
             killed: failed_setup_killed.clone(),
+            panic_on_clone: false,
         }));
         drop(guard);
         assert!(failed_setup_killed.load(std::sync::atomic::Ordering::Acquire));
 
-        let committed_killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let mut guard = SpawnedChildGuard::new(Box::new(SetupTestChild {
-            killed: committed_killed.clone(),
-        }));
-        let handoff = guard.handoff_child_to_waiter();
-        let child = handoff.into_child();
-        drop(guard);
-        drop(child);
-        assert!(!committed_killed.load(std::sync::atomic::Ordering::Acquire));
+        #[cfg(unix)]
+        {
+            let committed_killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let mut guard = SpawnedChildGuard::new(Box::new(SetupTestChild {
+                killed: committed_killed.clone(),
+                panic_on_clone: false,
+            }));
+            let child = guard.handoff_child_to_waiter();
+            let process_group = guard.commit_process_group();
+            drop(child);
+            assert!(process_group.is_none());
+            assert!(!committed_killed.load(std::sync::atomic::Ordering::Acquire));
+        }
     }
 
     #[test]
@@ -694,18 +787,130 @@ mod tests {
         let killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut guard = SpawnedChildGuard::new(Box::new(SetupTestChild {
             killed: killed.clone(),
+            panic_on_clone: false,
         }));
         let handoff = guard.handoff_child_to_waiter();
 
         let error = spawn_pty_thread_with(
             "injected-waiter-spawn-failure".to_owned(),
-            Box::new(move || drop(handoff.into_child())),
+            Box::new(move || drop(handoff)),
             |_builder, _task| Err(std::io::Error::other("injected waiter spawn failure")),
         )
         .unwrap_err();
 
         assert_eq!(error.to_string(), "injected waiter spawn failure");
+        assert!(
+            !killed.load(std::sync::atomic::Ordering::Acquire),
+            "root cleanup must remain with the tree-owning setup guard"
+        );
+        drop(guard);
         assert!(killed.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn child_killer_clone_panic_keeps_the_root_in_the_setup_guard() {
+        let killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let result = catch_unwind(AssertUnwindSafe({
+            let killed = killed.clone();
+            move || {
+                let mut guard = SpawnedChildGuard::new(Box::new(SetupTestChild {
+                    killed,
+                    panic_on_clone: true,
+                }));
+                let _child = guard.handoff_child_to_waiter();
+            }
+        }));
+
+        assert!(result.is_err());
+        assert!(killed.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn waiter_spawn_failure_sigkills_a_hup_resistant_root_without_a_process_group() {
+        let directory = tempfile::tempdir().unwrap();
+        let ready_file = directory.path().join("root-ready.txt");
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.args([
+            "-c",
+            "trap '' HUP; echo ready > \"$T4CODE_ROOT_READY\"; exec sleep 30",
+        ]);
+        command.env("T4CODE_ROOT_READY", ready_file.as_os_str());
+        let child = pair.slave.spawn_command(command).unwrap();
+        let root_pid = child.process_id().unwrap();
+        let root_pid_i32 = i32::try_from(root_pid).unwrap();
+        let mut guard = SpawnedChildGuard::new_with_process_group(child, None);
+        guard.remember_root_process_id(root_pid).unwrap();
+        drop(pair.slave);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !ready_file.is_file() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture root did not publish readiness"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let child = guard.handoff_child_to_waiter();
+        spawn_pty_thread_with(
+            "injected-hup-resistant-waiter-spawn-failure".to_owned(),
+            Box::new(move || drop(child)),
+            |_builder, _task| Err(std::io::Error::other("injected waiter spawn failure")),
+        )
+        .unwrap_err();
+
+        // SAFETY: signal zero only checks whether the fixture root still exists.
+        assert_eq!(unsafe { kill(root_pid_i32, 0) }, 0);
+        drop(guard);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let mut status = 0;
+        loop {
+            // SAFETY: the fixture root is a direct child of this test process;
+            // WNOHANG observes and reaps it only after termination.
+            let result = unsafe { waitpid(root_pid_i32, &raw mut status, 1) };
+            if result == root_pid_i32 {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                // SAFETY: the PID came from this test's fixture root.
+                unsafe { kill(root_pid_i32, 9) };
+                panic!("HUP-resistant PTY root survived waiter spawn failure");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn waiter_spawn_failure_terminates_the_tree_before_the_root() {
+        let cleanup_order = Arc::new(Mutex::new(Vec::new()));
+        let mut guard = SpawnedChildGuard::new(Box::new(OrderedSetupTestChild {
+            cleanup_order: cleanup_order.clone(),
+        }));
+        guard.observe_tree_cleanup({
+            let cleanup_order = cleanup_order.clone();
+            move || cleanup_order.lock().unwrap().push("tree")
+        });
+        let child = guard.handoff_child_to_waiter();
+
+        spawn_pty_thread_with(
+            "injected-ordered-waiter-spawn-failure".to_owned(),
+            Box::new(move || drop(child)),
+            |_builder, _task| Err(std::io::Error::other("injected waiter spawn failure")),
+        )
+        .unwrap_err();
+
+        assert!(cleanup_order.lock().unwrap().is_empty());
+        drop(guard);
+        assert_eq!(*cleanup_order.lock().unwrap(), ["tree", "root"]);
     }
 
     #[cfg(unix)]
