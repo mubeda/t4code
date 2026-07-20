@@ -103,7 +103,7 @@ describe("RPC wire fixture exporter", () => {
       "projects.list",
       "projects.remove",
     ]);
-    expect(manifest.fixtures).toHaveLength(190);
+    expect(manifest.fixtures).toHaveLength(193);
     expect(manifest.fixtures).toEqual([...manifest.fixtures].toSorted());
     expect(Object.keys(manifest.schemaFingerprints)).toHaveLength(176);
 

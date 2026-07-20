@@ -12,6 +12,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use t4code_server::diagnostics::UnavailableDesktopUiProcessObserver;
 use t4code_server::process::{configure_background_command, configure_background_std_command};
 use t4code_server::{
     DESKTOP_SHUTDOWN_PATH as SERVER_BACKEND_SHUTDOWN_PATH,
@@ -22,7 +23,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt as TokioAsyncWriteExt},
     process::{Child, Command},
-    sync::{Mutex as AsyncMutex, Notify, oneshot},
+    sync::{Mutex as AsyncMutex, Notify, oneshot, watch},
 };
 use uuid::Uuid;
 
@@ -379,6 +380,69 @@ struct BackendSlotState {
 struct BackendState {
     slots: BTreeMap<String, BackendSlotState>,
     next_run_id: u64,
+    in_flight_starts: usize,
+    lifecycle: BackendLifecycle,
+}
+
+#[derive(Debug)]
+enum BackendLifecycle {
+    Active {
+        epoch: u64,
+    },
+    Stopping {
+        epoch: u64,
+        terminate: bool,
+        completion: watch::Receiver<Option<Result<(), String>>>,
+        late_start_cleanup_error: Option<String>,
+    },
+    Stopped {
+        epoch: u64,
+        result: Result<(), String>,
+    },
+    Terminated {
+        result: Result<(), String>,
+    },
+}
+
+impl Default for BackendLifecycle {
+    fn default() -> Self {
+        Self::Active { epoch: 0 }
+    }
+}
+
+#[derive(Debug)]
+struct BackendStartPermit {
+    epoch: u64,
+    run_id: u64,
+    state: Arc<Mutex<BackendState>>,
+    start_completed: Arc<Notify>,
+}
+
+impl BackendStartPermit {
+    fn record_cleanup_error(&self, error: String) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("backend supervisor mutex poisoned");
+        if let BackendLifecycle::Stopping {
+            late_start_cleanup_error,
+            ..
+        } = &mut state.lifecycle
+        {
+            late_start_cleanup_error
+                .get_or_insert_with(|| format!("Late desktop backend cleanup failed: {error}"));
+        }
+    }
+}
+
+impl Drop for BackendStartPermit {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.state.lock() {
+            debug_assert!(state.in_flight_starts > 0);
+            state.in_flight_starts = state.in_flight_starts.saturating_sub(1);
+        }
+        self.start_completed.notify_waiters();
+    }
 }
 
 fn backend_slot_key(plan: &BackendLaunchPlan) -> String {
@@ -388,6 +452,13 @@ fn backend_slot_key(plan: &BackendLaunchPlan) -> String {
 #[derive(Debug, Clone, Default)]
 pub struct BackendSupervisor {
     state: Arc<Mutex<BackendState>>,
+    start_completed: Arc<Notify>,
+    #[cfg(test)]
+    start_publish_gate: Arc<Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>>,
+    #[cfg(test)]
+    shutdown_cleanup_reached: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    #[cfg(test)]
+    late_start_cleanup_failure: Arc<Mutex<Option<String>>>,
 }
 
 impl BackendSupervisor {
@@ -535,64 +606,323 @@ impl BackendSupervisor {
         restart: BackendRestartConfig,
         reset_restart_attempt: bool,
     ) -> Result<BackendRunConfig, String> {
+        let permit = self.begin_start(reset_restart_attempt)?;
         let (config, managed, pid) =
-            start_managed_backend(plan.clone(), readiness, self.next_run_id()?).await?;
+            start_managed_backend(plan.clone(), readiness, permit.run_id).await?;
+        #[cfg(test)]
+        self.wait_for_start_publish_gate().await;
         let mut active_plan = plan;
         active_plan.config = config.clone();
         let monitor_plan = active_plan.clone();
         let slot_key = backend_slot_key(&active_plan);
-        let (managed, previous) = {
+        let installed = {
             let mut state = self
                 .state
                 .lock()
                 .expect("backend supervisor mutex poisoned");
-            let slot = state.slots.entry(slot_key.clone()).or_default();
-            let previous = slot.backend.take();
-            slot.launch_plan = Some(active_plan);
-            slot.pid = pid;
-            slot.last_error = None;
-            slot.restart_scheduled = false;
-            if reset_restart_attempt {
-                slot.restart_attempt = 0;
+            if matches!(
+                &state.lifecycle,
+                BackendLifecycle::Active { epoch } if *epoch == permit.epoch
+            ) {
+                let slot = state.slots.entry(slot_key.clone()).or_default();
+                let previous = slot.backend.take();
+                slot.launch_plan = Some(active_plan);
+                slot.pid = pid;
+                slot.last_error = None;
+                slot.restart_scheduled = false;
+                if reset_restart_attempt {
+                    slot.restart_attempt = 0;
+                }
+                slot.backend = Some(managed.clone());
+                Some((managed.clone(), previous))
+            } else {
+                None
             }
-            slot.backend = Some(managed.clone());
-            (managed, previous)
+        };
+        let Some((managed_for_monitor, previous)) = installed else {
+            let cleanup = stop_managed_backend(managed, BackendShutdownConfig::default()).await;
+            #[cfg(test)]
+            let cleanup = self.inject_late_start_cleanup_failure(cleanup);
+            if let Err(error) = &cleanup {
+                permit.record_cleanup_error(error.clone());
+            }
+            return Err(match cleanup {
+                Ok(()) => {
+                    "Desktop backend shutdown began before startup could be published.".to_string()
+                }
+                Err(error) => format!(
+                    "Desktop backend shutdown began before startup could be published; \
+                     late backend cleanup failed: {error}"
+                ),
+            });
         };
 
         if let Some(previous) = previous {
             let _ = stop_managed_backend(previous, BackendShutdownConfig::default()).await;
         }
 
-        spawn_backend_monitor(self.clone(), managed, monitor_plan, readiness, restart);
+        spawn_backend_monitor(
+            self.clone(),
+            managed_for_monitor,
+            monitor_plan,
+            readiness,
+            restart,
+        );
 
         Ok(config)
     }
 
+    fn begin_start(&self, allow_restart_after_stop: bool) -> Result<BackendStartPermit, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|error| format!("backend supervisor mutex poisoned: {error}"))?;
+        let in_flight_starts = state
+            .in_flight_starts
+            .checked_add(1)
+            .ok_or_else(|| "Too many desktop backend starts are in flight.".to_string())?;
+        let epoch = match &state.lifecycle {
+            BackendLifecycle::Active { epoch } => *epoch,
+            BackendLifecycle::Stopped {
+                epoch,
+                result: Ok(()),
+            } if allow_restart_after_stop => epoch.saturating_add(1),
+            BackendLifecycle::Stopped {
+                result: Err(error), ..
+            } if allow_restart_after_stop => {
+                return Err(format!(
+                    "Desktop backend cleanup failed; restart is unsafe: {error}"
+                ));
+            }
+            BackendLifecycle::Stopping { .. } => {
+                return Err("Desktop backend shutdown is still in progress.".to_string());
+            }
+            BackendLifecycle::Stopped { .. } => {
+                return Err(
+                    "Desktop backend has stopped; automatic restart was cancelled.".to_string(),
+                );
+            }
+            BackendLifecycle::Terminated { .. } => {
+                return Err("Desktop backend is terminating and cannot be restarted.".to_string());
+            }
+        };
+        if matches!(state.lifecycle, BackendLifecycle::Stopped { .. }) {
+            state.lifecycle = BackendLifecycle::Active { epoch };
+        }
+        let run_id = state.next_run_id;
+        state.next_run_id = state.next_run_id.saturating_add(1);
+        state.in_flight_starts = in_flight_starts;
+        Ok(BackendStartPermit {
+            epoch,
+            run_id,
+            state: self.state.clone(),
+            start_completed: self.start_completed.clone(),
+        })
+    }
+
+    async fn wait_for_in_flight_starts(&self) {
+        loop {
+            let notified = self.start_completed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self
+                .state
+                .lock()
+                .expect("backend supervisor mutex poisoned")
+                .in_flight_starts
+                == 0
+            {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    #[cfg(test)]
+    fn set_start_publish_gate(&self, reached: oneshot::Sender<()>, release: oneshot::Receiver<()>) {
+        *self
+            .start_publish_gate
+            .lock()
+            .expect("backend start test gate mutex poisoned") = Some((reached, release));
+    }
+
+    #[cfg(test)]
+    async fn wait_for_start_publish_gate(&self) {
+        let gate = self
+            .start_publish_gate
+            .lock()
+            .expect("backend start test gate mutex poisoned")
+            .take();
+        if let Some((reached, release)) = gate {
+            let _ = reached.send(());
+            let _ = release.await;
+        }
+    }
+
+    #[cfg(test)]
+    fn set_shutdown_cleanup_reached(&self, reached: oneshot::Sender<()>) {
+        *self
+            .shutdown_cleanup_reached
+            .lock()
+            .expect("backend shutdown test notification mutex poisoned") = Some(reached);
+    }
+
+    #[cfg(test)]
+    fn notify_shutdown_cleanup_reached(&self) {
+        if let Some(reached) = self
+            .shutdown_cleanup_reached
+            .lock()
+            .expect("backend shutdown test notification mutex poisoned")
+            .take()
+        {
+            let _ = reached.send(());
+        }
+    }
+
+    #[cfg(test)]
+    fn set_late_start_cleanup_failure(&self, error: impl Into<String>) {
+        *self
+            .late_start_cleanup_failure
+            .lock()
+            .expect("late backend cleanup test failure mutex poisoned") = Some(error.into());
+    }
+
+    #[cfg(test)]
+    fn inject_late_start_cleanup_failure(&self, cleanup: Result<(), String>) -> Result<(), String> {
+        match self
+            .late_start_cleanup_failure
+            .lock()
+            .expect("late backend cleanup test failure mutex poisoned")
+            .take()
+        {
+            Some(error) => Err(error),
+            None => cleanup,
+        }
+    }
+
     pub async fn stop(&self, shutdown: BackendShutdownConfig) -> Result<(), String> {
-        let backends = {
+        self.stop_inner(shutdown, false).await
+    }
+
+    pub(crate) async fn stop_for_exit(
+        &self,
+        shutdown: BackendShutdownConfig,
+    ) -> Result<(), String> {
+        self.stop_inner(shutdown, true).await
+    }
+
+    async fn stop_inner(
+        &self,
+        shutdown: BackendShutdownConfig,
+        terminate: bool,
+    ) -> Result<(), String> {
+        let (mut completion, pending_shutdown) = {
             let mut state = self
                 .state
                 .lock()
                 .expect("backend supervisor mutex poisoned");
-            let backends = state
-                .slots
-                .values_mut()
-                .filter_map(|slot| slot.backend.take())
-                .collect::<Vec<_>>();
-            state.slots.clear();
-            backends
+            if let BackendLifecycle::Stopping {
+                terminate: active_terminate,
+                completion,
+                ..
+            } = &mut state.lifecycle
+            {
+                *active_terminate |= terminate;
+                (completion.clone(), None)
+            } else if let BackendLifecycle::Active { epoch } = state.lifecycle {
+                let shutdown_epoch = epoch.saturating_add(1);
+                let (completion_tx, completion_rx) = watch::channel(None);
+                state.lifecycle = BackendLifecycle::Stopping {
+                    epoch: shutdown_epoch,
+                    terminate,
+                    completion: completion_rx.clone(),
+                    late_start_cleanup_error: None,
+                };
+
+                let backends = state
+                    .slots
+                    .values_mut()
+                    .filter_map(|slot| slot.backend.take())
+                    .collect::<Vec<_>>();
+                state.slots.clear();
+                (
+                    completion_rx,
+                    Some((shutdown_epoch, backends, completion_tx)),
+                )
+            } else {
+                let completed_result = match &state.lifecycle {
+                    BackendLifecycle::Stopped { result, .. }
+                    | BackendLifecycle::Terminated { result } => result.clone(),
+                    BackendLifecycle::Active { .. } | BackendLifecycle::Stopping { .. } => {
+                        unreachable!("active and stopping lifecycle handled above")
+                    }
+                };
+                if terminate && matches!(state.lifecycle, BackendLifecycle::Stopped { .. }) {
+                    state.lifecycle = BackendLifecycle::Terminated {
+                        result: completed_result.clone(),
+                    };
+                }
+                let (_completion_tx, completion_rx) = watch::channel(Some(completed_result));
+                (completion_rx, None)
+            }
         };
 
-        let mut first_error = None;
-        for backend in backends {
-            if let Err(error) = stop_managed_backend(backend, shutdown).await
-                && first_error.is_none()
-            {
-                first_error = Some(error);
-            }
+        if let Some((shutdown_epoch, backends, completion_tx)) = pending_shutdown {
+            let supervisor = self.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut first_error = None;
+                for backend in backends {
+                    if let Err(error) = stop_managed_backend(backend, shutdown).await
+                        && first_error.is_none()
+                    {
+                        first_error = Some(error);
+                    }
+                }
+                #[cfg(test)]
+                supervisor.notify_shutdown_cleanup_reached();
+                supervisor.wait_for_in_flight_starts().await;
+
+                {
+                    let mut state = supervisor
+                        .state
+                        .lock()
+                        .expect("backend supervisor mutex poisoned");
+                    if let BackendLifecycle::Stopping {
+                        epoch,
+                        terminate,
+                        late_start_cleanup_error,
+                        ..
+                    } = &mut state.lifecycle
+                        && *epoch == shutdown_epoch
+                    {
+                        let result = match (first_error, late_start_cleanup_error.take()) {
+                            (None, None) => Ok(()),
+                            (Some(error), None) | (None, Some(error)) => Err(error),
+                            (Some(error), Some(late_error)) => {
+                                Err(format!("{error}; {late_error}"))
+                            }
+                        };
+                        let terminate = *terminate;
+                        let _ = completion_tx.send(Some(result.clone()));
+                        state.lifecycle = if terminate {
+                            BackendLifecycle::Terminated { result }
+                        } else {
+                            BackendLifecycle::Stopped {
+                                epoch: *epoch,
+                                result,
+                            }
+                        };
+                    }
+                }
+            });
         }
 
-        first_error.map_or(Ok(()), Err)
+        completion
+            .wait_for(|result| result.is_some())
+            .await
+            .map_err(|_| "Desktop backend shutdown task ended without a result.".to_string())?
+            .clone()
+            .expect("shutdown completion was checked above")
     }
 
     fn restart_still_desired(&self, slot_key: &str) -> bool {
@@ -670,6 +1000,7 @@ impl BackendSupervisor {
         slot.restart_scheduled = false;
     }
 
+    #[cfg(test)]
     fn next_run_id(&self) -> Result<u64, String> {
         let mut state = self
             .state
@@ -678,6 +1009,49 @@ impl BackendSupervisor {
         let run_id = state.next_run_id;
         state.next_run_id = state.next_run_id.saturating_add(1);
         Ok(run_id)
+    }
+}
+
+pub(crate) async fn shutdown_backend_after_termination(
+    backend: BackendSupervisor,
+    termination: impl std::future::Future<Output = ()> + Send,
+    request_exit: impl FnOnce() + Send,
+) {
+    termination.await;
+    if let Err(error) = backend
+        .stop_for_exit(BackendShutdownConfig::default())
+        .await
+    {
+        tracing::warn!("failed to stop Tauri desktop backend after termination signal: {error}");
+    }
+    request_exit();
+}
+
+#[cfg(unix)]
+pub(crate) fn install_termination_signal_handler<R: Runtime>(
+    app: AppHandle<R>,
+    backend: BackendSupervisor,
+) {
+    tauri::async_runtime::spawn(shutdown_backend_after_termination(
+        backend,
+        wait_for_termination_signal(),
+        move || app.exit(0),
+    ));
+}
+
+#[cfg(unix)]
+async fn wait_for_termination_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut terminate = match signal(SignalKind::terminate()) {
+        Ok(terminate) => terminate,
+        Err(error) => {
+            tracing::error!("failed to install desktop termination handler: {error}");
+            std::future::pending().await
+        }
+    };
+    if terminate.recv().await.is_none() {
+        std::future::pending().await
     }
 }
 
@@ -704,9 +1078,12 @@ async fn start_managed_backend(
     match &plan.target {
         BackendLaunchTarget::InProcess { base_dir } => {
             let server_config = server_config_for_launch(base_dir.clone(), &plan.config);
-            let handle = ServerRuntime::start(server_config)
-                .await
-                .map_err(|error| format!("Could not start in-process desktop backend: {error}"))?;
+            let handle = ServerRuntime::start_with_ui_process_observer(
+                server_config,
+                Arc::new(UnavailableDesktopUiProcessObserver),
+            )
+            .await
+            .map_err(|error| format!("Could not start in-process desktop backend: {error}"))?;
 
             let mut config = plan.config.clone();
             config.port = handle.local_addr().port();
@@ -2313,6 +2690,356 @@ mod tests {
             .expect("repeated empty stop should succeed");
     }
 
+    #[tokio::test]
+    async fn concurrent_stop_callers_wait_for_the_same_cleanup_completion() {
+        let supervisor = BackendSupervisor::new();
+        let join_result = Arc::new(AsyncMutex::new(Some(Err(
+            "shared cleanup failure".to_string()
+        ))));
+        let runtime = ManagedBackendRuntime {
+            run_id: 77,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            shutdown: Arc::new(Mutex::new(None)),
+            completion: Arc::new(Notify::new()),
+            join_result: join_result.clone(),
+        };
+        let cleanup_gate = runtime.join_result.lock().await;
+        {
+            let mut state = supervisor
+                .state
+                .lock()
+                .expect("backend supervisor mutex poisoned");
+            state.slots.insert(
+                PRIMARY_LOCAL_ENVIRONMENT_ID.to_owned(),
+                BackendSlotState {
+                    backend: Some(ManagedBackend::Runtime(Box::new(runtime.clone()))),
+                    ..BackendSlotState::default()
+                },
+            );
+        }
+
+        let first_supervisor = supervisor.clone();
+        let first_stop = tokio::spawn(async move {
+            first_supervisor
+                .stop(BackendShutdownConfig::default())
+                .await
+        });
+        while !runtime.stop_requested.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+
+        let second_supervisor = supervisor.clone();
+        let second_stop = tokio::spawn(async move {
+            second_supervisor
+                .stop(BackendShutdownConfig::default())
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !second_stop.is_finished(),
+            "a concurrent stop must wait for the cleanup already in progress"
+        );
+
+        drop(cleanup_gate);
+        let first_error = first_stop
+            .await
+            .expect("first stop task should join")
+            .expect_err("first stop should surface the cleanup failure");
+        let second_error = second_stop
+            .await
+            .expect("second stop task should join")
+            .expect_err("second stop should share the cleanup failure");
+        assert_eq!(first_error, "shared cleanup failure");
+        assert_eq!(second_error, first_error);
+        let later_error = supervisor
+            .stop(BackendShutdownConfig::default())
+            .await
+            .expect_err("later stop callers should retain the completed cleanup failure");
+        assert_eq!(later_error, first_error);
+        assert!(matches!(
+            supervisor
+                .state
+                .lock()
+                .expect("backend supervisor mutex poisoned")
+                .lifecycle,
+            BackendLifecycle::Stopped { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn failed_shutdown_does_not_allow_an_explicit_restart() {
+        let supervisor = BackendSupervisor::new();
+        let runtime = ManagedBackendRuntime {
+            run_id: 78,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            shutdown: Arc::new(Mutex::new(None)),
+            completion: Arc::new(Notify::new()),
+            join_result: Arc::new(AsyncMutex::new(Some(Err(
+                "restart-blocking cleanup failure".to_string(),
+            )))),
+        };
+        supervisor
+            .state
+            .lock()
+            .expect("backend supervisor mutex poisoned")
+            .slots
+            .insert(
+                PRIMARY_LOCAL_ENVIRONMENT_ID.to_owned(),
+                BackendSlotState {
+                    backend: Some(ManagedBackend::Runtime(Box::new(runtime))),
+                    ..BackendSlotState::default()
+                },
+            );
+
+        let shutdown_error = supervisor
+            .stop(BackendShutdownConfig::default())
+            .await
+            .expect_err("shutdown should surface the cleanup failure");
+        assert_eq!(shutdown_error, "restart-blocking cleanup failure");
+        let restart_error = supervisor
+            .begin_start(true)
+            .expect_err("failed shutdown must not open a new lifecycle");
+        assert!(restart_error.contains("cleanup"), "{restart_error}");
+    }
+
+    #[tokio::test]
+    async fn start_racing_stop_cleans_late_backend_without_publishing_it() {
+        let temp = tempfile::tempdir().expect("tempdir should open");
+        let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .expect("temporary port should bind")
+            .local_addr()
+            .expect("temporary listener should have an address")
+            .port();
+        let supervisor = BackendSupervisor::new();
+        let (publish_reached, wait_for_publish) = oneshot::channel();
+        let (allow_publish, publish_release) = oneshot::channel();
+        supervisor.set_start_publish_gate(publish_reached, publish_release);
+        let (cleanup_reached, wait_for_cleanup) = oneshot::channel();
+        supervisor.set_shutdown_cleanup_reached(cleanup_reached);
+        let plan = BackendLaunchPlan::local(temp.path().to_path_buf(), local_test_config(port));
+
+        let start_supervisor = supervisor.clone();
+        let start = tokio::spawn(async move {
+            start_supervisor
+                .start_with_options(
+                    plan,
+                    BackendReadinessConfig::default(),
+                    BackendRestartConfig::default(),
+                )
+                .await
+        });
+        wait_for_publish
+            .await
+            .expect("start should reach the pre-publish gate");
+
+        let stop_supervisor = supervisor.clone();
+        let stop =
+            tokio::spawn(
+                async move { stop_supervisor.stop(BackendShutdownConfig::default()).await },
+            );
+        wait_for_cleanup
+            .await
+            .expect("shutdown should finish cleaning currently published backends");
+        let shutdown_completed_before_start_cleanup = matches!(
+            supervisor
+                .state
+                .lock()
+                .expect("backend supervisor mutex poisoned")
+                .lifecycle,
+            BackendLifecycle::Stopped { .. } | BackendLifecycle::Terminated { .. }
+        );
+        allow_publish
+            .send(())
+            .expect("blocked start should still be waiting");
+        let start_result = start.await.expect("start task should join");
+        stop.await
+            .expect("stop task should join")
+            .expect("stop should succeed after late startup cleanup");
+        if start_result.is_ok() {
+            supervisor
+                .stop(BackendShutdownConfig::default())
+                .await
+                .expect("RED cleanup should stop a backend published after shutdown");
+        }
+
+        assert!(
+            !shutdown_completed_before_start_cleanup,
+            "stop must wait for starts that began before shutdown"
+        );
+        let error = start_result.expect_err("start begun before stop must not publish afterward");
+        assert!(error.contains("shutdown"), "{error}");
+        assert!(
+            supervisor
+                .state
+                .lock()
+                .expect("backend supervisor mutex poisoned")
+                .slots
+                .is_empty(),
+            "late-created backend must not remain installed"
+        );
+        assert!(
+            tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+                .await
+                .is_err(),
+            "late-created backend must be cleaned before start returns"
+        );
+    }
+
+    #[tokio::test]
+    async fn late_start_cleanup_failure_is_shared_retained_and_blocks_restart() {
+        let temp = tempfile::tempdir().expect("tempdir should open");
+        let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .expect("temporary port should bind")
+            .local_addr()
+            .expect("temporary listener should have an address")
+            .port();
+        let supervisor = BackendSupervisor::new();
+        let (publish_reached, wait_for_publish) = oneshot::channel();
+        let (allow_publish, publish_release) = oneshot::channel();
+        supervisor.set_start_publish_gate(publish_reached, publish_release);
+        let (cleanup_reached, wait_for_cleanup) = oneshot::channel();
+        supervisor.set_shutdown_cleanup_reached(cleanup_reached);
+        supervisor.set_late_start_cleanup_failure("injected late cleanup failure");
+        let plan = BackendLaunchPlan::local(temp.path().to_path_buf(), local_test_config(port));
+
+        let start_supervisor = supervisor.clone();
+        let start = tokio::spawn(async move {
+            start_supervisor
+                .start_with_options(
+                    plan,
+                    BackendReadinessConfig::default(),
+                    BackendRestartConfig::default(),
+                )
+                .await
+        });
+        wait_for_publish
+            .await
+            .expect("start should reach the pre-publish gate");
+
+        let first_stop_supervisor = supervisor.clone();
+        let first_stop = tokio::spawn(async move {
+            first_stop_supervisor
+                .stop(BackendShutdownConfig::default())
+                .await
+        });
+        wait_for_cleanup
+            .await
+            .expect("shutdown should reach its in-flight start wait");
+
+        let second_stop_supervisor = supervisor.clone();
+        let second_stop = tokio::spawn(async move {
+            second_stop_supervisor
+                .stop(BackendShutdownConfig::default())
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !first_stop.is_finished() && !second_stop.is_finished(),
+            "all stop callers must wait for late startup cleanup"
+        );
+
+        allow_publish
+            .send(())
+            .expect("blocked start should still be waiting");
+        let start_error = start
+            .await
+            .expect("start task should join")
+            .expect_err("start must surface its late cleanup failure");
+        assert!(
+            start_error.contains("injected late cleanup failure"),
+            "{start_error}"
+        );
+
+        let first_error = first_stop
+            .await
+            .expect("first stop task should join")
+            .expect_err("stop must surface the late cleanup failure");
+        let second_error = second_stop
+            .await
+            .expect("second stop task should join")
+            .expect_err("concurrent stop must share the late cleanup failure");
+        assert!(
+            first_error.contains("injected late cleanup failure"),
+            "{first_error}"
+        );
+        assert_eq!(second_error, first_error);
+
+        let retained_error = supervisor
+            .stop(BackendShutdownConfig::default())
+            .await
+            .expect_err("later stop callers must retain the late cleanup failure");
+        assert_eq!(retained_error, first_error);
+        let restart_error = supervisor
+            .begin_start(true)
+            .expect_err("a late cleanup failure must block restart");
+        assert!(restart_error.contains("cleanup"), "{restart_error}");
+        assert!(
+            supervisor
+                .state
+                .lock()
+                .expect("backend supervisor mutex poisoned")
+                .slots
+                .is_empty(),
+            "late-created backend must not remain installed"
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_start_after_completed_stop_begins_a_new_lifecycle() {
+        let temp = tempfile::tempdir().expect("tempdir should open");
+        let supervisor = BackendSupervisor::new();
+        supervisor
+            .stop(BackendShutdownConfig::default())
+            .await
+            .expect("initial lifecycle should stop");
+
+        let config = supervisor
+            .start(BackendLaunchPlan::local(
+                temp.path().to_path_buf(),
+                local_test_config(0),
+            ))
+            .await
+            .expect("an explicit start after completed stop should begin a new lifecycle");
+        assert!(
+            tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, config.port))
+                .await
+                .is_ok(),
+            "explicitly restarted backend should be reachable"
+        );
+
+        supervisor
+            .stop(BackendShutdownConfig::default())
+            .await
+            .expect("restarted lifecycle should stop cleanly");
+    }
+
+    #[tokio::test]
+    async fn terminal_stop_rejects_an_early_late_start() {
+        let temp = tempfile::tempdir().expect("tempdir should open");
+        let supervisor = BackendSupervisor::new();
+        supervisor
+            .stop_for_exit(BackendShutdownConfig::default())
+            .await
+            .expect("early terminal stop should succeed");
+
+        let error = supervisor
+            .start(BackendLaunchPlan::local(
+                temp.path().to_path_buf(),
+                local_test_config(0),
+            ))
+            .await
+            .expect_err("startup must not reopen after terminal shutdown");
+        assert!(error.contains("terminating"), "{error}");
+        assert!(
+            supervisor
+                .state
+                .lock()
+                .expect("backend supervisor mutex poisoned")
+                .slots
+                .is_empty()
+        );
+    }
+
     #[test]
     fn parses_wsl_distribution_list_with_default_marker() {
         let entries = parse_wsl_distro_entries(
@@ -3090,6 +3817,68 @@ exit /b 9
     }
 
     #[tokio::test]
+    async fn termination_waits_for_in_process_backend_cleanup_before_exit() {
+        let temp = tempfile::tempdir().expect("tempdir should open");
+        let (handle, config) = start_test_server(temp.path()).await;
+        let backend = BackendSupervisor::new();
+        let runtime = ManagedBackendRuntime::new(42, handle);
+        {
+            let mut state = backend
+                .state
+                .lock()
+                .expect("backend supervisor mutex poisoned");
+            state.slots.insert(
+                PRIMARY_LOCAL_ENVIRONMENT_ID.to_owned(),
+                BackendSlotState {
+                    backend: Some(ManagedBackend::Runtime(Box::new(runtime))),
+                    ..BackendSlotState::default()
+                },
+            );
+        }
+        let (terminate, termination) = oneshot::channel();
+        let exit_requested = Arc::new(AtomicBool::new(false));
+        let exit_requested_task = exit_requested.clone();
+
+        let shutdown = tokio::spawn(shutdown_backend_after_termination(
+            backend.clone(),
+            async move {
+                let _ = termination.await;
+            },
+            move || exit_requested_task.store(true, Ordering::SeqCst),
+        ));
+        tokio::task::yield_now().await;
+        assert!(
+            !exit_requested.load(Ordering::SeqCst),
+            "exit must not be requested before termination"
+        );
+
+        terminate.send(()).expect("termination should be observed");
+        shutdown.await.expect("termination task should join");
+
+        assert!(exit_requested.load(Ordering::SeqCst));
+        assert!(
+            backend
+                .state
+                .lock()
+                .expect("backend supervisor mutex poisoned")
+                .slots
+                .is_empty(),
+            "backend state must be drained before exit"
+        );
+        let address = format!("{}:{}", config.local_host, config.port);
+        assert!(
+            tokio::net::TcpStream::connect(address).await.is_err(),
+            "in-process server must stop before exit is requested"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn termination_signal_listener_can_be_created_without_tokio_reactor() {
+        let _listener = wait_for_termination_signal();
+    }
+
+    #[tokio::test]
     async fn in_process_desktop_runtime_serves_production_rpc_domains() {
         let state = tempfile::tempdir().expect("state tempdir should open");
         let workspace = tempfile::tempdir().expect("workspace tempdir should open");
@@ -3163,13 +3952,16 @@ exit /b 9
 
         let cwd = workspace.path().to_string_lossy();
         let initialized = request_rpc(&mut socket, 100, "vcs.init", json!({ "cwd": cwd })).await;
-        assert!(matches!(
-            initialized,
-            ServerMessage::Exit {
-                exit: RpcExit::Success { .. },
-                ..
-            }
-        ));
+        assert!(
+            matches!(
+                &initialized,
+                ServerMessage::Exit {
+                    exit: RpcExit::Success { .. },
+                    ..
+                }
+            ),
+            "vcs.init should succeed, got {initialized:?}"
+        );
         let refs = request_rpc(
             &mut socket,
             101,
@@ -3359,34 +4151,17 @@ exit /b 9
         let bootstrap_path = temp.path().join("bootstrap.txt");
         let shutdown_signal_path = temp.path().join("shutdown.signal");
         let shutdown_observed_path = temp.path().join("shutdown-observed.txt");
-        let shutdown_signal_name = PathBuf::from(
-            shutdown_signal_path
-                .file_name()
-                .expect("shutdown signal should have a file name"),
-        );
         let (port, requests, server) =
             spawn_external_backend_http_server(shutdown_signal_path.clone());
         let script = format!(
             r#"
-$watcher = [IO.FileSystemWatcher]::new({}, {})
-$sourceIdentifier = 't4code-shutdown-' + [Guid]::NewGuid().ToString('N')
-[void](Register-ObjectEvent -InputObject $watcher -EventName Created -SourceIdentifier $sourceIdentifier)
-$watcher.EnableRaisingEvents = $true
-try {{
-  $bootstrap = [Console]::In.ReadToEnd()
-  [IO.File]::WriteAllText({}, $bootstrap)
-  if (-not [IO.File]::Exists({})) {{
-    [void](Wait-Event -SourceIdentifier $sourceIdentifier)
-  }}
-  [IO.File]::WriteAllText({}, 'shutdown-observed')
-}} finally {{
-  $watcher.EnableRaisingEvents = $false
-  Unregister-Event -SourceIdentifier $sourceIdentifier -ErrorAction SilentlyContinue
-  $watcher.Dispose()
+$bootstrap = [Console]::In.ReadToEnd()
+[IO.File]::WriteAllText({}, $bootstrap)
+while (-not [IO.File]::Exists({})) {{
+  Start-Sleep -Milliseconds 10
 }}
+[IO.File]::WriteAllText({}, 'shutdown-observed')
 "#,
-            powershell_string_literal(temp.path()),
-            powershell_string_literal(&shutdown_signal_name),
             powershell_string_literal(&bootstrap_path),
             powershell_string_literal(&shutdown_signal_path),
             powershell_string_literal(&shutdown_observed_path),

@@ -26,7 +26,15 @@ describe("statusBarFormat", () => {
     expect(formatMemoryBytes(736_300_000)).toBe("702.2 MB");
     expect(formatMemoryBytes(1_610_612_736)).toBe("1.5 GB");
     expect(formatCpuPercent(3.456)).toBe("3.5%");
+    expect(formatCpuPercent(-3.456)).toBe("0.0%");
   });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    "formats non-finite CPU metrics as unavailable",
+    (cpuPercent) => {
+      expect(formatCpuPercent(cpuPercent)).toBe("Unavailable");
+    },
+  );
 
   it("uses Orca-style bar colors based on remaining quota", () => {
     expect(providerUsageBarColorClass(10)).toContain("emerald");

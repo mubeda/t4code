@@ -2,10 +2,32 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+pub const PROCESS_CLAIM_LABEL_MAX_SCALARS: usize = 80;
+pub const PROCESS_COMMAND_MAX_SCALARS: usize = 512;
+
+#[must_use]
+pub fn bound_diagnostic_string(value: &str, maximum_scalars: usize) -> String {
+    value.chars().take(maximum_scalars).collect()
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ProcessIdentity {
+    pub pid: u32,
+    pub started_at: u64,
+}
+
+impl ProcessIdentity {
+    #[must_use]
+    pub fn key(self) -> String {
+        format!("{}:{}", self.pid, self.started_at)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessRow {
     pub pid: u32,
+    pub started_at: u64,
     pub ppid: u32,
     pub pgid: Option<i32>,
     pub status: String,
@@ -21,6 +43,7 @@ impl ProcessRow {
     pub fn fixture(pid: u32, ppid: u32, command: impl Into<String>) -> Self {
         Self {
             pid,
+            started_at: 0,
             ppid,
             pgid: None,
             status: "Run".to_string(),
@@ -31,6 +54,117 @@ impl ProcessRow {
             command: command.into(),
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProcessTreeMetadata {
+    pub ppid: u32,
+    pub pgid: Option<i32>,
+    pub status: String,
+    pub elapsed: String,
+    pub command: String,
+    pub depth: usize,
+    pub child_pids: Vec<u32>,
+}
+
+#[must_use]
+pub fn process_tree_metadata(
+    rows: &[ProcessRow],
+    identities: impl IntoIterator<Item = ProcessIdentity>,
+) -> HashMap<ProcessIdentity, ProcessTreeMetadata> {
+    let included = identities.into_iter().collect::<HashSet<_>>();
+    let rows_by_identity = rows
+        .iter()
+        .map(|row| {
+            (
+                ProcessIdentity {
+                    pid: row.pid,
+                    started_at: row.started_at,
+                },
+                row,
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let identities_by_pid = included
+        .iter()
+        .copied()
+        .map(|identity| (identity.pid, identity))
+        .collect::<HashMap<_, _>>();
+    let mut children_by_identity = HashMap::<ProcessIdentity, Vec<u32>>::new();
+    for child in &included {
+        let Some(row) = rows_by_identity.get(child) else {
+            continue;
+        };
+        let Some(parent) = identities_by_pid.get(&row.ppid).copied() else {
+            continue;
+        };
+        if parent.started_at <= child.started_at {
+            children_by_identity
+                .entry(parent)
+                .or_default()
+                .push(child.pid);
+        }
+    }
+    for child_pids in children_by_identity.values_mut() {
+        child_pids.sort_unstable();
+    }
+    let mut depths = HashMap::new();
+
+    included
+        .iter()
+        .filter_map(|identity| {
+            let row = rows_by_identity.get(identity)?;
+            let depth = process_depth(
+                *identity,
+                &rows_by_identity,
+                &identities_by_pid,
+                &mut depths,
+                &mut HashSet::new(),
+            );
+            Some((
+                *identity,
+                ProcessTreeMetadata {
+                    ppid: row.ppid,
+                    pgid: row.pgid,
+                    status: row.status.clone(),
+                    elapsed: row.elapsed.clone(),
+                    command: row.command.clone(),
+                    depth,
+                    child_pids: children_by_identity
+                        .get(identity)
+                        .cloned()
+                        .unwrap_or_default(),
+                },
+            ))
+        })
+        .collect()
+}
+
+fn process_depth(
+    identity: ProcessIdentity,
+    rows_by_identity: &HashMap<ProcessIdentity, &ProcessRow>,
+    identities_by_pid: &HashMap<u32, ProcessIdentity>,
+    memo: &mut HashMap<ProcessIdentity, usize>,
+    visiting: &mut HashSet<ProcessIdentity>,
+) -> usize {
+    if let Some(depth) = memo.get(&identity) {
+        return *depth;
+    }
+    if !visiting.insert(identity) {
+        return 0;
+    }
+    let depth = rows_by_identity
+        .get(&identity)
+        .and_then(|row| identities_by_pid.get(&row.ppid))
+        .copied()
+        .filter(|parent| parent.started_at <= identity.started_at)
+        .map_or(0, |parent| {
+            process_depth(parent, rows_by_identity, identities_by_pid, memo, visiting)
+                .saturating_add(1)
+        });
+    visiting.remove(&identity);
+    memo.insert(identity, depth);
+    depth
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -132,65 +266,6 @@ pub struct ProcessDiagnosticsResult {
     pub total_rss_bytes: u64,
     pub total_cpu_percent: f64,
     pub processes: Vec<DescendantEntry>,
-    pub error: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ProcessSample {
-    pub sampled_at_ms: i128,
-    pub process_key: String,
-    pub pid: u32,
-    pub ppid: u32,
-    pub command: String,
-    pub cpu_percent: f64,
-    pub cpu_core_percent: f64,
-    pub rss_bytes: u64,
-    pub depth: usize,
-    pub is_server_root: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProcessResourceBucket {
-    pub started_at_ms: i128,
-    pub ended_at_ms: i128,
-    pub avg_cpu_percent: f64,
-    pub max_cpu_percent: f64,
-    pub max_rss_bytes: u64,
-    pub max_process_count: usize,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProcessResourceSummary {
-    pub process_key: String,
-    pub pid: u32,
-    pub ppid: u32,
-    pub command: String,
-    pub depth: usize,
-    pub is_server_root: bool,
-    pub first_seen_at_ms: i128,
-    pub last_seen_at_ms: i128,
-    pub current_cpu_percent: f64,
-    pub avg_cpu_percent: f64,
-    pub max_cpu_percent: f64,
-    pub cpu_seconds_approx: f64,
-    pub current_rss_bytes: u64,
-    pub max_rss_bytes: u64,
-    pub sample_count: usize,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProcessResourceHistory {
-    pub read_at_ms: i128,
-    pub window_ms: u64,
-    pub bucket_ms: u64,
-    pub sample_interval_ms: u64,
-    pub retained_sample_count: usize,
-    pub total_cpu_seconds_approx: f64,
-    pub buckets: Vec<ProcessResourceBucket>,
-    pub top_processes: Vec<ProcessResourceSummary>,
     pub error: Option<String>,
 }
 

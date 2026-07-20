@@ -19,6 +19,7 @@ import ProjectScriptsControl, {
 } from "../ProjectScriptsControl";
 import { ChatHeaderPanelMenu } from "./ChatHeaderPanelMenu";
 import { OpenInPicker } from "./OpenInPicker";
+import { type ProviderTerminalAction } from "./providerTerminalActions";
 import { usePrimaryEnvironmentId } from "../../state/environments";
 import { cn } from "~/lib/utils";
 
@@ -40,6 +41,7 @@ interface ChatHeaderProps {
   canCreatePanel: boolean;
   onCreateChatPanel: (entry: ProviderInstanceEntry) => void;
   onOpenTerminalPanel: () => void;
+  onOpenProviderTerminalPanel: (action: ProviderTerminalAction) => void;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<ProjectScriptActionResult>;
   onUpdateProjectScript: (
@@ -79,6 +81,7 @@ export const ChatHeader = memo(function ChatHeader({
   canCreatePanel,
   onCreateChatPanel,
   onOpenTerminalPanel,
+  onOpenProviderTerminalPanel,
   onRunProjectScript,
   onAddProjectScript,
   onUpdateProjectScript,
@@ -123,6 +126,7 @@ export const ChatHeader = memo(function ChatHeader({
           canCreatePanel={canCreatePanel}
           onCreateChatPanel={onCreateChatPanel}
           onOpenTerminalPanel={onOpenTerminalPanel}
+          onOpenProviderTerminalPanel={onOpenProviderTerminalPanel}
           onAddCustomAction={() => setAddDialogRequestId((id) => id + 1)}
         />
         {activeProjectScripts && (

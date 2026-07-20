@@ -1,26 +1,20 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     future::Future,
     pin::Pin,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::Duration,
+    sync::Arc,
+    time::{Duration, Instant},
 };
 
 use thiserror::Error;
 use time::OffsetDateTime;
-use tokio::sync::{Mutex, Notify};
-use tokio_util::sync::CancellationToken;
+use tokio::sync::{Mutex, RwLock};
 
 use super::{
-    ProcessResourceBucket, ProcessResourceHistory, ProcessResourceSummary, ProcessRow,
-    ProcessSample, build_descendant_entries,
+    AttributedProcessSample, AttributedProcessSnapshot, ProcessResourceHistory, ProcessRow,
+    ResourceSampler,
+    history::{aggregate_history, trim_samples},
 };
-
-const RETENTION: Duration = Duration::from_secs(60 * 60);
-const MAX_RETAINED_SAMPLES: usize = 20_000;
 
 #[derive(Debug, Error)]
 pub enum SamplingError {
@@ -36,381 +30,559 @@ pub trait ProcessSampler: std::fmt::Debug + Send + Sync + 'static {
 
 #[derive(Debug, Default)]
 struct MonitorState {
-    samples: VecDeque<ProcessSample>,
+    current: Option<Arc<AttributedProcessSnapshot>>,
+    samples: VecDeque<Arc<AttributedProcessSample>>,
     last_error: Option<String>,
+    last_attempt: Option<Instant>,
 }
 
-#[derive(Debug)]
-struct Demand {
-    count: AtomicUsize,
-    changed: Notify,
+#[derive(Clone, Debug)]
+pub struct CurrentProcessDiagnostics {
+    pub snapshot: Option<Arc<AttributedProcessSnapshot>>,
+    pub error: Option<String>,
 }
 
-#[derive(Debug)]
-pub struct SamplingLease {
-    demand: Arc<Demand>,
+trait MonitorClock: std::fmt::Debug + Send + Sync + 'static {
+    fn now(&self) -> Instant;
 }
 
-impl Drop for SamplingLease {
-    fn drop(&mut self) {
-        self.demand.count.fetch_sub(1, Ordering::AcqRel);
-        self.demand.changed.notify_waiters();
+#[derive(Clone, Copy, Debug)]
+struct SystemMonitorClock;
+
+impl MonitorClock for SystemMonitorClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+}
+
+trait HistoryAggregator: std::fmt::Debug + Send + Sync + 'static {
+    fn aggregate(
+        &self,
+        retained: &[Arc<AttributedProcessSample>],
+        error: Option<String>,
+        read_at_ms: i128,
+        window_ms: u64,
+        bucket_ms: u64,
+        interval: Duration,
+    ) -> ProcessResourceHistory;
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DefaultHistoryAggregator;
+
+impl HistoryAggregator for DefaultHistoryAggregator {
+    fn aggregate(
+        &self,
+        retained: &[Arc<AttributedProcessSample>],
+        error: Option<String>,
+        read_at_ms: i128,
+        window_ms: u64,
+        bucket_ms: u64,
+        interval: Duration,
+    ) -> ProcessResourceHistory {
+        aggregate_history(retained, error, read_at_ms, window_ms, bucket_ms, interval)
     }
 }
 
 #[derive(Debug)]
-pub struct DiagnosticsMonitor<S: ProcessSampler> {
-    state: Arc<Mutex<MonitorState>>,
-    demand: Arc<Demand>,
-    cancellation: CancellationToken,
+pub struct DiagnosticsMonitor<S: ResourceSampler> {
+    state: Arc<RwLock<MonitorState>>,
+    refresh: Arc<Mutex<()>>,
     interval: Duration,
-    _sampler: Arc<S>,
+    sampler: Arc<S>,
+    clock: Arc<dyn MonitorClock>,
+    history_aggregator: Arc<dyn HistoryAggregator>,
 }
 
-impl<S: ProcessSampler> DiagnosticsMonitor<S> {
+impl<S: ResourceSampler> DiagnosticsMonitor<S> {
     pub fn new(sampler: Arc<S>, interval: Duration) -> Self {
-        let state = Arc::new(Mutex::new(MonitorState::default()));
-        let demand = Arc::new(Demand {
-            count: AtomicUsize::new(0),
-            changed: Notify::new(),
-        });
-        let cancellation = CancellationToken::new();
-        tokio::spawn(sample_loop(
-            sampler.clone(),
-            state.clone(),
-            demand.clone(),
-            cancellation.child_token(),
+        Self::with_clock(sampler, interval, Arc::new(SystemMonitorClock))
+    }
+
+    fn with_clock(sampler: Arc<S>, interval: Duration, clock: Arc<dyn MonitorClock>) -> Self {
+        Self::with_clock_and_aggregator(
+            sampler,
             interval,
-        ));
-        Self {
-            state,
-            demand,
-            cancellation,
-            interval,
-            _sampler: sampler,
-        }
-    }
-
-    pub fn subscribe(&self) -> SamplingLease {
-        self.demand.count.fetch_add(1, Ordering::AcqRel);
-        self.demand.changed.notify_waiters();
-        SamplingLease {
-            demand: self.demand.clone(),
-        }
-    }
-
-    pub fn retain_history(&self) -> SamplingLease {
-        self.subscribe()
-    }
-
-    pub fn active_consumers(&self) -> usize {
-        self.demand.count.load(Ordering::Acquire)
-    }
-
-    pub async fn read_history(&self, window_ms: u64, bucket_ms: u64) -> ProcessResourceHistory {
-        let now_ms = OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000;
-        let state = self.state.lock().await;
-        aggregate_history(
-            &state.samples,
-            state.last_error.clone(),
-            now_ms,
-            window_ms.max(1_000),
-            bucket_ms.max(1_000),
-            self.interval,
+            clock,
+            Arc::new(DefaultHistoryAggregator),
         )
     }
 
-    pub fn shutdown(&self) {
-        self.cancellation.cancel();
+    fn with_clock_and_aggregator(
+        sampler: Arc<S>,
+        interval: Duration,
+        clock: Arc<dyn MonitorClock>,
+        history_aggregator: Arc<dyn HistoryAggregator>,
+    ) -> Self {
+        Self {
+            state: Arc::new(RwLock::new(MonitorState::default())),
+            refresh: Arc::new(Mutex::new(())),
+            interval,
+            sampler,
+            clock,
+            history_aggregator,
+        }
     }
-}
 
-async fn sample_loop<S: ProcessSampler>(
-    sampler: Arc<S>,
-    state: Arc<Mutex<MonitorState>>,
-    demand: Arc<Demand>,
-    cancellation: CancellationToken,
-    interval: Duration,
-) {
-    loop {
-        while demand.count.load(Ordering::Acquire) == 0 {
-            tokio::select! {
-                () = cancellation.cancelled() => return,
-                () = demand.changed.notified() => {}
-            }
+    pub async fn sample_current(&self) -> CurrentProcessDiagnostics {
+        self.refresh_if_needed().await;
+        let state = self.state.read().await;
+        CurrentProcessDiagnostics {
+            snapshot: state.current.clone(),
+            error: state.last_error.clone(),
+        }
+    }
+
+    pub async fn read_history(&self, window_ms: u64, bucket_ms: u64) -> ProcessResourceHistory {
+        self.refresh_if_needed().await;
+        let now_ms = OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000;
+        let (retained, error) = {
+            let state = self.state.read().await;
+            (
+                state.samples.iter().cloned().collect::<Vec<_>>(),
+                state.last_error.clone(),
+            )
+        };
+        let window_ms = window_ms.max(1_000);
+        let bucket_ms = bucket_ms.max(1_000);
+        let interval = self.interval;
+        let aggregator = self.history_aggregator.clone();
+        tokio::task::spawn_blocking(move || {
+            aggregator.aggregate(&retained, error, now_ms, window_ms, bucket_ms, interval)
+        })
+        .await
+        .unwrap_or_else(|error| {
+            aggregate_history(
+                &[],
+                Some(format!("process history aggregation failed: {error}")),
+                now_ms,
+                window_ms,
+                bucket_ms,
+                interval,
+            )
+        })
+    }
+
+    async fn refresh_if_needed(&self) {
+        let now = self.clock.now();
+        if self.is_fresh(now).await {
+            return;
         }
 
-        let sampled_at_ms = OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000;
-        match sampler.sample().await {
-            Ok(rows) => {
-                let samples = collect_samples(&rows, std::process::id(), sampled_at_ms);
-                let mut state = state.lock().await;
-                state.samples.extend(samples);
-                trim_samples(&mut state.samples, sampled_at_ms);
+        let _refresh = self.refresh.lock().await;
+        let now = self.clock.now();
+        if self.is_fresh(now).await {
+            return;
+        }
+
+        let sampled = self.sampler.sample().await;
+        let attempted_at = self.clock.now();
+        let mut state = self.state.write().await;
+        match sampled {
+            Ok(snapshot) => {
+                let snapshot = Arc::new(snapshot);
+                state
+                    .samples
+                    .push_back(Arc::new(AttributedProcessSample::from(snapshot.as_ref())));
+                trim_samples(&mut state.samples, snapshot.sampled_at_ms);
+                state.current = Some(snapshot);
                 state.last_error = None;
             }
-            Err(error) => state.lock().await.last_error = Some(error.to_string()),
+            Err(error) => state.last_error = Some(error.to_string()),
         }
-
-        tokio::select! {
-            () = cancellation.cancelled() => return,
-            () = demand.changed.notified() => {},
-            () = tokio::time::sleep(interval) => {},
-        }
+        state.last_attempt = Some(attempted_at);
     }
-}
 
-fn collect_samples(
-    rows: &[ProcessRow],
-    server_pid: u32,
-    sampled_at_ms: i128,
-) -> Vec<ProcessSample> {
-    let row_by_pid = rows
-        .iter()
-        .map(|row| (row.pid, row))
-        .collect::<HashMap<_, _>>();
-    let mut samples = Vec::new();
-    if let Some(root) = row_by_pid.get(&server_pid) {
-        samples.push(ProcessSample {
-            sampled_at_ms,
-            process_key: format!("{}:{}", root.pid, root.command),
-            pid: root.pid,
-            ppid: root.ppid,
-            command: root.command.clone(),
-            cpu_percent: f64::from(root.cpu_percent),
-            cpu_core_percent: f64::from(root.cpu_core_percent.unwrap_or(root.cpu_percent)),
-            rss_bytes: root.rss_bytes,
-            depth: 0,
-            is_server_root: true,
-        });
+    async fn is_fresh(&self, now: Instant) -> bool {
+        self.state
+            .read()
+            .await
+            .last_attempt
+            .is_some_and(|last_attempt| now.duration_since(last_attempt) < self.interval)
     }
-    for entry in build_descendant_entries(rows, server_pid) {
-        let cpu_core = row_by_pid
-            .get(&entry.pid)
-            .and_then(|row| row.cpu_core_percent)
-            .unwrap_or(entry.cpu_percent);
-        samples.push(ProcessSample {
-            sampled_at_ms,
-            process_key: format!("{}:{}", entry.pid, entry.command),
-            pid: entry.pid,
-            ppid: entry.ppid,
-            command: entry.command,
-            cpu_percent: f64::from(entry.cpu_percent),
-            cpu_core_percent: f64::from(cpu_core),
-            rss_bytes: entry.rss_bytes,
-            depth: entry.depth + 1,
-            is_server_root: false,
-        });
-    }
-    samples
-}
-
-fn trim_samples(samples: &mut VecDeque<ProcessSample>, now_ms: i128) {
-    let minimum = now_ms - RETENTION.as_millis() as i128;
-    while samples
-        .front()
-        .is_some_and(|sample| sample.sampled_at_ms < minimum)
-        || samples.len() > MAX_RETAINED_SAMPLES
-    {
-        samples.pop_front();
-    }
-}
-
-fn aggregate_history(
-    retained: &VecDeque<ProcessSample>,
-    error: Option<String>,
-    read_at_ms: i128,
-    window_ms: u64,
-    bucket_ms: u64,
-    interval: Duration,
-) -> ProcessResourceHistory {
-    let minimum = read_at_ms - i128::from(window_ms);
-    let samples = retained
-        .iter()
-        .filter(|sample| sample.sampled_at_ms >= minimum)
-        .cloned()
-        .collect::<Vec<_>>();
-    let interval_seconds = interval.as_secs_f64();
-    let total_cpu_seconds_approx = samples
-        .iter()
-        .map(|sample| sample.cpu_core_percent / 100.0 * interval_seconds)
-        .sum();
-
-    ProcessResourceHistory {
-        read_at_ms,
-        window_ms,
-        bucket_ms,
-        sample_interval_ms: interval.as_millis().try_into().unwrap_or(u64::MAX),
-        retained_sample_count: retained.len(),
-        total_cpu_seconds_approx,
-        buckets: build_buckets(&samples, read_at_ms, window_ms, bucket_ms),
-        top_processes: summarize_processes(&samples, interval_seconds),
-        error,
-    }
-}
-
-fn summarize_processes(
-    samples: &[ProcessSample],
-    interval_seconds: f64,
-) -> Vec<ProcessResourceSummary> {
-    let latest_sampled_at_ms = samples.iter().map(|sample| sample.sampled_at_ms).max();
-    let mut groups = HashMap::<String, Vec<&ProcessSample>>::new();
-    for sample in samples {
-        groups
-            .entry(sample.process_key.clone())
-            .or_default()
-            .push(sample);
-    }
-    let mut summaries = groups
-        .into_iter()
-        .filter_map(|(process_key, mut samples)| {
-            samples.sort_by_key(|sample| sample.sampled_at_ms);
-            let first = *samples.first()?;
-            let latest = *samples.last()?;
-            if Some(latest.sampled_at_ms) != latest_sampled_at_ms {
-                return None;
-            }
-            let cpu_total = samples.iter().map(|sample| sample.cpu_percent).sum::<f64>();
-            Some(ProcessResourceSummary {
-                process_key,
-                pid: latest.pid,
-                ppid: latest.ppid,
-                command: latest.command.clone(),
-                depth: latest.depth,
-                is_server_root: latest.is_server_root,
-                first_seen_at_ms: first.sampled_at_ms,
-                last_seen_at_ms: latest.sampled_at_ms,
-                current_cpu_percent: latest.cpu_percent,
-                avg_cpu_percent: cpu_total / samples.len() as f64,
-                max_cpu_percent: samples
-                    .iter()
-                    .map(|sample| sample.cpu_percent)
-                    .fold(0.0, f64::max),
-                cpu_seconds_approx: samples
-                    .iter()
-                    .map(|sample| sample.cpu_core_percent / 100.0 * interval_seconds)
-                    .sum(),
-                current_rss_bytes: latest.rss_bytes,
-                max_rss_bytes: samples
-                    .iter()
-                    .map(|sample| sample.rss_bytes)
-                    .max()
-                    .unwrap_or(0),
-                sample_count: samples.len(),
-            })
-        })
-        .collect::<Vec<_>>();
-    summaries.sort_by(|left, right| {
-        right
-            .cpu_seconds_approx
-            .total_cmp(&left.cpu_seconds_approx)
-            .then_with(|| left.process_key.cmp(&right.process_key))
-    });
-    summaries
-}
-
-fn build_buckets(
-    samples: &[ProcessSample],
-    read_at_ms: i128,
-    window_ms: u64,
-    bucket_ms: u64,
-) -> Vec<ProcessResourceBucket> {
-    let mut buckets = Vec::new();
-    let mut started_at_ms = read_at_ms - i128::from(window_ms);
-    while started_at_ms < read_at_ms {
-        let ended_at_ms = (started_at_ms + i128::from(bucket_ms)).min(read_at_ms);
-        let bucket_samples = samples
-            .iter()
-            .filter(|sample| {
-                sample.sampled_at_ms >= started_at_ms
-                    && (sample.sampled_at_ms < ended_at_ms
-                        || ended_at_ms == read_at_ms && sample.sampled_at_ms <= ended_at_ms)
-            })
-            .collect::<Vec<_>>();
-        let mut reads = HashMap::<i128, (f64, u64, usize)>::new();
-        for sample in bucket_samples {
-            let totals = reads.entry(sample.sampled_at_ms).or_default();
-            totals.0 += sample.cpu_percent;
-            totals.1 = totals.1.saturating_add(sample.rss_bytes);
-            totals.2 += 1;
-        }
-        let avg_cpu_percent = if reads.is_empty() {
-            0.0
-        } else {
-            reads.values().map(|totals| totals.0).sum::<f64>() / reads.len() as f64
-        };
-        buckets.push(ProcessResourceBucket {
-            started_at_ms,
-            ended_at_ms,
-            avg_cpu_percent,
-            max_cpu_percent: reads.values().map(|totals| totals.0).fold(0.0, f64::max),
-            max_rss_bytes: reads.values().map(|totals| totals.1).max().unwrap_or(0),
-            max_process_count: reads.values().map(|totals| totals.2).max().unwrap_or(0),
-        });
-        started_at_ms = ended_at_ms;
-    }
-    buckets
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Barrier, Mutex as SyncMutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+
+    use tokio::sync::Notify;
+
+    use crate::diagnostics::{
+        AttributedProcessSnapshot, ProcessAttributionTotals, ProcessIdentity, ResourceSampler,
+        UiCoverage,
+    };
+
     use super::*;
 
     #[derive(Debug)]
-    struct EmptySampler;
+    struct TestClock {
+        now: SyncMutex<Instant>,
+    }
 
-    impl ProcessSampler for EmptySampler {
+    impl TestClock {
+        fn new() -> Self {
+            Self {
+                now: SyncMutex::new(Instant::now()),
+            }
+        }
+
+        fn advance(&self, duration: Duration) {
+            let mut now = self.now.lock().expect("test clock lock");
+            *now += duration;
+        }
+    }
+
+    impl MonitorClock for TestClock {
+        fn now(&self) -> Instant {
+            *self.now.lock().expect("test clock lock")
+        }
+    }
+
+    #[derive(Debug)]
+    enum FakeResponse {
+        Snapshot(AttributedProcessSnapshot),
+        Failure(&'static str),
+    }
+
+    #[derive(Debug)]
+    struct FakeResourceSampler {
+        calls: AtomicUsize,
+        responses: SyncMutex<VecDeque<FakeResponse>>,
+        block_next: AtomicBool,
+        started: Notify,
+        release: Notify,
+    }
+
+    impl FakeResourceSampler {
+        fn new(responses: impl IntoIterator<Item = FakeResponse>) -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                responses: SyncMutex::new(responses.into_iter().collect()),
+                block_next: AtomicBool::new(false),
+                started: Notify::new(),
+                release: Notify::new(),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::Acquire)
+        }
+    }
+
+    impl ResourceSampler for FakeResourceSampler {
         fn sample(
             &self,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<ProcessRow>, SamplingError>> + Send + '_>>
-        {
-            Box::pin(async { Ok(Vec::new()) })
+        ) -> Pin<
+            Box<dyn Future<Output = Result<AttributedProcessSnapshot, SamplingError>> + Send + '_>,
+        > {
+            Box::pin(async move {
+                self.calls.fetch_add(1, Ordering::AcqRel);
+                if self.block_next.swap(false, Ordering::AcqRel) {
+                    self.started.notify_one();
+                    self.release.notified().await;
+                }
+                match self
+                    .responses
+                    .lock()
+                    .expect("fake responses lock")
+                    .pop_front()
+                    .expect("fake response")
+                {
+                    FakeResponse::Snapshot(snapshot) => Ok(snapshot),
+                    FakeResponse::Failure(message) => {
+                        Err(SamplingError::Failed(message.to_owned()))
+                    }
+                }
+            })
         }
     }
 
-    fn sample(pid: u32, sampled_at_ms: i128, command: &str) -> ProcessSample {
-        ProcessSample {
+    #[derive(Debug)]
+    struct BlockingHistoryAggregator {
+        entered: Arc<Barrier>,
+        release: Arc<Barrier>,
+    }
+
+    impl HistoryAggregator for BlockingHistoryAggregator {
+        fn aggregate(
+            &self,
+            retained: &[Arc<AttributedProcessSample>],
+            error: Option<String>,
+            read_at_ms: i128,
+            window_ms: u64,
+            bucket_ms: u64,
+            interval: Duration,
+        ) -> ProcessResourceHistory {
+            self.entered.wait();
+            self.release.wait();
+            aggregate_history(retained, error, read_at_ms, window_ms, bucket_ms, interval)
+        }
+    }
+
+    fn snapshot(sampled_at_ms: i128) -> AttributedProcessSnapshot {
+        AttributedProcessSnapshot {
             sampled_at_ms,
-            process_key: format!("{pid}:{command}"),
-            pid,
-            ppid: 1,
-            command: command.to_owned(),
-            cpu_percent: 1.0,
-            cpu_core_percent: 1.0,
-            rss_bytes: 100,
-            depth: 0,
-            is_server_root: pid == 10,
+            server_identity: ProcessIdentity {
+                pid: 10,
+                started_at: 100,
+            },
+            native_rows: Arc::from([]),
+            processes: Vec::new(),
+            totals: ProcessAttributionTotals::default(),
+            ui_coverage: UiCoverage::default(),
         }
     }
 
-    #[test]
-    fn top_processes_exclude_processes_missing_from_the_latest_sample() {
-        let summaries = summarize_processes(
-            &[
-                sample(10, 1_000, "t4code.exe"),
-                sample(11, 1_000, "git.exe"),
-                sample(10, 2_000, "t4code.exe"),
-            ],
-            2.0,
-        );
-
-        assert_eq!(summaries.len(), 1);
-        assert_eq!(summaries[0].pid, 10);
-        assert!(summaries[0].is_server_root);
-        assert_eq!(summaries[0].sample_count, 2);
+    fn monitor(
+        sampler: Arc<FakeResourceSampler>,
+    ) -> (DiagnosticsMonitor<FakeResourceSampler>, Arc<TestClock>) {
+        let clock = Arc::new(TestClock::new());
+        (
+            DiagnosticsMonitor::with_clock(sampler, Duration::from_secs(2), clock.clone()),
+            clock,
+        )
     }
 
     #[tokio::test]
-    async fn consumer_count_tracks_subscription_and_history_leases() {
-        let monitor = DiagnosticsMonitor::new(Arc::new(EmptySampler), Duration::from_secs(60));
-        assert_eq!(monitor.active_consumers(), 0);
-        let subscription = monitor.subscribe();
-        let history = monitor.retain_history();
-        assert_eq!(monitor.active_consumers(), 2);
-        drop(subscription);
-        assert_eq!(monitor.active_consumers(), 1);
-        drop(history);
-        assert_eq!(monitor.active_consumers(), 0);
-        monitor.shutdown();
+    async fn construction_performs_zero_samples() {
+        let sampler = Arc::new(FakeResourceSampler::new([FakeResponse::Snapshot(
+            snapshot(1_000),
+        )]));
+
+        let (_monitor, _clock) = monitor(sampler.clone());
+
+        assert_eq!(sampler.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn first_current_read_samples_once() {
+        let sampler = Arc::new(FakeResourceSampler::new([FakeResponse::Snapshot(
+            snapshot(1_000),
+        )]));
+        let (monitor, _clock) = monitor(sampler.clone());
+
+        let current = monitor.sample_current().await;
+
+        assert_eq!(sampler.calls(), 1);
+        assert_eq!(
+            current
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.sampled_at_ms),
+            Some(1_000)
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_current_and_history_reads_share_one_in_flight_sample() {
+        let sampler = Arc::new(FakeResourceSampler::new([FakeResponse::Snapshot(
+            snapshot(1_000),
+        )]));
+        sampler.block_next.store(true, Ordering::Release);
+        let (monitor, _clock) = monitor(sampler.clone());
+        let monitor = Arc::new(monitor);
+
+        let current_task = tokio::spawn({
+            let monitor = monitor.clone();
+            async move { monitor.sample_current().await }
+        });
+        sampler.started.notified().await;
+        let history_task = tokio::spawn({
+            let monitor = monitor.clone();
+            async move { monitor.read_history(60_000, 1_000).await }
+        });
+        tokio::task::yield_now().await;
+
+        assert_eq!(sampler.calls(), 1);
+        sampler.release.notify_one();
+        let current = current_task.await.expect("current task");
+        let history = history_task.await.expect("history task");
+        assert!(current.snapshot.is_some());
+        assert_eq!(history.retained_sample_count, 1);
+        assert_eq!(sampler.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn reads_within_the_interval_reuse_the_latest_sample() {
+        let sampler = Arc::new(FakeResourceSampler::new([FakeResponse::Snapshot(
+            snapshot(1_000),
+        )]));
+        let (monitor, _clock) = monitor(sampler.clone());
+
+        let _ = monitor.sample_current().await;
+        let _ = monitor.read_history(60_000, 1_000).await;
+        let _ = monitor.sample_current().await;
+
+        assert_eq!(sampler.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn read_at_the_interval_samples_again() {
+        let sampler = Arc::new(FakeResourceSampler::new([
+            FakeResponse::Snapshot(snapshot(1_000)),
+            FakeResponse::Snapshot(snapshot(3_000)),
+        ]));
+        let (monitor, clock) = monitor(sampler.clone());
+
+        let _ = monitor.sample_current().await;
+        clock.advance(Duration::from_secs(2));
+        let current = monitor.sample_current().await;
+
+        assert_eq!(sampler.calls(), 2);
+        assert_eq!(
+            current
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.sampled_at_ms),
+            Some(3_000)
+        );
+    }
+
+    #[tokio::test]
+    async fn no_timer_samples_after_reads_stop() {
+        let sampler = Arc::new(FakeResourceSampler::new([FakeResponse::Snapshot(
+            snapshot(1_000),
+        )]));
+        let (monitor, clock) = monitor(sampler.clone());
+
+        let _ = monitor.sample_current().await;
+        clock.advance(Duration::from_secs(60));
+        tokio::task::yield_now().await;
+
+        assert_eq!(sampler.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_retains_the_last_good_snapshot_and_history() {
+        let sampler = Arc::new(FakeResourceSampler::new([
+            FakeResponse::Snapshot(snapshot(1_000)),
+            FakeResponse::Failure("refresh failed"),
+        ]));
+        let (monitor, clock) = monitor(sampler.clone());
+        let first = monitor.sample_current().await;
+        let retained_before = monitor.state.read().await.samples.clone();
+        clock.advance(Duration::from_secs(2));
+
+        let failed = monitor.sample_current().await;
+        let retained_after = monitor.state.read().await.samples.clone();
+
+        assert_eq!(sampler.calls(), 2);
+        assert_eq!(
+            failed
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.sampled_at_ms),
+            first
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.sampled_at_ms)
+        );
+        assert_eq!(
+            failed.error.as_deref(),
+            Some("process diagnostics sampling failed: refresh failed")
+        );
+        assert_eq!(retained_after, retained_before);
+    }
+
+    #[tokio::test]
+    async fn cached_current_read_does_not_wait_for_history_aggregation() {
+        let sampler = Arc::new(FakeResourceSampler::new([FakeResponse::Snapshot(
+            snapshot(1_000),
+        )]));
+        let clock = Arc::new(TestClock::new());
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let monitor = Arc::new(DiagnosticsMonitor::with_clock_and_aggregator(
+            sampler.clone(),
+            Duration::from_secs(2),
+            clock,
+            Arc::new(BlockingHistoryAggregator {
+                entered: entered.clone(),
+                release: release.clone(),
+            }),
+        ));
+        let current = monitor.sample_current().await;
+        assert!(current.snapshot.is_some());
+
+        let history_task = tokio::spawn({
+            let monitor = monitor.clone();
+            async move { monitor.read_history(60_000, 1_000).await }
+        });
+        tokio::task::spawn_blocking(move || entered.wait())
+            .await
+            .expect("aggregation entry waiter");
+
+        let cached = tokio::time::timeout(Duration::from_millis(100), monitor.sample_current())
+            .await
+            .expect("cached current read should not wait for history aggregation");
+        assert!(cached.snapshot.is_some());
+        assert_eq!(sampler.calls(), 1);
+
+        tokio::task::spawn_blocking(move || release.wait())
+            .await
+            .expect("aggregation release waiter");
+        let _ = history_task.await.expect("history task");
+    }
+
+    #[tokio::test]
+    async fn first_read_failure_returns_no_snapshot() {
+        let sampler = Arc::new(FakeResourceSampler::new([FakeResponse::Failure(
+            "initial failure",
+        )]));
+        let (monitor, _clock) = monitor(sampler.clone());
+
+        let current = monitor.sample_current().await;
+
+        assert_eq!(sampler.calls(), 1);
+        assert!(current.snapshot.is_none());
+        assert_eq!(
+            current.error.as_deref(),
+            Some("process diagnostics sampling failed: initial failure")
+        );
+    }
+
+    #[tokio::test]
+    async fn first_history_read_failure_returns_no_measurement_buckets() {
+        let sampler = Arc::new(FakeResourceSampler::new([FakeResponse::Failure(
+            "initial failure",
+        )]));
+        let (monitor, _clock) = monitor(sampler.clone());
+
+        let history = monitor.read_history(60_000, 1_000).await;
+
+        assert_eq!(sampler.calls(), 1);
+        assert_eq!(history.retained_sample_count, 0);
+        assert!(history.buckets.is_empty());
+        assert!(history.processes.is_empty());
+        assert_eq!(
+            history.error.as_deref(),
+            Some("process diagnostics sampling failed: initial failure")
+        );
+    }
+
+    #[tokio::test]
+    async fn history_read_failure_retains_prior_successful_measurements() {
+        let sampler = Arc::new(FakeResourceSampler::new([
+            FakeResponse::Snapshot(snapshot(1_000)),
+            FakeResponse::Failure("refresh failed"),
+        ]));
+        let (monitor, clock) = monitor(sampler.clone());
+        let first = monitor.read_history(60_000, 1_000).await;
+        clock.advance(Duration::from_secs(2));
+
+        let stale = monitor.read_history(60_000, 1_000).await;
+
+        assert_eq!(sampler.calls(), 2);
+        assert_eq!(first.retained_sample_count, 1);
+        assert_eq!(stale.retained_sample_count, 1);
+        assert!(!stale.buckets.is_empty());
+        assert_eq!(
+            stale.error.as_deref(),
+            Some("process diagnostics sampling failed: refresh failed")
+        );
     }
 }

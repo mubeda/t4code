@@ -1,0 +1,844 @@
+# Task 6 Report: Atomic RPC Contract and Signal Revalidation
+
+## Status
+
+Implemented Task 6 on base `e821ffe98c`.
+
+- Replaced the legacy process diagnostics wire contract with attributed
+  Core/External totals, attribution metadata, UI coverage, split history
+  metrics, and complete history process summaries.
+- Added generated TypeScript-to-Rust wire fixtures for current diagnostics,
+  resource history, and identity-bound signaling.
+- Changed signaling from PID-only authorization to `{ pid, processKey,
+  signal }` revalidation against one fresh native row scan, the current
+  attribution pass, exact process identity, and current server ancestry.
+- Kept the native platform signal primitive private to diagnostics and added a
+  final target-specific identity refresh immediately before the platform
+  signal.
+- Applied the smallest web compatibility update required by the atomic
+  contract switch. Existing combined-value presentation remains in place;
+  split Core/External UI work is intentionally left for later tasks.
+
+Source commit:
+
+```text
+0f78c77f27 feat(contracts): expose attributed resource diagnostics
+```
+
+## TDD Evidence
+
+### RED: attributed TypeScript contract
+
+Command:
+
+```text
+vp test packages/contracts/src/rpcRustParity.test.ts
+```
+
+Exit: `1`.
+
+The new attributed diagnostics fixture decode failed against the legacy shape:
+
+```text
+SchemaError(Missing key at ["processCount"])
+```
+
+### RED: attributed Rust wire mapping
+
+Command:
+
+```text
+cargo test -p t4code-server production::server_terminal::tests::attributed_current_wire_maps_every_variant_and_bounds_failures -- --nocapture
+```
+
+Exit: `101`.
+
+The legacy adapter did not produce the split totals:
+
+```text
+assertion failed: wire totals combined cpuPercent
+left: Null
+right: 75.0
+```
+
+### RED: retained history metadata
+
+Command:
+
+```text
+cargo test -p t4code-server --lib diagnostics::history::tests::attributed_history_retains_native_metadata_for_independent_roots -- --nocapture
+```
+
+Exit: `101`.
+
+The attributed summary did not yet retain `ppid`, `command`, or `depth`.
+
+### RED: signal identity and eligibility revalidation
+
+Command:
+
+```text
+cargo test -p t4code-server --lib diagnostics::resource_sampler::tests::signal_revalidation_requires_current_external_identity_and_server_ancestry -- --nocapture
+```
+
+Exit: `101`.
+
+The sampler had no `signal_external_descendant` method and no structured
+`NotEligible` or `StaleIdentity` failures.
+
+### RED: generated atomic fixtures
+
+Command:
+
+```text
+vp test packages/contracts/src/rpcRustParity.test.ts
+```
+
+Exit: `1`.
+
+The parity test reported the expected missing generated contract fixture:
+
+```text
+ENOENT: contract-shapes/server__getProcessDiagnostics-success.json
+```
+
+### RED: atomic consumer compatibility
+
+Command:
+
+```text
+vp run typecheck
+```
+
+Exit: `1`.
+
+The web diagnostics/status consumers still referenced removed flat totals,
+`topProcesses`, `isServerRoot`, and PID-only signal input. The parent approved
+a minimal mechanical compatibility adaptation rather than weakening the
+atomic schema.
+
+## Implementation Evidence
+
+- Every attribution scope, kind, confidence, and UI coverage variant has an
+  explicit Rust-to-wire match; no Rust debug strings are serialized.
+- Current and historical RPC adapters use the precomputed attribution,
+  split totals, split buckets, and split CPU seconds without recomputing
+  attribution in the RPC layer.
+- Combined CPU, RSS, and process-count totals are asserted equal to Core plus
+  External.
+- Effect `Option` wire values retain the existing `{ "_tag": "None" }` and
+  `{ "_tag": "Some", "value": ... }` shapes.
+- Current, history, UI coverage, and signal failure text is scalar-bounded.
+- Current/history structural metadata is derived from the native rows already
+  retained in the attributed snapshot; independently claimed roots are not
+  dropped.
+- Signal validation performs one full native row scan, binds the current
+  registry snapshot, applies UI claims, runs the shared attributor, validates
+  the exact `pid:started_at` identity, requires current server ancestry,
+  requires current External attribution, and only then calls the private
+  platform primitive.
+- The private platform primitive refreshes only the target and checks its start
+  identity again, closing the PID-reuse window between validation and signal.
+- No timer, polling loop, or additional full scan was added; current/history
+  demand coalescing remains unchanged.
+
+## Focused Verification
+
+```text
+vp test packages/contracts/src/rpcRustParity.test.ts
+Test Files 1 passed; Tests 3 passed
+
+vp test packages/contracts/scripts/export-rust-rpc-fixtures.test.ts packages/contracts/src/rpcRustParity.test.ts apps/web/src/components/settings/DiagnosticsSettings.test.tsx apps/web/src/components/status-bar/AppStatusBar.test.tsx apps/web/src/components/status-bar/statusBarPresentation.test.ts
+Test Files 5 passed; Tests 46 passed
+
+cargo test -p t4code-server production::server_terminal::tests -- --nocapture
+test result: ok. 7 passed; 0 failed
+
+cargo test -p t4code-server diagnostics::resource_sampler::tests -- --nocapture
+test result: ok. 8 passed; 0 failed
+
+cargo test -p t4code-server production::server_terminal::tests
+test result: ok. 7 passed; 0 failed
+
+cargo test -p t4code-server diagnostics::resource_sampler::tests
+test result: ok. 8 passed; 0 failed
+
+cargo test -p t4code-server --lib diagnostics::history::tests -- --nocapture
+test result: ok. 6 passed; 0 failed
+
+cargo test -p t4code-server --lib diagnostics::native::tests -- --nocapture
+test result: ok. 4 passed; 0 failed
+
+cargo test -p t4code-server --test production_server_terminal_rpc -- --nocapture
+test result: ok. 5 passed; 0 failed
+
+cargo test -p t4code-server --test rpc_wire canonical_effect_fixtures_round_trip_without_losing_request_ids -- --nocapture
+test result: ok. 1 passed; 0 failed
+```
+
+Fixture generation:
+
+```text
+vp run --filter @t4code/contracts generate:rust-rpc-fixtures
+Finished in 117ms on 194 files
+```
+
+Only the three deterministic `contract-shapes` fixtures and their sorted
+manifest entries were added.
+
+## Required Gates
+
+```text
+cargo fmt --all -- --check
+exit 0
+
+vp check
+pass: All 1535 files are correctly formatted
+pass: Found no warnings or lint errors in 1158 files
+
+vp run typecheck
+exit 0
+vp run: 0/11 cache hit (0%)
+
+git diff --check
+exit 0
+```
+
+## Fifth correction: bounded cleanup after termination failure
+
+Source baseline: `0f054caad24905647ef7f75303dfdb6abfd198e2`. The
+correction is recorded by the commit containing this section.
+
+### Root cause and bounded ownership cleanup
+
+The shared cleanup path attempted `ChildWrapper::start_kill` and then awaited
+`ChildWrapper::wait` without a deadline. If ownership-unit termination failed,
+a live child could therefore wedge cancellation, timeout, stdin, read, output
+limit, and provider shutdown paths indefinitely. Provider inventory contained
+the same unbounded process-wrap sequence.
+
+Cleanup now:
+
+1. attempts the Job/process-group ownership-unit kill;
+2. attempts direct-root kill through `ChildWrapper::inner_mut` if the owner
+   kill fails;
+3. waits for at most two seconds;
+4. preserves the primary operation error while recording bounded secondary
+   cleanup failures.
+
+Git, the shared runner, provider runtime, and provider inventory all consume
+this bounded process-wrap cleanup.
+
+The async RED regression launches a real non-exiting test process, injects
+failures for both kill attempts, and force-cleans the fixture after its outer
+guard proves the old wait did not return:
+
+```text
+RED
+cargo test -p t4code-server --lib process::supervised::tests::live_child_with_failed_owner_and_root_kills_returns_bounded_report -- --nocapture
+cleanup must return within its bounded wait deadline: Elapsed(())
+test result: FAILED. 0 passed; 1 failed; finished in 3.01s
+
+GREEN
+test process::supervised::tests::live_child_with_failed_owner_and_root_kills_returns_bounded_report ... ok
+test result: ok. 1 passed; 0 failed; finished in 2.01s
+```
+
+### Bounded PTY initialization cleanup
+
+PTY initialization cleanup called portable-pty's blocking `Child::wait` after
+Job/process-group/root termination attempts. On Windows, portable-pty 0.9.0
+also reversed the `TerminateProcess` result check and discarded
+`WinChild::do_kill` errors, so a failed Job termination plus failed root
+termination could enter its infinite wait while reporting the root kill as
+successful.
+
+PTY initialization cleanup now polls `Child::try_wait` for at most two seconds
+and never calls blocking `Child::wait`. The local fork makes both Windows
+child-killer implementations propagate the actual Win32 success or error.
+`UPSTREAM.md` records this second minimal fork deviation.
+
+The PTY RED regression launches a real `/bin/sh` portable-pty child, injects
+root kill failure, then externally kills and reaps the fixture after proving
+the old cleanup missed its deadline. It also verifies that the primary
+initialization error is preserved and secondary failure counts and strings are
+bounded.
+
+```text
+RED
+cargo test -p t4code-server --lib terminal::pty::tests::failed_live_pty_kill_cannot_block_initialization_cleanup -- --nocapture
+PTY cleanup did not return within its deadline: timed out waiting on channel
+test result: FAILED. 0 passed; 1 failed; finished in 3.01s
+
+GREEN
+test terminal::pty::tests::failed_live_pty_kill_cannot_block_initialization_cleanup ... ok
+test result: ok. 1 passed; 0 failed; finished in 2.01s
+```
+
+### Fifth-cycle verification
+
+```text
+cargo test -p t4code-server --lib process:: -- --nocapture
+test result: ok. 13 passed; 0 failed
+
+cargo test -p t4code-server --test process_runner -- --nocapture
+test result: ok. 13 passed; 0 failed
+
+cargo test -p t4code-server --test git_coverage -- --nocapture
+test result: ok. 19 passed; 0 failed
+
+cargo test -p t4code-server --test git_rpc -- --nocapture
+test result: ok. 21 passed; 0 failed
+
+cargo test -p t4code-server --lib terminal::pty::tests -- --nocapture
+test result: ok. 7 passed; 0 failed
+
+cargo test -p t4code-server --lib terminal::manager::tests -- --nocapture
+test result: ok. 9 passed; 0 failed
+
+cargo test -p t4code-server --lib production::provider_inventory::tests -- --nocapture
+test result: ok. 15 passed; 0 failed
+
+cargo test -p t4code-server --lib production::provider_runtime::tests -- --nocapture
+test result: ok. 19 passed; 0 failed
+
+cargo test --manifest-path apps/server/tests/fixtures/task8-harness/Cargo.toml -- --nocapture
+test result: ok. 103 library tests and 11 integration tests passed
+
+RUSTC=/Users/admin/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc \
+RUSTFLAGS='-A dead_code' \
+rustup run 1.97.1-aarch64-apple-darwin cargo check \
+  --manifest-path apps/server/tests/fixtures/task8-harness/Cargo.toml \
+  --tests --target x86_64-pc-windows-msvc
+Finished `dev` profile
+
+cargo fmt --all -- --check
+exit 0
+
+vp check
+pass: All 1538 files are correctly formatted
+pass: Found no warnings or lint errors in 1158 files
+
+vp run typecheck
+exit 0
+
+git diff --check
+exit 0
+```
+
+No helper sidecar or production Node runtime was added. Packaged Windows
+runtime verification remains explicitly deferred to Task 9.
+
+## Fourth correction: race-free process ownership
+
+Source baseline: `dd76c8beacbb`. The correction is recorded by the commit that
+contains this section.
+
+### Shared lifecycle and non-PTY ownership
+
+- Added one crate-internal supervised lifecycle for the shared process runner
+  and Git runner. Spawn, required pipes, stdin, concurrent output collection,
+  wait, timeout, cancellation, and cleanup are now one ownership unit.
+- Every post-spawn pipe, stdin, read, output-limit, wait, timeout, and
+  cancellation failure terminates and waits for the whole process tree.
+  Cleanup continues to `wait` even when `start_kill` fails, and cleanup
+  diagnostics have bounded counts and strings.
+- Windows non-PTY processes now use process-wrap 9.1's built-in Job Object
+  wrapper, whose suspended create/assign/resume sequence closes the old
+  post-spawn assignment race. A duplicated process-handle guard terminates and
+  bounded-waits the suspended child when a later wrapper hook fails.
+- Unix non-PTY processes continue to use process groups. Public Git and shared
+  runner request, result, error, environment, and output behavior is
+  preserved.
+
+TDD evidence:
+
+```text
+RED
+cargo test -p t4code-server --lib process::supervised::tests -- --nocapture
+error[E0583]: file not found for module `supervised`
+
+GREEN
+cargo test -p t4code-server --lib process::supervised::tests -- --nocapture
+test result: ok. 4 passed; 0 failed
+```
+
+Real regressions use the current test executable as a fixture and create a
+leader, child, and grandchild. Cancellation, timeout, and broken-stdin paths
+assert that no descendant writes a post-cleanup survival sentinel. Equivalent
+target-gated Windows fixture code is included in the exact Windows harness.
+
+### ConPTY at-creation Job assignment
+
+- Checked in a narrow portable-pty 0.9.0 fork under
+  `third_party/portable-pty`. `UPSTREAM.md` records the crates.io version,
+  checksum `b4a596a2b3d2752d94f51fac2d4a96737b8705dddd311a32b9af47211f08671e`,
+  file inventory, update procedure, removal condition, and JOB_LIST
+  deviation.
+- The fork adds a Windows-only `CommandBuilder::job_list` API and supplies
+  `PROC_THREAD_ATTRIBUTE_JOB_LIST` alongside the pseudoconsole attribute to
+  `CreateProcessW`.
+- PTY startup creates and configures the Job before spawn. Every initialization
+  error after child creation terminates the Job, attempts root-child kill as a
+  fallback, waits for the child, and reports bounded cleanup failures without
+  replacing the primary initialization error.
+- Target-gated Windows tests cover first-instruction Job membership,
+  initialization cleanup, and leader/child/grandchild termination.
+- No helper sidecar or production Node runtime was added.
+
+The full server Windows cross-check remains blocked before reaching T4Code by
+the host C toolchain lacking Windows SDK headers for `aws-lc-sys`. The exact
+portable-pty, process-wrap, application API, and real Windows process-runner
+test source compile in the Task 8 harness:
+
+```text
+RUSTC=/Users/admin/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc \
+RUSTFLAGS='-A dead_code' \
+rustup run 1.97.1-aarch64-apple-darwin cargo check \
+  --manifest-path apps/server/tests/fixtures/task8-harness/Cargo.toml \
+  --tests --target x86_64-pc-windows-msvc
+Finished `dev` profile
+```
+
+The local Task 8 harness passes 100 library tests and 11 integration tests.
+Packaged Windows runtime verification remains explicitly deferred to Task 9.
+
+### Fourth-cycle verification
+
+```text
+cargo test -p t4code-server --lib process:: -- --nocapture
+test result: ok. 11 passed; 0 failed
+
+cargo test -p t4code-server --test process_runner -- --nocapture
+test result: ok. 13 passed; 0 failed
+
+cargo test -p t4code-server --test git_coverage -- --nocapture
+test result: ok. 19 passed; 0 failed
+
+cargo test -p t4code-server --test git_rpc -- --nocapture
+test result: ok. 21 passed; 0 failed
+
+cargo test -p t4code-server --lib terminal::pty::tests -- --nocapture
+test result: ok. 6 passed; 0 failed
+
+cargo test -p t4code-server --lib terminal::manager::tests -- --nocapture
+test result: ok. 9 passed; 0 failed
+
+cargo test -p t4code-server --lib production::provider_runtime::tests -- --nocapture
+test result: ok. 19 passed; 0 failed
+
+cargo test --manifest-path apps/server/tests/fixtures/task8-harness/Cargo.toml -- --nocapture
+test result: ok. 111 passed; 0 failed
+
+cargo fmt --all -- --check
+exit 0
+
+vp check
+pass: All 1538 files are correctly formatted
+pass: Found no warnings or lint errors in 1158 files
+
+vp run typecheck
+exit 0
+
+git diff --check
+exit 0
+```
+
+The full typecheck continues to print the repository's existing non-fatal
+Effect `Schema.Finite` suggestions.
+
+## Files
+
+Contract and generated wire fixtures:
+
+- `packages/contracts/src/server.ts`
+- `packages/contracts/src/rpcRustParity.test.ts`
+- `packages/contracts/scripts/export-rust-rpc-fixtures.ts`
+- `packages/contracts/scripts/export-rust-rpc-fixtures.test.ts`
+- `packages/contracts/fixtures/rpc-wire/manifest.json`
+- `packages/contracts/fixtures/rpc-wire/contract-shapes/*.json`
+
+Rust wire, history metadata, runtime ownership, and signal safety:
+
+- `apps/server/src/diagnostics/history.rs`
+- `apps/server/src/diagnostics/mod.rs`
+- `apps/server/src/diagnostics/model.rs`
+- `apps/server/src/diagnostics/native.rs`
+- `apps/server/src/diagnostics/resource_sampler.rs`
+- `apps/server/src/production/runtime.rs`
+- `apps/server/src/production/server_terminal.rs`
+- `apps/server/tests/production_server_terminal_rpc.rs`
+
+Parent-approved out-of-brief compatibility files:
+
+- `apps/web/src/components/settings/DiagnosticsSettings.tsx`
+- `apps/web/src/components/settings/DiagnosticsSettings.test.tsx`
+- `apps/web/src/components/status-bar/ResourceUsageSegment.tsx`
+- `apps/web/src/components/status-bar/statusBarPresentation.ts`
+- `apps/web/src/components/status-bar/statusBarPresentation.test.ts`
+- `apps/web/src/components/status-bar/AppStatusBar.test.tsx`
+
+These web edits only consume the new atomic names, carry `processKey` through
+signal actions, and continue presenting Combined values. They do not add the
+later split-attribution UI.
+
+## Self-Review and Concerns
+
+- The worktree started clean and the source commit contains only Task 6 and
+  its required compatibility changes.
+- Generated fixtures round-trip through Rust and decode through the executable
+  TypeScript schemas.
+- Unsupported signal names remain invalid structured RPC requests; unsupported
+  platform signals remain structured signal results.
+- Stale identity, Core server/UI, reparented External, and unknown PID cases
+  are all rejected before the platform primitive.
+- No known blocker or generated-fixture concern remains.
+
+## Review Correction Cycle
+
+Review corrections were implemented on source base `0f78c77f27`.
+
+Source correction commit:
+
+```text
+1e8af71330 fix(diagnostics): harden attributed process diagnostics
+```
+
+### Security: high-fidelity identity and identity-bound signaling
+
+- Native rows no longer use sysinfo's second-granularity start timestamp.
+  Linux reads `/proc/<pid>/stat` start ticks, macOS reads
+  `proc_bsdinfo` start seconds plus microseconds, and Windows reads the full
+  process-creation `FILETIME`.
+- The final signal path no longer performs any numeric-PID signal. Linux opens
+  and owns a pidfd, verifies the high-fidelity creation identity after
+  acquisition, then calls `pidfd_send_signal`. Windows opens and owns a process
+  HANDLE, verifies creation `FILETIME` on that handle, then terminates through
+  the same handle.
+- macOS returns structured `Unsupported` because this implementation has no
+  identity-bound signal primitive there. Unsupported targets likewise fail
+  safely rather than falling back to a check-then-signal PID race.
+- Descendant cleanup uses the same identity-bound primitive.
+- Signal authorization still performs exactly one full native-row scan.
+  Replacement immediately before the final primitive is rejected without
+  recording a signal.
+
+TDD evidence:
+
+```text
+RED
+cargo test -p t4code-server --lib diagnostics::native::tests::native_sampler_uses_the_platform_creation_identity -- --nocapture
+error[E0425]: cannot find function `platform_process_creation_identity`
+
+GREEN
+test diagnostics::native::tests::native_sampler_uses_the_platform_creation_identity ... ok
+
+RED
+cargo test -p t4code-server --lib diagnostics::native::tests::same_second_process_replacements_have_distinct_creation_identities -- --nocapture
+error[E0425]: cannot find function `macos_process_creation_identity`
+
+GREEN
+test diagnostics::native::tests::same_second_process_replacements_have_distinct_creation_identities ... ok
+
+RED
+cargo test -p t4code-server --lib diagnostics::native::tests::final_signal_stays_bound_to_the_verified_process_after_pid_replacement -- --nocapture
+error[E0405]: cannot find trait `IdentityBoundProcess`
+error[E0425]: cannot find function `signal_identity_bound_process`
+
+GREEN
+test diagnostics::native::tests::final_signal_stays_bound_to_the_verified_process_after_pid_replacement ... ok
+
+RED
+cargo test -p t4code-server --lib diagnostics::resource_sampler::tests::signal_revalidation_rejects_replacement_after_attribution -- --nocapture
+error[E0599]: no method named `replace_identity_before_signal`
+
+GREEN
+test diagnostics::resource_sampler::tests::signal_revalidation_rejects_replacement_after_attribution ... ok
+```
+
+The current macOS host ran the native tests. Linux start-tick parsing and
+Windows FILETIME tests are target-gated. A Windows cross-check reached native
+build dependencies but the local cross compiler lacks the Windows C headers
+required by `aws-lc-sys`; it failed before compiling `t4code-server`.
+The `windows-sys 0.61.2` declarations used here were inspected against the
+implementation. A Linux Rust target was not installed on this host.
+
+### UI: strictly current compact resources
+
+- The compact headline reads only
+  `diagnostics.totals.combined`; retained history cannot inflate current CPU,
+  RSS, or process count.
+- Top rows come only from current live diagnostics and have explicit ordering:
+  descending current CPU, then ascending process key for stable ties.
+- An exited process with very high retained usage now has no effect on the
+  current headline or live top-process selection.
+
+TDD evidence:
+
+```text
+RED
+vp test apps/web/src/components/status-bar/statusBarPresentation.test.ts
+expected current memory "0 B"; received retained-history memory "50.0 MB"
+
+GREEN
+Test Files 1 passed; Tests 7 passed
+```
+
+### Retention: remove the legacy duplicate projection
+
+- Removed legacy retained-process models, per-snapshot projection,
+  aggregation, buckets, summaries, exports, and tests.
+- Retained samples contain attributed processes and only the process metadata
+  required to build complete attributed history: parent PID, command, and
+  depth. They no longer retain duplicate native status, elapsed, pgid, or child
+  data.
+- Age and count retention bounds remain covered.
+
+TDD evidence:
+
+```text
+RED
+cargo test -p t4code-server --lib diagnostics::history::tests::retained_samples_do_not_copy_unattributed_native_rows -- --nocapture
+debug-retained sample contained `unattributed-secret-command`
+
+GREEN
+test diagnostics::history::tests::retained_samples_do_not_copy_unattributed_native_rows ... ok
+
+RED
+cargo test -p t4code-server --lib diagnostics::history::tests::retained_samples_keep_only_metadata_required_by_attributed_history -- --nocapture
+debug-retained sample contained unneeded native status and elapsed fields
+
+GREEN
+test diagnostics::history::tests::retained_samples_keep_only_metadata_required_by_attributed_history ... ok
+```
+
+### Wire coverage correction
+
+The all-variants wire test now supplies a 500-scalar Unicode UI-coverage
+message, asserts Effect Option `{ "_tag": "Some" }`, and asserts the emitted
+value is exactly 160 Unicode scalars. The same loop retains all four coverage
+statuses and verifies `{ "_tag": "None" }` for missing messages.
+
+```text
+cargo test -p t4code-server production::server_terminal::tests -- --nocapture
+test result: ok. 7 passed; 0 failed
+```
+
+### Correction verification
+
+```text
+vp test packages/contracts/src/rpcRustParity.test.ts
+Test Files 1 passed; Tests 3 passed
+
+cargo test -p t4code-server diagnostics::resource_sampler::tests -- --nocapture
+test result: ok. 9 passed; 0 failed
+
+cargo test -p t4code-server diagnostics::native::tests -- --nocapture
+test result: ok. 7 passed; 0 failed
+
+cargo test -p t4code-server diagnostics::history::tests -- --nocapture
+test result: ok. 8 passed; 0 failed
+
+cargo test -p t4code-server --test production_server_terminal_rpc -- --nocapture
+test result: ok. 5 passed; 0 failed
+
+vp test apps/web/src/components/status-bar/statusBarPresentation.test.ts
+Test Files 1 passed; Tests 7 passed
+
+vp check
+pass: All 1535 files are correctly formatted
+pass: Found no warnings or lint errors in 1158 files
+
+vp run typecheck
+exit 0
+vp run: 0/11 cache hit (0%)
+
+git diff --check
+exit 0
+```
+
+The RPC schema and generated wire fixture shapes did not change in this
+correction cycle, so fixtures were intentionally not regenerated.
+
+## Third correction cycle: coherent rows and owned shutdown
+
+Source commit before this cycle:
+
+```text
+1e8af71330 fix(diagnostics): harden attributed process diagnostics
+```
+
+Correction commit:
+
+```text
+dd76c8beac fix(diagnostics): make process ownership coherent
+```
+
+### Coherent platform process records
+
+- Security-sensitive creation identity and parent ancestry now come from one
+  coherent platform record per PID. Sysinfo supplies only presentation data:
+  CPU, RSS, status, elapsed time, and command.
+- Linux parses parent PID and start ticks from the same
+  `/proc/<pid>/stat` read.
+- macOS reads parent PID and microsecond-resolution creation identity from the
+  same `proc_bsdinfo` record.
+- Windows opens one query handle with `PROCESS_QUERY_INFORMATION`, then reads
+  creation `FILETIME` and `PROCESS_BASIC_INFORMATION` parent PID through that
+  handle. The exact Windows API fragment cross-compiles against
+  `windows-sys 0.61.2` for `x86_64-pc-windows-msvc`.
+- A failed platform record query omits the row; cached sysinfo ancestry is
+  never mixed into the security model.
+
+TDD evidence:
+
+```text
+RED
+cargo test -p t4code-server --lib diagnostics::native::tests::collection_window_replacement_cannot_inherit_cached_ancestry
+error[E0422]: cannot find struct `ProcessPresentation`
+error[E0422]: cannot find struct `PlatformProcessRecord`
+error[E0425]: cannot find function `combine_process_observations`
+
+GREEN
+test diagnostics::native::tests::collection_window_replacement_cannot_inherit_cached_ancestry ... ok
+```
+
+The deterministic A/B replacement test combines presentation cached for A
+with a coherent platform record for B and proves that both security fields
+come only from B.
+
+### Windows process error classification
+
+`OpenProcess` and `GetProcessTimes` failures now preserve their Win32 error:
+missing process errors map to `NotFound`, access denial maps to `Rejected`,
+and unexpected query failures map to structured `Read` errors. Pure mapping
+tests run on the macOS host.
+
+```text
+RED
+cargo test -p t4code-server --lib diagnostics::native::tests::windows_process_errors_distinguish_missing_denied_and_unexpected_failures
+error[E0425]: cannot find function `classify_windows_process_error`
+error[E0433]: failed to resolve `WindowsProcessOperation`
+
+GREEN
+test diagnostics::native::tests::windows_process_errors_distinguish_missing_denied_and_unexpected_failures ... ok
+```
+
+The full server Windows cross-check remains blocked before reaching T4Code by
+the host C toolchain lacking `stdlib.h` and `windows.h` for `aws-lc-sys`.
+An isolated crate containing the exact `OpenProcess`, `GetProcessTimes`, and
+`NtQueryInformationProcess` calls completes:
+
+```text
+cargo check --target x86_64-pc-windows-msvc
+Finished `dev` profile
+```
+
+### Owned process-tree shutdown
+
+- Terminal PTYs retain their existing Unix process-group and Windows Job
+  ownership. Shutdown attempts every terminal owner, continues after
+  individual failures, and emits a bounded aggregate failure report.
+- Provider sessions and process-runner commands retain the shared supervised
+  process-group/Job configuration. Their cleanup failures and timeouts are now
+  bounded and visible rather than silently discarded.
+- Production shutdown logs a bounded provider failure and continues through
+  terminal, log, and orchestration cleanup.
+- The descendant fallback attempts every coherent identity, aggregates
+  bounded failures, and never changes the macOS user-facing signal RPC:
+  macOS signaling remains structured `Unsupported` because no identity-bound
+  signal primitive is available.
+
+TDD evidence:
+
+```text
+RED
+cargo test -p t4code-server --lib diagnostics::native::tests::cleanup_fallback_continues_after_failures_and_bounds_its_report
+error[E0425]: cannot find function `cleanup_process_identities`
+
+GREEN
+test diagnostics::native::tests::cleanup_fallback_continues_after_failures_and_bounds_its_report ... ok
+
+RED
+cargo test -p t4code-server --lib terminal::manager::tests::shutdown_attempts_every_terminal_owner_and_bounds_failures
+error[E0609]: no field `attempted` on type `()`
+error[E0609]: no field `failure_count` on type `()`
+
+GREEN
+test terminal::manager::tests::shutdown_attempts_every_terminal_owner_and_bounds_failures ... ok
+```
+
+The real macOS-capable regression launches a child and grandchild through a
+portable PTY and verifies neither survives terminal-manager shutdown. It was
+added as a characterization of the existing process-group ownership and
+passed on its first run:
+
+```text
+test terminal::manager::tests::owner_shutdown_leaves_no_child_or_grandchild_processes ... ok
+```
+
+### Explicit history-only top-row exclusion
+
+The status-bar regression now explicitly proves that an exited process may
+remain in retained history while being absent from current top-process rows.
+Current totals and top rows remain derived only from the live diagnostics
+snapshot.
+
+```text
+vp test apps/web/src/components/status-bar/statusBarPresentation.test.ts
+Test Files 1 passed; Tests 7 passed
+```
+
+### Third-cycle verification
+
+```text
+cargo test -p t4code-server --lib diagnostics::native::tests
+test result: ok. 10 passed; 0 failed
+
+cargo test -p t4code-server --lib diagnostics::resource_sampler::tests
+test result: ok. 9 passed; 0 failed
+
+cargo test -p t4code-server --lib diagnostics::history::tests
+test result: ok. 8 passed; 0 failed
+
+cargo test -p t4code-server --lib diagnostics::monitor::tests
+test result: ok. 9 passed; 0 failed
+
+cargo test -p t4code-server --lib production::server_terminal::tests
+test result: ok. 7 passed; 0 failed
+
+cargo test -p t4code-server --lib terminal::manager::tests
+test result: ok. 9 passed; 0 failed
+
+cargo test -p t4code-server --lib terminal::pty::tests
+test result: ok. 6 passed; 0 failed
+
+cargo test -p t4code-server --test process_runner
+test result: ok. 12 passed; 0 failed
+
+cargo test -p t4code-server --lib production::provider_runtime::tests
+test result: ok. 19 passed; 0 failed
+
+cargo test -p t4code-server --lib production::lifecycle::tests
+test result: ok. 2 passed; 0 failed
+
+cargo test -p t4code-server --test production_server_terminal_rpc
+test result: ok. 5 passed; 0 failed
+
+vp test apps/web/src/components/status-bar/statusBarPresentation.test.ts packages/contracts/src/rpcRustParity.test.ts
+Test Files 4 passed; Tests 44 passed
+
+cargo fmt --all -- --check
+exit 0
+
+vp check
+pass: All 1535 files are correctly formatted
+pass: Found no warnings or lint errors in 1158 files
+
+vp run typecheck
+exit 0
+vp run: 0/11 cache hit (0%)
+
+git diff --check
+exit 0
+```

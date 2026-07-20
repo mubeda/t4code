@@ -1,0 +1,11 @@
+{
+  "_tag": "Request",
+  "id": "900719925474099312345",
+  "tag": "server.signalProcess",
+  "payload": {
+    "pid": 42,
+    "processKey": "42:100",
+    "signal": "SIGINT"
+  },
+  "headers": []
+}

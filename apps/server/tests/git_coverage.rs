@@ -2,7 +2,7 @@ use std::{
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -16,6 +16,14 @@ use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
 const PROCESS_FIXTURE_MODE: &str = "T4CODE_GIT_COVERAGE_PROCESS_MODE";
+const PROCESS_FIXTURE_ROLE: &str = "T4CODE_GIT_COVERAGE_PROCESS_ROLE";
+const PROCESS_FIXTURE_ROOT_READY: &str = "T4CODE_GIT_COVERAGE_ROOT_READY";
+const PROCESS_FIXTURE_CHILD_READY: &str = "T4CODE_GIT_COVERAGE_CHILD_READY";
+const PROCESS_FIXTURE_GRANDCHILD_READY: &str = "T4CODE_GIT_COVERAGE_GRANDCHILD_READY";
+const PROCESS_FIXTURE_ROOT_SURVIVED: &str = "T4CODE_GIT_COVERAGE_ROOT_SURVIVED";
+const PROCESS_FIXTURE_CHILD_SURVIVED: &str = "T4CODE_GIT_COVERAGE_CHILD_SURVIVED";
+const PROCESS_FIXTURE_GRANDCHILD_SURVIVED: &str = "T4CODE_GIT_COVERAGE_GRANDCHILD_SURVIVED";
+const PROCESS_FIXTURE_RELEASE: &str = "T4CODE_GIT_COVERAGE_RELEASE";
 const ISOLATED_GIT_TEST: &str = "T4CODE_GIT_COVERAGE_ISOLATED";
 static ISOLATED_GIT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -55,8 +63,64 @@ fn process_fixture() {
         "park" => loop {
             std::thread::park();
         },
+        "tree" => run_process_tree_fixture(),
         other => panic!("unknown process fixture mode: {other}"),
     }
+}
+
+fn run_process_tree_fixture() {
+    let role = std::env::var(PROCESS_FIXTURE_ROLE).unwrap_or_else(|_| "root".to_string());
+    let (ready_key, survived_key) = match role.as_str() {
+        "root" => {
+            spawn_process_tree_role("child");
+            (PROCESS_FIXTURE_ROOT_READY, PROCESS_FIXTURE_ROOT_SURVIVED)
+        }
+        "child" => {
+            spawn_process_tree_role("grandchild");
+            (PROCESS_FIXTURE_CHILD_READY, PROCESS_FIXTURE_CHILD_SURVIVED)
+        }
+        "grandchild" => (
+            PROCESS_FIXTURE_GRANDCHILD_READY,
+            PROCESS_FIXTURE_GRANDCHILD_SURVIVED,
+        ),
+        other => panic!("unknown process fixture role: {other}"),
+    };
+    fs::write(
+        std::env::var_os(ready_key).expect("tree fixture ready path"),
+        "ready",
+    )
+    .expect("write tree fixture ready file");
+    let release = PathBuf::from(
+        std::env::var_os(PROCESS_FIXTURE_RELEASE).expect("tree fixture release path"),
+    );
+    while !release.is_file() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    fs::write(
+        std::env::var_os(survived_key).expect("tree fixture survived path"),
+        "survived",
+    )
+    .expect("write tree fixture survived file");
+    loop {
+        std::thread::park();
+    }
+}
+
+fn spawn_process_tree_role(role: &str) {
+    Command::new(std::env::current_exe().expect("current test executable"))
+        .args([
+            "--exact",
+            "process_fixture",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(PROCESS_FIXTURE_MODE, "tree")
+        .env(PROCESS_FIXTURE_ROLE, role)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn process tree fixture role");
 }
 
 fn cancellation() -> CancellationToken {
@@ -308,6 +372,74 @@ async fn process_runner_timeout_and_precancellation_are_distinct() {
         .await
         .expect_err("pre-cancelled process is interrupted");
     assert!(cancelled.is_cancelled());
+}
+
+#[tokio::test]
+async fn process_runner_cancellation_kills_child_and_grandchild() {
+    let temp = tempfile::tempdir().expect("temporary process-tree directory");
+    let root_ready = temp.path().join("root.ready");
+    let child_ready = temp.path().join("child.ready");
+    let grandchild_ready = temp.path().join("grandchild.ready");
+    let root_survived = temp.path().join("root.survived");
+    let child_survived = temp.path().join("child.survived");
+    let grandchild_survived = temp.path().join("grandchild.survived");
+    let release = temp.path().join("release");
+
+    let mut request = process_request("tree");
+    request.env.extend([
+        (PROCESS_FIXTURE_ROLE.into(), "root".into()),
+        (
+            PROCESS_FIXTURE_ROOT_READY.into(),
+            root_ready.as_os_str().to_owned(),
+        ),
+        (
+            PROCESS_FIXTURE_CHILD_READY.into(),
+            child_ready.as_os_str().to_owned(),
+        ),
+        (
+            PROCESS_FIXTURE_GRANDCHILD_READY.into(),
+            grandchild_ready.as_os_str().to_owned(),
+        ),
+        (
+            PROCESS_FIXTURE_ROOT_SURVIVED.into(),
+            root_survived.as_os_str().to_owned(),
+        ),
+        (
+            PROCESS_FIXTURE_CHILD_SURVIVED.into(),
+            child_survived.as_os_str().to_owned(),
+        ),
+        (
+            PROCESS_FIXTURE_GRANDCHILD_SURVIVED.into(),
+            grandchild_survived.as_os_str().to_owned(),
+        ),
+        (
+            PROCESS_FIXTURE_RELEASE.into(),
+            release.as_os_str().to_owned(),
+        ),
+    ]);
+    let token = cancellation();
+    let task_token = token.clone();
+    let task = tokio::spawn(async move { ProcessRunner.run(request, &task_token).await });
+
+    wait_for_path(&root_ready).await;
+    wait_for_path(&child_ready).await;
+    wait_for_path(&grandchild_ready).await;
+    token.cancel();
+
+    let error = task
+        .await
+        .expect("join process-tree cancellation")
+        .expect_err("process tree should be cancelled");
+    assert!(error.is_cancelled());
+    fs::write(&release, "release").expect("write process-tree release");
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    for sentinel in [&root_survived, &child_survived, &grandchild_survived] {
+        assert!(
+            !sentinel.exists(),
+            "cancelled process survived long enough to write {}",
+            sentinel.display()
+        );
+    }
 }
 
 #[tokio::test]
@@ -938,4 +1070,14 @@ async fn broadcaster_cancellation_closes_subscription_and_missing_paths_report_e
     };
     assert_eq!(error.operation.as_ref(), "GitVcsDriver.detectRepository");
     assert!(error.detail.contains("failed to spawn git"));
+}
+
+async fn wait_for_path(path: &Path) {
+    for _ in 0..400 {
+        if path.is_file() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for {}", path.display());
 }

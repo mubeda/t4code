@@ -1,16 +1,13 @@
-use std::{
-    collections::BTreeMap,
-    path::PathBuf,
-    process::{ExitStatus, Stdio},
-    time::Duration,
-};
+use std::{collections::BTreeMap, path::PathBuf, process::Stdio, time::Duration};
 
-use process_wrap::tokio::{ChildWrapper, CommandWrap};
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
-use super::configure_supervised_background_command_wrap;
+use super::supervised::{
+    SupervisedOverflow, SupervisedRunError, SupervisedRunRequest, SupervisedStreamOutput,
+    run_supervised,
+};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
@@ -192,189 +189,127 @@ impl ProcessRunner {
         cancellation: CancellationToken,
     ) -> Result<ProcessRunOutput, ProcessError> {
         let resolved = resolve_command(&input);
-        let mut command = CommandWrap::with_new(&resolved.command, |command| {
-            command
-                .args(&resolved.args)
-                .stdin(if input.stdin.is_some() {
-                    Stdio::piped()
-                } else {
-                    Stdio::null()
-                })
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            if let Some(cwd) = input.spawn_cwd.as_ref().or(input.cwd.as_ref()) {
-                command.current_dir(cwd);
-            }
-            if let Some(env) = &input.env {
-                command.env_clear().envs(env);
-            }
-        });
-        configure_supervised_background_command_wrap(&mut command);
-
-        let mut child = command.spawn().map_err(|error| ProcessError::Spawn {
-            command: input.command.clone(),
-            message: error.to_string(),
-        })?;
-
-        if let Some(stdin) = input.stdin.as_ref() {
-            let mut writer = child.stdin().take().ok_or_else(|| {
-                ProcessError::Stdin("spawned process did not expose stdin".to_string())
-            })?;
-            writer
-                .write_all(stdin.as_bytes())
-                .await
-                .map_err(|error| ProcessError::Stdin(error.to_string()))?;
-            writer
-                .shutdown()
-                .await
-                .map_err(|error| ProcessError::Stdin(error.to_string()))?;
+        let mut command = Command::new(&resolved.command);
+        command
+            .args(&resolved.args)
+            .stdin(if input.stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(cwd) = input.spawn_cwd.as_ref().or(input.cwd.as_ref()) {
+            command.current_dir(cwd);
+        }
+        if let Some(env) = &input.env {
+            command.env_clear().envs(env);
         }
 
-        let stdout = child.stdout().take().ok_or_else(|| ProcessError::Read {
-            stream: "stdout",
-            message: "spawned process did not expose stdout".to_string(),
-        })?;
-        let stderr = child.stderr().take().ok_or_else(|| ProcessError::Read {
-            stream: "stderr",
-            message: "spawned process did not expose stderr".to_string(),
-        })?;
+        let result = run_supervised(
+            SupervisedRunRequest {
+                command,
+                stdin: input.stdin.as_ref().map(|stdin| stdin.as_bytes().to_vec()),
+                timeout: input.timeout,
+                max_output_bytes: input.max_output_bytes,
+                overflow: match input.output_mode {
+                    OutputMode::Error => SupervisedOverflow::Error,
+                    OutputMode::Truncate => SupervisedOverflow::Truncate,
+                },
+            },
+            &cancellation,
+        )
+        .await;
 
-        enum Outcome {
-            Completed(Result<(CollectedOutput, CollectedOutput, ExitStatus), ProcessError>),
-            TimedOut,
-            Cancelled,
-        }
-
-        let outcome = {
-            let execution = async {
-                let stdout = collect_output(
+        match result {
+            Ok(output) => {
+                let (stdout, stdout_truncated) = render_output(
+                    output.stdout,
+                    input.max_output_bytes,
+                    &input.truncated_marker,
+                );
+                let (stderr, stderr_truncated) = render_output(
+                    output.stderr,
+                    input.max_output_bytes,
+                    &input.truncated_marker,
+                );
+                Ok(ProcessRunOutput {
                     stdout,
-                    "stdout",
-                    input.max_output_bytes,
-                    input.output_mode,
-                    &input.truncated_marker,
-                );
-                let stderr = collect_output(
                     stderr,
-                    "stderr",
-                    input.max_output_bytes,
-                    input.output_mode,
-                    &input.truncated_marker,
-                );
-                let wait = async {
-                    child
-                        .wait()
-                        .await
-                        .map_err(|error| ProcessError::Wait(error.to_string()))
-                };
-                tokio::try_join!(stdout, stderr, wait)
-            };
-            tokio::pin!(execution);
-            tokio::select! {
-                result = &mut execution => Outcome::Completed(result),
-                () = cancellation.cancelled() => Outcome::Cancelled,
-                () = tokio::time::sleep(input.timeout) => Outcome::TimedOut,
+                    code: output.status.code(),
+                    timed_out: false,
+                    stdout_truncated,
+                    stderr_truncated,
+                })
             }
-        };
-
-        match outcome {
-            Outcome::Completed(Ok((stdout, stderr, status))) => Ok(ProcessRunOutput {
-                stdout: String::from_utf8_lossy(&stdout.bytes).into_owned(),
-                stderr: String::from_utf8_lossy(&stderr.bytes).into_owned(),
-                code: status.code(),
-                timed_out: false,
-                stdout_truncated: stdout.truncated,
-                stderr_truncated: stderr.truncated,
-            }),
-            Outcome::Completed(Err(error)) => {
-                kill_child(&mut *child).await;
-                Err(error)
+            Err(SupervisedRunError::Timeout)
+                if input.timeout_behavior == TimeoutBehavior::TimedOutResult =>
+            {
+                Ok(ProcessRunOutput {
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    code: None,
+                    timed_out: true,
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                })
             }
-            Outcome::Cancelled => {
-                kill_child(&mut *child).await;
-                Err(ProcessError::Cancelled)
-            }
-            Outcome::TimedOut => {
-                kill_child(&mut *child).await;
-                if input.timeout_behavior == TimeoutBehavior::TimedOutResult {
-                    Ok(ProcessRunOutput {
-                        stdout: String::new(),
-                        stderr: String::new(),
-                        code: None,
-                        timed_out: true,
-                        stdout_truncated: false,
-                        stderr_truncated: false,
-                    })
-                } else {
-                    Err(ProcessError::Timeout {
-                        timeout_ms: input.timeout.as_millis(),
-                    })
-                }
-            }
+            Err(error) => Err(map_supervised_error(error, &input)),
         }
     }
 }
 
-async fn kill_child(child: &mut dyn ChildWrapper) {
-    if let Err(error) = child.start_kill() {
-        tracing::debug!(%error, "failed to start supervised process cleanup");
-        return;
-    }
-    if let Err(error) = child.wait().await {
-        tracing::debug!(%error, "failed to wait for supervised process cleanup");
-    }
-}
-
-#[derive(Debug)]
-struct CollectedOutput {
-    bytes: Vec<u8>,
-    truncated: bool,
-}
-
-async fn collect_output(
-    mut reader: impl AsyncRead + Unpin,
-    stream: &'static str,
+fn render_output(
+    mut output: SupervisedStreamOutput,
     max_bytes: usize,
-    mode: OutputMode,
     marker: &str,
-) -> Result<CollectedOutput, ProcessError> {
-    let mut bytes = Vec::with_capacity(max_bytes.min(64 * 1024));
-    let mut observed_bytes = 0usize;
-    let mut buffer = [0u8; 8 * 1024];
-    let mut truncated = false;
-    loop {
-        let read = reader
-            .read(&mut buffer)
-            .await
-            .map_err(|error| ProcessError::Read {
-                stream,
-                message: error.to_string(),
-            })?;
-        if read == 0 {
-            break;
-        }
-        observed_bytes = observed_bytes.saturating_add(read);
-        let remaining = max_bytes.saturating_sub(bytes.len());
-        bytes.extend_from_slice(&buffer[..read.min(remaining)]);
-        if observed_bytes > max_bytes {
-            if mode == OutputMode::Error {
-                return Err(ProcessError::OutputLimit {
-                    stream,
-                    max_bytes,
-                    observed_bytes,
-                });
-            }
-            truncated = true;
-        }
-    }
-
+) -> (String, bool) {
+    let truncated = output.truncated();
     if truncated && !marker.is_empty() && max_bytes > 0 {
         let marker = marker.as_bytes();
         let marker_len = marker.len().min(max_bytes);
-        bytes.truncate(max_bytes - marker_len);
-        bytes.extend_from_slice(&marker[..marker_len]);
+        output.bytes.truncate(max_bytes - marker_len);
+        output.bytes.extend_from_slice(&marker[..marker_len]);
     }
-    Ok(CollectedOutput { bytes, truncated })
+    (
+        String::from_utf8_lossy(&output.bytes).into_owned(),
+        truncated,
+    )
+}
+
+fn map_supervised_error(error: SupervisedRunError, input: &ProcessRunInput) -> ProcessError {
+    match error {
+        SupervisedRunError::Spawn(error) => ProcessError::Spawn {
+            command: input.command.clone(),
+            message: error.to_string(),
+        },
+        SupervisedRunError::Pipe { stream: "stdin" } => {
+            ProcessError::Stdin("spawned process did not expose stdin".to_string())
+        }
+        SupervisedRunError::Pipe { stream } => ProcessError::Read {
+            stream,
+            message: format!("spawned process did not expose {stream}"),
+        },
+        SupervisedRunError::Stdin(error) => ProcessError::Stdin(error.to_string()),
+        SupervisedRunError::Read { stream, source } => ProcessError::Read {
+            stream,
+            message: source.to_string(),
+        },
+        SupervisedRunError::OutputLimit {
+            stream,
+            max_bytes,
+            observed_bytes,
+        } => ProcessError::OutputLimit {
+            stream,
+            max_bytes,
+            observed_bytes,
+        },
+        SupervisedRunError::Timeout => ProcessError::Timeout {
+            timeout_ms: input.timeout.as_millis(),
+        },
+        SupervisedRunError::Cancelled => ProcessError::Cancelled,
+        SupervisedRunError::Wait(error) => ProcessError::Wait(error.to_string()),
+    }
 }
 
 #[derive(Debug)]
@@ -411,18 +346,6 @@ fn resolve_command(input: &ProcessRunInput) -> ResolvedCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    struct FailingReader;
-
-    impl AsyncRead for FailingReader {
-        fn poll_read(
-            self: std::pin::Pin<&mut Self>,
-            _context: &mut std::task::Context<'_>,
-            _buffer: &mut tokio::io::ReadBuf<'_>,
-        ) -> std::task::Poll<std::io::Result<()>> {
-            std::task::Poll::Ready(Err(std::io::Error::other("injected read failure")))
-        }
-    }
 
     #[tokio::test]
     async fn runner_covers_unit_build_success_spawn_timeout_and_cancellation() {
@@ -469,26 +392,19 @@ mod tests {
         assert!(timed_out.timed_out);
     }
 
-    #[tokio::test]
-    async fn output_collection_covers_limits_markers_and_read_failures() {
-        let error = collect_output(&b"abcdef"[..], "stdout", 3, OutputMode::Error, "")
-            .await
-            .unwrap_err();
-        assert_eq!(error.output_limit(), Some(("stdout", 3)));
+    #[test]
+    fn output_rendering_covers_markers_and_command_resolution() {
+        let (rendered, truncated) = render_output(
+            SupervisedStreamOutput {
+                bytes: b"abcd".to_vec(),
+                observed_bytes: 6,
+            },
+            4,
+            "++",
+        );
+        assert_eq!(rendered, "ab++");
+        assert!(truncated);
 
-        let truncated = collect_output(&b"abcdef"[..], "stderr", 4, OutputMode::Truncate, "++")
-            .await
-            .unwrap();
-        assert_eq!(truncated.bytes, b"ab++");
-        assert!(truncated.truncated);
-
-        assert!(matches!(
-            collect_output(FailingReader, "stdout", 10, OutputMode::Error, "").await,
-            Err(ProcessError::Read {
-                stream: "stdout",
-                ..
-            })
-        ));
         let input = ProcessRunInput::new("command", ["one", "two"]);
         let resolved = resolve_command(&input);
         assert_eq!(resolved.command, "command");

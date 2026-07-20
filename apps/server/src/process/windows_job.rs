@@ -1,15 +1,107 @@
-use std::{fmt, future::Future, io, pin::Pin, process::ExitStatus};
+use std::{
+    ffi::{OsStr, OsString},
+    fmt,
+    future::Future,
+    io,
+    pin::Pin,
+    process::ExitStatus,
+};
 
-use process_wrap::tokio::{ChildWrapper, CommandWrap, CommandWrapper};
+use process_wrap::tokio::{ChildWrapper, CommandWrap, CommandWrapper, CreationFlags};
 use tokio::process::{Child, Command};
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, GetLastError, HANDLE},
+    Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE},
+    System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    },
     System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
         SetInformationJobObject, TerminateJobObject,
     },
+    System::Threading::{
+        CreateEventW, GetProcessId, OpenThread, ResumeThread, SetEvent, THREAD_SUSPEND_RESUME,
+    },
 };
+
+pub(crate) struct WindowsPtyLaunchGate {
+    handle: HANDLE,
+    ready_handle: HANDLE,
+    name: OsString,
+    ready_name: OsString,
+}
+
+// SAFETY: event handles can be signalled, waited on, and closed from any thread.
+unsafe impl Send for WindowsPtyLaunchGate {}
+// SAFETY: SetEvent is thread-safe for a live event handle.
+unsafe impl Sync for WindowsPtyLaunchGate {}
+
+impl WindowsPtyLaunchGate {
+    pub(crate) fn new() -> io::Result<Self> {
+        let identifier = format!(
+            "Local\\T4CodePtyLaunch-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        );
+        let name = identifier.clone();
+        let ready_name = format!("{identifier}-ready");
+        let wide_name = name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        // SAFETY: default security, a manual-reset nonsignalled event, and a
+        // NUL-terminated name are valid CreateEventW inputs.
+        let handle = unsafe { CreateEventW(std::ptr::null(), 1, 0, wide_name.as_ptr()) };
+        if handle.is_null() {
+            return Err(last_os_error());
+        }
+        let wide_ready_name = ready_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        // SAFETY: default security, a manual-reset nonsignalled event, and a
+        // NUL-terminated name are valid CreateEventW inputs.
+        let ready_handle =
+            unsafe { CreateEventW(std::ptr::null(), 1, 0, wide_ready_name.as_ptr()) };
+        if ready_handle.is_null() {
+            let error = last_os_error();
+            // SAFETY: this function owns the gate handle created above.
+            unsafe { CloseHandle(handle) };
+            return Err(error);
+        }
+        Ok(Self {
+            handle,
+            ready_handle,
+            name: name.into(),
+            ready_name: ready_name.into(),
+        })
+    }
+
+    pub(crate) fn name(&self) -> &OsStr {
+        &self.name
+    }
+
+    pub(crate) fn ready_name(&self) -> &OsStr {
+        &self.ready_name
+    }
+
+    pub(crate) fn signal(&self) -> io::Result<()> {
+        // SAFETY: this type owns a live event handle.
+        if unsafe { SetEvent(self.handle) } == 0 {
+            Err(last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Drop for WindowsPtyLaunchGate {
+    fn drop(&mut self) {
+        // SAFETY: this type owns both handles and closes each exactly once.
+        unsafe { CloseHandle(self.ready_handle) };
+        unsafe { CloseHandle(self.handle) };
+    }
+}
 
 pub(crate) struct WindowsJob(HANDLE);
 
@@ -92,6 +184,15 @@ pub(crate) struct BackgroundJob {
 }
 
 impl CommandWrapper for BackgroundJob {
+    fn pre_spawn(&mut self, command: &mut Command, core: &CommandWrap) -> io::Result<()> {
+        let mut flags = windows::Win32::System::Threading::CREATE_SUSPENDED;
+        if let Some(CreationFlags(user_flags)) = core.get_wrap::<CreationFlags>() {
+            flags |= *user_flags;
+        }
+        command.creation_flags(flags.0);
+        Ok(())
+    }
+
     fn post_spawn(
         &mut self,
         _command: &mut Command,
@@ -103,6 +204,11 @@ impl CommandWrapper for BackgroundJob {
             .ok_or_else(|| io::Error::other("child process handle is unavailable"))?;
         match WindowsJob::attach(process.cast()) {
             Ok(job) => {
+                if let Err(error) = resume_process_threads(process.cast()) {
+                    let _ = job.terminate();
+                    let _ = child.start_kill();
+                    return Err(error);
+                }
                 self.pending = Some(job);
                 Ok(())
             }
@@ -123,6 +229,61 @@ impl CommandWrapper for BackgroundJob {
             .take()
             .ok_or_else(|| io::Error::other("background job was not attached after spawn"))?;
         Ok(Box::new(BackgroundJobChild { inner, job }))
+    }
+}
+
+fn resume_process_threads(process: HANDLE) -> io::Result<()> {
+    // SAFETY: `process` is the live handle returned for the newly spawned child.
+    let process_id = unsafe { GetProcessId(process) };
+    if process_id == 0 {
+        return Err(last_os_error());
+    }
+    // SAFETY: this requests a snapshot of all threads and returns an owned handle.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(last_os_error());
+    }
+
+    let result = resume_process_threads_from_snapshot(process_id, snapshot);
+    // SAFETY: this function owns the snapshot handle.
+    unsafe { CloseHandle(snapshot) };
+    result
+}
+
+fn resume_process_threads_from_snapshot(process_id: u32, snapshot: HANDLE) -> io::Result<()> {
+    let mut entry = THREADENTRY32 {
+        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+        ..THREADENTRY32::default()
+    };
+    let mut resumed = false;
+    // SAFETY: `snapshot` is a thread snapshot and `entry` has the required size.
+    let mut has_entry = unsafe { Thread32First(snapshot, &mut entry) };
+    while has_entry != 0 {
+        if entry.th32OwnerProcessID == process_id {
+            // SAFETY: the thread id came from the live snapshot.
+            let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+            if thread.is_null() {
+                return Err(last_os_error());
+            }
+            // SAFETY: `thread` is a live handle with suspend/resume access.
+            let resume_result = unsafe { ResumeThread(thread) };
+            let resume_error = (resume_result == u32::MAX).then(last_os_error);
+            // SAFETY: this function owns the opened thread handle.
+            unsafe { CloseHandle(thread) };
+            if let Some(error) = resume_error {
+                return Err(error);
+            }
+            resumed = true;
+        }
+        // SAFETY: the snapshot and entry remain valid across enumeration.
+        has_entry = unsafe { Thread32Next(snapshot, &mut entry) };
+    }
+    if resumed {
+        Ok(())
+    } else {
+        Err(io::Error::other(
+            "suspended child process did not expose a resumable thread",
+        ))
     }
 }
 

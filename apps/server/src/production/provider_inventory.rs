@@ -11,9 +11,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     git::{OutputPolicy, ProcessRequest, ProcessRunner},
-    process::configure_supervised_background_command_wrap,
+    process::{
+        configure_supervised_background_command_wrap,
+        supervised::{log_cleanup_failures, terminate_and_wait},
+    },
     production::provider_runtime::{
-        provider_launch_program, resolve_provider_executable,
+        prepare_provider_launch, resolve_provider_executable,
         sanitize_provider_subprocess_environment,
     },
     provider::{claude, codex, cursor, grok, opencode},
@@ -731,11 +734,10 @@ async fn probe_claude_capabilities(
     cwd: &Path,
     environment: &[(OsString, OsString)],
 ) -> Option<ProviderCapabilities> {
-    let (program, prefix_args) = provider_launch_program(executable);
-    let mut command = Command::new(program);
+    let launch = prepare_provider_launch(executable, CLAUDE_CAPABILITY_PROBE_ARGS).ok()?;
+    let mut command = Command::new(launch.program);
     command
-        .args(prefix_args)
-        .args(CLAUDE_CAPABILITY_PROBE_ARGS)
+        .args(launch.args)
         .current_dir(cwd)
         .envs(environment.iter().cloned())
         .env("CLAUDE_CODE_ENTRYPOINT", "sdk-rust")
@@ -825,18 +827,13 @@ async fn run_command(
     cwd: &Path,
     environment: &[(OsString, OsString)],
 ) -> Option<CommandOutput> {
-    let (program, prefix_args) = provider_launch_program(executable);
-    let process_args = prefix_args
-        .into_iter()
-        .map(OsString::from)
-        .chain(args.iter().map(OsString::from))
-        .collect();
+    let launch = prepare_provider_launch(executable, args).ok()?;
     let output = ProcessRunner
         .run(
             ProcessRequest {
                 operation: "provider.inventory.probe".to_owned(),
-                command: program,
-                args: process_args,
+                command: launch.program,
+                args: launch.args,
                 cwd: cwd.to_path_buf(),
                 env: environment.to_vec(),
                 stdin: None,
@@ -864,13 +861,12 @@ async fn probe_codex(
     custom_models: &[String],
     environment: &[(OsString, OsString)],
 ) -> Option<codex::CodexProviderSnapshot> {
-    let (program, prefix_args) = provider_launch_program(executable);
-    let mut command = Command::new(program);
+    let launch = prepare_provider_launch(executable, ["app-server"]).ok()?;
+    let mut command = Command::new(launch.program);
     command.envs(environment.iter().cloned());
     sanitize_provider_subprocess_environment(&mut command);
     command
-        .args(prefix_args)
-        .arg("app-server")
+        .args(launch.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -900,17 +896,18 @@ async fn probe_cursor_models(
     cwd: &Path,
     environment: &[(OsString, OsString)],
 ) -> Option<Vec<Value>> {
-    let (program, prefix_args) = provider_launch_program(executable);
-    let mut command = Command::new(program);
+    let mut arguments = Vec::new();
+    if let Some(endpoint) = endpoint.filter(|value| !value.trim().is_empty()) {
+        arguments.extend([OsString::from("-e"), OsString::from(endpoint)]);
+    }
+    arguments.push(OsString::from("acp"));
+    let launch = prepare_provider_launch(executable, &arguments).ok()?;
+    let mut command = Command::new(launch.program);
     command
-        .args(prefix_args)
+        .args(launch.args)
         .current_dir(cwd)
         .envs(environment.iter().cloned());
-    if let Some(endpoint) = endpoint.filter(|value| !value.trim().is_empty()) {
-        command.args(["-e", endpoint]);
-    }
     command
-        .arg("acp")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1052,11 +1049,15 @@ async fn probe_local_opencode(
     let port = listener.local_addr().ok()?.port();
     drop(listener);
     let endpoint = format!("http://127.0.0.1:{port}");
-    let (program, prefix_args) = provider_launch_program(executable);
-    let mut command = Command::new(program);
+    let port_argument = format!("--port={port}");
+    let launch = prepare_provider_launch(
+        executable,
+        ["serve", "--hostname=127.0.0.1", port_argument.as_str()],
+    )
+    .ok()?;
+    let mut command = Command::new(launch.program);
     command
-        .args(prefix_args)
-        .args(["serve", "--hostname=127.0.0.1", &format!("--port={port}")])
+        .args(launch.args)
         .current_dir(cwd)
         .envs(environment.iter().cloned())
         .kill_on_drop(true)
@@ -1106,8 +1107,8 @@ fn supervised_command(command: Command) -> CommandWrap {
 }
 
 async fn stop_supervised_child(child: &mut dyn ChildWrapper) {
-    let _ = child.start_kill();
-    let _ = child.wait().await;
+    let report = terminate_and_wait(child).await;
+    log_cleanup_failures("provider inventory probe", &report);
 }
 
 fn first_line(stdout: &str, stderr: &str) -> Option<String> {

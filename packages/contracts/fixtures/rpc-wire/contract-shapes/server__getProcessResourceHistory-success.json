@@ -1,0 +1,86 @@
+{
+  "_tag": "Exit",
+  "requestId": "900719925474099312345",
+  "exit": {
+    "_tag": "Success",
+    "value": {
+      "readAt": "2026-01-01T00:00:00.000Z",
+      "windowMs": 60000,
+      "bucketMs": 1000,
+      "sampleIntervalMs": 500,
+      "retainedSampleCount": 2,
+      "cpuSecondsApprox": {
+        "combined": 1.5,
+        "core": 1,
+        "external": 0.5
+      },
+      "uiCoverage": {
+        "status": "partial",
+        "message": {
+          "_tag": "Some",
+          "value": "UI coverage is partial."
+        }
+      },
+      "buckets": [
+        {
+          "startedAt": "2026-01-01T00:00:00.000Z",
+          "endedAt": "2026-01-01T00:00:00.000Z",
+          "cpuPercent": {
+            "average": {
+              "combined": 3,
+              "core": 1,
+              "external": 2
+            },
+            "peak": {
+              "combined": 6,
+              "core": 2,
+              "external": 4
+            }
+          },
+          "rssBytes": {
+            "average": {
+              "combined": 30,
+              "core": 10,
+              "external": 20
+            },
+            "peak": {
+              "combined": 60,
+              "core": 20,
+              "external": 40
+            }
+          },
+          "maxProcessCount": {
+            "combined": 2,
+            "core": 1,
+            "external": 1
+          }
+        }
+      ],
+      "processes": [
+        {
+          "processKey": "42:100",
+          "pid": 42,
+          "ppid": 1,
+          "command": "codex",
+          "depth": 0,
+          "scope": "external",
+          "kind": "provider",
+          "label": "Codex",
+          "confidence": "exact",
+          "firstSeenAt": "2026-01-01T00:00:00.000Z",
+          "lastSeenAt": "2026-01-01T00:00:00.000Z",
+          "currentCpuPercent": 2,
+          "avgCpuPercent": 2,
+          "maxCpuPercent": 4,
+          "cpuSecondsApprox": 0.5,
+          "currentRssBytes": 20,
+          "maxRssBytes": 40,
+          "sampleCount": 2
+        }
+      ],
+      "error": {
+        "_tag": "None"
+      }
+    }
+  }
+}

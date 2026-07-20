@@ -12,6 +12,10 @@ import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/men
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { buildPanelMenuModel } from "./ChatHeaderPanelMenu.logic";
+import {
+  resolveProviderTerminalAction,
+  type ProviderTerminalAction,
+} from "./providerTerminalActions";
 
 interface ChatHeaderPanelMenuProps {
   readonly providerStatuses: ReadonlyArray<ServerProvider>;
@@ -20,6 +24,7 @@ interface ChatHeaderPanelMenuProps {
   readonly canCreatePanel: boolean;
   readonly onCreateChatPanel: (entry: ProviderInstanceEntry) => void;
   readonly onOpenTerminalPanel: () => void;
+  readonly onOpenProviderTerminalPanel: (action: ProviderTerminalAction) => void;
   readonly onAddCustomAction: () => void;
 }
 
@@ -45,11 +50,16 @@ export const ChatHeaderPanelMenu = memo(function ChatHeaderPanelMenu({
   canCreatePanel,
   onCreateChatPanel,
   onOpenTerminalPanel,
+  onOpenProviderTerminalPanel,
   onAddCustomAction,
 }: ChatHeaderPanelMenuProps) {
   const providerItems = buildPanelMenuModel(
     applyProviderInstanceSettings(deriveProviderInstanceEntries(providerStatuses), settings),
   );
+  const providerTerminalItems = providerItems.flatMap((item) => {
+    const action = resolveProviderTerminalAction(item.entry, settings);
+    return action ? [{ item, action }] : [];
+  });
 
   return (
     <Menu>
@@ -99,6 +109,46 @@ export const ChatHeaderPanelMenu = memo(function ChatHeaderPanelMenu({
             }
           />
         )}
+        {providerTerminalItems.length > 0 ? (
+          <>
+            <MenuSeparator />
+            {providerTerminalItems.map(({ item, action }) => {
+              const disabled = item.disabled || !canCreatePanel || action.command === null;
+              const reason = !canCreatePanel
+                ? PANEL_UNAVAILABLE_REASON
+                : (item.disabledReason ?? action.disabledReason);
+              const menuItem = (
+                <MenuItem
+                  key={`terminal:${item.entry.instanceId}`}
+                  className={disabled ? "data-disabled:pointer-events-auto" : undefined}
+                  disabled={disabled}
+                  onClick={() => {
+                    if (action.command !== null) {
+                      onOpenProviderTerminalPanel(action);
+                    }
+                  }}
+                >
+                  <ProviderInstanceIcon
+                    driverKind={item.entry.driverKind}
+                    displayName={item.entry.displayName}
+                    accentColor={item.entry.accentColor}
+                    iconClassName="size-4"
+                  />
+                  <span className="truncate">{action.label}</span>
+                </MenuItem>
+              );
+              return disabled && reason ? (
+                <DisabledReasonTooltip
+                  key={`terminal:${item.entry.instanceId}`}
+                  reason={reason}
+                  trigger={menuItem}
+                />
+              ) : (
+                menuItem
+              );
+            })}
+          </>
+        ) : null}
         <MenuSeparator />
         <MenuItem onClick={onAddCustomAction}>
           <PlusIcon className="size-4" />
