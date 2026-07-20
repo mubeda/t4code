@@ -1,8 +1,6 @@
 import type {
   ServerProcessDiagnosticsEntry,
   ServerProcessDiagnosticsResult,
-  ServerProcessResourceTotals,
-  ServerProcessUiCoverage,
   ServerProviderUsageSnapshot,
 } from "@t4code/contracts";
 import * as DateTime from "effect/DateTime";
@@ -136,14 +134,24 @@ function diagnosticsFixture(
 
 function buildResourcePresentation(
   diagnostics: ServerProcessDiagnosticsResult | null,
-  localCore: {
-    readonly totals: ServerProcessResourceTotals;
-    readonly uiCoverage: ServerProcessUiCoverage;
-  } | null = null,
+  options: {
+    readonly queryError?: string | null;
+    readonly localDiagnostics?: ServerProcessDiagnosticsResult | null;
+    readonly localQueryError?: string | null;
+  } = {},
 ) {
   return buildResourceSummaryViewModel({
-    diagnostics,
-    localCore,
+    selected: {
+      diagnostics,
+      queryError: options.queryError ?? null,
+    },
+    local:
+      options.localDiagnostics === undefined && options.localQueryError === undefined
+        ? null
+        : {
+            diagnostics: options.localDiagnostics ?? null,
+            queryError: options.localQueryError ?? null,
+          },
   });
 }
 
@@ -289,6 +297,33 @@ describe("statusBarPresentation", () => {
     expect(vm.external?.memoryLabel).toBe("300.0 MB");
     expect(vm.warning?.message).toContain("Showing the last successful sample.");
     expect(vm.warning?.message).toContain("Process refresh timed out.");
+    expect(vm.warning?.statusLabel).toBe("Showing stale resource data");
+  });
+
+  it("reports an initial selected query failure as unavailable", () => {
+    const vm = buildResourcePresentation(null, {
+      queryError: "Selected diagnostics request failed.",
+    });
+
+    expect(vm.headline).toBeNull();
+    expect(vm.core).toBeNull();
+    expect(vm.external).toBeNull();
+    expect(vm.warning).toEqual({
+      message: "Selected diagnostics request failed.",
+      statusLabel: "Resource data unavailable",
+    });
+  });
+
+  it("retains selected query data and marks it stale when the query layer fails", () => {
+    const vm = buildResourcePresentation(diagnosticsFixture(), {
+      queryError: "Selected diagnostics connection was lost.",
+    });
+
+    expect(vm.headline?.memoryLabel).toBe("700.0 MB");
+    expect(vm.warning).toEqual({
+      message: "Showing the last successful sample. Selected diagnostics connection was lost.",
+      statusLabel: "Showing stale resource data",
+    });
   });
 
   it("uses unavailable presentation instead of healthy zeroes without a good sample", () => {
@@ -313,21 +348,72 @@ describe("statusBarPresentation", () => {
 
   it("keeps local Core separate from the selected remote-host totals", () => {
     const vm = buildResourcePresentation(diagnosticsFixture(), {
-      totals: { processCount: 2, rssBytes: mebibytes(900), cpuPercent: 12 },
-      uiCoverage: {
-        status: "unavailable",
-        message: Option.some("This device UI usage is unavailable."),
-      },
+      localDiagnostics: diagnosticsFixture({
+        totals: {
+          combined: { processCount: 4, rssBytes: mebibytes(1_000), cpuPercent: 16 },
+          core: { processCount: 2, rssBytes: mebibytes(900), cpuPercent: 12 },
+          external: { processCount: 2, rssBytes: mebibytes(100), cpuPercent: 4 },
+        },
+        uiCoverage: {
+          status: "unavailable",
+          message: Option.some("This device UI usage is unavailable."),
+        },
+      }),
     });
 
     expect(vm.headline?.memoryLabel).toBe("700.0 MB");
     expect(vm.core?.memoryLabel).toBe("400.0 MB");
     expect(vm.external?.memoryLabel).toBe("300.0 MB");
-    expect(vm.localCore).toMatchObject({
+    expect(vm.warning).toBeNull();
+    expect(vm.localCore?.totals).toMatchObject({
       memoryLabel: "900.0 MB",
       cpuLabel: "12.0%",
       processCountLabel: "2",
       coverageLabel: "UI unavailable",
+    });
+    expect(vm.localCore?.warning?.message).toContain("This device UI usage is unavailable.");
+  });
+
+  it("renders an initial local query failure as unavailable without contaminating selected state", () => {
+    const vm = buildResourcePresentation(diagnosticsFixture(), {
+      localQueryError: "This device diagnostics request failed.",
+    });
+
+    expect(vm.headline?.memoryLabel).toBe("700.0 MB");
+    expect(vm.warning).toBeNull();
+    expect(vm.localCore?.totals).toBeNull();
+    expect(vm.localCore?.warning).toEqual({
+      message: "This device diagnostics request failed.",
+      statusLabel: "Resource data unavailable",
+    });
+  });
+
+  it("retains local query data with an independent stale warning", () => {
+    const vm = buildResourcePresentation(diagnosticsFixture(), {
+      localDiagnostics: diagnosticsFixture(),
+      localQueryError: "This device diagnostics connection was lost.",
+    });
+
+    expect(vm.warning).toBeNull();
+    expect(vm.localCore?.totals?.memoryLabel).toBe("400.0 MB");
+    expect(vm.localCore?.warning).toEqual({
+      message: "Showing the last successful sample. This device diagnostics connection was lost.",
+      statusLabel: "Showing stale resource data",
+    });
+  });
+
+  it("retains a local structured last-good sample with an independent stale warning", () => {
+    const vm = buildResourcePresentation(diagnosticsFixture(), {
+      localDiagnostics: diagnosticsFixture({
+        error: Option.some({ message: "This device process refresh timed out." }),
+      }),
+    });
+
+    expect(vm.warning).toBeNull();
+    expect(vm.localCore?.totals?.memoryLabel).toBe("400.0 MB");
+    expect(vm.localCore?.warning).toEqual({
+      message: "Showing the last successful sample. This device process refresh timed out.",
+      statusLabel: "Showing stale resource data",
     });
   });
 

@@ -128,13 +128,21 @@ describe("AppStatusBarView", () => {
     const markup = renderToStaticMarkup(
       <AppStatusBarView
         usage={usage}
-        diagnostics={diagnostics}
-        localCore={{
-          totals: { processCount: 1, rssBytes: 104_857_600, cpuPercent: 0.5 },
-          uiCoverage: {
-            status: "partial",
-            message: Option.some("One local UI process could not be sampled."),
+        diagnostics={{ diagnostics, queryError: null }}
+        localDiagnostics={{
+          diagnostics: {
+            ...diagnostics,
+            totals: {
+              combined: { processCount: 2, rssBytes: 141_157_600, cpuPercent: 1.5 },
+              core: { processCount: 1, rssBytes: 104_857_600, cpuPercent: 0.5 },
+              external: { processCount: 1, rssBytes: 36_300_000, cpuPercent: 1 },
+            },
+            uiCoverage: {
+              status: "partial",
+              message: Option.some("One local UI process could not be sampled."),
+            },
           },
+          queryError: null,
         }}
         terminalCount={11}
         onRefresh={() => {}}
@@ -175,8 +183,8 @@ describe("AppStatusBarView", () => {
     const markup = renderToStaticMarkup(
       <AppStatusBarView
         usage={null}
-        diagnostics={null}
-        localCore={null}
+        diagnostics={{ diagnostics: null, queryError: null }}
+        localDiagnostics={null}
         terminalCount={0}
         onRefresh={() => {}}
       />,
@@ -186,6 +194,50 @@ describe("AppStatusBarView", () => {
     expect(markup).toContain("Unavailable");
     expect(markup).not.toContain("0 B");
     expect(markup).not.toContain("0.0%");
+  });
+
+  it("adds selected stale state to the trigger title and accessible label", () => {
+    const markup = renderToStaticMarkup(
+      <AppStatusBarView
+        usage={null}
+        diagnostics={{
+          diagnostics,
+          queryError: "Selected diagnostics connection was lost.",
+        }}
+        localDiagnostics={null}
+        terminalCount={0}
+        onRefresh={() => {}}
+      />,
+    );
+
+    expect(markup).toContain(
+      'aria-label="Combined monitored resources: 702.2 MB memory, 4.2% CPU, 2 processes; 0 terminals; Showing stale resource data"',
+    );
+    expect(markup).toContain(
+      'title="Combined monitored resources: 702.2 MB memory · 4.2% CPU · 2 processes · Showing stale resource data"',
+    );
+  });
+
+  it("keeps local-only warning copy out of the selected trigger", () => {
+    const markup = renderToStaticMarkup(
+      <AppStatusBarView
+        usage={null}
+        diagnostics={{ diagnostics, queryError: null }}
+        localDiagnostics={{
+          diagnostics: null,
+          queryError: "This device diagnostics request failed.",
+        }}
+        terminalCount={0}
+        onRefresh={() => {}}
+      />,
+    );
+
+    const trigger = markup.slice(markup.indexOf("<button"), markup.indexOf("</button>"));
+    expect(trigger).not.toContain("This device diagnostics request failed.");
+    expect(trigger).not.toContain("Resource data unavailable");
+    expect(markup).toContain("This device");
+    expect(markup).toContain("Unavailable");
+    expect(markup).toContain("This device diagnostics request failed.");
   });
 
   it("refreshes provider usage and selected/local live diagnostics", async () => {

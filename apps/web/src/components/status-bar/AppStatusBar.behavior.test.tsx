@@ -14,6 +14,7 @@ const harness = vi.hoisted(() => ({
   effects: [] as Array<() => void | (() => void)>,
   queries: [] as Array<{
     data: unknown;
+    error: string | null;
     isPending: boolean;
     refresh: ReturnType<typeof vi.fn>;
   }>,
@@ -111,8 +112,8 @@ import {
   startStatusBarUsageAutoRefresh,
 } from "./AppStatusBar";
 
-function query(data: unknown = null, isPending = false) {
-  return { data, isPending, refresh: vi.fn() };
+function query(data: unknown = null, isPending = false, error: string | null = null) {
+  return { data, error, isPending, refresh: vi.fn() };
 }
 
 function renderStatusBar(): string {
@@ -299,9 +300,16 @@ describe("AppStatusBar", () => {
     expect(harness.resourceSegments[0]).toMatchObject({
       terminalCount: 2,
       iconOnly: true,
-      localCore: {
-        totals: { processCount: 1, rssBytes: 1024, cpuPercent: 1 },
-        uiCoverage: { status: "available" },
+      diagnostics: {
+        diagnostics: { diagnostics: true },
+        queryError: null,
+      },
+      localDiagnostics: {
+        diagnostics: {
+          totals: { core: { processCount: 1, rssBytes: 1024, cpuPercent: 1 } },
+          uiCoverage: { status: "available" },
+        },
+        queryError: null,
       },
     });
     harness.effects[0]?.();
@@ -357,8 +365,8 @@ describe("AppStatusBarView defaults", () => {
     renderToStaticMarkup(
       <AppStatusBarView
         usage={null}
-        diagnostics={null}
-        localCore={null}
+        diagnostics={{ diagnostics: null, queryError: null }}
+        localDiagnostics={null}
         terminalCount={0}
         isRefreshing
         iconOnly

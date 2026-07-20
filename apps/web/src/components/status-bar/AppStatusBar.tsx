@@ -1,8 +1,4 @@
-import type {
-  EnvironmentId,
-  ServerProcessDiagnosticsResult,
-  ServerProviderUsageResult,
-} from "@t4code/contracts";
+import type { EnvironmentId, ServerProviderUsageResult } from "@t4code/contracts";
 import { RefreshCwIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -19,7 +15,10 @@ import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ProviderUsageSegment } from "./ProviderUsageSegment";
 import { ResourceUsageSegment } from "./ResourceUsageSegment";
-import { buildProviderUsageViewModel, type LocalCoreResourceUsage } from "./statusBarPresentation";
+import {
+  buildProviderUsageViewModel,
+  type ResourceDiagnosticsQueryState,
+} from "./statusBarPresentation";
 
 export const STATUS_BAR_USAGE_REFRESH_INTERVAL_MS = 30_000;
 export const STATUS_BAR_RESOURCE_REFRESH_INTERVAL_MS = 2_000;
@@ -90,15 +89,15 @@ export function createStatusBarResourceRefreshHandler(input: {
 export function AppStatusBarView({
   usage,
   diagnostics,
-  localCore,
+  localDiagnostics,
   terminalCount,
   isRefreshing = false,
   iconOnly = false,
   onRefresh,
 }: {
   readonly usage: ServerProviderUsageResult | null;
-  readonly diagnostics: ServerProcessDiagnosticsResult | null;
-  readonly localCore: LocalCoreResourceUsage | null;
+  readonly diagnostics: ResourceDiagnosticsQueryState;
+  readonly localDiagnostics: ResourceDiagnosticsQueryState | null;
   readonly terminalCount: number;
   readonly isRefreshing?: boolean;
   readonly iconOnly?: boolean;
@@ -135,7 +134,7 @@ export function AppStatusBarView({
       <div className="flex shrink-0 items-center gap-2">
         <ResourceUsageSegment
           diagnostics={diagnostics}
-          localCore={localCore}
+          localDiagnostics={localDiagnostics}
           terminalCount={terminalCount}
           iconOnly={iconOnly}
         />
@@ -270,13 +269,13 @@ export function AppStatusBar() {
     <div ref={containerRef}>
       <AppStatusBarView
         usage={usage.data}
-        diagnostics={diagnostics.data}
-        localCore={
-          localDiagnostics.data === null
+        diagnostics={{ diagnostics: diagnostics.data, queryError: diagnostics.error }}
+        localDiagnostics={
+          primaryLocalEnvironmentId === null
             ? null
             : {
-                totals: localDiagnostics.data.totals.core,
-                uiCoverage: localDiagnostics.data.uiCoverage,
+                diagnostics: localDiagnostics.data,
+                queryError: localDiagnostics.error,
               }
         }
         terminalCount={terminalSessions.length}
