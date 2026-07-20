@@ -194,3 +194,90 @@ clean.
 No files under `.repos/` or `third_party/` were modified. The ignored,
 root-owned `.superpowers/sdd/progress.md` ledger was preserved and is not part
 of the Task 7 commit.
+
+## Reviewer Correction: Independent Query Failures
+
+Follow-up review identified that `AppStatusBar` discarded
+`useEnvironmentQuery().error` for both selected and local diagnostics, and
+reduced local diagnostics to totals before the presentation layer could
+interpret structured failure/freshness metadata.
+
+The correction:
+
+- carries typed `{ diagnostics, queryError }` states for the selected host and
+  optional primary-local host;
+- presents initial selected query failures as unavailable and retained
+  selected data as stale;
+- carries the full local diagnostics result so structured `result.error`, UI
+  coverage, and query-layer failure can produce a separate local warning;
+- renders an expected local query's initial failure as an unavailable **This
+  device** row rather than omitting it or showing zeroes;
+- keeps selected and local warnings independent, including separate status
+  regions and accessible copy;
+- appends the selected warning state to the trigger `aria-label` and `title`
+  without leaking local-only warnings into the trigger; and
+- adds a real React rerender regression using the real `useEnvironmentQuery`
+  and atom hooks. It transitions browser/desktop and remote/local selections,
+  exercises initial and retained query failures, verifies stable hook
+  execution, and verifies that no local diagnostics descriptor is requested
+  on the browser path.
+
+### Correction RED
+
+```text
+vp test apps/web/src/components/status-bar/statusBarPresentation.test.ts apps/web/src/components/status-bar/AppStatusBar.test.tsx
+
+Test Files 2 failed
+Tests 18 failed | 9 passed
+exit 1
+```
+
+The new failures demonstrated that production still accepted only the legacy
+`{ diagnostics, localCore }` input, had no query-error status, could not retain
+local failure metadata, and did not include stale/unavailable status in the
+selected trigger's accessible copy.
+
+The real rerender test was authored before production changes in a separate
+happy-dom file so the existing behavior harness could retain its intentionally
+mocked React implementation. Its final harness uses real React hooks, the real
+`useEnvironmentQuery`, real mutable Effect atoms, deterministic unmount
+cleanup, and mocks only environment selection, RPC atom factories, commands,
+terminal data, and leaf UI.
+
+### Correction Coverage
+
+New assertions cover:
+
+- initial and retained selected query-layer failures;
+- initial and retained local query-layer failures;
+- retained local structured diagnostics failures;
+- local UI-coverage warnings remaining local;
+- selected stale status in trigger `aria-label` and `title`;
+- local-only failure copy excluded from the selected trigger;
+- browser-to-desktop and remote-to-local rerenders without conditional hook
+  failure; and
+- absence of a primary-local diagnostics request until the desktop-local
+  environment is in scope.
+
+### Correction Verification
+
+```text
+vp test apps/web/src/components/status-bar/statusBarFormat.test.ts apps/web/src/components/status-bar/statusBarPresentation.test.ts apps/web/src/components/status-bar/AppStatusBar.test.tsx apps/web/src/components/status-bar/AppStatusBar.behavior.test.tsx apps/web/src/components/status-bar/AppStatusBar.rerender.test.tsx
+
+Test Files 5 passed
+Tests 43 passed
+exit 0
+
+vp check
+pass: All 1539 files are correctly formatted
+pass: Found no warnings or lint errors in 1159 files
+
+vp run typecheck
+exit 0
+vp run: 0/11 cache hit (0%)
+```
+
+The existing Node `localStorage` experimental notice and repository-wide
+Effect `Schema.Number` suggestions remain non-failing. No files under
+`.repos/` or `third_party/` were modified, and the ignored
+`.superpowers/sdd/progress.md` ledger remains untouched.

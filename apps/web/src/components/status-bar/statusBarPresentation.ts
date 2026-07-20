@@ -91,11 +91,20 @@ export interface ResourceConsumerPresentation {
 
 export interface ResourceWarningPresentation {
   readonly message: string;
+  readonly statusLabel:
+    | "Resource data unavailable"
+    | "Showing stale resource data"
+    | "Resource data warning";
 }
 
-export interface LocalCoreResourceUsage {
-  readonly totals: ServerProcessResourceTotals;
-  readonly uiCoverage: ServerProcessUiCoverage;
+export interface ResourceDiagnosticsQueryState {
+  readonly diagnostics: ServerProcessDiagnosticsResult | null;
+  readonly queryError: string | null;
+}
+
+export interface LocalCoreResourcePresentation {
+  readonly totals: ResourceTotalsPresentation | null;
+  readonly warning: ResourceWarningPresentation | null;
 }
 
 export interface ResourceUsagePresentation {
@@ -104,7 +113,7 @@ export interface ResourceUsagePresentation {
   readonly external: ResourceTotalsPresentation | null;
   readonly consumers: ReadonlyArray<ResourceConsumerPresentation>;
   readonly uiCoverage: ServerProcessUiCoverage;
-  readonly localCore: ResourceTotalsPresentation | null;
+  readonly localCore: LocalCoreResourcePresentation | null;
   readonly warning: ResourceWarningPresentation | null;
 }
 
@@ -195,15 +204,6 @@ function coverageWarning(coverage: ServerProcessUiCoverage): string | null {
   );
 }
 
-function diagnosticsWarning(
-  diagnostics: ServerProcessDiagnosticsResult,
-  hasGoodSample: boolean,
-): string | null {
-  const error = Option.getOrNull(diagnostics.error);
-  if (error === null) return null;
-  return hasGoodSample ? `Showing the last successful sample. ${error.message}` : error.message;
-}
-
 function isGoodSample(diagnostics: ServerProcessDiagnosticsResult): boolean {
   const hasError = Option.isSome(diagnostics.error);
   return !(
@@ -213,23 +213,50 @@ function isGoodSample(diagnostics: ServerProcessDiagnosticsResult): boolean {
   );
 }
 
-export function buildResourceSummaryViewModel(input: {
+function buildResourceWarning(input: {
   readonly diagnostics: ServerProcessDiagnosticsResult | null;
-  readonly localCore: LocalCoreResourceUsage | null;
+  readonly queryError: string | null;
+  readonly hasGoodSample: boolean;
+}): ResourceWarningPresentation | null {
+  const diagnosticError =
+    input.diagnostics === null ? null : Option.getOrNull(input.diagnostics.error)?.message;
+  const errorMessages = [diagnosticError, input.queryError].filter(
+    (message): message is string => typeof message === "string",
+  );
+  const uniqueErrorMessages = [...new Set(errorMessages)];
+  const errorMessage =
+    uniqueErrorMessages.length === 0
+      ? null
+      : `${input.hasGoodSample ? "Showing the last successful sample. " : ""}${uniqueErrorMessages.join(" ")}`;
+  const coverageMessage =
+    input.diagnostics === null ? null : coverageWarning(input.diagnostics.uiCoverage);
+  const messages = [errorMessage, coverageMessage].filter(
+    (message): message is string => message !== null,
+  );
+  if (messages.length === 0) return null;
+  return {
+    message: messages.join(" "),
+    statusLabel:
+      uniqueErrorMessages.length === 0
+        ? "Resource data warning"
+        : input.hasGoodSample
+          ? "Showing stale resource data"
+          : "Resource data unavailable",
+  };
+}
+
+export function buildResourceSummaryViewModel(input: {
+  readonly selected: ResourceDiagnosticsQueryState;
+  readonly local: ResourceDiagnosticsQueryState | null;
 }): ResourceUsagePresentation {
-  const diagnostics = input.diagnostics;
+  const diagnostics = input.selected.diagnostics;
+  const localDiagnostics = input.local?.diagnostics ?? null;
   const uiCoverage = diagnostics?.uiCoverage ?? UNAVAILABLE_UI_COVERAGE;
   const hasGoodSample = diagnostics !== null && isGoodSample(diagnostics);
+  const hasGoodLocalSample = localDiagnostics !== null && isGoodSample(localDiagnostics);
 
   if (diagnostics !== null) assertReconciledTotals(diagnostics.totals);
-
-  const warningMessages =
-    diagnostics === null
-      ? []
-      : [
-          diagnosticsWarning(diagnostics, hasGoodSample),
-          coverageWarning(diagnostics.uiCoverage),
-        ].filter((message): message is string => message !== null);
+  if (localDiagnostics !== null) assertReconciledTotals(localDiagnostics.totals);
 
   return {
     headline: hasGoodSample ? presentTotals(diagnostics.totals.combined) : null,
@@ -242,9 +269,22 @@ export function buildResourceSummaryViewModel(input: {
       : [],
     uiCoverage,
     localCore:
-      input.localCore === null
+      input.local === null
         ? null
-        : presentTotals(input.localCore.totals, input.localCore.uiCoverage),
-    warning: warningMessages.length === 0 ? null : { message: warningMessages.join(" ") },
+        : {
+            totals: hasGoodLocalSample
+              ? presentTotals(localDiagnostics.totals.core, localDiagnostics.uiCoverage)
+              : null,
+            warning: buildResourceWarning({
+              diagnostics: localDiagnostics,
+              queryError: input.local.queryError,
+              hasGoodSample: hasGoodLocalSample,
+            }),
+          },
+    warning: buildResourceWarning({
+      diagnostics,
+      queryError: input.selected.queryError,
+      hasGoodSample,
+    }),
   };
 }

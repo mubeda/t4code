@@ -1,10 +1,9 @@
-import type { ServerProcessDiagnosticsResult } from "@t4code/contracts";
 import { CpuIcon, MemoryStickIcon, TerminalIcon, TriangleAlertIcon } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import {
   buildResourceSummaryViewModel,
-  type LocalCoreResourceUsage,
+  type ResourceDiagnosticsQueryState,
   type ResourceTotalsPresentation,
 } from "./statusBarPresentation";
 
@@ -42,28 +41,37 @@ function ResourceTotalsCard({
 
 export function ResourceUsageSegment({
   diagnostics,
-  localCore,
+  localDiagnostics,
   terminalCount,
   iconOnly,
 }: {
-  diagnostics: ServerProcessDiagnosticsResult | null;
-  localCore: LocalCoreResourceUsage | null;
+  diagnostics: ResourceDiagnosticsQueryState;
+  localDiagnostics: ResourceDiagnosticsQueryState | null;
   terminalCount: number;
   iconOnly: boolean;
 }) {
-  const presentation = buildResourceSummaryViewModel({ diagnostics, localCore });
+  const presentation = buildResourceSummaryViewModel({
+    selected: diagnostics,
+    local: localDiagnostics,
+  });
   const terminalCountLabel = String(Math.max(0, terminalCount));
   const headline = presentation.headline;
   const compactMemoryLabel = headline?.memoryLabel ?? "--";
   const compactCpuLabel = headline?.cpuLabel ?? "--";
-  const accessibleLabel =
+  const selectedWarningLabel =
+    presentation.warning === null ? "" : `; ${presentation.warning.statusLabel}`;
+  const selectedWarningTitle =
+    presentation.warning === null ? "" : ` · ${presentation.warning.statusLabel}`;
+  const accessibleLabel = `${
     headline === null
       ? `Combined monitored resources unavailable; ${terminalCountLabel} terminals`
-      : `Combined monitored resources: ${headline.memoryLabel} memory, ${headline.cpuLabel} CPU, ${headline.processCountLabel} processes; ${terminalCountLabel} terminals`;
-  const title =
+      : `Combined monitored resources: ${headline.memoryLabel} memory, ${headline.cpuLabel} CPU, ${headline.processCountLabel} processes; ${terminalCountLabel} terminals`
+  }${selectedWarningLabel}`;
+  const title = `${
     headline === null
       ? "Combined monitored resources unavailable"
-      : `Combined monitored resources: ${headline.memoryLabel} memory · ${headline.cpuLabel} CPU · ${headline.processCountLabel} processes`;
+      : `Combined monitored resources: ${headline.memoryLabel} memory · ${headline.cpuLabel} CPU · ${headline.processCountLabel} processes`
+  }${selectedWarningTitle}`;
 
   return (
     <Popover>
@@ -166,22 +174,47 @@ export function ResourceUsageSegment({
           </div>
 
           {presentation.localCore === null ? null : (
-            <div className="border-t border-border pt-3">
+            <div
+              className="border-t border-border pt-3"
+              role="group"
+              aria-label={`This device T4Code Core${
+                presentation.localCore.warning === null
+                  ? ""
+                  : `; ${presentation.localCore.warning.statusLabel}`
+              }`}
+            >
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <div className="font-medium text-foreground">This device</div>
                   <div className="text-[10px] text-muted-foreground">
-                    T4Code Core · {presentation.localCore.coverageLabel}
+                    T4Code Core
+                    {presentation.localCore.totals?.coverageLabel === null ||
+                    presentation.localCore.totals?.coverageLabel === undefined
+                      ? null
+                      : ` · ${presentation.localCore.totals.coverageLabel}`}
                   </div>
                 </div>
-                <div className="shrink-0 text-right font-mono text-[10px] tabular-nums">
-                  <div>{presentation.localCore.memoryLabel}</div>
-                  <div className="text-muted-foreground">
-                    {presentation.localCore.cpuLabel} CPU ·{" "}
-                    {presentation.localCore.processCountLabel} processes
+                {presentation.localCore.totals === null ? (
+                  <div className="font-medium text-muted-foreground">Unavailable</div>
+                ) : (
+                  <div className="shrink-0 text-right font-mono text-[10px] tabular-nums">
+                    <div>{presentation.localCore.totals.memoryLabel}</div>
+                    <div className="text-muted-foreground">
+                      {presentation.localCore.totals.cpuLabel} CPU ·{" "}
+                      {presentation.localCore.totals.processCountLabel} processes
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
+              {presentation.localCore.warning === null ? null : (
+                <div
+                  className="mt-2 flex items-start gap-2 rounded-md border border-warning/30 bg-warning/5 p-2 text-warning-foreground"
+                  role="status"
+                >
+                  <TriangleAlertIcon className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
+                  <span>{presentation.localCore.warning.message}</span>
+                </div>
+              )}
             </div>
           )}
         </div>
