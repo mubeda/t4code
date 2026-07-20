@@ -90,6 +90,25 @@ describe("centerPanelStore", () => {
         terminalId: "term-1",
       });
     });
+
+    it("persists provider label and structured command", () => {
+      const command = {
+        executable: "/opt/codex",
+        args: ["--dangerously-bypass-approvals-and-sandbox"],
+        label: "Codex Terminal",
+      };
+      store().openTerminalPanel(HOST, "term-1", {
+        label: "Codex Terminal",
+        command,
+      });
+      expect(stateOf().surfaces[1]).toEqual({
+        id: "terminal:term-1",
+        kind: "terminal",
+        terminalId: "term-1",
+        label: "Codex Terminal",
+        command,
+      });
+    });
   });
 
   describe("activateSurface", () => {
@@ -262,7 +281,7 @@ describe("centerPanelStore", () => {
       expect(migratePersistedCenterPanelState({})).toEqual({ byThreadKey: {} });
     });
 
-    it("prepends the host surface and drops invalid surfaces", () => {
+    it("preserves a host-closed state while dropping invalid surfaces", () => {
       const migrated = migratePersistedCenterPanelState({
         byThreadKey: {
           "environment-1:host-1": {
@@ -277,11 +296,52 @@ describe("centerPanelStore", () => {
       });
       const state = migrated.byThreadKey["environment-1:host-1"];
       expect(state?.surfaces.map((surface) => surface.id)).toEqual([
-        HOST_SURFACE_ID,
         `chat:${PANEL_A}`,
         "terminal:term-1",
       ]);
       expect(state?.activeSurfaceId).toBe(`chat:${PANEL_A}`);
+    });
+
+    it("preserves an explicitly empty v1 state", () => {
+      expect(
+        migratePersistedCenterPanelState({
+          byThreadKey: {
+            "environment-1:host-1": {
+              activeSurfaceId: null,
+              surfaces: [],
+            },
+          },
+        }),
+      ).toEqual({
+        byThreadKey: {
+          "environment-1:host-1": {
+            activeSurfaceId: null,
+            surfaces: [],
+          },
+        },
+      });
+    });
+
+    it("preserves an ordinary v1 state where the host is present", () => {
+      const migrated = migratePersistedCenterPanelState({
+        byThreadKey: {
+          "environment-1:host-1": {
+            activeSurfaceId: `chat:${PANEL_A}`,
+            surfaces: [
+              { id: HOST_SURFACE_ID, kind: "chat-host" },
+              { id: `chat:${PANEL_A}`, kind: "chat", threadId: PANEL_A },
+            ],
+          },
+        },
+      });
+
+      expect(migrated.byThreadKey["environment-1:host-1"]).toEqual({
+        activeSurfaceId: `chat:${PANEL_A}`,
+        surfaces: [
+          { id: HOST_SURFACE_ID, kind: "chat-host" },
+          { id: `chat:${PANEL_A}`, kind: "chat", threadId: PANEL_A },
+        ],
+      });
     });
 
     it("dedupes a persisted host copy and repairs a dangling active id", () => {
@@ -336,14 +396,59 @@ describe("centerPanelStore", () => {
       });
 
       expect(migrated.byThreadKey["environment-1:host-1"]).toEqual({
-        activeSurfaceId: HOST_SURFACE_ID,
-        surfaces: [
-          { id: HOST_SURFACE_ID, kind: "chat-host" },
-          { id: `chat:${PANEL_A}`, kind: "chat", threadId: PANEL_A },
-        ],
+        activeSurfaceId: `chat:${PANEL_A}`,
+        surfaces: [{ id: `chat:${PANEL_A}`, kind: "chat", threadId: PANEL_A }],
       });
       expect(migrated.byThreadKey.malformed).toBeUndefined();
       expect(migrated.byThreadKey["environment-1:host-2"]).toBeUndefined();
+    });
+
+    it("preserves bounded launch metadata and drops malformed commands", () => {
+      const migrated = migratePersistedCenterPanelState({
+        byThreadKey: {
+          valid: {
+            activeSurfaceId: "terminal:term-1",
+            surfaces: [
+              { id: HOST_SURFACE_ID, kind: "chat-host" },
+              {
+                kind: "terminal",
+                terminalId: "term-1",
+                label: " Codex Terminal ",
+                command: {
+                  executable: " /opt/codex ",
+                  args: ["--dangerously-bypass-approvals-and-sandbox"],
+                  label: " Codex Terminal ",
+                },
+              },
+            ],
+          },
+          invalid: {
+            activeSurfaceId: "terminal:term-2",
+            surfaces: [
+              { id: HOST_SURFACE_ID, kind: "chat-host" },
+              {
+                kind: "terminal",
+                terminalId: "term-2",
+                command: { executable: " ", args: [] },
+              },
+            ],
+          },
+        },
+      });
+
+      expect(migrated.byThreadKey.valid?.surfaces[1]).toMatchObject({
+        label: "Codex Terminal",
+        command: {
+          executable: "/opt/codex",
+          args: ["--dangerously-bypass-approvals-and-sandbox"],
+          label: "Codex Terminal",
+        },
+      });
+      expect(migrated.byThreadKey.invalid?.surfaces[1]).toEqual({
+        id: "terminal:term-2",
+        kind: "terminal",
+        terminalId: "term-2",
+      });
     });
 
     it("returns null when an active surface id has no matching surface", () => {

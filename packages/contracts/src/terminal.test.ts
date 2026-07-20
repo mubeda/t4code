@@ -3,6 +3,10 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   DEFAULT_TERMINAL_ID,
+  TERMINAL_LAUNCH_ARGUMENT_MAX_COUNT,
+  TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH,
+  TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH,
+  TERMINAL_LAUNCH_LABEL_MAX_LENGTH,
   TerminalAttachInput,
   TerminalAttachStreamEvent,
   TerminalClearInput,
@@ -13,6 +17,7 @@ import {
   TerminalError,
   TerminalEvent,
   TerminalHistoryError,
+  TerminalLaunchCommand,
   TerminalNotRunningError,
   TerminalOpenInput,
   TerminalResizeError,
@@ -20,6 +25,7 @@ import {
   TerminalRestartInput,
   TerminalSessionSnapshot,
   TerminalSessionLookupError,
+  TerminalSpawnError,
   TerminalThreadInput,
   TerminalWriteError,
   TerminalWriteInput,
@@ -151,6 +157,150 @@ describe("TerminalAttachInput", () => {
     });
 
     expect(parsed.restartIfNotRunning).toBe(true);
+  });
+});
+
+describe("TerminalLaunchCommand", () => {
+  const command = {
+    executable: "/Applications/Cursor Agent/cursor-agent",
+    args: ["--yolo"],
+    label: "Cursor Terminal",
+  };
+
+  it("round-trips on open, attach, and restart inputs", () => {
+    for (const [schema, input] of [
+      [
+        TerminalOpenInput,
+        {
+          threadId: "thread-1",
+          terminalId: "term-1",
+          cwd: "/tmp/project",
+          command,
+        },
+      ],
+      [
+        TerminalAttachInput,
+        {
+          threadId: "thread-1",
+          terminalId: "term-1",
+          cwd: "/tmp/project",
+          command,
+        },
+      ],
+      [
+        TerminalRestartInput,
+        {
+          threadId: "thread-1",
+          terminalId: "term-1",
+          cwd: "/tmp/project",
+          cols: 120,
+          rows: 30,
+          command,
+        },
+      ],
+    ] as const) {
+      expect(decodeSync(schema, input).command).toEqual(command);
+    }
+  });
+
+  it("keeps legacy shell payloads valid", () => {
+    expect(
+      decodeSync(TerminalOpenInput, {
+        threadId: "thread-1",
+        terminalId: "term-1",
+        cwd: "/tmp/project",
+      }).command,
+    ).toBeUndefined();
+  });
+
+  it("rejects invalid executable, argument, count, and label bounds", () => {
+    expect(() => decodeSync(TerminalLaunchCommand, { executable: " ", args: [] })).toThrow();
+    expect(() =>
+      decodeSync(TerminalLaunchCommand, {
+        executable: "x".repeat(TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH + 1),
+        args: [],
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeSync(TerminalLaunchCommand, {
+        executable: "codex",
+        args: ["x".repeat(TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH + 1)],
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeSync(TerminalLaunchCommand, {
+        executable: "codex",
+        args: Array.from({ length: TERMINAL_LAUNCH_ARGUMENT_MAX_COUNT + 1 }, () => "x"),
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeSync(TerminalLaunchCommand, {
+        executable: "codex",
+        args: [],
+        label: "x".repeat(TERMINAL_LAUNCH_LABEL_MAX_LENGTH + 1),
+      }),
+    ).toThrow();
+  });
+
+  it("measures command string bounds in UTF-16 code units", () => {
+    const astral = "😀";
+    const atBoundary = decodeSync(TerminalLaunchCommand, {
+      executable: astral.repeat(TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH / 2),
+      args: [astral.repeat(TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH / 2)],
+      label: astral.repeat(TERMINAL_LAUNCH_LABEL_MAX_LENGTH / 2),
+    });
+
+    expect(atBoundary.executable.length).toBe(TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH);
+    expect(atBoundary.args[0]?.length).toBe(TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH);
+    expect(atBoundary.label?.length).toBe(TERMINAL_LAUNCH_LABEL_MAX_LENGTH);
+    for (const value of [
+      {
+        executable: astral.repeat(TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH / 2 + 1),
+        args: [],
+      },
+      {
+        executable: "codex",
+        args: [astral.repeat(TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH / 2 + 1)],
+      },
+      {
+        executable: "codex",
+        args: [],
+        label: astral.repeat(TERMINAL_LAUNCH_LABEL_MAX_LENGTH / 2 + 1),
+      },
+    ]) {
+      expect(() => decodeSync(TerminalLaunchCommand, value)).toThrow();
+    }
+  });
+
+  it("uses ECMAScript trim semantics without trimming arguments", () => {
+    const decoded = decodeSync(TerminalLaunchCommand, {
+      executable: "\uFEFFcodex\uFEFF",
+      args: ["\uFEFF--model\uFEFF"],
+      label: "\uFEFFCodex Terminal\uFEFF",
+    });
+
+    expect(decoded).toEqual({
+      executable: "codex",
+      args: ["\uFEFF--model\uFEFF"],
+      label: "Codex Terminal",
+    });
+    expect(
+      decodeSync(TerminalLaunchCommand, {
+        executable: "\u0085codex\u0085",
+        args: [],
+        label: "\u0085Codex Terminal\u0085",
+      }),
+    ).toEqual({
+      executable: "\u0085codex\u0085",
+      args: [],
+      label: "\u0085Codex Terminal\u0085",
+    });
+    expect(() =>
+      decodeSync(TerminalLaunchCommand, {
+        executable: "\uFEFF",
+        args: [],
+      }),
+    ).toThrow();
   });
 });
 
@@ -425,10 +575,36 @@ describe("terminal boundary schemas", () => {
 });
 
 describe("terminal errors", () => {
+  it("decodes a bounded terminal spawn failure without exposing process details", () => {
+    expect(
+      decodeTerminalError({
+        _tag: "TerminalSpawnError",
+        reason: "Terminal process could not be started.",
+      }),
+    ).toMatchObject({
+      _tag: "TerminalSpawnError",
+      reason: "Terminal process could not be started.",
+    });
+  });
+
+  it("rejects terminal spawn reasons beyond the wire bound", () => {
+    const invalid = {
+      _tag: "TerminalSpawnError",
+      reason: "x".repeat(513),
+    };
+    const expected = {
+      rootTag: "AnyOf" as const,
+      paths: [["reason"]],
+      containsTag: "InvalidValue" as const,
+    };
+    expectDecodeFailure(TerminalError, invalid, expected);
+  });
+
   const errors = [
     new TerminalCwdNotFoundError({ cwd: "/missing" }),
     new TerminalCwdNotDirectoryError({ cwd: "/file.txt" }),
     new TerminalCwdStatError({ cwd: "/denied", cause: "permission denied" }),
+    new TerminalSpawnError({ reason: "Terminal process could not be started." }),
     new TerminalHistoryError({
       operation: "migrate",
       threadId: "thread-1",
@@ -457,6 +633,7 @@ describe("terminal errors", () => {
       "Terminal cwd does not exist: /missing",
       "Terminal cwd is not a directory: /file.txt",
       "Failed to access terminal cwd: /denied",
+      "Terminal process could not be started.",
       "Failed to migrate terminal history for thread: thread-1, terminal: term-1",
       "Unknown terminal thread: thread-1, terminal: term-9",
       "Terminal is not running for thread: thread-1, terminal: term-2",

@@ -322,7 +322,7 @@ fn cleanup_failed_windows_spawn_handle(
         let error = io::Error::last_os_error();
         tracing::warn!(
             stage,
-            error = %super::bound_process_cleanup_failure(error),
+            error = %super::cleanup::bound_process_cleanup_failure(error),
             "failed to fully clean up process-wrap spawn failure"
         );
     }

@@ -36,7 +36,9 @@ The active thread's main chat is always the first center tab and cannot be
 closed. The chat header `+` menu contains:
 
 - enabled AI providers, which create new chat panels
-- Open Terminal, which creates a terminal panel in the current worktree
+- Open Terminal, which creates a shell terminal panel in the current worktree
+- enabled provider terminal actions, which launch the selected provider CLI in
+  the current worktree using that provider instance's configured binary path
 - Add custom action, which opens the custom action dialog
 
 Each extra chat panel is an isolated AI session. For contributors, this is
@@ -79,7 +81,12 @@ The Files surface is a full file manager for the active workspace:
   rename, delete, duplicate, copy paths, add a folder as a project, open in an
   external editor, or open previewable files in the preview browser.
 - Open file tabs follow renames and close when their file is deleted.
-- Autosave remains enabled, and Ctrl/Cmd+S explicitly flushes pending changes.
+- Autosave remains enabled. Every selected file shows a dedicated Save, Undo,
+  and Redo toolbar below its breadcrumbs. Save becomes available for pending
+  changes and flushes them immediately; Undo and Redo use independent native
+  history for each open source file. Read-only views keep the toolbar visible
+  with unavailable actions disabled. Ctrl/Cmd+S continues to flush pending
+  changes.
 
 ## Known Limitations
 

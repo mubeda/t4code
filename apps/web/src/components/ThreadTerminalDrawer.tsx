@@ -23,6 +23,7 @@ import {
 import {
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
+  type TerminalLaunchCommand,
   type ThreadId,
 } from "@t4code/contracts";
 import { getTerminalLabel } from "@t4code/shared/terminalLabels";
@@ -544,6 +545,7 @@ interface TerminalViewportProps {
   cwd: string;
   worktreePath?: string | null;
   runtimeEnv?: Record<string, string>;
+  command?: TerminalLaunchCommand;
   visible: boolean;
   onSessionExited: () => void;
   onAddTerminalContext: (selection: TerminalContextSelection) => void;
@@ -568,6 +570,7 @@ export function TerminalViewport({
   cwd,
   worktreePath,
   runtimeEnv,
+  command,
   visible,
   onSessionExited,
   onAddTerminalContext,
@@ -647,6 +650,7 @@ export function TerminalViewport({
       cwd,
       ...(worktreePath !== undefined ? { worktreePath } : {}),
       ...(runtimeEnv ? { env: runtimeEnv } : {}),
+      ...(command ? { command } : {}),
     },
     attach: shouldRender,
   });
@@ -1085,6 +1089,7 @@ export function TerminalViewport({
     };
     // Focus is handled by a separate activation effect so it never tears down this renderer.
   }, [
+    command,
     cwd,
     environmentId,
     runtimeEnvKey,
@@ -1339,6 +1344,8 @@ interface ThreadTerminalDrawerProps {
   keybindings: ResolvedKeybindingsConfig;
   /** Prefer server-provided tab titles when present (e.g. active subprocess name). */
   terminalLabelsById?: ReadonlyMap<string, string>;
+  /** Structured launch commands for provider terminals that have not started yet. */
+  terminalCommandsById?: ReadonlyMap<string, TerminalLaunchCommand>;
   /** Prefer per-session launch locations when the server already knows a terminal. */
   terminalLaunchLocationsById?: ReadonlyMap<string, TerminalLaunchLocation>;
 }
@@ -1399,6 +1406,7 @@ export default function ThreadTerminalDrawer({
   onAddTerminalContext,
   keybindings,
   terminalLabelsById,
+  terminalCommandsById,
   terminalLaunchLocationsById,
 }: ThreadTerminalDrawerProps) {
   const isPanel = mode === "panel";
@@ -1863,6 +1871,9 @@ export default function ThreadTerminalDrawer({
                           {...(terminalLaunchLocation.runtimeEnv
                             ? { runtimeEnv: terminalLaunchLocation.runtimeEnv }
                             : {})}
+                          {...(terminalCommandsById?.get(terminalId)
+                            ? { command: terminalCommandsById.get(terminalId)! }
+                            : {})}
                           visible={visible}
                           onSessionExited={() => onCloseTerminal(terminalId)}
                           onAddTerminalContext={onAddTerminalContext}
@@ -1891,6 +1902,9 @@ export default function ThreadTerminalDrawer({
                     : {})}
                   {...(activeTerminalLaunchLocation.runtimeEnv
                     ? { runtimeEnv: activeTerminalLaunchLocation.runtimeEnv }
+                    : {})}
+                  {...(terminalCommandsById?.get(resolvedActiveTerminalId)
+                    ? { command: terminalCommandsById.get(resolvedActiveTerminalId)! }
                     : {})}
                   visible={visible}
                   onSessionExited={() => onCloseTerminal(resolvedActiveTerminalId)}

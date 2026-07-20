@@ -1,5 +1,6 @@
 mod background;
 mod cleanup;
+mod executable;
 mod runner;
 mod shell;
 pub(crate) mod supervised;
@@ -7,13 +8,19 @@ pub(crate) mod supervised;
 mod windows_job;
 
 #[cfg(windows)]
-pub(crate) use windows_job::WindowsJob;
+pub(crate) use windows_job::{WindowsJob, WindowsPtyLaunchGate};
 
 pub use background::{
     configure_background_command, configure_background_std_command,
     configure_supervised_background_command_wrap,
 };
-pub(crate) use cleanup::{ProcessCleanupReport, bound_process_cleanup_failure};
+pub(crate) use cleanup::ProcessCleanupReport;
+#[cfg(any(windows, test))]
+pub(crate) use executable::wrap_windows_pty_launch;
+pub(crate) use executable::{
+    PreparedLaunch, launch_executable_extensions, locate_executable, wrap_launch_program,
+};
+pub use executable::{WINDOWS_PTY_TRAMPOLINE_ARG, run_windows_pty_trampoline};
 pub use runner::{
     OutputMode, ProcessError, ProcessRunInput, ProcessRunOutput, ProcessRunner, TimeoutBehavior,
 };

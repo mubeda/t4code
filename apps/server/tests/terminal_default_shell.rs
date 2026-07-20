@@ -8,11 +8,11 @@ use t4code_server::terminal::{
 };
 
 #[test]
-fn portable_backend_rejects_an_undiscoverable_shell_synchronously() {
+fn portable_backend_rejects_an_undiscoverable_executable_synchronously() {
     let workspace = tempfile::tempdir().expect("workspace");
     let backend = PortablePtyBackend;
     let result = backend.spawn(&PtySpawnInput {
-        shell: "t4code-shell-that-does-not-exist.exe".to_string(),
+        executable: "t4code-shell-that-does-not-exist.exe".to_string(),
         args: Vec::new(),
         cwd: workspace.path().to_path_buf(),
         cols: 120,
@@ -22,7 +22,7 @@ fn portable_backend_rejects_an_undiscoverable_shell_synchronously() {
 
     assert!(
         result.is_err(),
-        "missing shell must not produce a PTY process"
+        "missing executable must not produce a PTY process"
     );
 }
 
@@ -115,6 +115,7 @@ async fn attaching_a_missing_terminal_opens_it_without_deadlocking() {
             rows: Some(30),
             env: BTreeMap::new(),
             restart_if_not_running: false,
+            command: None,
         }),
     )
     .await
@@ -146,6 +147,7 @@ async fn concurrent_open_and_attach_share_one_native_process() {
         rows: Some(30),
         env: BTreeMap::new(),
         restart_if_not_running: false,
+        command: None,
     };
 
     let open_manager = manager.clone();
