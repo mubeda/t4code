@@ -126,8 +126,10 @@ describe("FileEditingSessionRegistry StrictMode ownership", () => {
     });
     expect(lease).not.toBeNull();
     await renderOwner("project-b:thread-b", ["src/b.ts"], "src/b.ts");
-    expect(registries).toHaveLength(2);
-    expect(sessions).toHaveLength(2);
+    await vi.waitFor(() => {
+      expect(registries).toHaveLength(2);
+      expect(sessions).toHaveLength(2);
+    });
     expect(sessions[0]!.dispose).not.toHaveBeenCalled();
 
     lease!.release();
