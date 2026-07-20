@@ -11,14 +11,18 @@ import { ScrollArea } from "../ui/scroll-area";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SettingsSection } from "./settingsLayout";
 import {
+  DEFAULT_HISTORY_PROCESS_SORT,
   DEFAULT_LIVE_PROCESS_SORT,
   HISTORY_PROCESS_COLUMNS,
   LIVE_PROCESS_COLUMNS,
   RESOURCE_HISTORY_WINDOWS,
   presentLiveProcesses,
   presentResourceHistory,
+  toggleHistoryProcessSort,
   toggleLiveProcessSort,
   type HistoryMetric,
+  type HistoryProcessSort,
+  type HistoryProcessSortKey,
   type LiveProcessSort,
   type LiveProcessSortKey,
   type ResourceDiagnosticsBanner,
@@ -164,6 +168,40 @@ function SortHeader({
         size="xs"
         className="-mx-2 h-6 px-2 text-[11px] font-semibold uppercase tracking-[0.08em]"
         aria-label={`Sort by ${sortLabel}`}
+        onClick={() => onSort(sortKey)}
+      >
+        {label}
+        {active ? <span aria-hidden>{sort.direction === "asc" ? " ↑" : " ↓"}</span> : null}
+      </Button>
+    </th>
+  );
+}
+
+function HistorySortHeader({
+  label,
+  sortKey,
+  sort,
+  onSort,
+  align = "left",
+}: {
+  readonly label: string;
+  readonly sortKey: HistoryProcessSortKey;
+  readonly sort: HistoryProcessSort;
+  readonly onSort: (key: HistoryProcessSortKey) => void;
+  readonly align?: "left" | "right";
+}) {
+  const active = sort.key === sortKey;
+  return (
+    <th
+      aria-sort={active ? (sort.direction === "asc" ? "ascending" : "descending") : "none"}
+      className={cn("whitespace-nowrap px-3 py-2 font-semibold", align === "right" && "text-right")}
+    >
+      <Button
+        type="button"
+        variant="ghost"
+        size="xs"
+        className="-mx-2 h-6 px-2 text-[11px] font-semibold uppercase tracking-[0.08em]"
+        aria-label={`Sort history by ${label}`}
         onClick={() => onSort(sortKey)}
       >
         {label}
@@ -455,9 +493,11 @@ function ResourceHistoryChart({
 function HistoryProcessTable({
   presentation,
   isPending,
+  onSort,
 }: {
   readonly presentation: ReturnType<typeof presentResourceHistory>;
   readonly isPending: boolean;
+  readonly onSort: (key: HistoryProcessSortKey) => void;
 }) {
   return (
     <ScrollArea
@@ -469,18 +509,65 @@ function HistoryProcessTable({
       <table className="w-full min-w-[1480px] table-fixed text-left text-xs">
         <thead className="sticky top-0 z-10 border-b border-border/60 bg-card text-[11px] uppercase tracking-[0.08em] text-muted-foreground/70">
           <tr>
-            {HISTORY_PROCESS_COLUMNS.map((column) => (
-              <th
-                key={column}
-                className={cn(
-                  "whitespace-nowrap px-3 py-2 font-semibold",
-                  (column.includes("CPU") || column.includes("Memory") || column === "PID") &&
-                    "text-right",
-                )}
-              >
-                {column}
-              </th>
-            ))}
+            <HistorySortHeader
+              label={HISTORY_PROCESS_COLUMNS[0]}
+              sortKey="scope"
+              sort={presentation.processSort}
+              onSort={onSort}
+            />
+            <HistorySortHeader
+              label={HISTORY_PROCESS_COLUMNS[1]}
+              sortKey="kind"
+              sort={presentation.processSort}
+              onSort={onSort}
+            />
+            <HistorySortHeader
+              label={HISTORY_PROCESS_COLUMNS[2]}
+              sortKey="label"
+              sort={presentation.processSort}
+              onSort={onSort}
+            />
+            <HistorySortHeader
+              label={HISTORY_PROCESS_COLUMNS[3]}
+              sortKey="cpuTime"
+              sort={presentation.processSort}
+              onSort={onSort}
+              align="right"
+            />
+            <HistorySortHeader
+              label={HISTORY_PROCESS_COLUMNS[4]}
+              sortKey="currentCpu"
+              sort={presentation.processSort}
+              onSort={onSort}
+              align="right"
+            />
+            <HistorySortHeader
+              label={HISTORY_PROCESS_COLUMNS[5]}
+              sortKey="averageCpu"
+              sort={presentation.processSort}
+              onSort={onSort}
+              align="right"
+            />
+            <HistorySortHeader
+              label={HISTORY_PROCESS_COLUMNS[6]}
+              sortKey="peakCpu"
+              sort={presentation.processSort}
+              onSort={onSort}
+              align="right"
+            />
+            <HistorySortHeader
+              label={HISTORY_PROCESS_COLUMNS[7]}
+              sortKey="maxMemory"
+              sort={presentation.processSort}
+              onSort={onSort}
+              align="right"
+            />
+            <th className="whitespace-nowrap px-3 py-2 font-semibold">
+              {HISTORY_PROCESS_COLUMNS[8]}
+            </th>
+            <th className="whitespace-nowrap px-3 py-2 text-right font-semibold">
+              {HISTORY_PROCESS_COLUMNS[9]}
+            </th>
           </tr>
         </thead>
         <tbody className="divide-y divide-border/50">
@@ -521,7 +608,6 @@ function HistoryProcessTable({
                 ["current-cpu", row.currentCpuLabel],
                 ["average-cpu", row.averageCpuLabel],
                 ["peak-cpu", row.peakCpuLabel],
-                ["current-memory", row.currentMemoryLabel],
                 ["max-memory", row.maxMemoryLabel],
               ].map(([metric, value]) => (
                 <td
@@ -570,6 +656,9 @@ export function ResourceDiagnosticsSections({
 }: ResourceDiagnosticsSectionsProps) {
   const [liveSort, setLiveSort] = useState<LiveProcessSort>(DEFAULT_LIVE_PROCESS_SORT);
   const [historyMetric, setHistoryMetric] = useState<HistoryMetric>("memory");
+  const [historyProcessSort, setHistoryProcessSort] = useState<HistoryProcessSort>(
+    DEFAULT_HISTORY_PROCESS_SORT,
+  );
   const live = useMemo(
     () =>
       presentLiveProcesses({
@@ -585,11 +674,15 @@ export function ResourceDiagnosticsSections({
         history: resourceData,
         queryError: resourceError,
         metric: historyMetric,
+        processSort: historyProcessSort,
       }),
-    [historyMetric, resourceData, resourceError],
+    [historyMetric, historyProcessSort, resourceData, resourceError],
   );
   const sortLiveProcesses = (key: LiveProcessSortKey) => {
     setLiveSort((current) => toggleLiveProcessSort(current, key));
+  };
+  const sortHistoryProcesses = (key: HistoryProcessSortKey) => {
+    setHistoryProcessSort((current) => toggleHistoryProcessSort(current, key));
   };
 
   return (
@@ -656,7 +749,11 @@ export function ResourceDiagnosticsSections({
         )}
         <ResourceBanners banners={history.banners} />
         <ResourceHistoryChart presentation={history} />
-        <HistoryProcessTable presentation={history} isPending={isResourcePending} />
+        <HistoryProcessTable
+          presentation={history}
+          isPending={isResourcePending}
+          onSort={sortHistoryProcesses}
+        />
       </SettingsSection>
     </>
   );

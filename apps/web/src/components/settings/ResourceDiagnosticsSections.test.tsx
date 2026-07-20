@@ -345,6 +345,53 @@ describe("ResourceDiagnosticsSections", () => {
     expect(markup).toContain("Same-sample peak 40.0%");
   });
 
+  it("sorts complete history rows from accessible attributed metric headers", () => {
+    let markup = render();
+    let historyMarkup = markup.slice(markup.indexOf('data-section-title="Resource History"'));
+
+    expect(historyMarkup.indexOf(">Codex<")).toBeLessThan(historyMarkup.indexOf(">T4Code Server<"));
+    expect(historyMarkup).toMatch(
+      /<th aria-sort="descending"[^>]*><button[^>]*aria-label="Sort history by Max Memory"/,
+    );
+
+    for (const label of [
+      "Scope",
+      "Kind",
+      "Label",
+      "CPU Time",
+      "Current CPU",
+      "Average CPU",
+      "Peak CPU",
+      "Max Memory",
+    ]) {
+      expect(h.buttons.some((button) => button["aria-label"] === `Sort history by ${label}`)).toBe(
+        true,
+      );
+    }
+
+    const sortByCpuTime = h.buttons.find(
+      (button) => button["aria-label"] === "Sort history by CPU Time",
+    );
+    if (!sortByCpuTime) throw new Error("Sort history by CPU Time button was not rendered");
+    (sortByCpuTime.onClick as () => void)();
+    expect(h.stateCalls).toContainEqual({ key: "cpuTime", direction: "desc" });
+
+    h.stateSeeds.push({
+      match: (initial) =>
+        typeof initial === "object" &&
+        initial !== null &&
+        "key" in initial &&
+        (initial as { key: string }).key === "maxMemory",
+      value: { key: "cpuTime", direction: "desc" },
+    });
+    markup = render();
+    historyMarkup = markup.slice(markup.indexOf('data-section-title="Resource History"'));
+    expect(historyMarkup.indexOf(">T4Code Server<")).toBeLessThan(historyMarkup.indexOf(">Codex<"));
+    expect(historyMarkup).toMatch(
+      /<th aria-sort="descending"[^>]*><button[^>]*aria-label="Sort history by CPU Time"/,
+    );
+  });
+
   it("renders bounded coverage warnings and keeps not-applicable coverage neutral", () => {
     let markup = render({
       processData: liveFixture({
@@ -396,15 +443,9 @@ describe("ResourceDiagnosticsSections", () => {
     for (const column of ["Scope", "Kind", "Label", "Command", "CPU", "Memory", "PID"]) {
       expect(liveMarkup).toContain(`>${column}<`);
     }
-    for (const column of [
-      "CPU Time",
-      "Current CPU",
-      "Average CPU",
-      "Peak CPU",
-      "Current Memory",
-      "Max Memory",
-    ]) {
+    for (const column of ["CPU Time", "Current CPU", "Average CPU", "Peak CPU", "Max Memory"]) {
       expect(markup).toContain(`>${column}<`);
     }
+    expect(markup).not.toContain(">Current Memory<");
   });
 });

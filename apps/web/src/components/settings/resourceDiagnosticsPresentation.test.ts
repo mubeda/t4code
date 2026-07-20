@@ -14,6 +14,7 @@ import {
   RESOURCE_HISTORY_WINDOWS,
   presentLiveProcesses,
   presentResourceHistory,
+  toggleHistoryProcessSort,
   toggleLiveProcessSort,
 } from "./resourceDiagnosticsPresentation";
 
@@ -352,17 +353,140 @@ describe("presentLiveProcesses", () => {
       queryError: null,
     });
     const signalEligibility = Object.fromEntries(
-      presentation.rows.map((row) => [row.pid, row.canSignal]),
+      presentation.rows.map((row) => [row.processKey, row.canSignal]),
     );
 
     expect(signalEligibility).toEqual({
-      100: false,
-      200: true,
-      201: true,
-      300: false,
-      400: false,
-      401: false,
+      "100:1": false,
+      "200:1": true,
+      "201:1": true,
+      "300:1": false,
+      "400:1": false,
+      "401:1": false,
     });
+  });
+
+  it("does not enable signals through ancestry cycles or reparented roots", () => {
+    const base = liveFixture();
+    const presentation = presentLiveProcesses({
+      diagnostics: liveFixture({
+        processes: [
+          ...base.processes,
+          processEntry({
+            pid: 500,
+            ppid: 501,
+            processKey: "500:1",
+            scope: "external",
+            kind: "helper",
+            label: "Cycle A",
+          }),
+          processEntry({
+            pid: 501,
+            ppid: 500,
+            processKey: "501:1",
+            scope: "external",
+            kind: "helper",
+            label: "Cycle B",
+          }),
+        ],
+      }),
+      queryError: null,
+    });
+    const signalEligibility = Object.fromEntries(
+      presentation.rows.map((row) => [row.processKey, row.canSignal]),
+    );
+
+    expect(signalEligibility["400:1"]).toBe(false);
+    expect(signalEligibility["401:1"]).toBe(false);
+    expect(signalEligibility["500:1"]).toBe(false);
+    expect(signalEligibility["501:1"]).toBe(false);
+  });
+
+  it("makes every duplicate target PID identity unsignalable", () => {
+    const base = liveFixture();
+    const presentation = presentLiveProcesses({
+      diagnostics: liveFixture({
+        processes: [
+          ...base.processes,
+          processEntry({
+            pid: 200,
+            ppid: 100,
+            processKey: "200:2",
+            scope: "external",
+            kind: "provider",
+            label: "Reused Codex PID",
+          }),
+          processEntry({
+            pid: 600,
+            ppid: 100,
+            processKey: "600:1",
+            scope: "external",
+            kind: "helper",
+            label: "Independent helper",
+          }),
+        ],
+      }),
+      queryError: null,
+    });
+    const signalEligibility = Object.fromEntries(
+      presentation.rows.map((row) => [row.processKey, row.canSignal]),
+    );
+
+    expect(signalEligibility["200:1"]).toBe(false);
+    expect(signalEligibility["200:2"]).toBe(false);
+    expect(signalEligibility["600:1"]).toBe(true);
+  });
+
+  it("makes descendants of an ambiguous parent PID unsignalable", () => {
+    const base = liveFixture();
+    const presentation = presentLiveProcesses({
+      diagnostics: liveFixture({
+        processes: [
+          ...base.processes,
+          processEntry({
+            pid: 700,
+            ppid: 100,
+            processKey: "700:1",
+            scope: "external",
+            kind: "terminal",
+            label: "Terminal identity A",
+          }),
+          processEntry({
+            pid: 700,
+            ppid: 100,
+            processKey: "700:2",
+            scope: "external",
+            kind: "terminal",
+            label: "Terminal identity B",
+          }),
+          processEntry({
+            pid: 701,
+            ppid: 700,
+            processKey: "701:1",
+            scope: "external",
+            kind: "terminal",
+            label: "Terminal child",
+          }),
+          processEntry({
+            pid: 702,
+            ppid: 100,
+            processKey: "702:1",
+            scope: "external",
+            kind: "helper",
+            label: "Independent helper",
+          }),
+        ],
+      }),
+      queryError: null,
+    });
+    const signalEligibility = Object.fromEntries(
+      presentation.rows.map((row) => [row.processKey, row.canSignal]),
+    );
+
+    expect(signalEligibility["700:1"]).toBe(false);
+    expect(signalEligibility["700:2"]).toBe(false);
+    expect(signalEligibility["701:1"]).toBe(false);
+    expect(signalEligibility["702:1"]).toBe(true);
   });
 
   it("retains the server sample timestamp while marking last-good data stale", () => {
@@ -493,7 +617,6 @@ describe("presentResourceHistory", () => {
       "Current CPU",
       "Average CPU",
       "Peak CPU",
-      "Current Memory",
       "Max Memory",
       "Command",
       "PID",
@@ -506,11 +629,108 @@ describe("presentResourceHistory", () => {
       currentCpuLabel: "9.0%",
       averageCpuLabel: "7.0%",
       peakCpuLabel: "30.0%",
-      currentMemoryLabel: "250.0 MB",
       maxMemoryLabel: "400.0 MB",
       command: "codex app-server",
       pid: 200,
     });
+    expect(codex).not.toHaveProperty("currentMemoryLabel");
+  });
+
+  it("defaults history processes to descending maximum-memory order", () => {
+    const presentation = presentResourceHistory({
+      history: historyFixture(),
+      queryError: null,
+    });
+
+    expect(presentation.processSort).toEqual({ key: "maxMemory", direction: "desc" });
+    expect(presentation.rows.map((row) => row.processKey)).toEqual(["200:1", "100:1"]);
+  });
+
+  it.each([
+    [{ key: "label", direction: "asc" }, ["1:1", "2:1", "3:1"]],
+    [{ key: "scope", direction: "asc" }, ["1:1", "2:1", "3:1"]],
+    [{ key: "kind", direction: "asc" }, ["3:1", "2:1", "1:1"]],
+    [{ key: "cpuTime", direction: "desc" }, ["2:1", "1:1", "3:1"]],
+    [{ key: "currentCpu", direction: "desc" }, ["3:1", "1:1", "2:1"]],
+    [{ key: "averageCpu", direction: "desc" }, ["2:1", "1:1", "3:1"]],
+    [{ key: "peakCpu", direction: "desc" }, ["3:1", "1:1", "2:1"]],
+    [{ key: "maxMemory", direction: "desc" }, ["1:1", "3:1", "2:1"]],
+  ] as const)("sorts full history rows by %o with process-key ties", (processSort, expected) => {
+    const processes = [
+      historySummary({
+        processKey: "1:1",
+        pid: 1,
+        scope: "core",
+        kind: "ui",
+        label: "Alpha",
+        cpuSecondsApprox: 20,
+        currentCpuPercent: 5,
+        avgCpuPercent: 6,
+        maxCpuPercent: 8,
+        maxRssBytes: 300 * 1024 ** 2,
+      }),
+      historySummary({
+        processKey: "2:1",
+        pid: 2,
+        scope: "external",
+        kind: "provider",
+        label: "Beta",
+        cpuSecondsApprox: 30,
+        currentCpuPercent: 1,
+        avgCpuPercent: 9,
+        maxCpuPercent: 7,
+        maxRssBytes: 100 * 1024 ** 2,
+      }),
+      historySummary({
+        processKey: "3:1",
+        pid: 3,
+        scope: "external",
+        kind: "helper",
+        label: "Gamma",
+        cpuSecondsApprox: 10,
+        currentCpuPercent: 10,
+        avgCpuPercent: 2,
+        maxCpuPercent: 12,
+        maxRssBytes: 200 * 1024 ** 2,
+      }),
+    ];
+    const presentation = presentResourceHistory({
+      history: historyFixture({ processes }),
+      queryError: null,
+      processSort,
+    });
+
+    expect(presentation.rows.map((row) => row.processKey)).toEqual(expected);
+    expect(presentation.rows).toHaveLength(processes.length);
+  });
+
+  it("toggles history text sorts ascending and metric sorts descending", () => {
+    expect(toggleHistoryProcessSort({ key: "maxMemory", direction: "desc" }, "maxMemory")).toEqual({
+      key: "maxMemory",
+      direction: "asc",
+    });
+    expect(toggleHistoryProcessSort({ key: "maxMemory", direction: "desc" }, "label")).toEqual({
+      key: "label",
+      direction: "asc",
+    });
+    expect(toggleHistoryProcessSort({ key: "label", direction: "asc" }, "cpuTime")).toEqual({
+      key: "cpuTime",
+      direction: "desc",
+    });
+  });
+
+  it("breaks equal history sort values by process key", () => {
+    const presentation = presentResourceHistory({
+      history: historyFixture({
+        processes: [
+          historySummary({ processKey: "9:1", pid: 9, maxRssBytes: 100 }),
+          historySummary({ processKey: "2:1", pid: 2, maxRssBytes: 100 }),
+        ],
+      }),
+      queryError: null,
+    });
+
+    expect(presentation.rows.map((row) => row.processKey)).toEqual(["2:1", "9:1"]);
   });
 
   it("preserves the existing resource window inputs", () => {
