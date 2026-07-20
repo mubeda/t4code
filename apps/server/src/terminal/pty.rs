@@ -320,13 +320,15 @@ fn build_pty_command(input: &PtySpawnInput) -> Result<PreparedPtyCommand, String
         });
     }
     #[cfg(not(windows))]
-    let command = build_pty_command_from_launch(
-        input,
-        prepare_pty_launch(platform, input, &executable)?,
-    );
-    Ok(PreparedPtyCommand {
-        command,
-    })
+    {
+        let command = build_pty_command_from_launch(
+            input,
+            prepare_pty_launch(platform, input, &executable)?,
+        );
+        Ok(PreparedPtyCommand {
+            command,
+        })
+    }
 }
 
 #[cfg(test)]
