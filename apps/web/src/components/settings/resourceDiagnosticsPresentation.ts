@@ -193,6 +193,22 @@ function compareText(left: string, right: string): number {
   return 0;
 }
 
+function numericSortRank(value: number): number {
+  if (value === Number.NEGATIVE_INFINITY) return 0;
+  if (Number.isFinite(value)) return 1;
+  if (value === Number.POSITIVE_INFINITY) return 2;
+  return 3;
+}
+
+function compareNumbersTotal(left: number, right: number): number {
+  const rankDifference = numericSortRank(left) - numericSortRank(right);
+  if (rankDifference !== 0) return rankDifference;
+  if (!Number.isFinite(left)) return 0;
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
 function scopeLabel(scope: ServerProcessDiagnosticsEntry["scope"]): "Core" | "External" {
   return scope === "core" ? "Core" : "External";
 }
@@ -215,10 +231,28 @@ function kindLabel(kind: ServerProcessAttributionKind): string {
 }
 
 function formatCpuTime(seconds: number): string {
+  if (!Number.isFinite(seconds)) return "Unavailable";
   if (seconds < 60) return `${seconds.toFixed(seconds >= 10 ? 1 : 2)}s`;
   const minutes = seconds / 60;
   if (minutes < 60) return `${minutes.toFixed(minutes >= 10 ? 1 : 2)}m`;
   return `${(minutes / 60).toFixed(2)}h`;
+}
+
+function formatHistoryCpuPercent(percent: number): string {
+  return Number.isFinite(percent) ? formatCpuPercent(percent) : "Unavailable";
+}
+
+function formatHistoryMemoryBytes(bytes: number): string {
+  return Number.isFinite(bytes) ? formatMemoryBytes(bytes) : "Unavailable";
+}
+
+function sanitizeHistoryMetric(metric: SplitMetric): SplitMetric {
+  const sanitize = (value: number): number => (Number.isFinite(value) ? Math.max(0, value) : 0);
+  return {
+    combined: sanitize(metric.combined),
+    core: sanitize(metric.core),
+    external: sanitize(metric.external),
+  };
 }
 
 function formatDuration(value: number): string {
@@ -461,7 +495,7 @@ function historyMetric(
 ): ReadonlyArray<ResourceHistoryBarPresentation> {
   return history.buckets.map((bucket) => {
     const values = metric === "memory" ? bucket.rssBytes : bucket.cpuPercent;
-    const format = metric === "memory" ? formatMemoryBytes : formatCpuPercent;
+    const format = metric === "memory" ? formatHistoryMemoryBytes : formatHistoryCpuPercent;
     const averageLabels = {
       combined: format(values.average.combined),
       core: format(values.average.core),
@@ -476,8 +510,8 @@ function historyMetric(
       key: `${bucket.startedAt}`,
       startedAt: bucket.startedAt,
       endedAt: bucket.endedAt,
-      average: values.average,
-      peak: values.peak,
+      average: sanitizeHistoryMetric(values.average),
+      peak: sanitizeHistoryMetric(values.peak),
       averageLabels,
       peakLabels,
       tooltip: `Combined average ${averageLabels.combined}. Same-sample peak ${peakLabels.combined}: Core ${peakLabels.core}, External ${peakLabels.external}.`,
@@ -498,10 +532,10 @@ function presentHistoryProcess(
     label: process.label,
     command: process.command,
     cpuTimeLabel: formatCpuTime(process.cpuSecondsApprox),
-    currentCpuLabel: formatCpuPercent(process.currentCpuPercent),
-    averageCpuLabel: formatCpuPercent(process.avgCpuPercent),
-    peakCpuLabel: formatCpuPercent(process.maxCpuPercent),
-    maxMemoryLabel: formatMemoryBytes(process.maxRssBytes),
+    currentCpuLabel: formatHistoryCpuPercent(process.currentCpuPercent),
+    averageCpuLabel: formatHistoryCpuPercent(process.avgCpuPercent),
+    peakCpuLabel: formatHistoryCpuPercent(process.maxCpuPercent),
+    maxMemoryLabel: formatHistoryMemoryBytes(process.maxRssBytes),
   };
 }
 
@@ -522,19 +556,19 @@ function compareHistoryProcesses(
       result = compareText(left.kind, right.kind);
       break;
     case "cpuTime":
-      result = left.cpuSecondsApprox - right.cpuSecondsApprox;
+      result = compareNumbersTotal(left.cpuSecondsApprox, right.cpuSecondsApprox);
       break;
     case "currentCpu":
-      result = left.currentCpuPercent - right.currentCpuPercent;
+      result = compareNumbersTotal(left.currentCpuPercent, right.currentCpuPercent);
       break;
     case "averageCpu":
-      result = left.avgCpuPercent - right.avgCpuPercent;
+      result = compareNumbersTotal(left.avgCpuPercent, right.avgCpuPercent);
       break;
     case "peakCpu":
-      result = left.maxCpuPercent - right.maxCpuPercent;
+      result = compareNumbersTotal(left.maxCpuPercent, right.maxCpuPercent);
       break;
     case "maxMemory":
-      result = left.maxRssBytes - right.maxRssBytes;
+      result = compareNumbersTotal(left.maxRssBytes, right.maxRssBytes);
       break;
   }
   if (result !== 0) return sort.direction === "asc" ? result : -result;
