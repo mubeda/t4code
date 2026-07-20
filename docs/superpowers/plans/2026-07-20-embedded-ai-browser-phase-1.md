@@ -498,9 +498,9 @@ mod tests {
 
 (Add `thiserror = "2"` to `apps/desktop/src-tauri/Cargo.toml` `[dependencies]` if not already present — check first; the codebase may already depend on it or use plain enums with `Display` impls. Follow whichever error idiom `bridge.rs` uses.)
 
-- [ ] **Step 1: Write `platform/mod.rs` exactly as above; run `pnpm --filter @t4code/desktop test`** — the `envelope_wraps_expression` test passes; macOS module missing so `cargo check` fails on mac. Proceed to Step 2 immediately.
+- [x] **Step 1: Write `platform/mod.rs` exactly as above; run `pnpm --filter @t4code/desktop test`** — the `envelope_wraps_expression` test passes; macOS module missing so `cargo check` fails on mac. Proceed to Step 2 immediately.
 
-- [ ] **Step 2: Implement macOS ops**
+- [x] **Step 2: Implement macOS ops**
 
 ```rust
 // apps/desktop/src-tauri/src/preview/platform/macos.rs
@@ -687,12 +687,12 @@ impl PlatformWebviewOps for MacosWebviewOps {
 
 **Expect to iterate on exact objc2 signatures.** The objc2-web-kit method names above follow its `selectorName_argName` convention but the generated signatures (Option vs non-Option pointers, `Retained` wrappers, feature flags per class) vary between crate versions. The verification loop for this task IS the compiler:
 
-- [ ] **Step 3: Compile until clean**
+- [x] **Step 3: Compile until clean**
 
 Run: `pnpm --filter @t4code/desktop typecheck`
 Expected: iterate on signature mismatches using `cargo doc -p objc2-web-kit --no-deps --open` (or docs.rs for the resolved version) until `cargo check` is clean. Do not change the trait — only the macOS internals.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add apps/desktop/src-tauri
