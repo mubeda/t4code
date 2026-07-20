@@ -3,7 +3,7 @@ import type {
   ProviderSessionDefault,
   ServerProviderModel,
 } from "@t4code/contracts";
-import { useId, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import {
   getProviderSessionDefaultControls,
   type ProviderSessionDefaultChange,
@@ -29,7 +29,7 @@ export function ProviderSessionDefaultsControls({
   onChange,
 }: ProviderSessionDefaultsControlsProps) {
   const idPrefix = useId();
-  const modelLabels = useRef(new Map<string, string>());
+  const modelLabelsByDriver = useRef(new Map<ProviderDriverKind, Map<string, string>>());
   const modelId = `${idPrefix}-model`;
   const effortId = `${idPrefix}-effort`;
   const fastModeId = `${idPrefix}-fast-mode`;
@@ -41,10 +41,18 @@ export function ProviderSessionDefaultsControls({
   const modelDisabled = disabled;
   const selectedModel = controls.modelAvailable ? controls.resolvedModel : controls.configuredModel;
   const selectedServerModel = models.find((model) => model.slug === selectedModel);
-  if (selectedServerModel)
-    modelLabels.current.set(selectedServerModel.slug, selectedServerModel.name);
+  const selectedModelSlug = selectedServerModel?.slug;
+  const selectedModelName = selectedServerModel?.name;
+  useEffect(() => {
+    if (selectedModelSlug === undefined || selectedModelName === undefined) return;
+    const modelLabels = modelLabelsByDriver.current.get(driver) ?? new Map<string, string>();
+    modelLabels.set(selectedModelSlug, selectedModelName);
+    modelLabelsByDriver.current.set(driver, modelLabels);
+  }, [driver, selectedModelName, selectedModelSlug]);
   const modelLabel =
-    selectedServerModel?.name ?? modelLabels.current.get(selectedModel) ?? selectedModel;
+    selectedServerModel?.name ??
+    modelLabelsByDriver.current.get(driver)?.get(selectedModel) ??
+    selectedModel;
 
   const change = (next: ProviderSessionDefaultChange) => {
     onChange(
