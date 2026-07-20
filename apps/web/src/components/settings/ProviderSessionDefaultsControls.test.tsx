@@ -1,6 +1,9 @@
+// @vitest-environment happy-dom
+
+import { act, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import type { ReactNode } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   ProviderDriverKind,
   type ProviderSessionDefault,
@@ -20,7 +23,9 @@ const controls = vi.hoisted(() => {
   return state;
 });
 
-vi.mock("../ui/select", () => {
+vi.mock("../ui/select", async () => {
+  const React = await import("react");
+  const SelectContext = React.createContext<Record<string, unknown>>({});
   const Wrapper = ({ children }: { readonly children?: ReactNode }) => <>{children}</>;
   return {
     Select: ({
@@ -28,23 +33,30 @@ vi.mock("../ui/select", () => {
       ...props
     }: { readonly children?: ReactNode } & Record<string, unknown>) => {
       controls.entries.push({ kind: "Select", props });
-      return <>{children}</>;
+      return <SelectContext.Provider value={props}>{children}</SelectContext.Provider>;
     },
     SelectItem: Wrapper,
     SelectPopup: Wrapper,
     SelectTrigger: ({
       children,
       ...props
-    }: { readonly children?: ReactNode } & Record<string, unknown>) => (
-      <button
-        aria-label={props["aria-label"] as string | undefined}
-        id={props.id as string | undefined}
-        type="button"
-      >
-        {children}
-      </button>
-    ),
-    SelectValue: () => <span />,
+    }: { readonly children?: ReactNode } & Record<string, unknown>) => {
+      const selectProps = React.useContext(SelectContext);
+      return (
+        <button
+          aria-label={props["aria-label"] as string | undefined}
+          disabled={selectProps.disabled === true}
+          id={props.id as string | undefined}
+          type="button"
+        >
+          {children}
+        </button>
+      );
+    },
+    SelectValue: ({ children }: { readonly children?: ReactNode }) => {
+      const selectProps = React.useContext(SelectContext);
+      return <span>{children ?? (selectProps.value as ReactNode)}</span>;
+    },
   };
 });
 
@@ -54,6 +66,8 @@ vi.mock("../ui/switch", () => ({
     return (
       <button
         aria-label={props["aria-label"] as string | undefined}
+        aria-checked={props.checked as boolean | undefined}
+        disabled={props.disabled as boolean | undefined}
         id={props.id as string | undefined}
         type="button"
       />
@@ -65,6 +79,9 @@ import { ProviderSessionDefaultsControls } from "./ProviderSessionDefaultsContro
 
 const CODEX = ProviderDriverKind.make("codex");
 const OPENCODE = ProviderDriverKind.make("opencode");
+
+let root: Root | null = null;
+let container: HTMLDivElement | null = null;
 
 function model(
   slug: string,
@@ -131,6 +148,39 @@ const richValue: ProviderSessionDefault = {
   ],
 };
 
+const stableCodexModels = [
+  model("gpt-rich", [
+    {
+      id: "reasoningEffort",
+      label: "Reasoning",
+      type: "select",
+      options: [
+        { id: "medium", label: "Medium", isDefault: true },
+        { id: "high", label: "High" },
+      ],
+      currentValue: "medium",
+    },
+    {
+      id: "serviceTier",
+      label: "Service tier",
+      type: "select",
+      options: [
+        { id: "default", label: "Standard", isDefault: true },
+        { id: "fast", label: "Fast" },
+      ],
+      currentValue: "default",
+    },
+  ]),
+] satisfies ReadonlyArray<ServerProviderModel>;
+
+const stableCodexValue: ProviderSessionDefault = {
+  model: "gpt-rich",
+  options: [
+    { id: "reasoningEffort", value: "high" },
+    { id: "serviceTier", value: "fast" },
+  ],
+};
+
 type Props = Parameters<typeof ProviderSessionDefaultsControls>[0];
 
 function baseProps(overrides: Partial<Props> = {}): Props {
@@ -149,6 +199,24 @@ function render(props: Props): string {
   return renderToStaticMarkup(<ProviderSessionDefaultsControls {...props} />);
 }
 
+async function mount(props: Props): Promise<HTMLDivElement> {
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => root?.render(<ProviderSessionDefaultsControls {...props} />));
+  return container;
+}
+
+async function rerender(props: Props): Promise<void> {
+  await act(async () => root?.render(<ProviderSessionDefaultsControls {...props} />));
+}
+
+function controlElement(mounted: HTMLDivElement, label: string): HTMLButtonElement {
+  const element = mounted.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+  if (element === null) throw new Error(`Expected ${label} control.`);
+  return element;
+}
+
 function entries(kind: "Select" | "Switch"): ReadonlyArray<Record<string, unknown>> {
   return controls.entries.filter((entry) => entry.kind === kind).map((entry) => entry.props);
 }
@@ -160,7 +228,16 @@ function attributeValues(markup: string, attribute: string): ReadonlyArray<strin
 }
 
 beforeEach(() => {
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   controls.reset();
+});
+
+afterEach(async () => {
+  if (root) await act(async () => root?.unmount());
+  container?.remove();
+  root = null;
+  container = null;
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
 });
 
 describe("ProviderSessionDefaultsControls", () => {
@@ -246,75 +323,78 @@ describe("ProviderSessionDefaultsControls", () => {
     expect(controls.entries.map((entry) => entry.kind)).toEqual(["Select"]);
   });
 
-  it("keeps the complete Codex row and values mounted when discovery becomes empty", () => {
-    const value: ProviderSessionDefault = {
-      model: "gpt-rich",
-      options: [
-        { id: "reasoningEffort", value: "high" },
-        { id: "serviceTier", value: "fast" },
-      ],
-    };
-    const codexModels = [
-      model("gpt-rich", [
-        {
-          id: "reasoningEffort",
-          label: "Reasoning",
-          type: "select",
-          options: [
-            { id: "medium", label: "Medium", isDefault: true },
-            { id: "high", label: "High" },
-          ],
-          currentValue: "medium",
-        },
-        {
-          id: "serviceTier",
-          label: "Service tier",
-          type: "select",
-          options: [
-            { id: "default", label: "Standard", isDefault: true },
-            { id: "fast", label: "Fast" },
-          ],
-          currentValue: "default",
-        },
-      ]),
-    ];
-    const richMarkup = render(baseProps({ models: codexModels, value }));
-    const richKinds = controls.entries.map((entry) => entry.kind);
-    const emptyMarkup = render(baseProps({ models: [], value }));
-    const emptyKinds = controls.entries.map((entry) => entry.kind);
+  it("keeps Codex controls mounted with their values when discovery becomes empty", async () => {
+    const mounted = await mount(baseProps({ models: stableCodexModels, value: stableCodexValue }));
+    const modelControl = controlElement(mounted, "Default model");
+    const effortControl = controlElement(mounted, "Default effort");
+    const fastControl = controlElement(mounted, "Fast by default");
 
-    expect(richMarkup).toContain("Default effort");
-    expect(emptyMarkup).toContain("Default effort");
-    expect(emptyMarkup).toContain("Fast by default");
-    expect(emptyKinds).toEqual(richKinds);
-    expect(emptyKinds).toEqual(["Select", "Select", "Switch"]);
-    expect(entries("Select")[1]?.value).toBe("high");
-    expect(entries("Switch")[0]?.checked).toBe(true);
+    await rerender(baseProps({ models: [], value: stableCodexValue }));
+
+    expect(controlElement(mounted, "Default model")).toBe(modelControl);
+    expect(controlElement(mounted, "Default effort")).toBe(effortControl);
+    expect(controlElement(mounted, "Fast by default")).toBe(fastControl);
+    expect(modelControl.isConnected).toBe(true);
+    expect(effortControl.isConnected).toBe(true);
+    expect(fastControl.isConnected).toBe(true);
+    expect(modelControl.textContent).toBe("GPT Rich");
+    expect(effortControl.textContent).toBe("high");
+    expect(fastControl.getAttribute("aria-checked")).toBe("true");
   });
 
-  it("changes only interactivity when Codex is disabled and re-enabled", () => {
-    render(baseProps({ disabled: true }));
-    const disabledShape = controls.entries.map((entry) => entry.kind);
+  it("keeps Codex controls mounted while provider interactivity changes", async () => {
+    const mounted = await mount(
+      baseProps({ models: stableCodexModels, value: stableCodexValue, disabled: true }),
+    );
+    const modelControl = controlElement(mounted, "Default model");
+    const effortControl = controlElement(mounted, "Default effort");
+    const fastControl = controlElement(mounted, "Fast by default");
 
-    expect(controls.entries.every((entry) => entry.props.disabled === true)).toBe(true);
+    expect([modelControl, effortControl, fastControl].every((control) => control.disabled)).toBe(
+      true,
+    );
 
-    render(baseProps({ disabled: false }));
+    await rerender(
+      baseProps({ models: stableCodexModels, value: stableCodexValue, disabled: false }),
+    );
 
-    expect(controls.entries.map((entry) => entry.kind)).toEqual(disabledShape);
-    expect(controls.entries.every((entry) => entry.props.disabled === false)).toBe(true);
+    expect(controlElement(mounted, "Default model")).toBe(modelControl);
+    expect(controlElement(mounted, "Default effort")).toBe(effortControl);
+    expect(controlElement(mounted, "Fast by default")).toBe(fastControl);
+    expect([modelControl, effortControl, fastControl].every((control) => control.isConnected)).toBe(
+      true,
+    );
+    expect(modelControl.textContent).toBe("GPT Rich");
+    expect(effortControl.textContent).toBe("high");
+    expect(fastControl.getAttribute("aria-checked")).toBe("true");
+    expect([modelControl, effortControl, fastControl].every((control) => !control.disabled)).toBe(
+      true,
+    );
   });
 
   it("keeps an unavailable saved model selectable so the user can recover", () => {
+    const onChange = vi.fn();
     const markup = render(
       baseProps({
         models: [richModels[0]!],
         value: { model: "private-model" },
+        onChange,
       }),
     );
 
     expect(markup).toContain("private-model");
     expect(markup).toContain("Unavailable here; new sessions will use gpt-rich.");
     expect(entries("Select")[0]).toMatchObject({ disabled: false, value: "private-model" });
+
+    (entries("Select")[0]!.onValueChange as (value: string | null) => void)("gpt-rich");
+
+    expect(onChange).toHaveBeenCalledWith({
+      model: "gpt-rich",
+      options: [
+        { id: "reasoning", value: "high" },
+        { id: "fastMode", value: false },
+      ],
+    });
   });
 
   it("selects the resolved live model for a saved model alias", () => {
