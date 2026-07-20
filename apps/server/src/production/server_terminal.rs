@@ -533,13 +533,14 @@ fn is_ecmascript_trim_character(character: char) -> bool {
             | '\u{0020}'
             | '\u{00a0}'
             | '\u{1680}'
-            | '\u{2000}'..='\u{200a}'
-            | '\u{2028}'
-            | '\u{2029}'
-            | '\u{202f}'
-            | '\u{205f}'
-            | '\u{3000}'
-            | '\u{feff}'
+            | '\u{2000}'
+            ..='\u{200a}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202f}'
+                | '\u{205f}'
+                | '\u{3000}'
+                | '\u{feff}'
     )
 }
 
@@ -994,9 +995,7 @@ mod tests {
             "label": astral.repeat(TERMINAL_LAUNCH_LABEL_MAX_LENGTH / 2),
         });
         assert!(
-            terminal_start_payload(at_boundary)
-                .into_open(false)
-                .is_ok(),
+            terminal_start_payload(at_boundary).into_open(false).is_ok(),
             "astral strings at the UTF-16 contract limits must be accepted"
         );
 

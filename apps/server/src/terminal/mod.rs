@@ -4,8 +4,8 @@ mod model;
 mod pty;
 
 pub use manager::{
-    SubprocessInspection, TerminalAttachment, TerminalManager, TerminalManagerOptions,
-    TerminalError, TerminalMetadataAttachment, TerminalSubprocessInspector,
+    SubprocessInspection, TerminalAttachment, TerminalError, TerminalManager,
+    TerminalManagerOptions, TerminalMetadataAttachment, TerminalSubprocessInspector,
 };
 pub use model::{
     TerminalAttachInput, TerminalEvent, TerminalLaunchCommand, TerminalMetadataEvent,

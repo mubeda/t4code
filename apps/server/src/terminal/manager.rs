@@ -213,8 +213,7 @@ impl SessionGeneration {
     }
 
     fn is_invalidated(&self) -> bool {
-        self.invalidated
-            .load(std::sync::atomic::Ordering::Acquire)
+        self.invalidated.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
@@ -1584,9 +1583,7 @@ mod tests {
                     restart_if_not_running: false,
                     command: Some(crate::terminal::TerminalLaunchCommand {
                         executable: "codex".to_owned(),
-                        args: vec![
-                            "--dangerously-bypass-approvals-and-sandbox".to_owned(),
-                        ],
+                        args: vec!["--dangerously-bypass-approvals-and-sandbox".to_owned()],
                         label: Some("Codex Terminal".to_owned()),
                     }),
                 })
@@ -1855,10 +1852,7 @@ mod tests {
             .expect("stale output publisher did not reach the barrier");
 
         manager
-            .close(
-                "thread-output-generation",
-                Some("term-output-generation"),
-            )
+            .close("thread-output-generation", Some("term-output-generation"))
             .await;
         manager.open(input).await.unwrap();
         let mut replacement = manager
