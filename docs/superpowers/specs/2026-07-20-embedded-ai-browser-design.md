@@ -126,8 +126,10 @@ Only the last three hops are new.
 - Screenshots behind `trait PreviewSnapshot`, three impls: WKWebView `takeSnapshot`
   (objc2), WebView2 `CapturePreview`, `webkit_web_view_get_snapshot`. PNG → base64,
   matching the existing screenshot artifact contract.
-- Isolated data profile per preview session (successor of the old
-  `persist:t4code-preview` partition).
+- One shared, isolated data profile for all preview webviews (successor of the old
+  `persist:t4code-preview` partition): cookies/storage persist across tabs and
+  restarts but never touch the user's personal browser state. Finer-grained
+  profiles are a possible later addition.
 - The automation agent bundle is embedded via `include_str!` and registered as an
   initialization script on every preview webview.
 
@@ -163,11 +165,13 @@ tabs, chrome row, and device toolbar activate with no further UI work.
   (`querySelector("webview[data-preview-tab]")` + `executeJavaScript`) with
   `desktopBridge.preview.automation.*` calls. The broker protocol above is untouched.
 
-### 5. Server — no changes for v1
+### 5. Server — no logic changes for v1
 
 The `preview_*` MCP tools, broker, per-thread credentials, and dev-server discovery
-work as-is. Optional hardening later: enforce the per-capability credential scoping
-the contract already defines (`PreviewAutomationUnavailableError`).
+work as-is. The only change in this area is text: sharpened LLM-facing tool
+descriptions (notably `preview_open`) in `packages/contracts/src/previewAutomation.ts`.
+Optional hardening later: enforce the per-capability credential scoping the contract
+already defines (`PreviewAutomationUnavailableError`).
 
 ### Contract change
 
