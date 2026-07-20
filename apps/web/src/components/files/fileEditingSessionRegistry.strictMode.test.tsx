@@ -69,6 +69,7 @@ describe("FileEditingSessionRegistry StrictMode ownership", () => {
   let root: Root;
 
   beforeEach(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -77,6 +78,7 @@ describe("FileEditingSessionRegistry StrictMode ownership", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
   });
 
   it("survives effect rehearsal, tool transitions, mutation release, lifetime replacement, and unmount", async () => {
