@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 const harness = vi.hoisted(() => ({
   primaryEnvironment: null as null | { environmentId: string },
+  primaryLocalEnvironment: null as null | { environmentId: string },
+  primaryLocalSelectionInput: null as unknown,
   refSeeds: {} as Record<number, unknown>,
   refs: [] as Array<{ current: unknown }>,
   refIndex: 0,
@@ -45,6 +47,10 @@ vi.mock("react", async (importOriginal) => ({
 }));
 vi.mock("../../state/environments", () => ({
   usePrimaryEnvironment: () => harness.primaryEnvironment,
+  usePrimaryLocalEnvironmentForSelected: (selectedEnvironmentId: unknown) => {
+    harness.primaryLocalSelectionInput = selectedEnvironmentId;
+    return harness.primaryLocalEnvironment;
+  },
 }));
 vi.mock("../../state/query", () => ({
   useEnvironmentQuery: (input: unknown) => {
@@ -128,6 +134,8 @@ function invokeRef(index: number): void {
 
 beforeEach(() => {
   harness.primaryEnvironment = null;
+  harness.primaryLocalEnvironment = null;
+  harness.primaryLocalSelectionInput = null;
   harness.refSeeds = {};
   harness.iconOnly = false;
   harness.setIconOnly.mockReset();
@@ -165,18 +173,22 @@ describe("status bar refresh guards", () => {
     const refreshUsageQuery = vi.fn();
     const refreshDiagnostics = vi.fn();
     const refreshHistory = vi.fn();
-    await createStatusBarRefreshHandler({
+    const refreshInput = {
       environmentId: null,
       refreshProviderUsage,
       refreshUsageQuery,
       refreshProcessDiagnostics: refreshDiagnostics,
+      refreshLocalProcessDiagnostics: refreshHistory,
       refreshResourceHistory: refreshHistory,
-    })();
-    createStatusBarResourceRefreshHandler({
+    };
+    await createStatusBarRefreshHandler(refreshInput)();
+    const resourceRefreshInput = {
       environmentId: null,
       refreshProcessDiagnostics: refreshDiagnostics,
+      refreshLocalProcessDiagnostics: refreshHistory,
       refreshResourceHistory: refreshHistory,
-    })();
+    };
+    createStatusBarResourceRefreshHandler(resourceRefreshInput)();
     expect(refreshProviderUsage).not.toHaveBeenCalled();
     expect(refreshDiagnostics).not.toHaveBeenCalled();
   });
@@ -222,34 +234,57 @@ describe("AppStatusBar", () => {
     expect(resourceCleanup).toHaveBeenCalledTimes(2);
   });
 
-  it("builds scoped queries and avoids duplicate or premature usage intervals", () => {
+  it("queries selected and desktop-local live diagnostics without requesting history", () => {
     const environmentId = EnvironmentId.make("environment-1");
+    const localEnvironmentId = EnvironmentId.make("primary");
     harness.primaryEnvironment = { environmentId };
+    harness.primaryLocalEnvironment = { environmentId: localEnvironmentId };
     harness.queries = [query(null), query(), query()];
     harness.refSeeds = { 4: environmentId, 6: environmentId };
     renderStatusBar();
     expect(harness.queryInputs).toHaveLength(3);
+    expect(harness.primaryLocalSelectionInput).toBe(environmentId);
     expect(harness.providerUsage).toHaveBeenCalledWith({ environmentId, input: {} });
-    expect(harness.history).toHaveBeenCalledWith({
-      environmentId,
-      input: { windowMs: 900_000, bucketMs: 60_000 },
+    expect(harness.diagnostics).toHaveBeenNthCalledWith(1, { environmentId, input: {} });
+    expect(harness.diagnostics).toHaveBeenNthCalledWith(2, {
+      environmentId: localEnvironmentId,
+      input: {},
     });
+    expect(harness.history).not.toHaveBeenCalled();
     harness.effects[3]?.();
     harness.effects[4]?.();
     expect(harness.refs[3]?.current).toBeNull();
     expect(harness.refs[5]?.current).toBeNull();
   });
 
+  it("avoids a local diagnostics RPC for browser or selected-local environments", () => {
+    const environmentId = EnvironmentId.make("primary");
+    harness.primaryEnvironment = { environmentId };
+    harness.primaryLocalEnvironment = null;
+    harness.queries = [query({ providers: [] }), query({ diagnostics: true }), query()];
+
+    renderStatusBar();
+
+    expect(harness.queryInputs[2]).toBeNull();
+    expect(harness.diagnostics).toHaveBeenCalledOnce();
+    expect(harness.history).not.toHaveBeenCalled();
+  });
+
   it("replaces refresh intervals when the environment changes", async () => {
     vi.useFakeTimers();
     const environmentId = EnvironmentId.make("environment-2");
+    const localEnvironmentId = EnvironmentId.make("primary");
     const oldUsageCleanup = vi.fn();
     const oldResourceCleanup = vi.fn();
     harness.primaryEnvironment = { environmentId };
+    harness.primaryLocalEnvironment = { environmentId: localEnvironmentId };
     harness.queries = [
       query({ providers: [] }),
       query({ diagnostics: true }),
-      query({ history: true }),
+      query({
+        totals: { core: { processCount: 1, rssBytes: 1024, cpuPercent: 1 } },
+        uiCoverage: { status: "available" },
+      }),
     ];
     harness.terminalSessions = [{ id: 1 }, { id: 2 }];
     harness.iconOnly = true;
@@ -261,7 +296,14 @@ describe("AppStatusBar", () => {
     };
     const markup = renderStatusBar();
     expect(markup).toContain("data-resource-segment");
-    expect(harness.resourceSegments[0]).toMatchObject({ terminalCount: 2, iconOnly: true });
+    expect(harness.resourceSegments[0]).toMatchObject({
+      terminalCount: 2,
+      iconOnly: true,
+      localCore: {
+        totals: { processCount: 1, rssBytes: 1024, cpuPercent: 1 },
+        uiCoverage: { status: "available" },
+      },
+    });
     harness.effects[0]?.();
     harness.effects[1]?.();
     harness.effects[3]?.();
@@ -316,7 +358,7 @@ describe("AppStatusBarView defaults", () => {
       <AppStatusBarView
         usage={null}
         diagnostics={null}
-        resourceHistory={null}
+        localCore={null}
         terminalCount={0}
         isRefreshing
         iconOnly

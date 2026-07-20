@@ -1,8 +1,8 @@
 import type {
   ServerProcessDiagnosticsEntry,
   ServerProcessDiagnosticsResult,
-  ServerProcessResourceHistorySummary,
-  ServerProcessResourceHistoryResult,
+  ServerProcessResourceTotals,
+  ServerProcessUiCoverage,
   ServerProviderUsageSnapshot,
 } from "@t4code/contracts";
 import * as DateTime from "effect/DateTime";
@@ -12,8 +12,6 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildProviderUsageViewModel,
   buildResourceSummaryViewModel,
-  buildResourceTopProcessViewModel,
-  selectCurrentTopProcesses,
 } from "./statusBarPresentation";
 
 const updatedAt = DateTime.makeUnsafe("2026-07-07T18:00:00.000Z");
@@ -43,6 +41,112 @@ function providerSnapshot(
   };
 }
 
+const mebibytes = (value: number): number => value * 1024 ** 2;
+
+function processEntry(
+  patch: Partial<ServerProcessDiagnosticsEntry> &
+    Pick<ServerProcessDiagnosticsEntry, "processKey" | "pid" | "scope" | "kind" | "label">,
+): ServerProcessDiagnosticsEntry {
+  return {
+    ppid: 1,
+    pgid: Option.none(),
+    status: "Run",
+    cpuPercent: 1,
+    rssBytes: mebibytes(50),
+    elapsed: "00:00:01",
+    command: `command-for-${patch.pid}`,
+    depth: 0,
+    childPids: [],
+    confidence: "exact",
+    ...patch,
+  };
+}
+
+const resourceProcesses: ReadonlyArray<ServerProcessDiagnosticsEntry> = [
+  processEntry({
+    processKey: "100:1",
+    pid: 100,
+    scope: "core",
+    kind: "server",
+    label: "T4Code Server",
+    command: "t4code server",
+    rssBytes: mebibytes(250),
+    cpuPercent: 2,
+  }),
+  processEntry({
+    processKey: "101:1",
+    pid: 101,
+    scope: "core",
+    kind: "ui",
+    label: "T4Code UI",
+    command: "T4Code WebContent",
+    rssBytes: mebibytes(150),
+    cpuPercent: 1,
+  }),
+  processEntry({
+    processKey: "200:1",
+    pid: 200,
+    scope: "external",
+    kind: "provider",
+    label: "Codex",
+    command: "codex app-server",
+    rssBytes: mebibytes(150),
+    cpuPercent: 4,
+  }),
+  processEntry({
+    processKey: "201:1",
+    pid: 201,
+    scope: "external",
+    kind: "terminal",
+    label: "Build terminal",
+    command: "pnpm test --filter web",
+    rssBytes: mebibytes(100),
+    cpuPercent: 2,
+  }),
+  processEntry({
+    processKey: "202:1",
+    pid: 202,
+    scope: "external",
+    kind: "unknown",
+    label: "Unattributed process",
+    command: "helper --serve",
+    rssBytes: mebibytes(50),
+    cpuPercent: 1,
+    confidence: "fallback",
+  }),
+];
+
+function diagnosticsFixture(
+  patch: Partial<ServerProcessDiagnosticsResult> = {},
+): ServerProcessDiagnosticsResult {
+  return {
+    serverPid: 100,
+    readAt: updatedAt,
+    totals: {
+      combined: { processCount: 5, rssBytes: mebibytes(700), cpuPercent: 10 },
+      core: { processCount: 2, rssBytes: mebibytes(400), cpuPercent: 3 },
+      external: { processCount: 3, rssBytes: mebibytes(300), cpuPercent: 7 },
+    },
+    uiCoverage: { status: "available", message: Option.none() },
+    processes: [...resourceProcesses],
+    error: Option.none(),
+    ...patch,
+  };
+}
+
+function buildResourcePresentation(
+  diagnostics: ServerProcessDiagnosticsResult | null,
+  localCore: {
+    readonly totals: ServerProcessResourceTotals;
+    readonly uiCoverage: ServerProcessUiCoverage;
+  } | null = null,
+) {
+  return buildResourceSummaryViewModel({
+    diagnostics,
+    localCore,
+  });
+}
+
 describe("statusBarPresentation", () => {
   it("builds provider view models with remaining quota labels", () => {
     const vm = buildProviderUsageViewModel(providerSnapshot({}));
@@ -67,162 +171,177 @@ describe("statusBarPresentation", () => {
     expect(vm.error).toBe("No auth");
   });
 
-  it("summarizes native process-tree resources and terminal counts", () => {
-    const diagnostics: ServerProcessDiagnosticsResult = {
-      serverPid: 100,
-      readAt: updatedAt,
-      totals: {
-        combined: { processCount: 2, rssBytes: 736_300_000, cpuPercent: 4.2 },
-        core: { processCount: 1, rssBytes: 700_000_000, cpuPercent: 3.2 },
-        external: { processCount: 1, rssBytes: 36_300_000, cpuPercent: 1 },
-      },
-      uiCoverage: { status: "notApplicable", message: Option.none() },
-      processes: [],
-      error: Option.none(),
-    };
+  it("uses Combined for the headline and separates Core from External totals", () => {
+    const vm = buildResourcePresentation(diagnosticsFixture());
 
-    const vm = buildResourceSummaryViewModel({
-      diagnostics,
-      resourceHistory: null,
-      terminalCount: 11,
+    expect(vm.headline).toMatchObject({
+      memoryLabel: "700.0 MB",
+      cpuLabel: "10.0%",
+      processCountLabel: "5",
     });
-
-    expect(vm.memoryLabel).toBe("702.2 MB");
-    expect(vm.cpuLabel).toBe("4.2%");
-    expect(vm.processCountLabel).toBe("2");
-    expect(vm.terminalCountLabel).toBe("11");
-  });
-
-  it("uses empty resource labels when no process data is available", () => {
-    const vm = buildResourceSummaryViewModel({
-      diagnostics: null,
-      resourceHistory: null,
-      terminalCount: -1,
+    expect(vm.core).toMatchObject({
+      memoryLabel: "400.0 MB",
+      cpuLabel: "3.0%",
+      processCountLabel: "2",
     });
-
-    expect(vm).toEqual({
-      memoryLabel: "--",
-      cpuLabel: "--",
-      processCountLabel: "0",
-      terminalCountLabel: "0",
+    expect(vm.external).toMatchObject({
+      memoryLabel: "300.0 MB",
+      cpuLabel: "7.0%",
+      processCountLabel: "3",
     });
   });
 
-  it("formats top process rows with per-process CPU instead of aggregate CPU", () => {
-    const vm = buildResourceTopProcessViewModel({
-      processKey: "123:100",
-      pid: 123,
-      ppid: 1,
-      pgid: Option.none(),
-      status: "Run",
-      cpuPercent: 1.2,
-      rssBytes: 10_000,
-      elapsed: "00:00:01",
-      command: "t4code server",
-      depth: 0,
-      childPids: [],
-      scope: "core",
-      kind: "server",
-      label: "T4Code Server",
-      confidence: "exact",
-    } satisfies ServerProcessDiagnosticsEntry);
+  it("orders highest consumers by RSS and shows scope, memory, and CPU for every row", () => {
+    const vm = buildResourcePresentation(diagnosticsFixture());
 
-    expect(vm.command).toBe("t4code server");
-    expect(vm.detailLabel).toBe("1.2% · 123");
-  });
-
-  it("orders temporary top rows from current live CPU with stable key ties", () => {
-    const process = (
-      pid: number,
-      processKey: string,
-      cpuPercent: number,
-    ): ServerProcessDiagnosticsEntry => ({
-      processKey,
-      pid,
-      ppid: 1,
-      pgid: Option.none(),
-      status: "Run",
-      cpuPercent,
-      rssBytes: 10_000,
-      elapsed: "00:00:01",
-      command: `process-${pid}`,
-      depth: 0,
-      childPids: [],
-      scope: "external",
-      kind: "provider",
-      label: `Process ${pid}`,
-      confidence: "exact",
-    });
-
+    expect(vm.consumers.map((consumer) => consumer.label)).toEqual([
+      "T4Code Server",
+      "Codex",
+      "T4Code UI",
+      "Build terminal",
+      "Unattributed process",
+    ]);
     expect(
-      selectCurrentTopProcesses([
-        process(1, "1:100", 1),
-        process(3, "3:100", 5),
-        process(2, "2:100", 5),
-      ]).map((entry) => entry.processKey),
-    ).toEqual(["2:100", "3:100", "1:100"]);
+      vm.consumers.map(({ scopeLabel, memoryLabel, cpuLabel }) => ({
+        scopeLabel,
+        memoryLabel,
+        cpuLabel,
+      })),
+    ).toEqual([
+      { scopeLabel: "Core", memoryLabel: "250.0 MB", cpuLabel: "2.0%" },
+      { scopeLabel: "External", memoryLabel: "150.0 MB", cpuLabel: "4.0%" },
+      { scopeLabel: "Core", memoryLabel: "150.0 MB", cpuLabel: "1.0%" },
+      { scopeLabel: "External", memoryLabel: "100.0 MB", cpuLabel: "2.0%" },
+      { scopeLabel: "External", memoryLabel: "50.0 MB", cpuLabel: "1.0%" },
+    ]);
   });
 
-  it("derives the compact summary strictly from current diagnostics", () => {
-    const process = {
-      processKey: "100:t4code.exe",
-      pid: 100,
-      ppid: 1,
-      command: "exited-high-usage",
-      depth: 0,
-      scope: "core",
-      kind: "server",
-      label: "T4Code Server",
-      confidence: "exact",
-      firstSeenAt: updatedAt,
-      lastSeenAt: updatedAt,
-      currentCpuPercent: 99,
-      avgCpuPercent: 99,
-      maxCpuPercent: 99,
-      cpuSecondsApprox: 100,
-      currentRssBytes: 999_999_999,
-      maxRssBytes: 999_999_999,
-      sampleCount: 2,
-    } satisfies ServerProcessResourceHistorySummary;
-    const resourceHistory: ServerProcessResourceHistoryResult = {
-      readAt: updatedAt,
-      windowMs: 60_000,
-      bucketMs: 10_000,
-      sampleIntervalMs: 2_000,
-      retainedSampleCount: 2,
-      cpuSecondsApprox: { combined: 100, core: 100, external: 0 },
-      uiCoverage: { status: "notApplicable", message: Option.none() },
-      buckets: [],
-      processes: [process],
-      error: Option.none(),
-    };
-    const diagnostics: ServerProcessDiagnosticsResult = {
-      serverPid: 100,
-      readAt: updatedAt,
-      totals: {
-        combined: { processCount: 0, rssBytes: 0, cpuPercent: 0 },
-        core: { processCount: 0, rssBytes: 0, cpuPercent: 0 },
-        external: { processCount: 0, rssBytes: 0, cpuPercent: 0 },
-      },
-      uiCoverage: { status: "notApplicable", message: Option.none() },
-      processes: [],
-      error: Option.none(),
-    };
-
-    const vm = buildResourceSummaryViewModel({
-      diagnostics,
-      resourceHistory,
-      terminalCount: 0,
-    });
-
-    expect(resourceHistory.processes.map((entry) => entry.processKey)).toContain(
-      process.processKey,
+  it("breaks equal-memory ties by label and then process key", () => {
+    const tied = [
+      processEntry({
+        processKey: "3:1",
+        pid: 3,
+        scope: "external",
+        kind: "helper",
+        label: "Zulu",
+      }),
+      processEntry({
+        processKey: "2:1",
+        pid: 2,
+        scope: "external",
+        kind: "helper",
+        label: "Alpha",
+      }),
+      processEntry({
+        processKey: "1:1",
+        pid: 1,
+        scope: "external",
+        kind: "helper",
+        label: "Alpha",
+      }),
+    ];
+    const vm = buildResourcePresentation(
+      diagnosticsFixture({
+        totals: {
+          combined: { processCount: 3, rssBytes: mebibytes(150), cpuPercent: 3 },
+          core: { processCount: 0, rssBytes: 0, cpuPercent: 0 },
+          external: { processCount: 3, rssBytes: mebibytes(150), cpuPercent: 3 },
+        },
+        processes: tied,
+      }),
     );
-    expect(
-      selectCurrentTopProcesses(diagnostics.processes).map((entry) => entry.processKey),
-    ).not.toContain(process.processKey);
-    expect(vm.memoryLabel).toBe("0 B");
-    expect(vm.cpuLabel).toBe("0.0%");
-    expect(vm.processCountLabel).toBe("0");
+
+    expect(vm.consumers.map((consumer) => consumer.processKey)).toEqual(["1:1", "2:1", "3:1"]);
+  });
+
+  it.each([
+    ["partial", "Some UI processes could not be sampled."],
+    ["unavailable", "UI process accounting is unavailable."],
+  ] as const)("creates a warning for %s UI coverage", (status, message) => {
+    const vm = buildResourcePresentation(
+      diagnosticsFixture({
+        uiCoverage: { status, message: Option.some(message) },
+      }),
+    );
+
+    expect(vm.warning?.message).toContain(message);
+  });
+
+  it("does not warn when UI coverage is not applicable", () => {
+    const vm = buildResourcePresentation(
+      diagnosticsFixture({
+        uiCoverage: { status: "notApplicable", message: Option.none() },
+      }),
+    );
+
+    expect(vm.warning).toBeNull();
+  });
+
+  it("retains a stale last-good sample and reports the refresh failure", () => {
+    const vm = buildResourcePresentation(
+      diagnosticsFixture({
+        error: Option.some({ message: "Process refresh timed out." }),
+      }),
+    );
+
+    expect(vm.headline?.memoryLabel).toBe("700.0 MB");
+    expect(vm.core?.memoryLabel).toBe("400.0 MB");
+    expect(vm.external?.memoryLabel).toBe("300.0 MB");
+    expect(vm.warning?.message).toContain("Showing the last successful sample.");
+    expect(vm.warning?.message).toContain("Process refresh timed out.");
+  });
+
+  it("uses unavailable presentation instead of healthy zeroes without a good sample", () => {
+    const vm = buildResourcePresentation(
+      diagnosticsFixture({
+        totals: {
+          combined: { processCount: 0, rssBytes: 0, cpuPercent: 0 },
+          core: { processCount: 0, rssBytes: 0, cpuPercent: 0 },
+          external: { processCount: 0, rssBytes: 0, cpuPercent: 0 },
+        },
+        processes: [],
+        error: Option.some({ message: "No process sample is available." }),
+      }),
+    );
+
+    expect(vm.headline).toBeNull();
+    expect(vm.core).toBeNull();
+    expect(vm.external).toBeNull();
+    expect(vm.consumers).toEqual([]);
+    expect(vm.warning?.message).toContain("No process sample is available.");
+  });
+
+  it("keeps local Core separate from the selected remote-host totals", () => {
+    const vm = buildResourcePresentation(diagnosticsFixture(), {
+      totals: { processCount: 2, rssBytes: mebibytes(900), cpuPercent: 12 },
+      uiCoverage: {
+        status: "unavailable",
+        message: Option.some("This device UI usage is unavailable."),
+      },
+    });
+
+    expect(vm.headline?.memoryLabel).toBe("700.0 MB");
+    expect(vm.core?.memoryLabel).toBe("400.0 MB");
+    expect(vm.external?.memoryLabel).toBe("300.0 MB");
+    expect(vm.localCore).toMatchObject({
+      memoryLabel: "900.0 MB",
+      cpuLabel: "12.0%",
+      processCountLabel: "2",
+      coverageLabel: "UI unavailable",
+    });
+  });
+
+  it("rejects selected-host totals that do not reconcile", () => {
+    expect(() =>
+      buildResourcePresentation(
+        diagnosticsFixture({
+          totals: {
+            combined: { processCount: 99, rssBytes: mebibytes(700), cpuPercent: 10 },
+            core: { processCount: 2, rssBytes: mebibytes(400), cpuPercent: 3 },
+            external: { processCount: 3, rssBytes: mebibytes(300), cpuPercent: 7 },
+          },
+        }),
+      ),
+    ).toThrow(/reconcile/i);
   });
 });
