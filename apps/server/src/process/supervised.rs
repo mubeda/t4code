@@ -332,7 +332,6 @@ fn cleanup_failed_windows_spawn_handle(
 mod tests {
     use std::{
         future::Future,
-        io::Write as _,
         pin::Pin,
         process::{ExitStatus, Stdio},
         sync::{
@@ -341,10 +340,7 @@ mod tests {
         },
     };
 
-    use tokio::{
-        io::{AsyncBufReadExt, BufReader},
-        process::Child,
-    };
+    use tokio::process::Child;
 
     use super::*;
 
@@ -385,13 +381,12 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct StubbornLiveChild {
-        child: Child,
+    struct PendingChild {
         kill_calls: Arc<AtomicUsize>,
         wait_calls: Arc<AtomicUsize>,
     }
 
-    impl ChildWrapper for StubbornLiveChild {
+    impl ChildWrapper for PendingChild {
         fn inner(&self) -> &dyn ChildWrapper {
             self
         }
@@ -401,84 +396,25 @@ mod tests {
         }
 
         fn into_inner(self: Box<Self>) -> Box<dyn ChildWrapper> {
-            Box::new(self.child)
+            self
         }
 
         fn start_kill(&mut self) -> io::Result<()> {
             self.kill_calls.fetch_add(1, Ordering::SeqCst);
-            Err(io::Error::other("injected live-child kill failure"))
+            Err(io::Error::other("injected pending-child kill failure"))
         }
 
         fn wait(&mut self) -> Pin<Box<dyn Future<Output = io::Result<ExitStatus>> + Send + '_>> {
             self.wait_calls.fetch_add(1, Ordering::SeqCst);
-            Box::pin(self.child.wait())
+            Box::pin(std::future::pending())
         }
     }
 
-    const LIVE_CHILD_FIXTURE_ENV: &str = "T4CODE_SUPERVISED_LIVE_CHILD_FIXTURE";
-    const LIVE_CHILD_FIXTURE_READY: &str = "t4code-live-child-ready";
-
-    #[test]
-    fn live_child_cleanup_fixture() {
-        if std::env::var_os(LIVE_CHILD_FIXTURE_ENV).is_none() {
-            return;
-        }
-        println!("{LIVE_CHILD_FIXTURE_READY}");
-        std::io::stdout()
-            .flush()
-            .expect("live cleanup fixture readiness should flush");
-        loop {
-            std::thread::park();
-        }
-    }
-
-    async fn stubborn_live_child() -> (Box<StubbornLiveChild>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
-        let mut command = Command::new(
-            std::env::current_exe().expect("current test executable should be available"),
-        );
-        command
-            .args([
-                "--exact",
-                "process::supervised::tests::live_child_cleanup_fixture",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env(LIVE_CHILD_FIXTURE_ENV, "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        let mut child = command.spawn().expect("live cleanup fixture should spawn");
-        let stdout = child
-            .stdout
-            .take()
-            .expect("live cleanup fixture stdout should be piped");
-        let mut output = String::new();
-        let mut stdout = BufReader::new(stdout);
-        let readiness = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let bytes = stdout.read_line(&mut output).await?;
-                if output.contains(LIVE_CHILD_FIXTURE_READY) {
-                    return Ok::<(), io::Error>(());
-                }
-                if bytes == 0 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "live cleanup fixture exited before readiness",
-                    ));
-                }
-            }
-        })
-        .await;
-        if !matches!(readiness, Ok(Ok(()))) {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            panic!("live cleanup fixture failed to become ready: {readiness:?}, output={output:?}");
-        }
+    fn pending_child() -> (Box<PendingChild>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
         let kill_calls = Arc::new(AtomicUsize::new(0));
         let wait_calls = Arc::new(AtomicUsize::new(0));
         (
-            Box::new(StubbornLiveChild {
-                child,
+            Box::new(PendingChild {
                 kill_calls: Arc::clone(&kill_calls),
                 wait_calls: Arc::clone(&wait_calls),
             }),
@@ -574,39 +510,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_child_with_failed_owner_and_root_kills_returns_bounded_report() {
-        let (mut child, kill_calls, wait_calls) = stubborn_live_child().await;
-        assert!(
-            child
-                .child
-                .try_wait()
-                .expect("live fixture status should be readable")
-                .is_none()
-        );
-
+    async fn pending_child_with_failed_owner_and_root_kills_returns_bounded_report() {
+        let (mut child, kill_calls, wait_calls) = pending_child();
         let cleanup =
             tokio::time::timeout(Duration::from_secs(3), terminate_and_wait(&mut *child)).await;
-        if cleanup.is_err() {
-            child
-                .child
-                .start_kill()
-                .expect("test fallback should kill live fixture");
-            child
-                .child
-                .wait()
-                .await
-                .expect("test fallback should reap live fixture");
-        }
         let report = cleanup.expect("cleanup must return within its bounded wait deadline");
-        child
-            .child
-            .start_kill()
-            .expect("test cleanup should kill surviving fixture");
-        child
-            .child
-            .wait()
-            .await
-            .expect("test cleanup should reap surviving fixture");
 
         assert_eq!(kill_calls.load(Ordering::SeqCst), 2);
         assert_eq!(wait_calls.load(Ordering::SeqCst), 1);
