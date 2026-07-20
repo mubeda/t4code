@@ -2132,6 +2132,50 @@ describe("ChatView project script handlers", () => {
     });
   });
 
+  it("creates a Codex chat panel with saved effort and fast mode during empty discovery", async () => {
+    seedEnvironment(makeEnvironmentPresentation());
+    seedProject(makeProject({ defaultModelSelection: null }));
+    seedServerThread(makeThread());
+    seedGitStatus(true);
+    h.settings = {
+      ...h.settings,
+      providerSessionDefaults: {
+        [ProviderDriverKind.make("codex")]: {
+          model: "gpt-offline",
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "fast" },
+          ],
+        },
+      },
+    };
+    renderServerRoute();
+    const header = capturedProps("chatHeader");
+    const entry = {
+      instanceId: codexInstanceId,
+      driverKind: ProviderDriverKind.make("codex"),
+      displayName: "Codex",
+      models: [],
+    } as unknown as ProviderInstanceEntry;
+
+    (header["onCreateChatPanel"] as (entry: ProviderInstanceEntry) => void)(entry);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(commandCallsFor("thread.create")[0]?.input).toMatchObject({
+      input: {
+        modelSelection: {
+          instanceId: codexInstanceId,
+          model: DEFAULT_MODEL_BY_PROVIDER[ProviderDriverKind.make("codex")],
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "fast" },
+          ],
+        },
+      },
+    });
+  });
+
   it("runs a script in the active terminal and remembers it per project", async () => {
     const header = renderWithScripts();
     const onRunProjectScript = header["onRunProjectScript"] as (
