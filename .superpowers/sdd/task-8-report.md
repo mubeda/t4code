@@ -221,3 +221,85 @@ exit 0
 
 Typecheck continues to emit the same repository-wide TS377098 suggestions
 documented above and reports no typecheck failure.
+
+## Final Numeric Total-Order Correction
+
+The final review identified that subtraction is not a valid comparator for the
+`Schema.Number` CPU fields: `NaN` and equal infinities produce `NaN`, which the
+previous comparator returned instead of reaching the required `processKey`
+tie.
+
+The history comparator now defines this explicit ascending total order:
+
+```text
+-Infinity < finite values < +Infinity < NaN
+```
+
+Descending reverses the primary numeric order. Equal finite values, equal
+infinities, and `NaN` pairs always fall through to ascending `processKey`, so
+ties remain deterministic in either direction. Maximum memory uses the same
+comparator even though its server value is an integer.
+
+Non-finite history CPU-time, CPU-percentage, and memory labels render as
+`Unavailable`. Non-finite chart values are represented internally as zero
+while their labels remain `Unavailable`, keeping chart dimensions finite and
+avoiding misleading `NaNh` / `Infinityh` output.
+
+### Final Correction RED
+
+Before the total-order implementation, all four CPU sort regressions failed.
+For example, ascending order retained a leading `nan-b` and did not order
+equal infinities by process key:
+
+```text
+expected:
+negative-infinity-a, negative-infinity-b, finite-a, finite-b,
+positive-infinity-a, positive-infinity-b, nan-a, nan-b
+
+received:
+nan-b, negative-infinity-b, negative-infinity-a, finite-a, finite-b,
+positive-infinity-b, nan-a, positive-infinity-a
+```
+
+The bounded-label regression also failed with:
+
+```text
+NaNh
+Infinityh
+-Infinitys
+```
+
+instead of `Unavailable`.
+
+### Final Correction Verification
+
+```text
+vp test apps/web/src/components/settings/resourceDiagnosticsPresentation.test.ts \
+  apps/web/src/components/settings/ResourceDiagnosticsSections.test.tsx \
+  apps/web/src/components/settings/DiagnosticsSettings.test.tsx --run
+
+Test Files 3 passed (3)
+Tests 76 passed (76)
+
+vp test apps/web/src/components/settings --run
+
+Test Files 21 passed (21)
+Tests 322 passed (322)
+```
+
+Final correction gates:
+
+```text
+vp check
+pass: All 1543 files are correctly formatted
+pass: Found no warnings or lint errors in 1163 files
+
+vp run typecheck
+exit 0
+
+git diff --check
+exit 0
+```
+
+Typecheck reports only the pre-existing repository-wide TS377098 suggestions
+described above.

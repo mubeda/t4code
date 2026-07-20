@@ -733,6 +733,134 @@ describe("presentResourceHistory", () => {
     expect(presentation.rows.map((row) => row.processKey)).toEqual(["2:1", "9:1"]);
   });
 
+  it.each([
+    ["cpuTime", "cpuSecondsApprox"],
+    ["currentCpu", "currentCpuPercent"],
+    ["averageCpu", "avgCpuPercent"],
+    ["peakCpu", "maxCpuPercent"],
+  ] as const)(
+    "totally orders non-finite %s values in both directions with process-key ties",
+    (key, field) => {
+      const process = (processKey: string, value: number) =>
+        historySummary({
+          processKey,
+          pid: 1,
+          [field]: value,
+        });
+      const processes = [
+        process("nan-b", Number.NaN),
+        process("positive-infinity-b", Number.POSITIVE_INFINITY),
+        process("finite-b", 5),
+        process("negative-infinity-b", Number.NEGATIVE_INFINITY),
+        process("nan-a", Number.NaN),
+        process("positive-infinity-a", Number.POSITIVE_INFINITY),
+        process("finite-a", 5),
+        process("negative-infinity-a", Number.NEGATIVE_INFINITY),
+      ];
+
+      const ascending = presentResourceHistory({
+        history: historyFixture({ processes }),
+        queryError: null,
+        processSort: { key, direction: "asc" },
+      });
+      const descending = presentResourceHistory({
+        history: historyFixture({ processes }),
+        queryError: null,
+        processSort: { key, direction: "desc" },
+      });
+
+      expect(ascending.rows.map((row) => row.processKey)).toEqual([
+        "negative-infinity-a",
+        "negative-infinity-b",
+        "finite-a",
+        "finite-b",
+        "positive-infinity-a",
+        "positive-infinity-b",
+        "nan-a",
+        "nan-b",
+      ]);
+      expect(descending.rows.map((row) => row.processKey)).toEqual([
+        "nan-a",
+        "nan-b",
+        "positive-infinity-a",
+        "positive-infinity-b",
+        "finite-a",
+        "finite-b",
+        "negative-infinity-a",
+        "negative-infinity-b",
+      ]);
+    },
+  );
+
+  it("presents non-finite history metrics as bounded unavailable labels", () => {
+    const bucket = historyFixture().buckets[0]!;
+    const presentation = presentResourceHistory({
+      history: historyFixture({
+        cpuSecondsApprox: {
+          combined: Number.NaN,
+          core: Number.POSITIVE_INFINITY,
+          external: Number.NEGATIVE_INFINITY,
+        },
+        processes: [
+          historySummary({
+            cpuSecondsApprox: Number.NaN,
+            currentCpuPercent: Number.POSITIVE_INFINITY,
+            avgCpuPercent: Number.NEGATIVE_INFINITY,
+            maxCpuPercent: Number.NaN,
+            maxRssBytes: Number.POSITIVE_INFINITY,
+          }),
+        ],
+        buckets: [
+          {
+            ...bucket,
+            cpuPercent: {
+              average: {
+                combined: Number.NaN,
+                core: Number.POSITIVE_INFINITY,
+                external: Number.NEGATIVE_INFINITY,
+              },
+              peak: {
+                combined: Number.POSITIVE_INFINITY,
+                core: Number.NEGATIVE_INFINITY,
+                external: Number.NaN,
+              },
+            },
+          },
+        ],
+      }),
+      queryError: null,
+      metric: "cpu",
+    });
+
+    expect(presentation.summary).toEqual({
+      combined: { title: "Combined", valueLabel: "Unavailable" },
+      core: { title: "T4Code Core", valueLabel: "Unavailable" },
+      external: { title: "External Tooling", valueLabel: "Unavailable" },
+    });
+    expect(presentation.rows[0]).toMatchObject({
+      cpuTimeLabel: "Unavailable",
+      currentCpuLabel: "Unavailable",
+      averageCpuLabel: "Unavailable",
+      peakCpuLabel: "Unavailable",
+      maxMemoryLabel: "Unavailable",
+    });
+    expect(presentation.chart.bars[0]).toMatchObject({
+      average: { combined: 0, core: 0, external: 0 },
+      peak: { combined: 0, core: 0, external: 0 },
+      averageLabels: {
+        combined: "Unavailable",
+        core: "Unavailable",
+        external: "Unavailable",
+      },
+      peakLabels: {
+        combined: "Unavailable",
+        core: "Unavailable",
+        external: "Unavailable",
+      },
+    });
+    expect(presentation.chart.maximumAverage).toBe(1);
+  });
+
   it("preserves the existing resource window inputs", () => {
     expect(RESOURCE_HISTORY_WINDOWS).toEqual([
       { label: "5m", windowMs: 5 * 60_000, bucketMs: 30_000 },
