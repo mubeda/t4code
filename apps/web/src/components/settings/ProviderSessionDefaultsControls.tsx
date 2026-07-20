@@ -3,7 +3,7 @@ import type {
   ProviderSessionDefault,
   ServerProviderModel,
 } from "@t4code/contracts";
-import { useId } from "react";
+import { useId, useRef } from "react";
 import {
   getProviderSessionDefaultControls,
   type ProviderSessionDefaultChange,
@@ -29,6 +29,7 @@ export function ProviderSessionDefaultsControls({
   onChange,
 }: ProviderSessionDefaultsControlsProps) {
   const idPrefix = useId();
+  const modelLabels = useRef(new Map<string, string>());
   const modelId = `${idPrefix}-model`;
   const effortId = `${idPrefix}-effort`;
   const fastModeId = `${idPrefix}-fast-mode`;
@@ -40,7 +41,10 @@ export function ProviderSessionDefaultsControls({
   const modelDisabled = disabled;
   const selectedModel = controls.modelAvailable ? controls.resolvedModel : controls.configuredModel;
   const selectedServerModel = models.find((model) => model.slug === selectedModel);
-  const modelLabel = selectedServerModel?.name ?? selectedModel;
+  if (selectedServerModel)
+    modelLabels.current.set(selectedServerModel.slug, selectedServerModel.name);
+  const modelLabel =
+    selectedServerModel?.name ?? modelLabels.current.get(selectedModel) ?? selectedModel;
 
   const change = (next: ProviderSessionDefaultChange) => {
     onChange(
