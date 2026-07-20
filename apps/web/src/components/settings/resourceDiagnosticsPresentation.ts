@@ -239,7 +239,8 @@ function formatCpuTime(seconds: number): string {
 }
 
 function formatHistoryCpuPercent(percent: number): string {
-  return Number.isFinite(percent) ? formatCpuPercent(percent) : "Unavailable";
+  if (!Number.isFinite(percent)) return "Unavailable";
+  return percent < 0 ? `-${formatCpuPercent(-percent)}` : formatCpuPercent(percent);
 }
 
 function formatHistoryMemoryBytes(bytes: number): string {
@@ -247,7 +248,7 @@ function formatHistoryMemoryBytes(bytes: number): string {
 }
 
 function sanitizeHistoryMetric(metric: SplitMetric): SplitMetric {
-  const sanitize = (value: number): number => (Number.isFinite(value) ? Math.max(0, value) : 0);
+  const sanitize = (value: number): number => (Number.isFinite(value) ? value : 0);
   return {
     combined: sanitize(metric.combined),
     core: sanitize(metric.core),
