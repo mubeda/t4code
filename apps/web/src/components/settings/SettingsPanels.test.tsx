@@ -6,6 +6,8 @@ import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import * as Duration from "effect/Duration";
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/unstable/reactivity";
 import {
   type DesktopUpdateState,
   EnvironmentId,
@@ -419,6 +421,14 @@ async function flush(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 function makeUpdateState(overrides: Partial<DesktopUpdateState>): DesktopUpdateState {
@@ -1189,7 +1199,10 @@ describe("ProviderSettingsPanel", () => {
           readonly submit: (
             driver: ProviderDriverKind,
             next: UnifiedSettings["providerSessionDefaults"][ProviderDriverKind],
-          ) => UnifiedSettings["providerSessionDefaults"];
+          ) => {
+            readonly revision: object;
+            readonly defaults: UnifiedSettings["providerSessionDefaults"];
+          };
           readonly reconcile: (
             authoritative: UnifiedSettings["providerSessionDefaults"],
           ) => UnifiedSettings["providerSessionDefaults"];
@@ -1206,15 +1219,15 @@ describe("ProviderSettingsPanel", () => {
     const firstSubmission = draft.submit(CODEX_DRIVER, nextCodex);
     const latestSubmission = draft.submit(CLAUDE_DRIVER, nextClaude);
 
-    expect(draft.reconcile(firstSubmission)).toEqual(latestSubmission);
-    expect(draft.reconcile(latestSubmission)).toEqual(latestSubmission);
+    expect(draft.reconcile(firstSubmission.defaults)).toEqual(latestSubmission.defaults);
+    expect(draft.reconcile(latestSubmission.defaults)).toEqual(latestSubmission.defaults);
     expect(
       draft.reconcile({
-        ...latestSubmission,
+        ...latestSubmission.defaults,
         [ProviderDriverKind.make("futureDriver")]: { model: "future-external" },
       }),
     ).toEqual({
-      ...latestSubmission,
+      ...latestSubmission.defaults,
       [ProviderDriverKind.make("futureDriver")]: { model: "future-external" },
     });
   });
@@ -1268,6 +1281,81 @@ describe("ProviderSettingsPanel", () => {
           previousActEnvironment;
       }
     }
+  });
+
+  it("rolls a failed latest provider-default mutation back to its acknowledged predecessor", async () => {
+    const settings = baseProviderSettings();
+    h.settings = settings;
+    const firstResult = deferred<unknown>();
+    const secondResult = deferred<unknown>();
+    h.updateSettings
+      .mockReturnValueOnce(firstResult.promise)
+      .mockReturnValueOnce(secondResult.promise);
+
+    render(<ProviderSettingsPanel />);
+    const codexCard = h.instanceCards.find((card) => String(card.instanceId) === "codex")!;
+    const claudeCard = h.instanceCards.find((card) => String(card.instanceId) === "claudeAgent")!;
+    const submittedS1 = { model: "codex-s1" };
+    const submittedS2 = { model: "codex-s2" };
+    (codexCard.onSessionDefaultsChange as (next: ProviderSessionDefault) => void)(submittedS1);
+    (codexCard.onSessionDefaultsChange as (next: ProviderSessionDefault) => void)(submittedS2);
+
+    firstResult.resolve(
+      AsyncResult.success({
+        ...settings,
+        providerSessionDefaults: {
+          ...settings.providerSessionDefaults,
+          [CODEX_DRIVER]: submittedS1,
+        },
+      }),
+    );
+    await flush();
+    secondResult.resolve(AsyncResult.failure(Cause.fail(new Error("S2 rejected"))));
+    await flush();
+
+    (claudeCard.onSessionDefaultsChange as (next: ProviderSessionDefault) => void)({
+      model: "claude-after-failure",
+    });
+    expect(h.updateSettings).toHaveBeenNthCalledWith(3, {
+      providerSessionDefaults: {
+        ...settings.providerSessionDefaults,
+        [CODEX_DRIVER]: submittedS1,
+        [CLAUDE_DRIVER]: { model: "claude-after-failure" },
+      },
+    });
+  });
+
+  it("keeps the latest provider default when an older mutation fails", async () => {
+    const settings = baseProviderSettings();
+    h.settings = settings;
+    const firstResult = deferred<unknown>();
+    const secondResult = deferred<unknown>();
+    h.updateSettings
+      .mockReturnValueOnce(firstResult.promise)
+      .mockReturnValueOnce(secondResult.promise);
+
+    render(<ProviderSettingsPanel />);
+    const codexCard = h.instanceCards.find((card) => String(card.instanceId) === "codex")!;
+    const claudeCard = h.instanceCards.find((card) => String(card.instanceId) === "claudeAgent")!;
+    const submittedS2 = { model: "codex-s2" };
+    (codexCard.onSessionDefaultsChange as (next: ProviderSessionDefault) => void)({
+      model: "codex-s1",
+    });
+    (codexCard.onSessionDefaultsChange as (next: ProviderSessionDefault) => void)(submittedS2);
+
+    firstResult.resolve(AsyncResult.failure(Cause.fail(new Error("S1 rejected"))));
+    await flush();
+    (claudeCard.onSessionDefaultsChange as (next: ProviderSessionDefault) => void)({
+      model: "claude-after-failure",
+    });
+
+    expect(h.updateSettings).toHaveBeenNthCalledWith(3, {
+      providerSessionDefaults: {
+        ...settings.providerSessionDefaults,
+        [CODEX_DRIVER]: submittedS2,
+        [CLAUDE_DRIVER]: { model: "claude-after-failure" },
+      },
+    });
   });
 
   it("routes instance card callbacks into settings patches", () => {
