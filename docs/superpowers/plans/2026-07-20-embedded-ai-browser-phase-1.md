@@ -817,7 +817,7 @@ The heart of Phase 1: create/position/navigate native child webviews and emit `D
   `desktop_preview_reveal_artifact { path }`.
   Event `preview://state` with payload `{ tabId: string, state: DesktopPreviewTabState }` (camelCase serde).
 
-- [ ] **Step 1: Write `host.rs`**
+- [x] **Step 1: Write `host.rs`**
 
 ```rust
 // apps/desktop/src-tauri/src/preview/host.rs
@@ -1054,7 +1054,7 @@ Notes for the implementer:
 - If `app.get_window("main")` compiles on 2.11.5 (it does with `unstable`), drop the `get_webview_window` fallback line.
 - `data_store_identifier` takes `[u8; 16]` — the literal above is exactly 16 bytes (`t4codepreview001`).
 
-- [ ] **Step 2: Write `commands.rs`**
+- [x] **Step 2: Write `commands.rs`**
 
 ```rust
 // apps/desktop/src-tauri/src/preview/commands.rs
@@ -1218,7 +1218,7 @@ pub fn desktop_preview_reveal_artifact(app: AppHandle, path: String) -> Result<(
 
 Check `crate::config::state_dir`'s exact signature in `config.rs` and match it (it may take `&AppHandle` or an `App`; adjust the call).
 
-- [ ] **Step 3: Register commands + permissions**
+- [x] **Step 3: Register commands + permissions**
 
 `preview/mod.rs`: add `pub mod commands; pub mod host; pub mod platform;`.
 
@@ -1296,16 +1296,16 @@ commands.allow = [
 
 `capabilities/default.json`: `"permissions": ["allow-desktop-bridge", "allow-desktop-preview", "core:default"]`.
 
-- [ ] **Step 4: Write the permission consistency test**
+- [x] **Step 4: Write the permission consistency test**
 
 In `lib.rs` `mod tests`, clone the existing `desktop_bridge_permission_allows_registered_commands` test as `desktop_preview_permission_allows_registered_commands`, pointing at `include_str!("../permissions/preview.toml")`, identifier `allow-desktop-preview`, and `DESKTOP_PREVIEW_COMMAND_NAMES`.
 
-- [ ] **Step 5: Compile + test**
+- [x] **Step 5: Compile + test**
 
 Run: `pnpm --filter @t4code/desktop typecheck && pnpm --filter @t4code/desktop test`
 Expected: clean check; registry tests + both permission tests PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/desktop/src-tauri

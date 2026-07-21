@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default permissions for the T4Code Tauri desktop shell.",
   "windows": ["main"],
-  "permissions": ["allow-desktop-bridge", "core:default"]
+  "permissions": ["allow-desktop-bridge", "allow-desktop-preview", "core:default"]
 }

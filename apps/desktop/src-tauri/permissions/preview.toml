@@ -1,0 +1,18 @@
+[[permission]]
+identifier = "allow-desktop-preview"
+description = "Allows the renderer to drive native preview webviews."
+commands.allow = [
+  "desktop_preview_create_tab",
+  "desktop_preview_close_tab",
+  "desktop_preview_set_bounds",
+  "desktop_preview_navigate",
+  "desktop_preview_go_back",
+  "desktop_preview_go_forward",
+  "desktop_preview_refresh",
+  "desktop_preview_hard_reload",
+  "desktop_preview_set_zoom",
+  "desktop_preview_open_devtools",
+  "desktop_preview_clear_data",
+  "desktop_preview_capture_screenshot",
+  "desktop_preview_reveal_artifact",
+]
