@@ -26,6 +26,7 @@ import { listen as importedTauriListen } from "@tauri-apps/api/event";
 import { readBrowserClientSettings, writeBrowserClientSettings } from "./clientPersistenceStorage";
 import { showContextMenuFallback } from "./contextMenuFallback";
 import { invokeTauriCommand, type TauriCommandMock } from "./tauriInvokeRouting";
+import { createTauriPreviewBridge } from "./tauriPreviewBridge";
 
 const CONNECTION_CATALOG_STORAGE_KEY = "t4code.connectionCatalog";
 const BACKEND_READY_EVENT = "desktop:backend-ready";
@@ -495,6 +496,10 @@ function createTauriDesktopBridge(): DesktopBridge {
       tauriInvokeDesktop("desktop_bridge_install_update", undefined),
     onUpdateState: (listener: (state: DesktopUpdateState) => void) =>
       tauriListen(UPDATE_STATE_EVENT, listener),
+    preview: createTauriPreviewBridge({
+      invoke: tauriInvoke,
+      listen: tauriListen,
+    }),
   };
 }
 

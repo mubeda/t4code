@@ -1325,7 +1325,7 @@ git commit -m "feat(preview): native child-webview host with nav events and comm
 - Consumes: Task 7 command names/payloads; Task 1 contract (`DesktopPreviewBridge`, `DesktopPreviewBounds`).
 - Produces: `createTauriPreviewBridge(deps: { invoke, listen }): DesktopPreviewBridge` — dependency-injected so tests pass fakes; `tauriDesktopBridge.ts` wires the real `tauriInvoke`/`tauriListen`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // apps/web/src/tauriPreviewBridge.test.ts
@@ -1391,12 +1391,12 @@ describe("tauriPreviewBridge", () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `pnpm --filter @t4code/web test -- tauriPreviewBridge`
 Expected: FAIL — module does not exist.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```ts
 // apps/web/src/tauriPreviewBridge.ts
@@ -1513,12 +1513,12 @@ In `apps/web/src/tauriDesktopBridge.ts`, inside `createTauriDesktopBridge()`'s r
 
 with the import at the top: `import { createTauriPreviewBridge } from "./tauriPreviewBridge";`
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `pnpm --filter @t4code/web test -- tauriPreviewBridge && pnpm --filter @t4code/web typecheck`
 Expected: 3 tests PASS; typecheck clean.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/tauriPreviewBridge.ts apps/web/src/tauriPreviewBridge.test.ts apps/web/src/tauriDesktopBridge.ts
