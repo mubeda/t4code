@@ -12,7 +12,9 @@ import {
   getProviderCapabilityDescriptors,
   getProviderOptionCurrentLabel,
   getProviderOptionCurrentValue,
+  getProviderOptionStringSelectionValue,
   isClaudeUltrathinkPrompt,
+  resolvePromptInjectedEffort,
 } from "@t4code/shared/model";
 import { memo, useCallback, useState } from "react";
 import type { VariantProps } from "class-variance-authority";
@@ -107,6 +109,13 @@ function getSelectedTraits(
   const thinkingDescriptor =
     booleanDescriptors.find((descriptor) => descriptor.id === "thinking") ?? null;
 
+  const rawPrimaryValue = primarySelectDescriptor
+    ? getProviderOptionStringSelectionValue(modelOptions, primarySelectDescriptor.id)
+    : undefined;
+  const rawPromptInjectedEffort = allowPromptInjectedEffort
+    ? resolvePromptInjectedEffort(caps, rawPrimaryValue)
+    : null;
+
   // Prompt-controlled effort (e.g. ultrathink in prompt text)
   const ultrathinkPromptControlled =
     allowPromptInjectedEffort &&
@@ -116,10 +125,11 @@ function getSelectedTraits(
   // Check if "ultrathink" appears in the body text (not just our prefix)
   const ultrathinkInBodyText =
     ultrathinkPromptControlled && isClaudeUltrathinkPrompt(prompt.replace(/^Ultrathink:\s*/i, ""));
+  const selectedPromptInjectedEffort = ultrathinkPromptControlled
+    ? "ultrathink"
+    : rawPromptInjectedEffort;
   const effort =
-    (ultrathinkPromptControlled
-      ? "ultrathink"
-      : getDescriptorStringValue(primarySelectDescriptor)) ?? null;
+    selectedPromptInjectedEffort ?? getDescriptorStringValue(primarySelectDescriptor) ?? null;
   const thinkingEnabled =
     typeof thinkingDescriptor?.currentValue === "boolean" ? thinkingDescriptor.currentValue : null;
   const fastModeEnabled =
@@ -144,6 +154,7 @@ function getSelectedTraits(
     thinkingEnabled,
     fastModeEnabled,
     contextWindow,
+    selectedPromptInjectedEffort,
     ultrathinkPromptControlled,
     ultrathinkInBodyText,
     selectedAgent,
@@ -244,6 +255,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
     selectDescriptors,
     booleanDescriptors,
     primarySelectDescriptor,
+    selectedPromptInjectedEffort,
     ultrathinkPromptControlled,
     ultrathinkInBodyText,
     hasAnyControls,
@@ -301,8 +313,8 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
             ) : null}
             <MenuRadioGroup
               value={
-                ultrathinkPromptControlled && descriptor.id === primarySelectDescriptor?.id
-                  ? "ultrathink"
+                selectedPromptInjectedEffort && descriptor.id === primarySelectDescriptor?.id
+                  ? selectedPromptInjectedEffort
                   : (getDescriptorStringValue(descriptor) ?? "")
               }
               onValueChange={(value) => handleSelectChange(descriptor, value)}
@@ -360,7 +372,7 @@ export const TraitsPicker = memo(function TraitsPicker({
   ...persistence
 }: TraitsMenuContentProps & TraitsPersistence) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const { descriptors, primarySelectDescriptor, ultrathinkPromptControlled } =
+  const { descriptors, primarySelectDescriptor, selectedPromptInjectedEffort } =
     getTraitsSectionVisibility({
       provider,
       models,
@@ -385,8 +397,10 @@ export const TraitsPicker = memo(function TraitsPicker({
   const triggerLabels: Array<string> = [];
   for (const descriptor of descriptors) {
     const label =
-      ultrathinkPromptControlled && descriptor.id === primarySelectDescriptor?.id
-        ? "Ultrathink"
+      descriptor.type === "select" &&
+      selectedPromptInjectedEffort &&
+      descriptor.id === primarySelectDescriptor?.id
+        ? descriptor.options.find((option) => option.id === selectedPromptInjectedEffort)?.label
         : descriptor.type === "boolean"
           ? descriptor.id === "fastMode"
             ? descriptor.currentValue === true

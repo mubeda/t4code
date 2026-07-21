@@ -168,6 +168,7 @@ describe("getComposerProviderState", () => {
       provider: ProviderDriverKind.make("claudeAgent"),
       promptEffort: "ultrathink",
       modelOptionsForDispatch: selections(["effort", "high"]),
+      ...ULTRATHINK_FRAME_CLASSES,
     });
   });
 
