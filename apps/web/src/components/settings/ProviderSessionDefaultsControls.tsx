@@ -39,7 +39,9 @@ export function ProviderSessionDefaultsControls({
     models,
     ...(value ? { configuredDefault: value } : {}),
   });
-  const modelDisabled = disabled;
+  const modelSupported = models.length > 0;
+  const modelDisabled = disabled || !modelSupported;
+  const effortSupported = controls.effortDescriptor !== null;
   const selectedModel = controls.modelAvailable ? controls.resolvedModel : controls.configuredModel;
   const selectedServerModel = models.find((model) => model.slug === selectedModel);
   const selectedModelSlug = selectedServerModel?.slug;
@@ -109,46 +111,46 @@ export function ProviderSessionDefaultsControls({
         ) : null}
       </div>
 
-      {controls.effortDescriptor ? (
-        <div className="min-w-0 space-y-1">
-          <label className="text-sm font-medium" htmlFor={effortId}>
-            Default effort
-          </label>
-          <Select
-            disabled={disabled}
-            value={controls.effort ?? undefined}
-            onValueChange={(next) => {
-              if (next) change({ type: "effort", value: next });
-            }}
-          >
-            <SelectTrigger aria-label="Default effort" id={effortId}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectPopup>
-              {controls.effortDescriptor.options.map((option) => (
-                <SelectItem key={option.id} value={option.id}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
-        </div>
-      ) : null}
+      <div className="min-w-0 space-y-1">
+        <label className="text-sm font-medium" htmlFor={effortId}>
+          Default effort
+        </label>
+        <Select
+          disabled={disabled || !effortSupported}
+          value={controls.effort ?? undefined}
+          onValueChange={(next) => {
+            if (effortSupported && next) change({ type: "effort", value: next });
+          }}
+        >
+          <SelectTrigger aria-label="Default effort" id={effortId}>
+            <SelectValue>{effortSupported ? undefined : "Not supported"}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup>
+            {controls.effortDescriptor?.options.map((option) => (
+              <SelectItem key={option.id} value={option.id}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      </div>
 
-      {controls.fastModeSupported ? (
-        <div className="flex min-h-9 items-center gap-2 sm:pb-0.5">
-          <label className="text-sm font-medium" htmlFor={fastModeId}>
-            Fast by default
-          </label>
-          <Switch
-            aria-label="Fast by default"
-            checked={controls.fastMode ?? false}
-            disabled={disabled}
-            id={fastModeId}
-            onCheckedChange={(next) => change({ type: "fastMode", value: Boolean(next) })}
-          />
-        </div>
-      ) : null}
+      <div className="flex min-h-9 items-center gap-2 sm:pb-0.5">
+        <label className="text-sm font-medium" htmlFor={fastModeId}>
+          Fast by default
+        </label>
+        <Switch
+          aria-label="Fast by default"
+          checked={controls.fastModeSupported ? (controls.fastMode ?? false) : false}
+          disabled={disabled || !controls.fastModeSupported}
+          id={fastModeId}
+          onCheckedChange={(next) => {
+            if (controls.fastModeSupported) {
+              change({ type: "fastMode", value: Boolean(next) });
+            }
+          }}
+        />
+      </div>
     </div>
   );
 }

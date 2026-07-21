@@ -360,7 +360,7 @@ describe("ProviderSessionDefaultsControls", () => {
     expect(entries("Switch")[0]?.disabled).toBe(true);
   });
 
-  it("omits effort and fast controls when the selected model does not support them", () => {
+  it("keeps effort and fast controls visible but disabled when unsupported", () => {
     const markup = render(
       baseProps({
         driver: OPENCODE,
@@ -391,9 +391,44 @@ describe("ProviderSessionDefaultsControls", () => {
     );
 
     expect(markup).toContain("Default model");
-    expect(markup).not.toContain("Default effort");
-    expect(markup).not.toContain("Fast by default");
-    expect(controls.entries.map((entry) => entry.kind)).toEqual(["Select"]);
+    expect(markup).toContain("Default effort");
+    expect(markup).toContain("Fast by default");
+    expect(markup).toContain("Not supported");
+    expect(controls.entries.map((entry) => entry.kind)).toEqual(["Select", "Select", "Switch"]);
+    expect(entries("Select")[0]?.disabled).toBe(false);
+    expect(entries("Select")[1]?.disabled).toBe(true);
+    expect(entries("Switch")[0]).toMatchObject({ checked: false, disabled: true });
+  });
+
+  it("disables the model control when no provider models are available", () => {
+    render(baseProps({ driver: OPENCODE, models: [], value: { model: "auto" } }));
+
+    expect(entries("Select")[0]?.disabled).toBe(true);
+    expect(entries("Select")[1]?.disabled).toBe(true);
+    expect(entries("Switch")[0]?.disabled).toBe(true);
+  });
+
+  it("keeps the full control row mounted when model capabilities change", async () => {
+    const mounted = await mount(
+      baseProps({ driver: OPENCODE, models: richModels, value: richValue }),
+    );
+    const modelControl = controlElement(mounted, "Default model");
+    const effortControl = controlElement(mounted, "Default effort");
+    const fastControl = controlElement(mounted, "Fast by default");
+
+    expect(effortControl.disabled).toBe(false);
+    expect(fastControl.disabled).toBe(false);
+
+    await rerender(
+      baseProps({ driver: OPENCODE, models: [model("plain")], value: { model: "plain" } }),
+    );
+
+    expect(controlElement(mounted, "Default model")).toBe(modelControl);
+    expect(controlElement(mounted, "Default effort")).toBe(effortControl);
+    expect(controlElement(mounted, "Fast by default")).toBe(fastControl);
+    expect(effortControl.disabled).toBe(true);
+    expect(effortControl.textContent).toBe("Not supported");
+    expect(fastControl.disabled).toBe(true);
   });
 
   it("keeps Codex controls mounted with their values when discovery becomes empty", async () => {
