@@ -181,20 +181,33 @@ describe("resolveWorktreeCreateInput", () => {
 
   it("resolves name mode from sanitized text", () => {
     const result = resolveWorktreeCreateInput({ ...base, mode: "name", nameText: "My Feature" });
-    expect(result).toEqual({ branchName: "My-Feature", baseRefName: "main" });
+    expect(result).toEqual({
+      kind: "new-branch",
+      branchName: "My-Feature",
+      refName: "main",
+      newRefName: "My-Feature",
+      baseRefName: "main",
+    });
   });
 
   it("returns null for name mode with empty text", () => {
     expect(resolveWorktreeCreateInput({ ...base, mode: "name", nameText: "   " })).toBeNull();
   });
 
-  it("resolves branch mode from the selected ref", () => {
+  it("resolves branch mode as an existing ref", () => {
     const result = resolveWorktreeCreateInput({
       ...base,
       mode: "branch",
-      selectedBranchRefName: "feature/login",
+      selectedBranchRefName: "feature--login",
+      advancedBaseBranchOverride: "develop",
     });
-    expect(result).toEqual({ branchName: "feature/login", baseRefName: "main" });
+    expect(result).toEqual({
+      kind: "existing-ref",
+      branchName: "feature--login",
+      refName: "feature--login",
+      newRefName: null,
+      baseRefName: null,
+    });
   });
 
   it("returns null for branch mode with no selection", () => {
@@ -207,7 +220,13 @@ describe("resolveWorktreeCreateInput", () => {
       mode: "github",
       githubItem: { number: 42, kind: "pr" },
     });
-    expect(result).toEqual({ branchName: "pr-42", baseRefName: "main" });
+    expect(result).toEqual({
+      kind: "new-branch",
+      branchName: "pr-42",
+      refName: "main",
+      newRefName: "pr-42",
+      baseRefName: "main",
+    });
   });
 
   it("returns null for github mode with no parsed item", () => {
@@ -221,21 +240,56 @@ describe("resolveWorktreeCreateInput", () => {
       githubItem: { number: 7, kind: "issue" },
       selectedBranchRefName: "feature/login",
     });
-    expect(result).toEqual({ branchName: "pr-7", baseRefName: "main" });
+    expect(result).toEqual({
+      kind: "new-branch",
+      branchName: "pr-7",
+      refName: "main",
+      newRefName: "pr-7",
+      baseRefName: "main",
+    });
   });
 
-  it("smart mode falls back to a branch selection when no github item", () => {
+  it("smart mode falls back to an existing ref when no github item", () => {
     const result = resolveWorktreeCreateInput({
       ...base,
       mode: "smart",
-      selectedBranchRefName: "feature/login",
+      selectedBranchRefName: "feature--login",
+      advancedBaseBranchOverride: "develop",
     });
-    expect(result).toEqual({ branchName: "feature/login", baseRefName: "main" });
+    expect(result).toEqual({
+      kind: "existing-ref",
+      branchName: "feature--login",
+      refName: "feature--login",
+      newRefName: null,
+      baseRefName: null,
+    });
   });
 
   it("smart mode falls back to sanitized text when nothing else resolves", () => {
     const result = resolveWorktreeCreateInput({ ...base, mode: "smart", nameText: "brand new" });
-    expect(result).toEqual({ branchName: "brand-new", baseRefName: "main" });
+    expect(result).toEqual({
+      kind: "new-branch",
+      branchName: "brand-new",
+      refName: "main",
+      newRefName: "brand-new",
+      baseRefName: "main",
+    });
+  });
+
+  it("uses HEAD as the base when no default base branch is available", () => {
+    const result = resolveWorktreeCreateInput({
+      ...base,
+      mode: "name",
+      nameText: "feature",
+      defaultBaseBranch: null,
+    });
+    expect(result).toEqual({
+      kind: "new-branch",
+      branchName: "feature",
+      refName: "HEAD",
+      newRefName: "feature",
+      baseRefName: "HEAD",
+    });
   });
 
   it("prefers the advanced base-branch override over the default", () => {
@@ -245,12 +299,24 @@ describe("resolveWorktreeCreateInput", () => {
       nameText: "feature",
       advancedBaseBranchOverride: "develop",
     });
-    expect(result).toEqual({ branchName: "feature", baseRefName: "develop" });
+    expect(result).toEqual({
+      kind: "new-branch",
+      branchName: "feature",
+      refName: "develop",
+      newRefName: "feature",
+      baseRefName: "develop",
+    });
   });
 });
 
 describe("getCreateWorktreeDisabled", () => {
-  const resolution = { branchName: "feature", baseRefName: "main" };
+  const resolution = {
+    kind: "new-branch" as const,
+    branchName: "feature",
+    refName: "main",
+    newRefName: "feature",
+    baseRefName: "main",
+  };
 
   it("is disabled without a project", () => {
     expect(getCreateWorktreeDisabled({ hasProject: false, resolution, isSubmitting: false })).toBe(

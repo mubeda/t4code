@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
+    fs, io,
     path::{Component, Path, PathBuf},
     time::Duration,
 };
@@ -22,10 +23,30 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_OUTPUT_LIMIT: usize = 1_000_000;
 const COMMIT_FIELD_SEPARATOR: char = '\x1f';
 const CLONE_OPERATION: &str = "GitVcsDriver.clone";
+const MAX_AUTOMATIC_WORKTREE_SUFFIX_ATTEMPTS: usize = 100;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GitRepository {
     runner: ProcessRunner,
+}
+
+#[derive(Debug)]
+struct OwnedWorktreePath {
+    path: PathBuf,
+}
+
+impl OwnedWorktreePath {
+    fn reserve(path: PathBuf) -> io::Result<Self> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::create_dir(&path)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 impl GitRepository {
@@ -656,35 +677,44 @@ impl GitRepository {
         let target_ref = input
             .new_ref_name
             .as_deref()
-            .unwrap_or(input.ref_name.as_str())
-            .to_owned();
-        let path = input.path.unwrap_or_else(|| {
-            let repo = input
-                .cwd
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("repository");
-            input
-                .cwd
-                .parent()
-                .unwrap_or(&input.cwd)
-                .join(".t4code-worktrees")
-                .join(repo)
-                .join(target_ref.replace('/', "-"))
-        });
-        let path_string = display_path(&path);
-        let new_ref_existed = match input.new_ref_name.as_deref() {
-            Some(new_ref) => {
-                self.local_branch_exists(&input.cwd, new_ref, cancellation)
-                    .await?
+            .unwrap_or(input.ref_name.as_str());
+        let requested_path = match input.path.as_deref() {
+            Some(path) => Some(resolve_explicit_worktree_path(&input.cwd, path).await),
+            None => None,
+        };
+        let existing_ref_is_local = input.new_ref_name.is_none()
+            && self
+                .local_branch_exists(&input.cwd, &input.ref_name, cancellation)
+                .await?;
+        if existing_ref_is_local {
+            let worktrees = self.worktree_map(&input.cwd, cancellation).await?;
+            if worktrees.contains_key(&input.ref_name) {
+                return self
+                    .create_suffixed_worktree_from_occupied_branch(
+                        &input.cwd,
+                        &input.ref_name,
+                        requested_path.as_ref(),
+                        cancellation,
+                    )
+                    .await;
             }
-            None => false,
+        }
+
+        let path = requested_path
+            .clone()
+            .unwrap_or_else(|| default_worktree_path(&input.cwd, target_ref));
+        let path_string = display_path(&path);
+        let new_ref_existed = if let Some(new_ref) = input.new_ref_name.as_deref() {
+            self.local_branch_exists(&input.cwd, new_ref, cancellation)
+                .await?
+        } else {
+            false
         };
         let mut args = strings(&["worktree", "add"]);
         if let Some(new_ref) = input.new_ref_name.as_deref() {
             args.extend(["-b".into(), new_ref.into()]);
         }
-        args.extend([path_string.clone(), input.ref_name]);
+        args.extend([path_string, input.ref_name.clone()]);
         if let Err(mut error) = self
             .run(
                 "GitVcsDriver.createWorktree",
@@ -703,6 +733,22 @@ impl GitRepository {
                     error.detail, rollback_error.detail
                 )
                 .into();
+            }
+            if input.new_ref_name.is_none()
+                && existing_ref_is_local
+                && self
+                    .worktree_map(&input.cwd, cancellation)
+                    .await?
+                    .contains_key(&input.ref_name)
+            {
+                return self
+                    .create_suffixed_worktree_from_occupied_branch(
+                        &input.cwd,
+                        &input.ref_name,
+                        requested_path.as_ref(),
+                        cancellation,
+                    )
+                    .await;
             }
             return Err(error);
         }
@@ -727,9 +773,196 @@ impl GitRepository {
         Ok(VcsCreateWorktreeResult {
             worktree: VcsWorktree {
                 path: path_string,
-                ref_name: target_ref,
+                ref_name: target_ref.to_owned(),
             },
         })
+    }
+
+    async fn create_suffixed_worktree_from_occupied_branch(
+        &self,
+        cwd: &Path,
+        base_ref: &str,
+        requested_path: Option<&PathBuf>,
+        cancellation: &CancellationToken,
+    ) -> Result<VcsCreateWorktreeResult, GitCommandError> {
+        for suffix in 2..(2 + MAX_AUTOMATIC_WORKTREE_SUFFIX_ATTEMPTS) {
+            let candidate = format!("{base_ref}-{suffix}");
+            if self
+                .local_branch_exists(cwd, &candidate, cancellation)
+                .await?
+            {
+                continue;
+            }
+
+            let path = requested_path
+                .cloned()
+                .unwrap_or_else(|| default_worktree_path(cwd, &candidate));
+            let owned_path = match OwnedWorktreePath::reserve(path.clone()) {
+                Ok(owned_path) => owned_path,
+                Err(error)
+                    if error.kind() == io::ErrorKind::AlreadyExists && requested_path.is_none() =>
+                {
+                    continue;
+                }
+                Err(error) => {
+                    let detail = if error.kind() == io::ErrorKind::AlreadyExists {
+                        format!(
+                            "The requested worktree path '{}' already exists. Choose an absent path so T4Code can safely own its cleanup.",
+                            display_path(&path)
+                        )
+                    } else {
+                        format!(
+                            "The worktree path '{}' could not be reserved: {error}",
+                            display_path(&path)
+                        )
+                    };
+                    return Err(simple_error("GitVcsDriver.createWorktree", cwd, &detail));
+                }
+            };
+            self.prepare_detached_owned_worktree(cwd, base_ref, &owned_path, cancellation)
+                .await?;
+
+            match self
+                .checkout_owned_suffixed_branch(cwd, &owned_path, &candidate, cancellation)
+                .await
+            {
+                Ok(()) => {
+                    let canonical_path = tokio::fs::canonicalize(owned_path.path())
+                        .await
+                        .unwrap_or(path);
+                    return Ok(VcsCreateWorktreeResult {
+                        worktree: VcsWorktree {
+                            path: display_path(&canonical_path),
+                            ref_name: candidate,
+                        },
+                    });
+                }
+                Err(error) => {
+                    if cancellation.is_cancelled() {
+                        return Err(error);
+                    }
+                    let cleanup_token = CancellationToken::new();
+                    let candidate_was_claimed = self
+                        .local_branch_exists(cwd, &candidate, &cleanup_token)
+                        .await?;
+                    if candidate_was_claimed {
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+
+        Err(simple_error(
+            "GitVcsDriver.createWorktree",
+            cwd,
+            &format!(
+                "No available worktree branch was found for '{base_ref}' after {MAX_AUTOMATIC_WORKTREE_SUFFIX_ATTEMPTS} attempts. Remove an unused suffixed branch or choose another base."
+            ),
+        ))
+    }
+
+    async fn prepare_detached_owned_worktree(
+        &self,
+        cwd: &Path,
+        base_ref: &str,
+        owned_path: &OwnedWorktreePath,
+        cancellation: &CancellationToken,
+    ) -> Result<(), GitCommandError> {
+        let args = vec![
+            "worktree".into(),
+            "add".into(),
+            "--detach".into(),
+            display_path(owned_path.path()),
+            base_ref.into(),
+        ];
+        if let Err(mut error) = self
+            .run("GitVcsDriver.createWorktree", cwd, &args, cancellation)
+            .await
+        {
+            if let Err(cleanup_error) = self.cleanup_owned_worktree(cwd, owned_path).await {
+                error.detail = format!(
+                    "{}\nOwned worktree cleanup also failed: {}",
+                    error.detail, cleanup_error.detail
+                )
+                .into();
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    async fn checkout_owned_suffixed_branch(
+        &self,
+        cwd: &Path,
+        owned_path: &OwnedWorktreePath,
+        candidate: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<(), GitCommandError> {
+        if let Err(mut error) = self
+            .run(
+                "GitVcsDriver.createWorktree.createBranch",
+                owned_path.path(),
+                &["checkout".into(), "-b".into(), candidate.into()],
+                cancellation,
+            )
+            .await
+        {
+            if let Err(cleanup_error) = self.cleanup_owned_worktree(cwd, owned_path).await {
+                error.detail = format!(
+                    "{}\nOwned worktree cleanup also failed: {}",
+                    error.detail, cleanup_error.detail
+                )
+                .into();
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    async fn cleanup_owned_worktree(
+        &self,
+        cwd: &Path,
+        owned_path: &OwnedWorktreePath,
+    ) -> Result<(), GitCommandError> {
+        let cleanup_token = CancellationToken::new();
+        let removal_error = self
+            .remove_worktree(cwd, owned_path.path(), true, &cleanup_token)
+            .await
+            .err();
+        let filesystem_error = match tokio::fs::remove_dir_all(owned_path.path()).await {
+            Ok(()) => None,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => Some(error),
+        };
+        let still_registered = self
+            .worktree_paths(cwd, &cleanup_token)
+            .await?
+            .iter()
+            .any(|registered| same_worktree_path(registered, owned_path.path()));
+        if still_registered {
+            return Err(removal_error.unwrap_or_else(|| {
+                simple_error(
+                    "GitVcsDriver.createWorktree.cleanup",
+                    cwd,
+                    &format!(
+                        "The owned worktree '{}' is still registered after cleanup.",
+                        display_path(owned_path.path())
+                    ),
+                )
+            }));
+        }
+        if let Some(error) = filesystem_error {
+            return Err(simple_error(
+                "GitVcsDriver.createWorktree.cleanup",
+                cwd,
+                &format!(
+                    "The owned worktree path '{}' could not be removed: {error}",
+                    display_path(owned_path.path())
+                ),
+            ));
+        }
+        Ok(())
     }
 
     async fn local_branch_exists(
@@ -1287,14 +1520,33 @@ impl GitRepository {
             } else if let (Some(branch), Some(path)) =
                 (line.strip_prefix("branch refs/heads/"), path.as_ref())
             {
-                if Path::new(path).exists() {
-                    map.insert(branch.to_owned(), display_path(Path::new(path)));
-                }
+                map.insert(branch.to_owned(), display_path(Path::new(path)));
             } else if line.is_empty() {
                 path = None;
             }
         }
         Ok(map)
+    }
+
+    async fn worktree_paths(
+        &self,
+        cwd: &Path,
+        cancellation: &CancellationToken,
+    ) -> Result<HashSet<String>, GitCommandError> {
+        let output = self
+            .run(
+                "GitVcsDriver.worktreePaths",
+                cwd,
+                &strings(&["worktree", "list", "--porcelain"]),
+                cancellation,
+            )
+            .await?;
+        Ok(output
+            .stdout
+            .lines()
+            .filter_map(|line| line.strip_prefix("worktree "))
+            .map(|path| display_path(Path::new(path)))
+            .collect())
     }
 }
 
@@ -1314,6 +1566,65 @@ fn git_environment() -> Vec<(OsString, OsString)> {
 
 fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_owned()).collect()
+}
+
+fn default_worktree_path(cwd: &Path, target_ref: &str) -> PathBuf {
+    let repo = cwd
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("repository");
+    cwd.parent()
+        .unwrap_or(cwd)
+        .join(".t4code-worktrees")
+        .join(repo)
+        .join(target_ref.replace('/', "-"))
+}
+
+async fn resolve_explicit_worktree_path(cwd: &Path, requested_path: &Path) -> PathBuf {
+    let repository_cwd = match tokio::fs::canonicalize(cwd).await {
+        Ok(path) => path,
+        Err(_) if cwd.is_absolute() => cwd.to_path_buf(),
+        Err(_) => std::env::current_dir()
+            .map(|current_dir| current_dir.join(cwd))
+            .unwrap_or_else(|_| cwd.to_path_buf()),
+    };
+    let path = if requested_path.is_absolute() {
+        requested_path.to_path_buf()
+    } else {
+        repository_cwd.join(requested_path)
+    };
+    normalize_path_lexically(&path)
+}
+
+fn normalize_path_lexically(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let can_pop = matches!(
+                    normalized.components().next_back(),
+                    Some(Component::Normal(_))
+                );
+                if can_pop {
+                    normalized.pop();
+                } else if !normalized.has_root() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn same_worktree_path(registered: &str, path: &Path) -> bool {
+    let candidate = display_path(path);
+    if cfg!(windows) {
+        registered.eq_ignore_ascii_case(&candidate)
+    } else {
+        registered == candidate
+    }
 }
 
 fn parse_branch_headers(stdout: &str) -> (Option<String>, Option<String>, u64, u64) {
@@ -1539,4 +1850,149 @@ fn display_path(path: &Path) -> String {
         return format!("//{}", unc_path.replace('\\', "/"));
     }
     raw.strip_prefix(r"\\?\").unwrap_or(&raw).replace('\\', "/")
+}
+
+#[cfg(test)]
+mod worktree_ownership_tests {
+    use std::{fs, path::Path, process::Command};
+
+    use tempfile::TempDir;
+    use tokio_util::sync::CancellationToken;
+
+    use super::{GitRepository, OwnedWorktreePath, display_path};
+
+    fn git(cwd: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "T4Code Test")
+            .env("GIT_AUTHOR_EMAIL", "t4code@example.invalid")
+            .env("GIT_COMMITTER_NAME", "T4Code Test")
+            .env("GIT_COMMITTER_EMAIL", "t4code@example.invalid")
+            .output()
+            .expect("git starts");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    fn repository() -> TempDir {
+        let repo = tempfile::tempdir().expect("temporary repository");
+        git(repo.path(), &["init", "-b", "main"]);
+        fs::write(repo.path().join("README.md"), "base\n").expect("write fixture");
+        git(repo.path(), &["add", "README.md"]);
+        git(repo.path(), &["commit", "-m", "initial"]);
+        repo
+    }
+
+    #[tokio::test]
+    async fn failed_detached_preparation_cleans_its_owned_reserved_path() {
+        let repo = repository();
+        let parent = tempfile::tempdir().expect("worktree parent");
+        let path = parent.path().join("reserved");
+        let owned = OwnedWorktreePath::reserve(path.clone()).expect("reserve absent path");
+
+        GitRepository::default()
+            .prepare_detached_owned_worktree(
+                repo.path(),
+                "missing-ref",
+                &owned,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("missing base fails detached preparation");
+
+        assert!(!path.exists());
+        assert!(
+            !git(repo.path(), &["worktree", "list", "--porcelain"])
+                .replace('\\', "/")
+                .contains(&display_path(&path))
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_detached_preparation_cleans_its_owned_reserved_path() {
+        let repo = repository();
+        let parent = tempfile::tempdir().expect("worktree parent");
+        let path = parent.path().join("reserved");
+        let owned = OwnedWorktreePath::reserve(path.clone()).expect("reserve absent path");
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+
+        GitRepository::default()
+            .prepare_detached_owned_worktree(repo.path(), "main", &owned, &cancelled)
+            .await
+            .expect_err("cancelled detached preparation fails");
+
+        assert!(!path.exists());
+        assert!(
+            !git(repo.path(), &["worktree", "list", "--porcelain"])
+                .replace('\\', "/")
+                .contains(&display_path(&path))
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_branch_checkout_cleans_the_prepared_detached_worktree() {
+        let repo = repository();
+        let parent = tempfile::tempdir().expect("worktree parent");
+        let path = parent.path().join("reserved");
+        let owned = OwnedWorktreePath::reserve(path.clone()).expect("reserve absent path");
+        let repository = GitRepository::default();
+        repository
+            .prepare_detached_owned_worktree(repo.path(), "main", &owned, &CancellationToken::new())
+            .await
+            .expect("Git accepts an atomically reserved empty directory");
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+
+        repository
+            .checkout_owned_suffixed_branch(repo.path(), &owned, "main-2", &cancelled)
+            .await
+            .expect_err("cancelled checkout fails");
+
+        assert!(!path.exists());
+        assert!(git(repo.path(), &["branch", "--list", "main-2"]).is_empty());
+        assert!(
+            !git(repo.path(), &["worktree", "list", "--porcelain"])
+                .replace('\\', "/")
+                .contains(&display_path(&path))
+        );
+    }
+
+    #[tokio::test]
+    async fn competing_branch_checkout_failure_cleans_only_the_owned_worktree() {
+        let repo = repository();
+        let parent = tempfile::tempdir().expect("worktree parent");
+        let path = parent.path().join("reserved");
+        let owned = OwnedWorktreePath::reserve(path.clone()).expect("reserve absent path");
+        let repository = GitRepository::default();
+        repository
+            .prepare_detached_owned_worktree(repo.path(), "main", &owned, &CancellationToken::new())
+            .await
+            .expect("prepare detached worktree");
+        git(repo.path(), &["branch", "main-2"]);
+
+        repository
+            .checkout_owned_suffixed_branch(
+                repo.path(),
+                &owned,
+                "main-2",
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("competing branch makes checkout fail");
+
+        assert!(!path.exists());
+        assert_eq!(git(repo.path(), &["branch", "--list", "main-2"]), "main-2");
+        assert!(
+            !git(repo.path(), &["worktree", "list", "--porcelain"])
+                .replace('\\', "/")
+                .contains(&display_path(&path))
+        );
+    }
 }
