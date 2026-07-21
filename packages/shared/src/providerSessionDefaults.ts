@@ -307,13 +307,17 @@ function normalizeProviderOptions(
   };
 }
 
-function getPreferredSelection(input: {
+function getPreferredSessionDefaultSource(input: {
   readonly instanceId: ProviderInstanceId;
+  readonly configuredDefault?: ProviderSessionDefault | null;
   readonly projectSelection?: ModelSelection | null;
   readonly explicitSelection?: ModelSelection | null;
-}): ModelSelection | null {
+}): ModelSelection | ProviderSessionDefault | null {
   if (input.explicitSelection?.instanceId === input.instanceId) {
     return input.explicitSelection;
+  }
+  if (input.configuredDefault) {
+    return input.configuredDefault;
   }
   if (input.projectSelection?.instanceId === input.instanceId) {
     return input.projectSelection;
@@ -329,18 +333,13 @@ export function resolveProviderSessionDefault(input: {
   readonly projectSelection?: ModelSelection | null;
   readonly explicitSelection?: ModelSelection | null;
 }): ResolvedProviderSessionDefault {
-  const preferredSelection = getPreferredSelection(input);
+  const preferredSource = getPreferredSessionDefaultSource(input);
   const fallbackModel = getFallbackModel(input.models);
   const configuredModel =
-    preferredSelection?.model ??
-    input.configuredDefault?.model ??
-    fallbackModel?.slug ??
-    getProviderDefaultModel(input.driver);
+    preferredSource?.model ?? fallbackModel?.slug ?? getProviderDefaultModel(input.driver);
   const configuredServerModel = findSelectableModel(input.driver, input.models, configuredModel);
   const selectedModel = configuredServerModel ?? fallbackModel;
-  const selections = preferredSelection
-    ? preferredSelection.options
-    : input.configuredDefault?.options;
+  const selections = preferredSource?.options;
   const optionsModel =
     selectedModel ?? getInvariantProviderModel(input.driver, configuredModel, selections);
   const resolvedModel =

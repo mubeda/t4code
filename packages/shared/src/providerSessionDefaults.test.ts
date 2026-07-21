@@ -480,17 +480,21 @@ describe("Codex-only serviceTier fast-mode binding", () => {
 });
 
 describe("resolveProviderSessionDefault", () => {
-  it("uses explicit, project, configured, then discovered defaults in precedence order", () => {
+  it("uses one complete explicit, configured, project, then discovered source", () => {
     const configuredDefault: ProviderSessionDefault = {
       model: "gpt-5.4",
-      options: [{ id: "reasoningEffort", value: "low" }],
+      options: [
+        { id: "reasoningEffort", value: "medium" },
+        { id: "serviceTier", value: "fast" },
+      ],
     };
-    const projectSelection = createModelSelection(CODEX_ID, "gpt-5.4", [
-      { id: "reasoningEffort", value: "high" },
+    const projectSelection = createModelSelection(CODEX_ID, "gpt-5.4-mini", [
+      { id: "reasoningEffort", value: "low" },
+      { id: "serviceTier", value: "default" },
     ]);
     const explicitSelection = createModelSelection(CODEX_ID, "gpt-5.4-mini", [
-      { id: "reasoningEffort", value: "medium" },
-      { id: "serviceTier", value: "fast" },
+      { id: "reasoningEffort", value: "high" },
+      { id: "serviceTier", value: "default" },
     ]);
 
     const explicit = resolveProviderSessionDefault({
@@ -501,18 +505,18 @@ describe("resolveProviderSessionDefault", () => {
       projectSelection,
       explicitSelection,
     });
-    const project = resolveProviderSessionDefault({
+    const configured = resolveProviderSessionDefault({
       driver: CODEX,
       instanceId: CODEX_ID,
       models: codexModels,
       configuredDefault,
       projectSelection,
     });
-    const configured = resolveProviderSessionDefault({
+    const project = resolveProviderSessionDefault({
       driver: CODEX,
       instanceId: CODEX_ID,
       models: codexModels,
-      configuredDefault,
+      projectSelection,
     });
     const discovered = resolveProviderSessionDefault({
       driver: CODEX,
@@ -521,18 +525,20 @@ describe("resolveProviderSessionDefault", () => {
     });
 
     expect(explicit.modelSelection.model).toBe("gpt-5.4-mini");
-    expect(explicit.effort).toBe("medium");
-    expect(explicit.fastMode).toBe(true);
-    expect(project.modelSelection.model).toBe("gpt-5.4");
-    expect(project.effort).toBe("high");
+    expect(explicit.effort).toBe("high");
+    expect(explicit.fastMode).toBe(false);
     expect(configured.modelSelection.model).toBe("gpt-5.4");
-    expect(configured.effort).toBe("low");
+    expect(configured.effort).toBe("medium");
+    expect(configured.fastMode).toBe(true);
+    expect(project.modelSelection.model).toBe("gpt-5.4-mini");
+    expect(project.effort).toBe("low");
+    expect(project.fastMode).toBe(false);
     expect(discovered.modelSelection.model).toBe("gpt-5.4");
     expect(discovered.configuredModelAvailable).toBe(true);
     expect(discovered.fallback).toBeNull();
   });
 
-  it("ignores mismatched explicit and project instances instead of rerouting", () => {
+  it("ignores mismatched sources and keeps configured defaults ahead of a matching project", () => {
     const configuredDefault: ProviderSessionDefault = {
       model: "gpt-5.4",
       options: [{ id: "reasoningEffort", value: "low" }],
@@ -562,8 +568,8 @@ describe("resolveProviderSessionDefault", () => {
     });
 
     expect(projectResult.modelSelection.instanceId).toBe(CODEX_ID);
-    expect(projectResult.modelSelection.model).toBe("gpt-5.4-mini");
-    expect(projectResult.effort).toBe("high");
+    expect(projectResult.modelSelection.model).toBe("gpt-5.4");
+    expect(projectResult.effort).toBe("low");
     expect(configuredResult.modelSelection.instanceId).toBe(CODEX_ID);
     expect(configuredResult.modelSelection.model).toBe("gpt-5.4");
     expect(configuredResult.effort).toBe("low");

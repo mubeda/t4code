@@ -353,14 +353,24 @@ describe("useNewThreadHandler", () => {
     });
   });
 
-  it("seeds a normal new draft from the configured provider session default", async () => {
-    testState.projects = [project()];
+  it("seeds a normal new draft from configured defaults instead of a stale project snapshot", async () => {
+    testState.projects = [
+      project(projectId, environmentId, {
+        defaultModelSelection: createModelSelection(codexInstanceId, "gpt-stale", [
+          { id: "reasoningEffort", value: "low" },
+          { id: "serviceTier", value: "default" },
+        ]),
+      }),
+    ];
     configureEnvironment({
       providers: [
         serverProvider({
           instanceId: codexInstanceId,
           driver: codexDriver,
-          models: [providerModel("gpt-configured", [reasoningEffortDescriptor])],
+          models: [
+            providerModel("gpt-stale", [reasoningEffortDescriptor, serviceTierDescriptor]),
+            providerModel("gpt-configured", [reasoningEffortDescriptor, serviceTierDescriptor]),
+          ],
         }),
       ],
       settings: {
@@ -368,7 +378,7 @@ describe("useNewThreadHandler", () => {
           [codexDriver]: {
             model: "gpt-configured",
             options: [
-              { id: "reasoningEffort", value: "high" },
+              { id: "reasoningEffort", value: "medium" },
               { id: "serviceTier", value: "fast" },
             ],
           },
@@ -382,7 +392,7 @@ describe("useNewThreadHandler", () => {
       instanceId: codexInstanceId,
       model: "gpt-configured",
       options: [
-        { id: "reasoningEffort", value: "high" },
+        { id: "reasoningEffort", value: "medium" },
         { id: "serviceTier", value: "fast" },
       ],
     });
@@ -524,7 +534,7 @@ describe("useNewThreadHandler", () => {
     });
   });
 
-  it("lets the project default select the provider instance and retain every explicit option", async () => {
+  it("lets the project default route the provider while configured defaults control the selection", async () => {
     const projectSelection = createModelSelection(claudeWorkInstanceId, "claude-project", [
       { id: "effort", value: "high" },
       { id: "fastMode", value: true },
@@ -542,7 +552,10 @@ describe("useNewThreadHandler", () => {
         serverProvider({
           instanceId: claudeWorkInstanceId,
           driver: claudeDriver,
-          models: [providerModel("claude-project", [claudeEffortDescriptor, fastModeDescriptor])],
+          models: [
+            providerModel("claude-project", [claudeEffortDescriptor, fastModeDescriptor]),
+            providerModel("claude-configured", [claudeEffortDescriptor, fastModeDescriptor]),
+          ],
         }),
       ],
       settings: {
@@ -562,7 +575,14 @@ describe("useNewThreadHandler", () => {
     await mount(<NewThreadHarness />);
     await clickNewThread();
 
-    expect(createdDraftModelSelection()).toEqual(projectSelection);
+    expect(createdDraftModelSelection()).toEqual({
+      instanceId: claudeWorkInstanceId,
+      model: "claude-configured",
+      options: [
+        { id: "effort", value: "low" },
+        { id: "fastMode", value: false },
+      ],
+    });
   });
 
   it("keeps sticky provider routing but replaces sticky model options with shared defaults", async () => {

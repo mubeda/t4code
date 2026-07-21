@@ -655,6 +655,18 @@ staticDescribe("CreateWorktreeDialog", () => {
   });
 
   it("resolves the selected provider's shared model, effort, and fast defaults", async () => {
+    testState.projects = [
+      project({
+        defaultModelSelection: {
+          instanceId: "codex",
+          model: "gpt-5.4",
+          options: [
+            { id: "reasoningEffort", value: "medium" },
+            { id: "serviceTier", value: "default" },
+          ],
+        },
+      }),
+    ];
     testState.serverConfigs.set(ENVIRONMENT_ID, {
       providers: [
         {

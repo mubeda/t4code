@@ -2124,7 +2124,18 @@ staticDescribe("primary row", () => {
   });
 
   it("creates a default thread on demand when the server has not backfilled one", async () => {
-    h.state.projects = [projectA];
+    h.state.projects = [
+      makeProject("project-a", {
+        defaultModelSelection: createModelSelection(
+          ProviderInstanceId.make("claude"),
+          "claude-fable-stale",
+          [
+            { id: "effort", value: "medium" },
+            { id: "fastMode", value: false },
+          ],
+        ),
+      }),
+    ];
     h.state.threads = [threadIdle];
     h.state.environments = [environmentFixture({ environmentId: ENV_MAIN, label: "Main" })];
     h.state.serverConfigs = new Map([
@@ -2137,6 +2148,29 @@ staticDescribe("primary row", () => {
               instanceId: ProviderInstanceId.make("claude"),
               driver: "claudeAgent",
               models: [
+                {
+                  slug: "claude-fable-stale",
+                  capabilities: {
+                    optionDescriptors: [
+                      {
+                        id: "effort",
+                        label: "Effort",
+                        type: "select",
+                        options: [
+                          { id: "medium", label: "Medium", isDefault: true },
+                          { id: "high", label: "High" },
+                        ],
+                        currentValue: "medium",
+                      },
+                      {
+                        id: "fastMode",
+                        label: "Fast",
+                        type: "boolean",
+                        currentValue: false,
+                      },
+                    ],
+                  },
+                },
                 {
                   slug: "claude-fable-5",
                   capabilities: {
