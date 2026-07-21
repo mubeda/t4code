@@ -243,6 +243,104 @@ describe("tauriPreviewBridge", () => {
     expect(secondArgs?.factor).toBeCloseTo(1.2);
   });
 
+  it("orders deferred zoom, close, and recreate on the same tab queue", async () => {
+    const { bridge, invoke } = makeBridge();
+    const zoomInvoke = deferred<void>();
+    const closeInvoke = deferred<void>();
+    invoke
+      .mockImplementationOnce(() => zoomInvoke.promise)
+      .mockImplementationOnce(() => closeInvoke.promise)
+      .mockResolvedValueOnce(undefined);
+
+    const zoom = bridge.zoomIn("t1");
+    const close = bridge.closeTab("t1");
+    const recreate = bridge.createTab("t1");
+
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual(["desktop_preview_set_zoom"]);
+
+    zoomInvoke.resolve(undefined);
+    await zoom;
+    await Promise.resolve();
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+      "desktop_preview_set_zoom",
+      "desktop_preview_close_tab",
+    ]);
+
+    closeInvoke.resolve(undefined);
+    await close;
+    await recreate;
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+      "desktop_preview_set_zoom",
+      "desktop_preview_close_tab",
+      "desktop_preview_create_tab",
+    ]);
+  });
+
+  it("waits for an unresolved close before recreating the same tab", async () => {
+    const { bridge, invoke } = makeBridge();
+    const closeInvoke = deferred<void>();
+    invoke.mockImplementationOnce(() => closeInvoke.promise).mockResolvedValueOnce(undefined);
+
+    const close = bridge.closeTab("t1");
+    const recreate = bridge.createTab("t1");
+
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual(["desktop_preview_close_tab"]);
+
+    closeInvoke.resolve(undefined);
+    await close;
+    await recreate;
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+      "desktop_preview_close_tab",
+      "desktop_preview_create_tab",
+    ]);
+  });
+
+  it("invokes create immediately when the tab has no pending operation", async () => {
+    const { bridge, invoke } = makeBridge();
+
+    const create = bridge.createTab("t1");
+
+    expect(invoke).toHaveBeenCalledWith("desktop_preview_create_tab", { tabId: "t1" });
+    await create;
+  });
+
+  it("continues to recreate after close fails without clearing committed zoom", async () => {
+    const { bridge, invoke } = makeBridge();
+    const closeInvoke = deferred<void>();
+    const error = new Error("close failed");
+    await bridge.zoomIn("t1");
+    invoke
+      .mockImplementationOnce(() => closeInvoke.promise)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined);
+
+    const close = bridge.closeTab("t1");
+    const closeResult = close.then(
+      () => undefined,
+      (closeError: unknown) => closeError,
+    );
+    const recreate = bridge.createTab("t1");
+
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+      "desktop_preview_set_zoom",
+      "desktop_preview_close_tab",
+    ]);
+
+    closeInvoke.reject(error);
+    expect(await closeResult).toBe(error);
+    await recreate;
+    await bridge.zoomIn("t1");
+
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+      "desktop_preview_set_zoom",
+      "desktop_preview_close_tab",
+      "desktop_preview_create_tab",
+      "desktop_preview_set_zoom",
+    ]);
+    const lastArgs = invoke.mock.lastCall?.[1] as { factor: number; tabId: string } | undefined;
+    expect(lastArgs?.factor).toBeCloseTo(1.2);
+  });
+
   it("recovers from a rejected zoom using the last successfully committed factor", async () => {
     const { bridge, invoke } = makeBridge();
     const error = new Error("set zoom failed");

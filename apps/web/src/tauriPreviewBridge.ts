@@ -62,7 +62,8 @@ export function createTauriPreviewBridge(deps: PreviewBridgeDeps): DesktopPrevie
     });
 
   return {
-    createTab: (tabId) => invoke("desktop_preview_create_tab", { tabId }),
+    createTab: (tabId) =>
+      enqueueTabOperation(tabId, () => invoke("desktop_preview_create_tab", { tabId })),
     closeTab: (tabId) =>
       enqueueTabOperation(tabId, async () => {
         await invoke("desktop_preview_close_tab", { tabId });
