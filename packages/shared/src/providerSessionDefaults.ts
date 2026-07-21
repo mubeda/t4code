@@ -16,14 +16,11 @@ import {
   createModelSelection,
   getProviderCapabilityDescriptors,
   getProviderOptionCurrentValue,
+  PROVIDER_EFFORT_OPTION_IDS,
   resolveSelectableModel,
 } from "./model.ts";
 
-export const PROVIDER_SESSION_EFFORT_OPTION_IDS = [
-  "reasoningEffort",
-  "effort",
-  "reasoning",
-] as const;
+export const PROVIDER_SESSION_EFFORT_OPTION_IDS = PROVIDER_EFFORT_OPTION_IDS;
 
 export type ProviderSessionDefaultFallbackReason =
   | "configured-model-unavailable"
@@ -98,7 +95,16 @@ function getInvariantProviderModel(
     return null;
   }
 
-  const effortId = driver === CODEX_DRIVER_KIND ? "reasoningEffort" : "effort";
+  if (driver === CODEX_DRIVER_KIND) {
+    return {
+      slug: model,
+      name: model,
+      isCustom: false,
+      capabilities: null,
+    };
+  }
+
+  const effortId = "effort";
   const effort =
     selectedString(selections, PROVIDER_SESSION_EFFORT_OPTION_IDS) ??
     DEFAULT_EFFORT_BY_PROVIDER[driver]!;

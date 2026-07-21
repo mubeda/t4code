@@ -1,6 +1,6 @@
 import { ArchiveIcon, ArchiveX, LoaderIcon, PlusIcon, RefreshCwIcon } from "lucide-react";
 import { Link } from "@tanstack/react-router";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import {
   defaultInstanceIdForDriver,
@@ -86,6 +86,7 @@ import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
 import {
   buildProviderInstanceUpdatePatch,
+  createProviderSessionDefaultsDraft,
   formatDiagnosticsDescription,
 } from "./SettingsPanels.logic";
 import {
@@ -1162,6 +1163,21 @@ export function ProviderSettingsPanel() {
   >(() => new Set());
   const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
   const refreshingRef = useRef(false);
+  const sessionDefaultsDraftRef = useRef(
+    createProviderSessionDefaultsDraft(settings.providerSessionDefaults),
+  );
+  const [providerSessionDefaults, setProviderSessionDefaults] = useState(
+    settings.providerSessionDefaults,
+  );
+
+  useEffect(() => {
+    const reconciled = sessionDefaultsDraftRef.current.reconcile(
+      settings.providerSessionDefaults,
+    );
+    setProviderSessionDefaults((current) =>
+      Equal.equals(current, reconciled) ? current : reconciled,
+    );
+  }, [settings.providerSessionDefaults]);
 
   const providerUpdateCandidates = useMemo(
     () => collectProviderUpdateCandidates(serverProviders),
@@ -1369,11 +1385,10 @@ export function ProviderSettingsPanel() {
   };
 
   const updateSessionDefaults = (driver: ProviderDriverKind, next: ProviderSessionDefault) => {
+    const providerSessionDefaults = sessionDefaultsDraftRef.current.submit(driver, next);
+    setProviderSessionDefaults(providerSessionDefaults);
     updateSettings({
-      providerSessionDefaults: {
-        ...settings.providerSessionDefaults,
-        [driver]: next,
-      },
+      providerSessionDefaults,
     });
   };
 
@@ -1560,7 +1575,7 @@ export function ProviderSettingsPanel() {
               headerAction={headerAction}
               {...(row.isDefault
                 ? {
-                    sessionDefaults: settings.providerSessionDefaults[row.driver],
+                    sessionDefaults: providerSessionDefaults[row.driver],
                     onSessionDefaultsChange: (next: ProviderSessionDefault) =>
                       updateSessionDefaults(row.driver, next),
                   }

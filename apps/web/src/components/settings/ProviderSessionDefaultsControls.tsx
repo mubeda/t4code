@@ -30,6 +30,7 @@ export function ProviderSessionDefaultsControls({
 }: ProviderSessionDefaultsControlsProps) {
   const idPrefix = useId();
   const modelLabelsByDriver = useRef(new Map<ProviderDriverKind, Map<string, string>>());
+  const latestValueRef = useRef(value);
   const modelId = `${idPrefix}-model`;
   const effortId = `${idPrefix}-effort`;
   const fastModeId = `${idPrefix}-fast-mode`;
@@ -49,20 +50,24 @@ export function ProviderSessionDefaultsControls({
     modelLabels.set(selectedModelSlug, selectedModelName);
     modelLabelsByDriver.current.set(driver, modelLabels);
   }, [driver, selectedModelName, selectedModelSlug]);
+  useEffect(() => {
+    latestValueRef.current = value;
+  }, [value]);
   const modelLabel =
     selectedServerModel?.name ??
     modelLabelsByDriver.current.get(driver)?.get(selectedModel) ??
     selectedModel;
 
   const change = (next: ProviderSessionDefaultChange) => {
-    onChange(
-      updateProviderSessionDefault({
-        driver,
-        models,
-        change: next,
-        ...(value ? { current: value } : {}),
-      }),
-    );
+    const latestValue = latestValueRef.current;
+    const updatedValue = updateProviderSessionDefault({
+      driver,
+      models,
+      change: next,
+      ...(latestValue ? { current: latestValue } : {}),
+    });
+    latestValueRef.current = updatedValue;
+    onChange(updatedValue);
   };
 
   return (

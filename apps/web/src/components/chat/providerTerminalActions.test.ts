@@ -395,6 +395,8 @@ describe("resolveProviderTerminalAction", () => {
       "--model",
       "gpt-5.4",
       "--config",
+      'model_reasoning_effort="medium"',
+      "--config",
       'service_tier="default"',
     ]);
   });
@@ -439,7 +441,7 @@ describe("resolveProviderTerminalAction", () => {
     ).toEqual(["--permission-mode", "bypassPermissions", "--model", "grok-4"]);
   });
 
-  it("drops stale effort but preserves the Codex service-tier invariant after fallback", () => {
+  it("preserves Codex effort and service-tier invariants after a model fallback", () => {
     const settings = {
       ...DEFAULT_SERVER_SETTINGS,
       providerSessionDefaults: {
@@ -461,6 +463,8 @@ describe("resolveProviderTerminalAction", () => {
       "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5.4-mini",
+      "--config",
+      'model_reasoning_effort="high"',
       "--config",
       'service_tier="fast"',
     ]);

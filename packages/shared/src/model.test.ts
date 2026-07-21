@@ -139,9 +139,28 @@ describe("descriptor helpers", () => {
       getProviderCapabilityDescriptors({
         provider: CODEX,
         caps: {},
-        selections: [{ id: "serviceTier", value: "fast" }],
+        selections: [
+          { id: "reasoningEffort", value: "xhigh" },
+          { id: "serviceTier", value: "fast" },
+        ],
       }),
     ).toEqual([
+      {
+        id: "reasoningEffort",
+        label: "Reasoning",
+        type: "select",
+        options: [
+          { id: "none", label: "None" },
+          { id: "minimal", label: "Minimal" },
+          { id: "low", label: "Low" },
+          { id: "medium", label: "Medium", isDefault: true },
+          { id: "high", label: "High" },
+          { id: "xhigh", label: "Extra High" },
+          { id: "max", label: "Max" },
+          { id: "ultra", label: "Ultra" },
+        ],
+        currentValue: "xhigh",
+      },
       {
         id: "serviceTier",
         label: "Service Tier",
@@ -152,6 +171,80 @@ describe("descriptor helpers", () => {
         ],
         currentValue: "fast",
       },
+    ]);
+
+    expect(
+      getProviderCapabilityDescriptors({
+        provider: CODEX,
+        caps: createModelCapabilities({
+          optionDescriptors: [
+            {
+              id: "reasoningEffort",
+              label: "Broken effort",
+              type: "boolean",
+              currentValue: false,
+            },
+            {
+              id: "reasoningEffort",
+              label: "Duplicate effort",
+              type: "select",
+              options: [],
+            },
+          ],
+        }),
+        selections: [{ id: "reasoningEffort", value: "high" }],
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        id: "reasoningEffort",
+        type: "select",
+        currentValue: "high",
+      }),
+      expect.objectContaining({ id: "serviceTier", type: "select" }),
+    ]);
+
+    const repairedMalformedValues = getProviderCapabilityDescriptors({
+      provider: CODEX,
+      caps: createModelCapabilities({
+        optionDescriptors: [
+          {
+            id: "reasoningEffort",
+            label: "Live effort",
+            type: "select",
+            options: [
+              { id: "medium", label: "Medium", isDefault: true },
+              { id: "medium", label: "Duplicate Medium" },
+              { id: "high", label: "High" },
+            ],
+            currentValue: "retired-effort",
+          },
+          {
+            id: "serviceTier",
+            label: "Live tier",
+            type: "select",
+            options: [],
+            currentValue: "retired-tier",
+          },
+        ],
+      }),
+    });
+    expect(repairedMalformedValues).toEqual([
+      expect.objectContaining({
+        id: "reasoningEffort",
+        currentValue: "medium",
+        options: [
+          { id: "medium", label: "Medium", isDefault: true },
+          { id: "high", label: "High" },
+        ],
+      }),
+      expect.objectContaining({
+        id: "serviceTier",
+        currentValue: "default",
+        options: [
+          { id: "default", label: "Standard", isDefault: true },
+          { id: "fast", label: "Fast" },
+        ],
+      }),
     ]);
 
     expect(
