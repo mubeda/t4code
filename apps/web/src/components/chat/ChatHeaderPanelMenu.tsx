@@ -19,7 +19,10 @@ import {
 
 interface ChatHeaderPanelMenuProps {
   readonly providerStatuses: ReadonlyArray<ServerProvider>;
-  readonly settings: Pick<ServerSettings, "providerInstances" | "providers">;
+  readonly settings: Pick<
+    ServerSettings,
+    "providerInstances" | "providers" | "providerSessionDefaults"
+  >;
   /** False when the host thread can't yet spawn sibling panels (no thread ref). */
   readonly canCreatePanel: boolean;
   readonly onCreateChatPanel: (entry: ProviderInstanceEntry) => void;
@@ -123,7 +126,13 @@ export const ChatHeaderPanelMenu = memo(function ChatHeaderPanelMenu({
                   className={disabled ? "data-disabled:pointer-events-auto" : undefined}
                   disabled={disabled}
                   onClick={() => {
+                    if (disabled) {
+                      return;
+                    }
                     if (action.command !== null) {
+                      if (action.fallback) {
+                        console.warn("Provider session default fallback", action.fallback);
+                      }
                       onOpenProviderTerminalPanel(action);
                     }
                   }}

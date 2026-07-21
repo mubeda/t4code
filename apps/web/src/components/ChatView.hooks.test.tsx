@@ -16,15 +16,17 @@ import type { ReactElement, ReactNode, RefObject } from "react";
 import {
   ApprovalRequestId,
   type ChatAttachmentId,
-  DEFAULT_MODEL,
+  DEFAULT_MODEL_BY_PROVIDER,
   EnvironmentId,
   EventId,
   MessageId,
+  type ModelSelection,
   OrchestrationProposedPlanId,
   ProjectId,
   type ProjectScript,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProviderOptionDescriptor,
   type ServerProvider,
   ThreadId,
   TurnId,
@@ -552,6 +554,7 @@ import type { ChatComposerHandle } from "./chat/ChatComposer";
 import type { ComposerBannerStackItem } from "./chat/ComposerBannerStack";
 import type { ProviderInstanceEntry } from "../providerInstances";
 import type { TerminalContextDraft, TerminalContextSelection } from "../lib/terminalContext";
+import { getComposerProviderState } from "./chat/composerProviderState";
 
 const environmentId = EnvironmentId.make("environment-local");
 const projectId = ProjectId.make("project-1");
@@ -849,6 +852,52 @@ function installComposerHandle(overrides: Partial<ChatComposerHandle> = {}): {
   return { handle, promptRef: composer["promptRef"] as RefObject<string> };
 }
 
+function seedFreshLocalDraft(
+  logicalProjectKey: string,
+  modelSelection: ModelSelection,
+): ReturnType<typeof newDraftId> {
+  const draftId = newDraftId();
+  seedEnvironment(makeEnvironmentPresentation());
+  seedProject(makeProject());
+  seedGitStatus(true);
+  useComposerDraftStore
+    .getState()
+    .setLogicalProjectDraftThreadId(
+      logicalProjectKey,
+      scopeProjectRef(environmentId, projectId),
+      draftId,
+      { threadId, createdAt: now, envMode: "local" },
+    );
+  useComposerDraftStore.getState().setModelSelection(draftId, modelSelection);
+  publishSeededStoreState(useComposerDraftStore);
+  return draftId;
+}
+
+function draftModelSelection(
+  draftId: ReturnType<typeof newDraftId>,
+  instanceId: ProviderInstanceId,
+): ModelSelection {
+  const selection = useComposerDraftStore.getState().getComposerDraft(draftId)
+    ?.modelSelectionByProvider[instanceId];
+  expect(selection).toBeDefined();
+  return selection!;
+}
+
+function installComposerModelSelection(
+  selection: ModelSelection,
+  promptEffort: string,
+): RefObject<string> {
+  return installComposerHandle({
+    getSendContext: () => ({
+      ...composerHandle().getSendContext(),
+      selectedPromptEffort: promptEffort,
+      selectedModelOptionsForDispatch: selection.options,
+      selectedModelSelection: selection,
+      selectedModel: selection.model,
+    }),
+  }).promptRef;
+}
+
 interface FakeLegendListOptions {
   scroll?: number;
   scrollLength?: number;
@@ -1118,6 +1167,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -2000,6 +2050,199 @@ describe("ChatView project script handlers", () => {
     return capturedProps("chatHeader");
   }
 
+  it("creates a chat panel from configured defaults instead of stale project options", async () => {
+    const reasoningEffort: ProviderOptionDescriptor = {
+      id: "reasoningEffort",
+      label: "Reasoning",
+      type: "select",
+      options: [
+        { id: "medium", label: "Medium", isDefault: true },
+        { id: "high", label: "High" },
+      ],
+      currentValue: "medium",
+    };
+    const configuredModel = {
+      slug: "gpt-configured",
+      name: "Configured",
+      isCustom: false,
+      capabilities: { optionDescriptors: [reasoningEffort] },
+    };
+    seedEnvironment(makeEnvironmentPresentation());
+    seedProject(
+      makeProject({
+        defaultModelSelection: {
+          instanceId: codexInstanceId,
+          model: "gpt-stale",
+          options: [
+            { id: "reasoningEffort", value: "medium" },
+            { id: "serviceTier", value: "default" },
+          ],
+        },
+        scripts: [script],
+      }),
+    );
+    seedServerThread(
+      makeThread({
+        branch: "feature/panels",
+        worktreePath: "X:/demo/worktrees/panels",
+      }),
+    );
+    seedGitStatus(true);
+    h.settings = {
+      ...h.settings,
+      providerSessionDefaults: {
+        [ProviderDriverKind.make("codex")]: {
+          model: "gpt-configured",
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "fast" },
+          ],
+        },
+      },
+    };
+    renderServerRoute();
+    const header = capturedProps("chatHeader");
+    const entry = {
+      instanceId: codexInstanceId,
+      driverKind: ProviderDriverKind.make("codex"),
+      displayName: "Codex",
+      models: [
+        {
+          slug: "gpt-stale",
+          name: "Stale",
+          isCustom: false,
+          capabilities: { optionDescriptors: [reasoningEffort] },
+        },
+        configuredModel,
+      ],
+    } as unknown as ProviderInstanceEntry;
+
+    (header["onCreateChatPanel"] as (entry: ProviderInstanceEntry) => void)(entry);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(commandCallsFor("thread.create")).toHaveLength(1);
+    expect(commandCallsFor("thread.create")[0]?.input).toMatchObject({
+      environmentId,
+      input: {
+        projectId,
+        branch: "feature/panels",
+        worktreePath: "X:/demo/worktrees/panels",
+        modelSelection: {
+          instanceId: codexInstanceId,
+          model: "gpt-configured",
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "fast" },
+          ],
+        },
+      },
+    });
+  });
+
+  it("creates a Claude chat panel with a configured prompt-injected effort", async () => {
+    const claudeDriver = ProviderDriverKind.make("claudeAgent");
+    const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
+    const configuredModel = {
+      slug: "claude-sonnet-5",
+      name: "Claude Sonnet 5",
+      isCustom: false,
+      capabilities: {
+        optionDescriptors: [
+          {
+            id: "effort",
+            label: "Effort",
+            type: "select" as const,
+            options: [
+              { id: "high", label: "High", isDefault: true },
+              { id: "ultrathink", label: "Ultrathink" },
+            ],
+            promptInjectedValues: ["ultrathink"],
+          },
+        ],
+      },
+    };
+    seedEnvironment(makeEnvironmentPresentation());
+    seedProject(makeProject({ defaultModelSelection: null }));
+    seedServerThread(makeThread());
+    seedGitStatus(true);
+    h.settings = {
+      ...h.settings,
+      providerSessionDefaults: {
+        [claudeDriver]: {
+          model: "claude-sonnet-5",
+          options: [{ id: "effort", value: "ultrathink" }],
+        },
+      },
+    };
+    renderServerRoute();
+    const header = capturedProps("chatHeader");
+    const entry = {
+      instanceId: claudeInstanceId,
+      driverKind: claudeDriver,
+      displayName: "Claude",
+      models: [configuredModel],
+    } as unknown as ProviderInstanceEntry;
+
+    (header["onCreateChatPanel"] as (entry: ProviderInstanceEntry) => void)(entry);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(commandCallsFor("thread.create")[0]?.input).toMatchObject({
+      input: {
+        modelSelection: {
+          instanceId: claudeInstanceId,
+          model: "claude-sonnet-5",
+          options: [{ id: "effort", value: "ultrathink" }],
+        },
+      },
+    });
+  });
+
+  it("creates a Codex chat panel with saved effort and fast mode during empty discovery", async () => {
+    seedEnvironment(makeEnvironmentPresentation());
+    seedProject(makeProject({ defaultModelSelection: null }));
+    seedServerThread(makeThread());
+    seedGitStatus(true);
+    h.settings = {
+      ...h.settings,
+      providerSessionDefaults: {
+        [ProviderDriverKind.make("codex")]: {
+          model: "gpt-offline",
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "fast" },
+          ],
+        },
+      },
+    };
+    renderServerRoute();
+    const header = capturedProps("chatHeader");
+    const entry = {
+      instanceId: codexInstanceId,
+      driverKind: ProviderDriverKind.make("codex"),
+      displayName: "Codex",
+      models: [],
+    } as unknown as ProviderInstanceEntry;
+
+    (header["onCreateChatPanel"] as (entry: ProviderInstanceEntry) => void)(entry);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(commandCallsFor("thread.create")[0]?.input).toMatchObject({
+      input: {
+        modelSelection: {
+          instanceId: codexInstanceId,
+          model: DEFAULT_MODEL_BY_PROVIDER[ProviderDriverKind.make("codex")],
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "fast" },
+          ],
+        },
+      },
+    });
+  });
+
   it("runs a script in the active terminal and remembers it per project", async () => {
     const header = renderWithScripts();
     const onRunProjectScript = header["onRunProjectScript"] as (
@@ -2122,7 +2365,7 @@ describe("ChatView project script handlers", () => {
 
     const entry = {
       instanceId: codexInstanceId,
-      driver: ProviderDriverKind.make("codex"),
+      driverKind: ProviderDriverKind.make("codex"),
       displayName: "Codex",
       models: codexProvider.models,
     } as unknown as ProviderInstanceEntry;
@@ -2162,11 +2405,60 @@ describe("ChatView project script handlers", () => {
     ).toHaveLength(2);
   });
 
+  it("falls back to a built-in model discovered for the target provider instance", async () => {
+    const targetInstanceId = ProviderInstanceId.make("codex_work");
+    seedEnvironment(makeEnvironmentPresentation());
+    seedProject(
+      makeProject({
+        defaultModelSelection: {
+          instanceId: codexInstanceId,
+          model: "gpt-custom-first",
+        },
+        scripts: [script],
+      }),
+    );
+    seedServerThread(makeThread());
+    seedGitStatus(true);
+    h.settings = {
+      ...h.settings,
+      providerSessionDefaults: {
+        [ProviderDriverKind.make("codex")]: { model: "gpt-other-instance" },
+      },
+    };
+    renderServerRoute();
+    const header = capturedProps("chatHeader");
+    const entry = {
+      instanceId: targetInstanceId,
+      driverKind: ProviderDriverKind.make("codex"),
+      displayName: "Codex Work",
+      models: [
+        { slug: "gpt-custom-first", name: "Custom", isCustom: true, capabilities: null },
+        { slug: "gpt-built-in", name: "Built in", isCustom: false, capabilities: null },
+      ],
+    } as unknown as ProviderInstanceEntry;
+
+    (header["onCreateChatPanel"] as (entry: ProviderInstanceEntry) => void)(entry);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(commandCallsFor("thread.create")).toHaveLength(1);
+    expect(commandCallsFor("thread.create")[0]?.input).toMatchObject({
+      input: {
+        modelSelection: {
+          instanceId: targetInstanceId,
+          model: "gpt-built-in",
+        },
+      },
+    });
+  });
+
   it("creates a provider chat panel even when model discovery is temporarily empty", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const header = renderWithScripts();
+    const claudeDriver = ProviderDriverKind.make("claudeAgent");
     const entry = {
       instanceId: ProviderInstanceId.make("claudeAgent"),
-      driver: ProviderDriverKind.make("claudeAgent"),
+      driverKind: claudeDriver,
       displayName: "Claude",
       models: [],
     } as unknown as ProviderInstanceEntry;
@@ -2192,11 +2484,20 @@ describe("ChatView project script handlers", () => {
         title: "Panel — Claude",
         modelSelection: {
           instanceId: ProviderInstanceId.make("claudeAgent"),
-          model: DEFAULT_MODEL,
+          model: DEFAULT_MODEL_BY_PROVIDER[claudeDriver],
         },
         kind: "panel",
       },
     });
+    expect(warn).toHaveBeenCalledWith(
+      "Provider session default fallback",
+      expect.objectContaining({
+        driver: claudeDriver,
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        resolvedModel: DEFAULT_MODEL_BY_PROVIDER[claudeDriver],
+        reason: "models-unavailable",
+      }),
+    );
 
     const centerState = useCenterPanelStore.getState().byThreadKey[threadKey];
     const claudeSurface = centerState?.surfaces.find((surface) => surface.kind === "chat");
@@ -2324,6 +2625,453 @@ describe("ChatView project script handlers", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("ChatView send flows", () => {
+  it("uses shared defaults for a legacy draft that has no stored model selection", () => {
+    const draftId = newDraftId();
+    const capabilityRichProvider: ServerProvider = {
+      ...codexProvider,
+      models: [
+        {
+          ...codexProvider.models[0]!,
+          capabilities: {
+            optionDescriptors: [
+              {
+                id: "reasoningEffort",
+                label: "Reasoning",
+                type: "select",
+                options: [
+                  { id: "medium", label: "Medium", isDefault: true },
+                  { id: "high", label: "High" },
+                ],
+                currentValue: "medium",
+              },
+              {
+                id: "serviceTier",
+                label: "Service tier",
+                type: "select",
+                options: [
+                  { id: "default", label: "Default", isDefault: true },
+                  { id: "fast", label: "Fast" },
+                ],
+                currentValue: "default",
+              },
+            ],
+          },
+        },
+      ],
+    };
+    seedEnvironment(
+      makeEnvironmentPresentation({
+        serverConfig: {
+          providers: [capabilityRichProvider],
+          environment: { label: "Local" },
+        },
+      }),
+    );
+    seedProject(makeProject({ defaultModelSelection: null }));
+    seedGitStatus(true);
+    h.settings = {
+      ...h.settings,
+      providerSessionDefaults: {
+        codex: {
+          model: "gpt-5.4",
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "fast" },
+          ],
+        },
+      },
+    };
+    useComposerDraftStore
+      .getState()
+      .setLogicalProjectDraftThreadId(
+        "legacy-draft",
+        scopeProjectRef(environmentId, projectId),
+        draftId,
+        { threadId, createdAt: now, envMode: "local" },
+      );
+    publishSeededStoreState(useComposerDraftStore);
+
+    renderDraftRoute(draftId);
+
+    expect(capturedProps("chatComposer")["activeThreadModelSelection"]).toEqual({
+      instanceId: codexInstanceId,
+      model: "gpt-5.4",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "fast" },
+      ],
+    });
+  });
+
+  it.each(["draft", "server-style"] as const)(
+    "warns once at legacy draft promotion through the %s route when a configured model falls back",
+    async (route) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const draftId = newDraftId();
+      seedEnvironment(makeEnvironmentPresentation());
+      seedProject(makeProject({ defaultModelSelection: null }));
+      seedGitStatus(true);
+      h.settings = {
+        ...h.settings,
+        providerSessionDefaults: {
+          codex: {
+            model: "retired-codex-model",
+            options: [],
+          },
+        },
+      };
+      useComposerDraftStore
+        .getState()
+        .setLogicalProjectDraftThreadId(
+          "legacy-draft-fallback",
+          scopeProjectRef(environmentId, projectId),
+          draftId,
+          { threadId, createdAt: now, envMode: "local" },
+        );
+      publishSeededStoreState(useComposerDraftStore);
+
+      if (route === "draft") {
+        renderDraftRoute(draftId);
+      } else {
+        renderServerRoute();
+      }
+
+      expect(warn).not.toHaveBeenCalled();
+      const resolvedSelection = capturedProps("chatComposer")[
+        "activeThreadModelSelection"
+      ] as ModelSelection;
+      expect(resolvedSelection).toEqual({
+        instanceId: codexInstanceId,
+        model: "gpt-5.4",
+        options: [
+          { id: "reasoningEffort", value: "medium" },
+          { id: "serviceTier", value: "default" },
+        ],
+      });
+      const promptRef = installComposerModelSelection(resolvedSelection, "medium");
+      const onSend = capturedProps("chatComposer")["onSend"] as () => Promise<void>;
+
+      promptRef.current = "promote the legacy draft";
+      await onSend();
+      promptRef.current = "retry the same legacy promotion boundary";
+      await onSend();
+
+      expect(warn.mock.calls).toEqual([
+        [
+          "Provider session default fallback",
+          {
+            driver: ProviderDriverKind.make("codex"),
+            instanceId: codexInstanceId,
+            configuredModel: "retired-codex-model",
+            resolvedModel: "gpt-5.4",
+            reason: "configured-model-unavailable",
+          },
+        ],
+      ]);
+    },
+  );
+
+  it("promotes a freshly seeded draft with its unchanged full model selection", async () => {
+    const seededSelection: ModelSelection = {
+      instanceId: codexInstanceId,
+      model: "gpt-5.4",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "fast" },
+      ],
+    };
+    const draftId = seedFreshLocalDraft("logical-project-first-turn", seededSelection);
+    const storedSelection = draftModelSelection(draftId, codexInstanceId);
+    expect(storedSelection).toEqual(seededSelection);
+
+    renderDraftRoute(draftId);
+    const promptRef = installComposerModelSelection(storedSelection, "high");
+    promptRef.current = "use the seeded defaults";
+
+    await (capturedProps("chatComposer")["onSend"] as () => Promise<void>)();
+
+    const startCalls = commandCallsFor("thread.startTurn");
+    expect(startCalls).toHaveLength(1);
+    const input = startCalls[0]!.input as {
+      input: {
+        modelSelection: ModelSelection;
+        bootstrap?: { createThread?: { modelSelection: ModelSelection } };
+      };
+    };
+    expect(input.input.modelSelection).toBe(storedSelection);
+    expect(input.input.bootstrap?.createThread?.modelSelection).toBe(storedSelection);
+  });
+
+  it("dispatches Codex High and Fast on first send through partial live tier metadata", async () => {
+    const partialCodexModel: ServerProvider["models"][number] = {
+      slug: "gpt-5.5",
+      name: "GPT-5.5",
+      isCustom: false,
+      capabilities: {
+        optionDescriptors: [
+          {
+            id: "reasoningEffort",
+            label: "Reasoning",
+            type: "select",
+            options: [
+              { id: "medium", label: "Medium", isDefault: true },
+              { id: "high", label: "High" },
+            ],
+          },
+          {
+            id: "serviceTier",
+            label: "Service Tier",
+            type: "select",
+            options: [{ id: "default", label: "Standard", isDefault: true }],
+          },
+        ],
+      },
+    };
+    const seededSelection: ModelSelection = {
+      instanceId: codexInstanceId,
+      model: partialCodexModel.slug,
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "fast" },
+      ],
+    };
+    const draftId = seedFreshLocalDraft("codex-partial-fast-first-turn", seededSelection);
+    seedEnvironment(
+      makeEnvironmentPresentation({
+        serverConfig: {
+          providers: [{ ...codexProvider, models: [partialCodexModel] }],
+          environment: { label: "Local" },
+        },
+      }),
+    );
+    renderDraftRoute(draftId);
+
+    const composerState = getComposerProviderState({
+      provider: ProviderDriverKind.make("codex"),
+      model: partialCodexModel.slug,
+      models: [partialCodexModel],
+      modelOptions: seededSelection.options,
+    });
+    const dispatchSelection: ModelSelection = {
+      instanceId: codexInstanceId,
+      model: partialCodexModel.slug,
+      ...(composerState.modelOptionsForDispatch
+        ? { options: composerState.modelOptionsForDispatch }
+        : {}),
+    };
+    const { promptRef } = installComposerHandle({
+      getSendContext: () => ({
+        ...composerHandle().getSendContext(),
+        selectedPromptEffort: composerState.promptEffort,
+        selectedModelOptionsForDispatch: composerState.modelOptionsForDispatch,
+        selectedModelSelection: dispatchSelection,
+        selectedModel: partialCodexModel.slug,
+        selectedProviderModels: [partialCodexModel],
+      }),
+    });
+    promptRef.current = "dispatch fast";
+
+    await (capturedProps("chatComposer")["onSend"] as () => Promise<void>)();
+
+    expect(commandCallsFor("thread.startTurn")).toHaveLength(1);
+    expect(commandCallsFor("thread.startTurn")[0]?.input).toMatchObject({
+      input: {
+        modelSelection: seededSelection,
+        bootstrap: { createThread: { modelSelection: seededSelection } },
+      },
+    });
+  });
+
+  it("prefixes the first prompt from a prompt-injected Claude session default", async () => {
+    const claudeDriver = ProviderDriverKind.make("claudeAgent");
+    const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
+    const claudeModel: ServerProvider["models"][number] = {
+      slug: "claude-sonnet-5",
+      name: "Claude Sonnet 5",
+      isCustom: false,
+      capabilities: {
+        optionDescriptors: [
+          {
+            id: "effort",
+            label: "Effort",
+            type: "select",
+            options: [
+              { id: "high", label: "High", isDefault: true },
+              { id: "ultrathink", label: "Ultrathink" },
+            ],
+            promptInjectedValues: ["ultrathink"],
+          },
+        ],
+      },
+    };
+    const seededSelection: ModelSelection = {
+      instanceId: claudeInstanceId,
+      model: claudeModel.slug,
+      options: [{ id: "effort", value: "ultrathink" }],
+    };
+    const draftId = seedFreshLocalDraft("claude-ultrathink-first-turn", seededSelection);
+    seedEnvironment(
+      makeEnvironmentPresentation({
+        serverConfig: {
+          providers: [
+            {
+              ...codexProvider,
+              instanceId: claudeInstanceId,
+              driver: claudeDriver,
+              models: [claudeModel],
+            },
+          ],
+          environment: { label: "Local" },
+        },
+      }),
+    );
+
+    renderDraftRoute(draftId);
+    const storedSelection = draftModelSelection(draftId, claudeInstanceId);
+    const composerState = getComposerProviderState({
+      provider: claudeDriver,
+      model: claudeModel.slug,
+      models: [claudeModel],
+      modelOptions: storedSelection.options,
+    });
+    const dispatchSelection: ModelSelection = {
+      instanceId: claudeInstanceId,
+      model: claudeModel.slug,
+      ...(composerState.modelOptionsForDispatch
+        ? { options: composerState.modelOptionsForDispatch }
+        : {}),
+    };
+    const { promptRef } = installComposerHandle({
+      getSendContext: () => ({
+        ...composerHandle().getSendContext(),
+        selectedPromptEffort: composerState.promptEffort,
+        selectedModelOptionsForDispatch: composerState.modelOptionsForDispatch,
+        selectedModelSelection: dispatchSelection,
+        selectedProvider: claudeDriver,
+        selectedModel: claudeModel.slug,
+        selectedProviderModels: [claudeModel],
+      }),
+    });
+    promptRef.current = "Investigate the flaky test";
+
+    await (capturedProps("chatComposer")["onSend"] as () => Promise<void>)();
+
+    expect(commandCallsFor("thread.startTurn")).toHaveLength(1);
+    expect(commandCallsFor("thread.startTurn")[0]?.input).toMatchObject({
+      input: {
+        message: { text: "Ultrathink:\nInvestigate the flaky test" },
+        modelSelection: {
+          instanceId: claudeInstanceId,
+          model: "claude-sonnet-5",
+          options: [{ id: "effort", value: "high" }],
+        },
+        bootstrap: {
+          createThread: {
+            modelSelection: {
+              instanceId: claudeInstanceId,
+              model: "claude-sonnet-5",
+              options: [{ id: "effort", value: "high" }],
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it("uses explicit draft model, effort, and fast changes for the first turn", async () => {
+    const seededSelection: ModelSelection = {
+      instanceId: codexInstanceId,
+      model: "gpt-5.4",
+      options: [
+        { id: "reasoningEffort", value: "medium" },
+        { id: "fastMode", value: false },
+      ],
+    };
+    const userSelection: ModelSelection = {
+      instanceId: codexInstanceId,
+      model: "gpt-5.4-mini",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "fastMode", value: true },
+      ],
+    };
+    const draftId = seedFreshLocalDraft("logical-project-first-turn-edited", seededSelection);
+    useComposerDraftStore.getState().setModelSelection(draftId, userSelection);
+    publishSeededStoreState(useComposerDraftStore);
+
+    const storedSelection = draftModelSelection(draftId, codexInstanceId);
+    expect(storedSelection).toEqual(userSelection);
+
+    renderDraftRoute(draftId);
+    const promptRef = installComposerModelSelection(storedSelection, "high");
+    promptRef.current = "use my explicit choices";
+
+    await (capturedProps("chatComposer")["onSend"] as () => Promise<void>)();
+
+    const startCalls = commandCallsFor("thread.startTurn");
+    expect(startCalls).toHaveLength(1);
+    const input = startCalls[0]!.input as {
+      input: {
+        modelSelection: ModelSelection;
+        bootstrap?: { createThread?: { modelSelection: ModelSelection } };
+      };
+    };
+    expect(input.input.modelSelection).toBe(storedSelection);
+    expect(input.input.bootstrap?.createThread?.modelSelection).toBe(storedSelection);
+  });
+
+  it("keeps an existing thread selection after provider session defaults change", async () => {
+    const persistedSelection: ModelSelection = {
+      instanceId: codexInstanceId,
+      model: "gpt-5.4",
+      options: [
+        { id: "reasoningEffort", value: "low" },
+        { id: "fastMode", value: false },
+      ],
+    };
+    seedConnectedServerThread(makeThread({ modelSelection: persistedSelection }));
+    h.settings = {
+      ...h.settings,
+      providerSessionDefaults: {
+        [ProviderDriverKind.make("codex")]: {
+          model: "gpt-5.4-mini",
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "fastMode", value: true },
+          ],
+        },
+      },
+    };
+
+    renderServerRoute();
+    const promptRef = installComposerModelSelection(persistedSelection, "low");
+    promptRef.current = "continue with the persisted selection";
+
+    await (capturedProps("chatComposer")["onSend"] as () => Promise<void>)();
+
+    expect(commandCallsFor("thread.create")).toHaveLength(0);
+    const startCalls = commandCallsFor("thread.startTurn");
+    expect(startCalls).toHaveLength(1);
+    const input = startCalls[0]!.input as {
+      input: {
+        modelSelection: ModelSelection;
+        bootstrap?: unknown;
+      };
+    };
+    expect(input.input.modelSelection).toBe(persistedSelection);
+    expect(input.input.bootstrap).toBeUndefined();
+    expect(
+      commandCallsFor("thread.updateMetadata").filter(
+        (call) =>
+          (
+            call.input as {
+              input?: { modelSelection?: ModelSelection };
+            }
+          ).input?.modelSelection !== undefined,
+      ),
+    ).toHaveLength(0);
+  });
+
   it("returns without dispatch when the composer handle has no send context", async () => {
     seedConnectedServerThread();
     renderServerRoute();
@@ -3414,6 +4162,59 @@ describe("ChatView banners and dialogs", () => {
 
   it("opens the pull request dialog flow and prepares a draft thread", async () => {
     seedConnectedServerThread();
+    seedProject(makeProject({ defaultModelSelection: null }));
+    const capabilityRichCodexProvider: ServerProvider = {
+      ...codexProvider,
+      models: [
+        {
+          ...codexProvider.models[0]!,
+          capabilities: {
+            optionDescriptors: [
+              {
+                id: "reasoningEffort",
+                label: "Reasoning",
+                type: "select",
+                options: [
+                  { id: "medium", label: "Medium", isDefault: true },
+                  { id: "high", label: "High" },
+                ],
+                currentValue: "medium",
+              },
+              {
+                id: "serviceTier",
+                label: "Service tier",
+                type: "select",
+                options: [
+                  { id: "default", label: "Default", isDefault: true },
+                  { id: "fast", label: "Fast" },
+                ],
+                currentValue: "default",
+              },
+            ],
+          },
+        },
+      ],
+    };
+    seedEnvironment(
+      makeEnvironmentPresentation({
+        serverConfig: {
+          providers: [capabilityRichCodexProvider],
+          environment: { label: "Local" },
+        },
+      }),
+    );
+    h.settings = {
+      ...h.settings,
+      providerSessionDefaults: {
+        codex: {
+          model: "gpt-5.4",
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "fast" },
+          ],
+        },
+      },
+    };
     seedHostState("pullRequestDialogState", { initialReference: "octo/repo#42", key: 7 });
 
     const markup = renderServerRoute();
@@ -3436,8 +4237,19 @@ describe("ChatView banners and dialogs", () => {
     )({ branch: "pr-branch", worktreePath: null });
 
     expect(h.navigateCalls.length).toBeGreaterThanOrEqual(1);
-    const navigateCall = h.navigateCalls[0] as { to: string };
+    const navigateCall = h.navigateCalls[0] as {
+      to: string;
+      params: { draftId: ReturnType<typeof newDraftId> };
+    };
     expect(navigateCall.to).toBe("/draft/$draftId");
+    expect(draftModelSelection(navigateCall.params.draftId, codexInstanceId)).toEqual({
+      instanceId: codexInstanceId,
+      model: "gpt-5.4",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "fast" },
+      ],
+    });
   });
 
   it("reuses a stored draft session for pull request checkout when one exists", async () => {

@@ -54,9 +54,18 @@ struct ProviderDefinition {
     binary_path: String,
     available: bool,
     custom_models: Vec<String>,
+    configured_model: Option<String>,
+    configured_effort: Option<String>,
+    configured_service_tier: Option<String>,
     endpoint: Option<String>,
     server_password: Option<String>,
     environment: Vec<(OsString, OsString)>,
+}
+
+struct ProviderSessionDefaults {
+    model: Option<String>,
+    effort: Option<String>,
+    service_tier: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -66,11 +75,41 @@ struct ProviderCapabilities {
     agents: Vec<Value>,
 }
 
-pub(crate) async fn probe(settings: &Value, selected: Option<&str>, cwd: &Path) -> Vec<Value> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RichMetadataOutcome {
+    NotRequested,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ProviderProbeResult {
+    pub(crate) snapshot: Value,
+    pub(crate) rich_metadata: RichMetadataOutcome,
+}
+
+impl ProviderProbeResult {
+    fn new(snapshot: Value, rich_metadata: RichMetadataOutcome) -> Self {
+        Self {
+            snapshot,
+            rich_metadata,
+        }
+    }
+}
+
+pub(crate) async fn probe(
+    settings: &Value,
+    selected: Option<&str>,
+    cwd: &Path,
+) -> Vec<ProviderProbeResult> {
     probe_inner(settings, selected, cwd, false).await
 }
 
-pub(crate) async fn probe_full(settings: &Value, selected: Option<&str>, cwd: &Path) -> Vec<Value> {
+pub(crate) async fn probe_full(
+    settings: &Value,
+    selected: Option<&str>,
+    cwd: &Path,
+) -> Vec<ProviderProbeResult> {
     probe_inner(settings, selected, cwd, true).await
 }
 
@@ -79,7 +118,7 @@ async fn probe_inner(
     selected: Option<&str>,
     cwd: &Path,
     include_slow_capabilities: bool,
-) -> Vec<Value> {
+) -> Vec<ProviderProbeResult> {
     let mut snapshots = Vec::new();
     for definition in definitions(settings) {
         if selected.is_none_or(|selected| selected == definition.instance_id) {
@@ -103,6 +142,7 @@ fn definitions(settings: &Value) -> Vec<ProviderDefinition> {
                         .and_then(Value::as_str)
                         .unwrap_or("unknown");
                     let legacy_settings = legacy.and_then(|providers| providers.get(driver));
+                    let session_defaults = provider_session_defaults(settings, driver);
                     let config = instance.get("config");
                     ProviderDefinition {
                         instance_id: instance_id.clone(),
@@ -128,6 +168,9 @@ fn definitions(settings: &Value) -> Vec<ProviderDefinition> {
                         custom_models: string_array(config, "customModels")
                             .or_else(|| string_array(legacy_settings, "customModels"))
                             .unwrap_or_default(),
+                        configured_model: session_defaults.model,
+                        configured_effort: session_defaults.effort,
+                        configured_service_tier: session_defaults.service_tier,
                         endpoint: string_setting(config, "serverUrl")
                             .or_else(|| string_setting(config, "apiEndpoint"))
                             .or_else(|| string_setting(legacy_settings, "serverUrl"))
@@ -153,6 +196,7 @@ fn definitions(settings: &Value) -> Vec<ProviderDefinition> {
             continue;
         }
         let driver_settings = legacy.and_then(|providers| providers.get(driver));
+        let session_defaults = provider_session_defaults(settings, driver);
         definitions.push(ProviderDefinition {
             instance_id: driver.to_owned(),
             driver: driver.to_owned(),
@@ -166,6 +210,9 @@ fn definitions(settings: &Value) -> Vec<ProviderDefinition> {
                 .to_owned(),
             available: true,
             custom_models: string_array(driver_settings, "customModels").unwrap_or_default(),
+            configured_model: session_defaults.model,
+            configured_effort: session_defaults.effort,
+            configured_service_tier: session_defaults.service_tier,
             endpoint: string_setting(driver_settings, "serverUrl")
                 .or_else(|| string_setting(driver_settings, "apiEndpoint"))
                 .filter(|value| !value.trim().is_empty())
@@ -177,6 +224,45 @@ fn definitions(settings: &Value) -> Vec<ProviderDefinition> {
         });
     }
     definitions
+}
+
+fn provider_session_defaults(settings: &Value, driver: &str) -> ProviderSessionDefaults {
+    let session_default = settings
+        .get("providerSessionDefaults")
+        .and_then(Value::as_object)
+        .and_then(|defaults| defaults.get(driver));
+    let effort = ["reasoningEffort", "effort", "reasoning"]
+        .into_iter()
+        .find_map(|id| provider_option_value(session_default, id))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let service_tier = provider_option_value(session_default, "serviceTier")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            provider_option_value(session_default, "fastMode")
+                .and_then(Value::as_bool)
+                .map(|fast| if fast { "fast" } else { "default" }.to_owned())
+        });
+    ProviderSessionDefaults {
+        model: session_default
+            .and_then(|value| value.get("model"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        effort,
+        service_tier,
+    }
+}
+
+fn provider_option_value<'a>(session_default: Option<&'a Value>, id: &str) -> Option<&'a Value> {
+    let options = session_default?.get("options")?;
+    if let Some(selections) = options.as_array() {
+        return selections
+            .iter()
+            .find(|selection| selection.get("id").and_then(Value::as_str) == Some(id))
+            .and_then(|selection| selection.get("value"));
+    }
+    options.as_object()?.get(id)
 }
 
 fn string_setting<'a>(value: Option<&'a Value>, name: &str) -> Option<&'a str> {
@@ -231,52 +317,61 @@ async fn probe_one(
     definition: ProviderDefinition,
     cwd: &Path,
     include_slow_capabilities: bool,
-) -> Value {
+) -> ProviderProbeResult {
     let checked_at = super::control::now_iso();
     let default_models = provider_models_without_version(&definition);
     if !definition.available {
-        return snapshot(
-            &definition,
-            false,
-            None,
-            "disabled",
-            json!({ "status": "unknown" }),
-            default_models,
-            ProviderCapabilities::default(),
-            Some("Provider driver is unavailable in this build."),
-            checked_at,
-            "unavailable",
+        return ProviderProbeResult::new(
+            snapshot(
+                &definition,
+                false,
+                None,
+                "disabled",
+                json!({ "status": "unknown" }),
+                default_models,
+                ProviderCapabilities::default(),
+                Some("Provider driver is unavailable in this build."),
+                checked_at,
+                "unavailable",
+            ),
+            RichMetadataOutcome::NotRequested,
         );
     }
     if !definition.enabled {
-        return snapshot(
-            &definition,
-            false,
-            None,
-            "disabled",
-            json!({ "status": "unknown" }),
-            default_models,
-            ProviderCapabilities::default(),
-            None,
-            checked_at,
-            "available",
+        return ProviderProbeResult::new(
+            snapshot(
+                &definition,
+                false,
+                None,
+                "disabled",
+                json!({ "status": "unknown" }),
+                default_models,
+                ProviderCapabilities::default(),
+                None,
+                checked_at,
+                "available",
+            ),
+            RichMetadataOutcome::NotRequested,
         );
     }
     if !include_slow_capabilities
         && definition.driver == "opencode"
         && definition.endpoint.is_some()
     {
-        return snapshot(
-            &definition,
-            true,
-            None,
-            "ready",
-            json!({ "status": "unknown" }),
-            default_models,
-            ProviderCapabilities::default(),
-            None,
-            checked_at,
-            "available",
+        return ProviderProbeResult::new(
+            snapshot(
+                &definition,
+                true,
+                None,
+                "ready",
+                json!({ "status": "unknown" }),
+                default_models,
+                ProviderCapabilities::default(),
+                None,
+                checked_at,
+                "available",
+            ),
+            RichMetadataOutcome::NotRequested,
         );
     }
     if include_slow_capabilities
@@ -298,48 +393,62 @@ async fn probe_one(
             skills: Vec::new(),
             agents: inventory.agents,
         };
-        return snapshot(
-            &definition,
-            true,
-            None,
-            "ready",
-            inventory.auth,
-            models,
-            capabilities,
-            None,
-            checked_at,
-            "available",
+        return ProviderProbeResult::new(
+            snapshot(
+                &definition,
+                true,
+                None,
+                "ready",
+                inventory.auth,
+                models,
+                capabilities,
+                None,
+                checked_at,
+                "available",
+            ),
+            RichMetadataOutcome::Succeeded,
         );
     }
+    let mut rich_metadata = if include_slow_capabilities {
+        RichMetadataOutcome::Failed
+    } else {
+        RichMetadataOutcome::NotRequested
+    };
     let Some(executable) = resolve_provider_executable(&definition.binary_path) else {
-        return snapshot(
-            &definition,
-            false,
-            None,
-            "error",
-            json!({ "status": "unknown" }),
-            default_models,
-            ProviderCapabilities::default(),
-            Some("Provider executable was not found."),
-            checked_at,
-            "available",
+        return ProviderProbeResult::new(
+            snapshot(
+                &definition,
+                false,
+                None,
+                "error",
+                json!({ "status": "unknown" }),
+                default_models,
+                ProviderCapabilities::default(),
+                Some("Provider executable was not found."),
+                checked_at,
+                "available",
+            ),
+            rich_metadata,
         );
     };
     if !include_slow_capabilities {
-        return snapshot(
-            &definition,
-            true,
-            None,
-            "ready",
-            json!({ "status": "unknown" }),
-            default_models,
-            ProviderCapabilities {
-                slash_commands: built_in_slash_commands(&definition.driver),
-                ..ProviderCapabilities::default()
-            },
-            None,
-            checked_at,
-            "available",
+        return ProviderProbeResult::new(
+            snapshot(
+                &definition,
+                true,
+                None,
+                "ready",
+                json!({ "status": "unknown" }),
+                default_models,
+                ProviderCapabilities {
+                    slash_commands: built_in_slash_commands(&definition.driver),
+                    ..ProviderCapabilities::default()
+                },
+                None,
+                checked_at,
+                "available",
+            ),
+            rich_metadata,
         );
     }
 
@@ -379,6 +488,7 @@ async fn probe_one(
                 .await
             {
                 installed = true;
+                rich_metadata = RichMetadataOutcome::Succeeded;
                 (status, auth, message) = codex_probe_health(&inventory.account);
                 models = serde_json::to_value(inventory.models)
                     .ok()
@@ -420,25 +530,31 @@ async fn probe_one(
                     .await
                 {
                     models = discovered;
+                    rich_metadata = RichMetadataOutcome::Succeeded;
                 }
-                return snapshot_owned_message(
-                    &definition,
-                    installed,
-                    about.version.or(version),
-                    status,
-                    auth,
-                    models,
-                    capabilities,
-                    about.message,
-                    checked_at,
+                return ProviderProbeResult::new(
+                    snapshot_owned_message(
+                        &definition,
+                        installed,
+                        about.version.or(version),
+                        status,
+                        auth,
+                        models,
+                        capabilities,
+                        about.message,
+                        checked_at,
+                    ),
+                    rich_metadata,
                 );
             }
         }
         "claudeAgent" => {
+            let mut model_catalog_complete = false;
             if version_output.as_ref().is_some_and(|output| output.success)
                 && let Some(version) = version.as_deref()
             {
                 models = claude::model::models_for_version(version, &definition.custom_models);
+                model_catalog_complete = true;
             }
             if let Some(output) = run_command(
                 &executable,
@@ -464,6 +580,9 @@ async fn probe_one(
                     built_in_slash_commands(&definition.driver),
                 );
                 apply_agent_options(&mut models, &capabilities.agents);
+                if model_catalog_complete {
+                    rich_metadata = RichMetadataOutcome::Succeeded;
+                }
             }
         }
         "opencode" => {
@@ -476,6 +595,7 @@ async fn probe_one(
                 )
                 .await
             {
+                rich_metadata = RichMetadataOutcome::Succeeded;
                 status = "ready";
                 auth = inventory.auth;
                 models = serde_json::to_value(inventory.models)
@@ -487,25 +607,39 @@ async fn probe_one(
                 message = None;
             }
         }
+        "grok" => {
+            if version_output.as_ref().is_some_and(|output| output.success) {
+                rich_metadata = RichMetadataOutcome::Succeeded;
+            }
+        }
         _ => {}
     }
 
-    snapshot(
-        &definition,
-        installed,
-        version,
-        status,
-        auth,
-        models,
-        capabilities,
-        message,
-        checked_at,
-        "available",
+    ProviderProbeResult::new(
+        snapshot(
+            &definition,
+            installed,
+            version,
+            status,
+            auth,
+            models,
+            capabilities,
+            message,
+            checked_at,
+            "available",
+        ),
+        rich_metadata,
     )
 }
 
 fn provider_models_without_version(definition: &ProviderDefinition) -> Vec<Value> {
     match definition.driver.as_str() {
+        "codex" => codex::model::fallback_models(
+            definition.configured_model.as_deref(),
+            definition.configured_effort.as_deref(),
+            definition.configured_service_tier.as_deref(),
+            &definition.custom_models,
+        ),
         "claudeAgent" => claude::model::all_models(&definition.custom_models),
         "grok" => serde_json::to_value(grok::model::default_models(&definition.custom_models))
             .ok()
@@ -599,29 +733,30 @@ fn parse_claude_initialization_response(response: &Value) -> ProviderCapabilitie
     }
 }
 
-fn parse_claude_skills_response(response: &Value) -> Vec<Value> {
+fn parse_claude_skills_response(response: &Value) -> Option<Vec<Value>> {
     let mut seen = HashSet::new();
-    response
-        .get("skills")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|skill| {
-            let name = skill.get("name")?.as_str()?.trim().trim_start_matches('/');
-            if name.is_empty() || !seen.insert(name.to_ascii_lowercase()) {
-                return None;
-            }
-            let mut result = json!({
-                "name": name,
-                "path": format!("claude://skill/{name}"),
-                "scope": "provider",
-                "enabled": true,
-                "invocation": "slash",
-            });
-            copy_non_empty_string(skill, &mut result, "description");
-            Some(result)
-        })
-        .collect()
+    Some(
+        response
+            .get("skills")?
+            .as_array()?
+            .iter()
+            .filter_map(|skill| {
+                let name = skill.get("name")?.as_str()?.trim().trim_start_matches('/');
+                if name.is_empty() || !seen.insert(name.to_ascii_lowercase()) {
+                    return None;
+                }
+                let mut result = json!({
+                    "name": name,
+                    "path": format!("claude://skill/{name}"),
+                    "scope": "provider",
+                    "enabled": true,
+                    "invocation": "slash",
+                });
+                copy_non_empty_string(skill, &mut result, "description");
+                Some(result)
+            })
+            .collect(),
+    )
 }
 
 fn parse_command_values(value: Option<&Value>) -> Vec<Value> {
@@ -761,19 +896,24 @@ async fn probe_claude_capabilities(
     .flatten()?;
     let mut capabilities = parse_claude_initialization_response(&initialization);
 
-    if write_claude_control_request(&mut stdin, "t4code-skills", "reload_skills")
+    let skills = if write_claude_control_request(&mut stdin, "t4code-skills", "reload_skills")
         .await
         .is_ok()
-        && let Ok(Some(skills)) = timeout(
+    {
+        timeout(
             CLAUDE_SKILLS_TIMEOUT,
             read_claude_control_response(&mut lines, "t4code-skills"),
         )
         .await
-    {
-        capabilities.skills = parse_claude_skills_response(&skills);
-    }
+        .ok()
+        .flatten()
+        .and_then(|response| parse_claude_skills_response(&response))
+    } else {
+        None
+    };
     let _ = stdin.shutdown().await;
     stop_supervised_child(&mut *child).await;
+    capabilities.skills = skills?;
     Some(capabilities)
 }
 
@@ -980,18 +1120,9 @@ async fn probe_opencode_with_timeout(
         get_opencode_json(&client, endpoint, "/agent", server_password),
         get_opencode_json(&client, endpoint, "/command", server_password),
     );
-    if providers.is_none() && agents.is_none() && commands.is_none() {
-        return None;
-    }
-    let providers = providers.unwrap_or_else(|| {
-        json!({
-            "all": [],
-            "connected": [],
-            "default": {}
-        })
-    });
-    let agents = agents.unwrap_or_else(|| json!([]));
-    let commands = commands.unwrap_or_else(|| json!([]));
+    let providers = providers?;
+    let agents = agents?;
+    let commands = commands?;
     Some(opencode::build_inventory_snapshot(
         &providers,
         &agents,
@@ -1295,6 +1426,19 @@ mod tests {
 
     use axum::{Json, Router, routing::get};
 
+    #[tokio::test]
+    async fn quick_disabled_probe_marks_rich_metadata_not_requested() {
+        let settings = json!({
+            "providerInstances": {
+                "codex": { "driver": "codex", "enabled": false, "config": {} }
+            }
+        });
+        let result = probe(&settings, Some("codex"), Path::new(".")).await;
+
+        assert_eq!(result[0].rich_metadata, RichMetadataOutcome::NotRequested);
+        assert!(!result[0].snapshot["models"].as_array().unwrap().is_empty());
+    }
+
     #[test]
     fn provider_probe_timeouts_allow_slow_windows_cli_startup() {
         assert!(PROBE_TIMEOUT >= Duration::from_secs(10));
@@ -1333,6 +1477,64 @@ mod tests {
         assert_eq!(
             drivers.iter().filter(|driver| **driver == "cursor").count(),
             1
+        );
+    }
+
+    #[test]
+    fn codex_inventory_uses_saved_defaults_before_live_discovery() {
+        let definitions = definitions(&json!({
+            "providerInstances": {
+                "codex": { "driver": "codex", "enabled": true, "config": {} }
+            },
+            "providerSessionDefaults": {
+                "codex": {
+                    "model": "gpt-configured",
+                    "options": [
+                        { "id": "reasoningEffort", "value": "xhigh" },
+                        { "id": "serviceTier", "value": "fast" }
+                    ]
+                }
+            }
+        }));
+        let models = provider_models_without_version(&definitions[0]);
+
+        assert_eq!(models[0]["slug"], "gpt-configured");
+        assert_eq!(
+            models[0]["capabilities"]["optionDescriptors"][0]["currentValue"],
+            "xhigh"
+        );
+        assert_eq!(
+            models[0]["capabilities"]["optionDescriptors"][1]["currentValue"],
+            "fast"
+        );
+    }
+
+    #[test]
+    fn codex_inventory_uses_legacy_object_saved_defaults_before_live_discovery() {
+        let definitions = definitions(&json!({
+            "providerInstances": {
+                "codex": { "driver": "codex", "enabled": true, "config": {} }
+            },
+            "providerSessionDefaults": {
+                "codex": {
+                    "model": "gpt-legacy",
+                    "options": {
+                        "effort": "xhigh",
+                        "fastMode": true
+                    }
+                }
+            }
+        }));
+        let models = provider_models_without_version(&definitions[0]);
+
+        assert_eq!(models[0]["slug"], "gpt-legacy");
+        assert_eq!(
+            models[0]["capabilities"]["optionDescriptors"][0]["currentValue"],
+            "xhigh"
+        );
+        assert_eq!(
+            models[0]["capabilities"]["optionDescriptors"][1]["currentValue"],
+            "fast"
         );
     }
 
@@ -1402,6 +1604,9 @@ mod tests {
             binary_path: "grok".to_owned(),
             available: true,
             custom_models: Vec::new(),
+            configured_model: None,
+            configured_effort: None,
+            configured_service_tier: None,
             endpoint: None,
             server_password: None,
             environment: Vec::new(),
@@ -1464,12 +1669,25 @@ mod tests {
                 { "name": "loop", "description": "Run repeatedly", "argumentHint": "[interval] [prompt]" },
                 { "name": "loop", "description": "Duplicate lower-priority skill" }
             ]
-        }));
+        }))
+        .expect("valid skills response");
 
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0]["name"], "loop");
         assert_eq!(skills[0]["invocation"], "slash");
         assert_eq!(skills[0]["path"], "claude://skill/loop");
+    }
+
+    #[test]
+    fn claude_skills_probe_distinguishes_empty_inventory_from_parse_failure() {
+        assert_eq!(
+            parse_claude_skills_response(&json!({ "skills": [] })),
+            Some(Vec::new())
+        );
+        assert_eq!(
+            parse_claude_skills_response(&json!({ "skills": "invalid" })),
+            None
+        );
     }
 
     #[test]
@@ -1499,7 +1717,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn opencode_slow_command_inventory_does_not_erase_models_and_agents() {
+    async fn opencode_partial_inventory_is_not_authoritative() {
         let app = Router::new()
             .route(
                 "/provider",
@@ -1559,24 +1777,10 @@ mod tests {
             &["custom/model".to_owned()],
             Duration::from_millis(75),
         )
-        .await
-        .expect("partial OpenCode inventory");
+        .await;
         server.abort();
 
-        assert!(
-            inventory
-                .models
-                .iter()
-                .any(|model| model.slug == "openai/gpt-5")
-        );
-        assert!(
-            inventory
-                .models
-                .iter()
-                .any(|model| model.slug == "custom/model")
-        );
-        assert_eq!(inventory.agents[0]["name"], "build");
-        assert!(inventory.commands.is_empty());
+        assert!(inventory.is_none());
         assert!(
             probe_opencode("http://127.0.0.1:1", None, &[])
                 .await

@@ -1,4 +1,5 @@
 import {
+  DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -6,7 +7,9 @@ import {
   TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH,
   TERMINAL_LAUNCH_EXECUTABLE_MAX_LENGTH,
   TERMINAL_LAUNCH_LABEL_MAX_LENGTH,
+  type ProviderOptionDescriptor,
   type ServerSettings,
+  type ServerProviderModel,
 } from "@t4code/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -14,7 +17,18 @@ import type { ProviderInstanceEntry } from "~/providerInstances";
 import { decodeTerminalLaunchCommand } from "~/lib/terminalLaunchCommand";
 import { resolveProviderTerminalAction } from "./providerTerminalActions";
 
-function entry(driver: string, instanceId = driver, displayName = driver): ProviderInstanceEntry {
+const CODEX_DRIVER = ProviderDriverKind.make("codex");
+const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
+const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
+const GROK_DRIVER = ProviderDriverKind.make("grok");
+const OPENCODE_DRIVER = ProviderDriverKind.make("opencode");
+
+function entry(
+  driver: string,
+  instanceId = driver,
+  displayName = driver,
+  models: ReadonlyArray<ServerProviderModel> = [],
+): ProviderInstanceEntry {
   return {
     instanceId: ProviderInstanceId.make(instanceId),
     driverKind: ProviderDriverKind.make(driver),
@@ -27,25 +41,442 @@ function entry(driver: string, instanceId = driver, displayName = driver): Provi
     isDefault: instanceId === driver,
     isAvailable: true,
     snapshot: {} as ProviderInstanceEntry["snapshot"],
-    models: [],
+    models,
   };
 }
 
+function model(
+  slug: string,
+  optionDescriptors: ReadonlyArray<ProviderOptionDescriptor>,
+): ServerProviderModel {
+  return {
+    slug,
+    name: slug,
+    isCustom: false,
+    capabilities: { optionDescriptors: [...optionDescriptors] },
+  };
+}
+
+const effortDescriptor: ProviderOptionDescriptor = {
+  id: "reasoningEffort",
+  label: "Reasoning",
+  type: "select",
+  options: [
+    { id: "medium", label: "Medium", isDefault: true },
+    { id: "high", label: "High" },
+  ],
+  currentValue: "medium",
+};
+
+const claudeEffortDescriptor: ProviderOptionDescriptor = {
+  ...effortDescriptor,
+  id: "effort",
+};
+
+const claudePromptInjectedEffortDescriptor: ProviderOptionDescriptor = {
+  ...claudeEffortDescriptor,
+  options: [
+    { id: "high", label: "High", isDefault: true },
+    { id: "ultrathink", label: "Ultrathink" },
+  ],
+  promptInjectedValues: ["ultrathink"],
+};
+
+const cursorEffortDescriptor: ProviderOptionDescriptor = {
+  ...effortDescriptor,
+  id: "reasoning",
+};
+
+const fastModeDescriptor: ProviderOptionDescriptor = {
+  id: "fastMode",
+  label: "Fast mode",
+  type: "boolean",
+  currentValue: false,
+};
+
+const serviceTierDescriptor: ProviderOptionDescriptor = {
+  id: "serviceTier",
+  label: "Service tier",
+  type: "select",
+  options: [
+    { id: "default", label: "Default", isDefault: true },
+    { id: "fast", label: "Fast" },
+  ],
+  currentValue: "default",
+};
+
+const partialServiceTierDescriptor: ProviderOptionDescriptor = {
+  id: "serviceTier",
+  label: "Live service tier",
+  type: "select",
+  options: [{ id: "default", label: "Live Standard", isDefault: true }],
+  currentValue: "default",
+};
+
 describe("resolveProviderTerminalAction", () => {
   it.each([
-    ["claudeAgent", "claude", ["--dangerously-skip-permissions"], "Claude Terminal"],
-    ["codex", "codex", ["--dangerously-bypass-approvals-and-sandbox"], "Codex Terminal"],
-    ["opencode", "opencode", [], "OpenCode Terminal"],
-    ["cursor", "cursor-agent", ["--yolo"], "Cursor Terminal"],
-    ["grok", "grok", ["--permission-mode", "bypassPermissions"], "Grok Terminal"],
-  ])("resolves %s", (driver, executable, args, label) => {
+    {
+      name: "Codex",
+      driverKind: CODEX_DRIVER,
+      models: [model("gpt-5.4", [effortDescriptor])],
+      configuredDefault: {
+        model: "gpt-5.4",
+        options: [
+          { id: "reasoningEffort", value: "high" },
+          { id: "serviceTier", value: "fast" },
+        ],
+      },
+      expected: {
+        executable: "codex",
+        args: [
+          "--dangerously-bypass-approvals-and-sandbox",
+          "--model",
+          "gpt-5.4",
+          "--config",
+          'model_reasoning_effort="high"',
+          "--config",
+          'service_tier="fast"',
+        ],
+        label: "Codex Terminal",
+      },
+    },
+    {
+      name: "Claude",
+      driverKind: CLAUDE_DRIVER,
+      models: [model("claude-sonnet-5", [claudeEffortDescriptor])],
+      configuredDefault: {
+        model: "claude-sonnet-5",
+        options: [{ id: "effort", value: "high" }],
+      },
+      expected: {
+        executable: "claude",
+        args: ["--dangerously-skip-permissions", "--model", "claude-sonnet-5", "--effort", "high"],
+        label: "Claude Terminal",
+      },
+    },
+    {
+      name: "Cursor",
+      driverKind: CURSOR_DRIVER,
+      models: [model("cursor-large[legacy=true]", [cursorEffortDescriptor, fastModeDescriptor])],
+      configuredDefault: {
+        model: "cursor-large[legacy=true]",
+        options: [
+          { id: "reasoning", value: "high" },
+          { id: "fastMode", value: true },
+        ],
+      },
+      expected: {
+        executable: "cursor-agent",
+        args: ["--yolo", "--model", "cursor-large[effort=high,fast=true]"],
+        label: "Cursor Terminal",
+      },
+    },
+    {
+      name: "Grok",
+      driverKind: GROK_DRIVER,
+      models: [model("grok-4", [claudeEffortDescriptor])],
+      configuredDefault: {
+        model: "grok-4",
+        options: [{ id: "effort", value: "high" }],
+      },
+      expected: {
+        executable: "grok",
+        args: ["--permission-mode", "bypassPermissions", "--model", "grok-4", "--effort", "high"],
+        label: "Grok Terminal",
+      },
+    },
+    {
+      name: "OpenCode",
+      driverKind: OPENCODE_DRIVER,
+      models: [model("openai/gpt-5", [claudeEffortDescriptor, fastModeDescriptor])],
+      configuredDefault: {
+        model: "openai/gpt-5",
+        options: [
+          { id: "effort", value: "high" },
+          { id: "fastMode", value: true },
+        ],
+      },
+      expected: {
+        executable: "opencode",
+        args: ["--model", "openai/gpt-5"],
+        env: { OPENCODE_CONFIG_CONTENT: '{"theme":"system"}' },
+        label: "OpenCode Terminal",
+      },
+    },
+  ])(
+    "resolves $name with the exact supported executable and argument vector",
+    ({ name, driverKind, models, configuredDefault, expected }) => {
+      const settings = {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerSessionDefaults: {
+          [driverKind]: configuredDefault,
+        },
+      } satisfies ServerSettings;
+
+      expect(
+        resolveProviderTerminalAction(entry(driverKind, driverKind, name, models), settings)
+          ?.command,
+      ).toEqual(expected);
+    },
+  );
+
+  it("builds Codex terminal arguments from saved defaults during empty discovery", () => {
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerSessionDefaults: {
+        [CODEX_DRIVER]: {
+          model: "gpt-offline",
+          options: [
+            { id: "reasoningEffort", value: "xhigh" },
+            { id: "serviceTier", value: "fast" },
+          ],
+        },
+      },
+    } satisfies ServerSettings;
+
+    expect(
+      resolveProviderTerminalAction(entry("codex", "codex", "Codex", []), settings)?.command?.args,
+    ).toEqual([
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model",
+      DEFAULT_MODEL_BY_PROVIDER[CODEX_DRIVER],
+      "--config",
+      'model_reasoning_effort="xhigh"',
+      "--config",
+      'service_tier="fast"',
+    ]);
+  });
+
+  it("builds Codex Fast arguments through a partial live serviceTier descriptor", () => {
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerSessionDefaults: {
+        [CODEX_DRIVER]: {
+          model: "gpt-5.6-sol",
+          options: [{ id: "serviceTier", value: "fast" }],
+        },
+      },
+    } satisfies ServerSettings;
+
+    expect(
+      resolveProviderTerminalAction(
+        entry("codex", "codex", "Codex", [
+          model("gpt-5.6-sol", [effortDescriptor, partialServiceTierDescriptor]),
+        ]),
+        settings,
+      )?.command?.args,
+    ).toEqual([
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model",
+      "gpt-5.6-sol",
+      "--config",
+      'model_reasoning_effort="medium"',
+      "--config",
+      'service_tier="fast"',
+    ]);
+  });
+
+  it("builds Claude model and effort arguments and omits unsupported fast mode", () => {
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerSessionDefaults: {
+        [CLAUDE_DRIVER]: {
+          model: "claude-opus-4-8",
+          options: [
+            { id: "effort", value: "high" },
+            { id: "fastMode", value: true },
+          ],
+        },
+      },
+    } satisfies ServerSettings;
+
+    expect(
+      resolveProviderTerminalAction(
+        entry("claudeAgent", "claudeAgent", "Claude", [
+          model("claude-opus-4-8", [claudeEffortDescriptor, fastModeDescriptor]),
+        ]),
+        settings,
+      )?.command?.args,
+    ).toEqual(["--dangerously-skip-permissions", "--model", "claude-opus-4-8", "--effort", "high"]);
+  });
+
+  it.each([
+    {
+      effort: "ultrathink",
+      expected: ["--dangerously-skip-permissions", "--model", "claude-opus-4-8"],
+    },
+    {
+      effort: "high",
+      expected: [
+        "--dangerously-skip-permissions",
+        "--model",
+        "claude-opus-4-8",
+        "--effort",
+        "high",
+      ],
+    },
+  ])("maps the Claude $effort default to supported terminal arguments", ({ effort, expected }) => {
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerSessionDefaults: {
+        [CLAUDE_DRIVER]: {
+          model: "claude-opus-4-8",
+          options: [{ id: "effort", value: effort }],
+        },
+      },
+    } satisfies ServerSettings;
+
+    expect(
+      resolveProviderTerminalAction(
+        entry("claudeAgent", "claudeAgent", "Claude", [
+          model("claude-opus-4-8", [claudePromptInjectedEffortDescriptor]),
+        ]),
+        settings,
+      )?.command?.args,
+    ).toEqual(expected);
+  });
+
+  it.each([
+    {
+      effort: "ultrathink",
+      expected: [
+        "--dangerously-skip-permissions",
+        "--model",
+        DEFAULT_MODEL_BY_PROVIDER[CLAUDE_DRIVER],
+      ],
+    },
+    {
+      effort: "high",
+      expected: [
+        "--dangerously-skip-permissions",
+        "--model",
+        DEFAULT_MODEL_BY_PROVIDER[CLAUDE_DRIVER],
+        "--effort",
+        "high",
+      ],
+    },
+  ])(
+    "conservatively maps the Claude $effort default during empty discovery",
+    ({ effort, expected }) => {
+      const settings = {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerSessionDefaults: {
+          [CLAUDE_DRIVER]: {
+            model: "claude-offline",
+            options: [{ id: "effort", value: effort }],
+          },
+        },
+      } satisfies ServerSettings;
+
+      expect(
+        resolveProviderTerminalAction(entry("claudeAgent", "claudeAgent", "Claude", []), settings)
+          ?.command?.args,
+      ).toEqual(expected);
+    },
+  );
+
+  it('passes Codex fast mode off as an explicit service_tier="default" config', () => {
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerSessionDefaults: {
+        [CODEX_DRIVER]: {
+          model: "gpt-5.4",
+          options: [{ id: "serviceTier", value: "default" }],
+        },
+      },
+    } satisfies ServerSettings;
+
+    expect(
+      resolveProviderTerminalAction(
+        entry("codex", "codex", "Codex", [model("gpt-5.4", [serviceTierDescriptor])]),
+        settings,
+      )?.command?.args,
+    ).toEqual([
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model",
+      "gpt-5.4",
+      "--config",
+      'model_reasoning_effort="medium"',
+      "--config",
+      'service_tier="default"',
+    ]);
+  });
+
+  it("omits Claude fast mode from terminal arguments", () => {
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerSessionDefaults: {
+        [CLAUDE_DRIVER]: {
+          model: "claude-sonnet-5",
+          options: [{ id: "fastMode", value: true }],
+        },
+      },
+    } satisfies ServerSettings;
+
+    expect(
+      resolveProviderTerminalAction(
+        entry("claudeAgent", "claudeAgent", "Claude", [
+          model("claude-sonnet-5", [fastModeDescriptor]),
+        ]),
+        settings,
+      )?.command?.args,
+    ).toEqual(["--dangerously-skip-permissions", "--model", "claude-sonnet-5"]);
+  });
+
+  it("omits Grok fast mode from terminal arguments", () => {
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerSessionDefaults: {
+        [GROK_DRIVER]: {
+          model: "grok-4",
+          options: [{ id: "fastMode", value: true }],
+        },
+      },
+    } satisfies ServerSettings;
+
+    expect(
+      resolveProviderTerminalAction(
+        entry("grok", "grok", "Grok", [model("grok-4", [fastModeDescriptor])]),
+        settings,
+      )?.command?.args,
+    ).toEqual(["--permission-mode", "bypassPermissions", "--model", "grok-4"]);
+  });
+
+  it("preserves Codex effort and service-tier invariants after a model fallback", () => {
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerSessionDefaults: {
+        [CODEX_DRIVER]: {
+          model: "retired-codex-model",
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "fast" },
+          ],
+        },
+      },
+    } satisfies ServerSettings;
+
     const action = resolveProviderTerminalAction(
-      entry(driver, driver, label.replace(" Terminal", "")),
-      DEFAULT_SERVER_SETTINGS,
+      entry("codex", "codex", "Codex", [model("gpt-5.4-mini", [])]),
+      settings,
     );
+    expect(action?.command?.args).toEqual([
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model",
+      "gpt-5.4-mini",
+      "--config",
+      'model_reasoning_effort="high"',
+      "--config",
+      'service_tier="fast"',
+    ]);
     expect(action).toMatchObject({
-      label,
-      command: { executable, args, label },
+      fallback: {
+        driver: "codex",
+        instanceId: "codex",
+        configuredModel: "retired-codex-model",
+        resolvedModel: "gpt-5.4-mini",
+        reason: "configured-model-unavailable",
+      },
     });
   });
 
@@ -200,6 +631,25 @@ describe("resolveProviderTerminalAction", () => {
     ).toEqual({
       entry: entry("codex", instanceId, displayName),
       label: `${displayName} Terminal`,
+      command: null,
+      disabledReason:
+        "Provider terminal command exceeds supported limits. Shorten the provider name or configured binary path.",
+    });
+  });
+
+  it("disables an action when a resolved model argument exceeds command bounds", () => {
+    const oversizedModel = "x".repeat(TERMINAL_LAUNCH_ARGUMENT_MAX_LENGTH + 1);
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerSessionDefaults: {
+        [OPENCODE_DRIVER]: { model: oversizedModel },
+      },
+    } satisfies ServerSettings;
+    const providerEntry = entry("opencode", "opencode", "OpenCode", [model(oversizedModel, [])]);
+
+    expect(resolveProviderTerminalAction(providerEntry, settings)).toEqual({
+      entry: providerEntry,
+      label: "OpenCode Terminal",
       command: null,
       disabledReason:
         "Provider terminal command exceeds supported limits. Shorten the provider name or configured binary path.",

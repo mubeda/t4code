@@ -1,6 +1,6 @@
 import { ArchiveIcon, ArchiveX, LoaderIcon, PlusIcon, RefreshCwIcon } from "lucide-react";
 import { Link } from "@tanstack/react-router";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import {
   defaultInstanceIdForDriver,
@@ -9,6 +9,7 @@ import {
   ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceId,
+  type ProviderSessionDefault,
   type ScopedThreadRef,
 } from "@t4code/contracts";
 import { scopeThreadRef } from "@t4code/client-runtime/environment";
@@ -85,6 +86,7 @@ import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
 import {
   buildProviderInstanceUpdatePatch,
+  createProviderSessionDefaultsDraft,
   formatDiagnosticsDescription,
 } from "./SettingsPanels.logic";
 import {
@@ -111,6 +113,21 @@ const THEME_OPTIONS = [
     label: "Dark",
   },
 ] as const;
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "then" in value &&
+    typeof value.then === "function"
+  );
+}
+
+function isSettingsUpdateFailure(result: unknown): boolean {
+  return (
+    typeof result === "object" && result !== null && "_tag" in result && result._tag === "Failure"
+  );
+}
 
 const TERMINAL_FONT_OPTIONS = [
   {
@@ -1144,10 +1161,23 @@ export function GeneralSettingsPanel() {
 }
 
 export function ProviderSettingsPanel() {
+  const primaryEnvironment = usePrimaryEnvironment();
+  return (
+    <EnvironmentScopedProviderSettingsPanel
+      key={primaryEnvironment?.environmentId ?? "disconnected"}
+      primaryEnvironment={primaryEnvironment}
+    />
+  );
+}
+
+function EnvironmentScopedProviderSettingsPanel({
+  primaryEnvironment,
+}: {
+  readonly primaryEnvironment: ReturnType<typeof usePrimaryEnvironment>;
+}) {
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
   const serverProviders = useAtomValue(primaryServerProvidersAtom);
-  const primaryEnvironment = usePrimaryEnvironment();
   const refreshServerProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -1161,6 +1191,19 @@ export function ProviderSettingsPanel() {
   >(() => new Set());
   const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
   const refreshingRef = useRef(false);
+  const sessionDefaultsDraftRef = useRef(
+    createProviderSessionDefaultsDraft(settings.providerSessionDefaults),
+  );
+  const [providerSessionDefaults, setProviderSessionDefaults] = useState(
+    settings.providerSessionDefaults,
+  );
+
+  useEffect(() => {
+    const reconciled = sessionDefaultsDraftRef.current.reconcile(settings.providerSessionDefaults);
+    setProviderSessionDefaults((current) =>
+      Equal.equals(current, reconciled) ? current : reconciled,
+    );
+  }, [settings.providerSessionDefaults]);
 
   const providerUpdateCandidates = useMemo(
     () => collectProviderUpdateCandidates(serverProviders),
@@ -1367,6 +1410,27 @@ export function ProviderSettingsPanel() {
     });
   };
 
+  const updateSessionDefaults = (driver: ProviderDriverKind, next: ProviderSessionDefault) => {
+    const submission = sessionDefaultsDraftRef.current.submit(driver, next);
+    setProviderSessionDefaults(submission.defaults);
+    const updateResult: unknown = updateSettings({
+      providerSessionDefaults: submission.defaults,
+    });
+    if (!isPromiseLike(updateResult)) return;
+
+    const applyRejectedSubmission = () => {
+      const rejected = sessionDefaultsDraftRef.current.reject(submission.revision);
+      setProviderSessionDefaults((current) =>
+        Equal.equals(current, rejected) ? current : rejected,
+      );
+    };
+    void Promise.resolve(updateResult).then((result) => {
+      if (isSettingsUpdateFailure(result)) {
+        applyRejectedSubmission();
+      }
+    }, applyRejectedSubmission);
+  };
+
   const updateProviderModelPreferences = (
     instanceId: ProviderInstanceId,
     next: {
@@ -1438,6 +1502,7 @@ export function ProviderSettingsPanel() {
     <SettingsPageContainer>
       <SettingsSection
         title="Providers"
+        contentVariant="stack"
         headerAction={
           <div className="flex items-center gap-1.5">
             <ProviderLastChecked lastCheckedAt={lastCheckedAt} />
@@ -1547,6 +1612,13 @@ export function ProviderSettingsPanel() {
               }}
               onDelete={row.isDefault ? undefined : () => deleteProviderInstance(row.instanceId)}
               headerAction={headerAction}
+              {...(row.isDefault
+                ? {
+                    sessionDefaults: providerSessionDefaults[row.driver],
+                    onSessionDefaultsChange: (next: ProviderSessionDefault) =>
+                      updateSessionDefaults(row.driver, next),
+                  }
+                : {})}
               hiddenModels={modelPreferences.hiddenModels}
               favoriteModels={favoriteModels}
               modelOrder={modelPreferences.modelOrder}

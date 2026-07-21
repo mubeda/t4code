@@ -59,6 +59,7 @@ import {
   isTerminalSplitShortcut,
   isTerminalSplitVerticalShortcut,
   isTerminalToggleShortcut,
+  terminalClipboardShortcut,
   terminalDeleteShortcutData,
   terminalNavigationShortcutData,
 } from "../keybindings";
@@ -913,6 +914,31 @@ export function TerminalViewport({
       inputScheduler.enqueue(data);
     };
 
+    // xterm's selection lives on the WebGL canvas, so the browser's native copy
+    // never sees it. Mirror the selection to the OS clipboard explicitly (on
+    // Ctrl/Cmd+C and on select) so it can be pasted into another terminal.
+    const copyTerminalSelection = (): boolean => {
+      const active = terminalRef.current;
+      if (!active?.hasSelection()) return false;
+      const text = active.getSelection();
+      if (text.length === 0) return false;
+      void navigator.clipboard?.writeText(text).catch(() => {});
+      return true;
+    };
+
+    // Ctrl/Cmd+V otherwise reaches xterm as the raw \x16 control byte; read the
+    // clipboard and paste it (bracketed-paste aware via terminal.paste).
+    const pasteIntoTerminal = () => {
+      void (async () => {
+        try {
+          const text = await navigator.clipboard.readText();
+          if (text.length > 0) terminalRef.current?.paste(text);
+        } catch {
+          // Clipboard read is unavailable or denied; nothing to paste.
+        }
+      })();
+    };
+
     terminal.attachCustomKeyEventHandler((event) => {
       const currentKeybindings = keybindingsRef.current;
       const options = { context: { terminalFocus: true, terminalOpen: true } };
@@ -925,6 +951,24 @@ export function TerminalViewport({
         isDiffToggleShortcut(event, currentKeybindings, options)
       ) {
         return false;
+      }
+
+      const clipboard = terminalClipboardShortcut(event);
+      if (clipboard !== null) {
+        if (clipboard.action === "paste") {
+          event.preventDefault();
+          event.stopPropagation();
+          pasteIntoTerminal();
+          return false;
+        }
+        // Copy the selection when there is one; otherwise let a bare Ctrl+C
+        // fall through to the terminal as SIGINT.
+        if (copyTerminalSelection()) {
+          event.preventDefault();
+          event.stopPropagation();
+          return false;
+        }
+        return true;
       }
 
       const navigationData = terminalNavigationShortcutData(event);
@@ -1054,6 +1098,10 @@ export function TerminalViewport({
       if (!shouldHandle) {
         return;
       }
+      // Copy-on-select: mirror the finished selection to the clipboard so it can
+      // be pasted (Ctrl/Cmd+V) into this or another terminal without a separate
+      // copy step.
+      copyTerminalSelection();
       selectionPointerRef.current = { x: event.clientX, y: event.clientY };
       const delay = terminalSelectionActionDelayForClickCount(event.detail);
       selectionActionTimerRef.current = window.setTimeout(() => {

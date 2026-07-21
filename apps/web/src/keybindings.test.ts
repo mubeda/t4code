@@ -24,6 +24,7 @@ import {
   shouldShowModelPickerJumpHints,
   shouldShowThreadJumpHints,
   shortcutLabelForCommand,
+  terminalClipboardShortcut,
   terminalDeleteShortcutData,
   terminalNavigationShortcutData,
   threadJumpCommandForIndex,
@@ -311,6 +312,73 @@ describe("split/new/close terminal shortcuts", () => {
         platform: "Linux",
       }),
     );
+  });
+});
+
+describe("terminalClipboardShortcut", () => {
+  const ev = (over: Partial<ShortcutEventLike>): ShortcutEventLike => ({
+    type: "keydown",
+    key: "",
+    metaKey: false,
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+    ...over,
+  });
+
+  it("treats Ctrl+V as paste on Windows/Linux", () => {
+    assert.deepEqual(terminalClipboardShortcut(ev({ key: "v", ctrlKey: true }), "Win32"), {
+      action: "paste",
+      onlyWithSelection: false,
+    });
+    assert.deepEqual(terminalClipboardShortcut(ev({ key: "v", ctrlKey: true }), "Linux"), {
+      action: "paste",
+      onlyWithSelection: false,
+    });
+  });
+
+  it("treats Ctrl+Shift+V as paste too", () => {
+    assert.deepEqual(
+      terminalClipboardShortcut(ev({ key: "V", ctrlKey: true, shiftKey: true }), "Win32"),
+      { action: "paste", onlyWithSelection: false },
+    );
+  });
+
+  it("treats bare Ctrl+C as copy only when a selection exists (otherwise SIGINT)", () => {
+    assert.deepEqual(terminalClipboardShortcut(ev({ key: "c", ctrlKey: true }), "Win32"), {
+      action: "copy",
+      onlyWithSelection: true,
+    });
+  });
+
+  it("treats Ctrl+Shift+C as an unconditional copy", () => {
+    assert.deepEqual(
+      terminalClipboardShortcut(ev({ key: "c", ctrlKey: true, shiftKey: true }), "Win32"),
+      { action: "copy", onlyWithSelection: false },
+    );
+  });
+
+  it("uses Cmd on macOS and leaves Ctrl+C as SIGINT", () => {
+    assert.deepEqual(terminalClipboardShortcut(ev({ key: "c", metaKey: true }), "MacIntel"), {
+      action: "copy",
+      onlyWithSelection: false,
+    });
+    assert.deepEqual(terminalClipboardShortcut(ev({ key: "v", metaKey: true }), "MacIntel"), {
+      action: "paste",
+      onlyWithSelection: false,
+    });
+    assert.isNull(terminalClipboardShortcut(ev({ key: "c", ctrlKey: true }), "MacIntel"));
+  });
+
+  it("ignores non-keydown events, Alt combos, and unrelated keys", () => {
+    assert.isNull(
+      terminalClipboardShortcut(ev({ key: "v", ctrlKey: true, type: "keyup" }), "Win32"),
+    );
+    assert.isNull(terminalClipboardShortcut(ev({ key: "x", ctrlKey: true }), "Win32"));
+    assert.isNull(
+      terminalClipboardShortcut(ev({ key: "v", ctrlKey: true, altKey: true }), "Win32"),
+    );
+    assert.isNull(terminalClipboardShortcut(ev({ key: "v" }), "Win32"));
   });
 });
 

@@ -28,6 +28,7 @@ import { safeErrorLogAttributes } from "@t4code/client-runtime/errors";
 import { ensureLocalApi } from "~/localApi";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
+import { AsyncResult } from "effect/unstable/reactivity";
 import { primaryServerSettingsAtom, serverEnvironment } from "~/state/server";
 import { usePrimaryEnvironment } from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -251,15 +252,13 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
   const updateSettings = useCallback(
     (patch: Partial<UnifiedSettings>) => {
       const { serverPatch, clientPatch } = splitPatch(patch);
-
-      if (Object.keys(serverPatch).length > 0) {
-        if (environmentId) {
-          void persistServerSettings({
-            environmentId,
-            input: { patch: serverPatch },
-          });
-        }
-      }
+      const serverResult =
+        Object.keys(serverPatch).length > 0 && environmentId
+          ? persistServerSettings({
+              environmentId,
+              input: { patch: serverPatch },
+            })
+          : Promise.resolve(AsyncResult.success(undefined));
 
       if (Object.keys(clientPatch).length > 0) {
         persistClientSettings({
@@ -267,6 +266,8 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
           ...clientPatch,
         });
       }
+
+      return serverResult;
     },
     [environmentId, persistServerSettings],
   );

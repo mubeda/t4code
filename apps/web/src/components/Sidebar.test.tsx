@@ -14,7 +14,13 @@ import { createRoot, type Root } from "react-dom/client";
 import * as React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t4code/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  EnvironmentId,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t4code/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t4code/contracts/settings";
 import { createModelSelection } from "@t4code/shared/model";
 import { scopedThreadKey, scopeThreadRef } from "@t4code/client-runtime/environment";
@@ -2118,7 +2124,18 @@ staticDescribe("primary row", () => {
   });
 
   it("creates a default thread on demand when the server has not backfilled one", async () => {
-    h.state.projects = [projectA];
+    h.state.projects = [
+      makeProject("project-a", {
+        defaultModelSelection: createModelSelection(
+          ProviderInstanceId.make("claude"),
+          "claude-fable-stale",
+          [
+            { id: "effort", value: "medium" },
+            { id: "fastMode", value: false },
+          ],
+        ),
+      }),
+    ];
     h.state.threads = [threadIdle];
     h.state.environments = [environmentFixture({ environmentId: ENV_MAIN, label: "Main" })];
     h.state.serverConfigs = new Map([
@@ -2129,9 +2146,69 @@ staticDescribe("primary row", () => {
             {
               enabled: true,
               instanceId: ProviderInstanceId.make("claude"),
-              models: [{ slug: "claude-fable-5" }],
+              driver: "claudeAgent",
+              models: [
+                {
+                  slug: "claude-fable-stale",
+                  capabilities: {
+                    optionDescriptors: [
+                      {
+                        id: "effort",
+                        label: "Effort",
+                        type: "select",
+                        options: [
+                          { id: "medium", label: "Medium", isDefault: true },
+                          { id: "high", label: "High" },
+                        ],
+                        currentValue: "medium",
+                      },
+                      {
+                        id: "fastMode",
+                        label: "Fast",
+                        type: "boolean",
+                        currentValue: false,
+                      },
+                    ],
+                  },
+                },
+                {
+                  slug: "claude-fable-5",
+                  capabilities: {
+                    optionDescriptors: [
+                      {
+                        id: "effort",
+                        label: "Effort",
+                        type: "select",
+                        options: [
+                          { id: "medium", label: "Medium", isDefault: true },
+                          { id: "high", label: "High" },
+                        ],
+                        currentValue: "medium",
+                      },
+                      {
+                        id: "fastMode",
+                        label: "Fast",
+                        type: "boolean",
+                        currentValue: false,
+                      },
+                    ],
+                  },
+                },
+              ],
             },
           ],
+          settings: {
+            ...DEFAULT_SERVER_SETTINGS,
+            providerSessionDefaults: {
+              claudeAgent: {
+                model: "claude-fable-5",
+                options: [
+                  { id: "effort", value: "high" },
+                  { id: "fastMode", value: true },
+                ],
+              },
+            },
+          },
         },
       ],
     ]);
@@ -2149,6 +2226,10 @@ staticDescribe("primary row", () => {
     expect(createCall).toBeDefined();
     expect(createCall.input.input.kind).toBe("default");
     expect(createCall.input.input.modelSelection.model).toBe("claude-fable-5");
+    expect(createCall.input.input.modelSelection.options).toEqual([
+      { id: "effort", value: "high" },
+      { id: "fastMode", value: true },
+    ]);
     expect(h.spies.routerNavigate).toHaveBeenCalled();
   });
 

@@ -15,14 +15,14 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t4code/client-runtime/state/runtime";
-import type { EnvironmentId, ProjectId, ScopedThreadRef, ThreadId } from "@t4code/contracts";
-import {
-  DEFAULT_MODEL,
-  DEFAULT_PROVIDER_INTERACTION_MODE,
-  DEFAULT_RUNTIME_MODE,
-  ProviderInstanceId,
+import type {
+  EnvironmentId,
+  ModelSelection,
+  ProjectId,
+  ScopedThreadRef,
+  ThreadId,
 } from "@t4code/contracts";
-import { createModelSelection } from "@t4code/shared/model";
+import { DEFAULT_PROVIDER_INTERACTION_MODE, DEFAULT_RUNTIME_MODE } from "@t4code/contracts";
 import { nextTerminalId } from "@t4code/shared/terminalLabels";
 import { useCallback } from "react";
 
@@ -40,16 +40,15 @@ import { useAtomCommand } from "~/state/use-atom-command";
 
 export interface CreateChatPanelInput {
   /** Host thread ref — keys the center-panel store and provides the environment. */
-  hostRef: ScopedThreadRef;
+  readonly hostRef: ScopedThreadRef;
   /** Copied from the host thread so the panel shares its workspace. */
-  projectId: ProjectId;
-  worktreePath?: string | null;
-  branch?: string | null;
-  /** Chosen provider instance + model for the new panel thread. */
-  instanceId: string;
-  model?: string;
+  readonly projectId: ProjectId;
+  readonly worktreePath?: string | null;
+  readonly branch?: string | null;
+  /** Fully resolved provider instance, model, and options for the new panel thread. */
+  readonly modelSelection: ModelSelection;
   /** Display label used for the thread title and the tab. */
-  providerLabel: string;
+  readonly providerLabel: string;
 }
 
 export interface CenterPanelActions {
@@ -90,13 +89,9 @@ export function useCenterPanelActions(): CenterPanelActions {
 
   const createChatPanel = useCallback(
     async (input: CreateChatPanelInput): Promise<ThreadId | null> => {
-      const { hostRef, projectId, worktreePath, branch, instanceId, model, providerLabel } = input;
+      const { hostRef, projectId, worktreePath, branch, modelSelection, providerLabel } = input;
       const environmentId = hostRef.environmentId;
       const threadId = newThreadId();
-      const modelSelection = createModelSelection(
-        ProviderInstanceId.make(instanceId),
-        model || DEFAULT_MODEL,
-      );
       const result = await createThread({
         environmentId,
         input: {

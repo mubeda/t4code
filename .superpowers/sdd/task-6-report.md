@@ -842,3 +842,433 @@ vp run: 0/11 cache hit (0%)
 git diff --check
 exit 0
 ```
+
+---
+
+# Provider Defaults Stability QA — Task 6 Addendum
+
+Status: **DONE WITH CONCERNS**
+Source HEAD before/after QA: `779108a12f8b8f9e251b1865fceb74e864a423e6`
+
+Task 6 was executed without production or test edits. The current-worktree native app was launched
+twice with the exact isolated environment, controlled through fresh accessibility snapshots by
+exact PID, quit normally, and fully stopped.
+
+## Passed
+
+- Rust provider-inventory focused suite: 18 tests passed.
+- Shared defaults focused suite: 29 tests passed.
+- Named settings tests without the stale project filter: 44 tests passed.
+- Named chat/terminal tests without the stale project filter: 139 tests passed.
+- `vp check` and `vp run typecheck` passed.
+- Provider enable/disable and three refresh cycles kept supported controls mounted, ordered, and
+  value-stable.
+- All five Codex models and all eight Claude models were exercised; invalid cross-model effort
+  values fell back to a nonblank valid default.
+- Claude Fast was shown only on its four supported Opus descriptors and persisted while moving
+  among those models.
+- Closing/reopening Settings and a normal full app restart preserved the last valid Codex and
+  Claude defaults.
+- Both native dev commands exited 0 and final process cleanup found nothing left running.
+
+## Concerns and blocked cases
+
+1. The exact web commands containing `--project unit` fail before test collection because no Vite+
+   project named `unit` exists. The identical file lists pass without that filter.
+2. Rich Codex inventory does not expose `Fast by default` for any available model. This fails the
+   required always-mounted Codex Fast control and prevents Fast-on terminal validation.
+3. Rich-only Claude effort values are rewritten by the quick inventory after selection. A direct
+   native example is Sonnet 5 `ultrathink` immediately reverting to `high`.
+4. `T4CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD=1` does not add a project. The isolated app stays at
+   `No projects yet`, disabling chat creation. Therefore existing/new chat immutability, added
+   panels, and live terminal argv cases could not be executed.
+
+Full command outcomes, model inventories, lifecycle PIDs, screenshot names, and blocked-case
+details are in `.superpowers/qa/provider-defaults-stability/results.md`.
+
+---
+
+# Task 6 blocker fixes
+
+Implementation commit: `abdd938982144e6838d5a622f00a962b68648e4c`
+
+## Files changed and behavior
+
+- `packages/shared/src/model.ts` adds an explicit provider-default opt-in for preserving
+  prompt-injected descriptor selections. The default path still resets those raw values for the
+  live composer.
+- `packages/shared/src/providerSessionDefaults.ts` opts provider session defaults into that path
+  and merges a missing Codex `serviceTier` descriptor into live model metadata without replacing
+  authoritative effort or other descriptors.
+- `packages/shared/src/model.test.ts` and `packages/shared/src/providerSessionDefaults.test.ts`
+  cover the default reset behavior, explicit prompt-injected preservation, all three provider
+  default APIs, Codex-only Fast exposure, and model-change compatibility.
+- `apps/web/src/components/settings/ProviderSessionDefaultsControls.test.tsx` covers the Fast switch
+  for rich Codex metadata that omits `serviceTier`.
+- `apps/web/src/hooks/useHandleNewThread.test.tsx`,
+  `apps/web/src/components/ChatView.hooks.test.tsx`, and
+  `apps/web/src/components/chat/providerTerminalActions.test.ts` cover Codex Fast and Claude
+  `ultrathink` across new-chat, panel, and native terminal command boundaries.
+
+## Red and green evidence
+
+- RED: `vp test packages/shared/src/model.test.ts packages/shared/src/providerSessionDefaults.test.ts`
+  reported 7 expected failures: the opt-in still reset `ultrathink`, Codex Fast was absent from
+  controls/resolve/update, and Claude `ultrathink` was rewritten in controls/resolve/update.
+- RED: `vp test apps/web/src/components/settings/ProviderSessionDefaultsControls.test.tsx`
+  reported the expected missing `Fast by default` failure.
+- RED: the new-chat, panel, and provider-terminal focused tests showed Codex `serviceTier` being
+  dropped and Claude `ultrathink` becoming the descriptor default. After correcting the Claude
+  new-chat fixture to select the Claude instance, its focused red run failed only on the expected
+  `ultrathink` rewrite (alongside the expected Codex Fast loss).
+- GREEN: shared focused command passed 85 tests; settings UI passed 11 tests; new-chat, panel, and
+  provider-terminal command passed 141 tests.
+
+## Final command outcomes
+
+- `vp test packages/shared/src/model.test.ts packages/shared/src/providerSessionDefaults.test.ts`:
+  85 passed, 0 failed.
+- `vp test apps/web/src/components/settings/ProviderSessionDefaultsControls.test.tsx`: 11 passed,
+  0 failed.
+- `vp test apps/web/src/hooks/useHandleNewThread.test.tsx apps/web/src/components/ChatView.hooks.test.tsx apps/web/src/components/chat/providerTerminalActions.test.ts`:
+  141 passed, 0 failed.
+- `vp check`: exit 0; all 1562 files formatted and 1182 files linted with no warnings or errors.
+- `vp run typecheck`: exit 0.
+- `git diff --check`: exit 0.
+
+## Residual concerns
+
+None. Native UI QA was intentionally deferred to the root task as requested.
+
+---
+
+# Task 6 review fixes
+
+Implementation commit: `2b713467e9caa30475f367185bf8a56e3ab76ed6`
+
+## Behavior fixed
+
+- `getComposerProviderState` now keeps ordinary descriptor normalization unchanged for provider
+  dispatch while separately resolving a raw prompt-injected session default through the model's
+  `promptInjectedValues` metadata. A seeded Claude `ultrathink` default therefore supplies
+  `promptEffort: "ultrathink"`, while dispatched model options contain the native descriptor
+  default.
+- The first-send production boundary is covered through `ChatView`: a new draft seeded with the
+  Claude default sends `Ultrathink:\n...` and bootstraps the provider with native `high` effort.
+- Claude provider terminals omit metadata-declared prompt-injected efforts. With live metadata,
+  declared native values remain authoritative; during empty discovery, only the documented native
+  fallback values (`low`, `medium`, `high`, `xhigh`, and `max`) are emitted.
+- Existing live-composer/TraitsPicker prompt-controlled behavior remains unchanged.
+
+## RED evidence
+
+- Initial focused run: 126 passed and 3 failed as expected. The composer returned `high` instead of
+  raw `ultrathink`, the first `thread.startTurn` message lacked the `Ultrathink:` prefix, and the
+  provider terminal emitted `--effort ultrathink`.
+- Conservative fallback cycle: 22 passed and 1 failed as expected. With an empty model discovery
+  snapshot, the Claude terminal still emitted `--effort ultrathink`.
+
+## GREEN evidence
+
+- The initial focused composer, first-send, and terminal command passed all 129 tests after the
+  metadata-driven fix.
+- The conservative terminal-focused suite passed all 23 tests after adding the bounded native
+  fallback.
+- One test-fixture exact-optional-property type error and one descriptor-union narrowing type error
+  were corrected without changing the tested runtime behavior; the affected suites and type gate
+  were rerun successfully.
+
+## Final command outcomes
+
+- `vp test apps/web/src/components/chat/composerProviderState.test.tsx apps/web/src/components/chat/TraitsPicker.test.tsx`:
+  18 passed, 0 failed.
+- `vp test apps/web/src/components/ChatView.hooks.test.tsx apps/web/src/components/chat/providerTerminalActions.test.ts`:
+  120 passed, 0 failed.
+- `vp test packages/shared/src/model.test.ts packages/shared/src/providerSessionDefaults.test.ts`:
+  85 passed, 0 failed.
+- `vp check`: exit 0; all 1562 files formatted and 1182 files linted with no warnings or errors.
+- `vp run typecheck`: exit 0.
+- `git diff --check`: exit 0.
+
+## Residual concerns
+
+None for the requested semantics. During empty discovery, an unknown future Claude native effort is
+intentionally omitted until authoritative model metadata is available; this is the conservative
+failure mode and prevents unsupported flags from reaching the CLI.
+
+---
+
+# Task 6 live Codex Fast fix
+
+Implementation commit: `be6bbc1846a0c35fe7ce05b7b130ca97c8268049`
+
+## Behavior fixed
+
+- Codex provider-default normalization now augments a live `serviceTier` select descriptor with
+  missing invariant `default` and `fast` choices instead of treating the descriptor ID alone as
+  sufficient. Existing descriptor metadata, labels, choices, selection, and surrounding live
+  descriptors remain intact, and existing choices are not duplicated.
+- An incompatible Codex descriptor with the `serviceTier` ID is replaced in place with the safe
+  invariant select shape. The normalization remains Codex-only.
+- Shared controls, session resolution, settings rendering, and provider-terminal resolution now
+  keep Fast available when rich Codex metadata advertises only Standard/default. Explicit Standard
+  remains off, configured Fast remains `serviceTier=fast`, and terminal launch emits
+  `service_tier="fast"`.
+
+## RED evidence
+
+- `vp test packages/shared/src/providerSessionDefaults.test.ts apps/web/src/components/settings/ProviderSessionDefaultsControls.test.tsx apps/web/src/components/chat/providerTerminalActions.test.ts`:
+  70 passed and 6 failed as expected before the implementation. The failures showed partial Codex
+  metadata reporting Fast unsupported, resolving Fast back to `default`, dropping the Fast update
+  and terminal config, omitting the settings switch, and retaining an incompatible boolean
+  descriptor.
+- The partial non-Codex regression passed during RED, confirming that the failing behavior was
+  scoped to the missing Codex invariant rather than general `serviceTier` handling.
+
+## GREEN evidence
+
+- The same focused shared/settings/terminal command passed all 76 tests after the normalization
+  fix.
+- The broader focused command including shared model normalization passed all 126 tests.
+
+## Final command outcomes
+
+- `vp test packages/shared/src/model.test.ts packages/shared/src/providerSessionDefaults.test.ts apps/web/src/components/settings/ProviderSessionDefaultsControls.test.tsx apps/web/src/components/chat/providerTerminalActions.test.ts`:
+  126 passed, 0 failed.
+- `vp check`: exit 0; all 1562 files formatted and 1182 files linted with no warnings or errors.
+- `vp run typecheck`: exit 0.
+- `git diff --check`: exit 0.
+
+## Residual concerns
+
+None for the requested code paths. Native UI QA was intentionally not launched; the root task owns
+the exact-worktree retest.
+
+---
+
+# Task 6 session precedence fix
+
+Implementation commit: `6dfd3ec0a9c7bf679b938633ea5b9745422ba0c4`
+
+## Root cause and behavior fixed
+
+- `resolveProviderSessionDefault` ranked a matching `projectSelection` ahead of the configured
+  provider session default. Projects therefore carried their add-project model/options snapshot
+  into every later new-session boundary, even after the provider-wide defaults changed.
+- The resolver now chooses one complete source in this order: matching explicit selection,
+  configured provider default, matching project fallback, then live model fallback. Model and
+  options always come from that same source.
+- Project selection still determines provider-instance routing at the creation boundaries. When
+  no configured provider default exists, the matching project selection remains the fallback.
+- Existing-session immutability, provider fallback reporting, custom-instance routing, offline
+  behavior, and Claude prompt-injected handling remain covered by the focused suites.
+
+## RED evidence
+
+Command:
+
+```text
+vp test packages/shared/src/providerSessionDefaults.test.ts apps/web/src/hooks/useHandleNewThread.test.tsx apps/web/src/components/ChatView.hooks.test.tsx apps/web/src/components/CreateWorktreeDialog.test.tsx apps/web/src/components/Sidebar.test.tsx
+```
+
+Exit: `1`. Five test files reported 7 expected failures and 259 passing tests. The shared resolver,
+normal new-thread, routed-provider new-thread, added chat panel, new worktree, and default-thread
+boundaries all received stale project model/options instead of the configured provider source.
+Representative failures received `gpt-stale` + Low + Standard where the assertions required
+`gpt-configured` + Medium + Fast. The existing immutable-session and no-config project-fallback
+tests remained green.
+
+## GREEN and final verification
+
+- Focused command above: 5 files passed; 266 tests passed; exit 0.
+- `vp check`: all 1562 files correctly formatted; no warnings or lint errors in 1182 files; exit 0.
+- `vp run typecheck`: exit 0.
+- `git diff --check`: exit 0.
+
+No native UI was launched. Existing QA artifacts and report content were preserved.
+
+---
+
+# Task 6 composer Fast invariant fix
+
+Implementation commit: `f20ce3d3c54c35488eb0ebaf1f53cef77012c480`
+
+## Root cause and behavior fixed
+
+- Live Codex model parsing omitted the `serviceTier` descriptor when the CLI returned no tiers and
+  duplicated `default` when partial metadata already contained it. Parsing now always emits one
+  explicit `default` and one `fast`, deduplicates every live tier ID, and preserves live labels,
+  descriptions, extra tiers, and the valid live default/current value.
+- Client normalization previously enforced this invariant only inside provider session defaults.
+  The shared model layer now owns Codex capability normalization, and Settings, ChatComposer, and
+  TraitsPicker all consume it. Partial and older snapshots keep configured Fast; empty/custom
+  snapshots recover it when a selection exists; non-Codex capabilities remain untouched.
+- A service-tier-only selection is excluded from prompt-effort inference, so the defensive empty
+  snapshot path dispatches Fast without interpreting `fast` as reasoning effort.
+- Canonical Codex discovery/probe fixtures now record the invariant Fast choice. Existing settings,
+  session defaults, Claude prompt injection, added panels, worktrees, and provider-terminal paths
+  remain covered.
+
+## RED evidence
+
+- `cargo test -p t4code-server --lib provider::codex::model::tests::live_models_always_expose_unique_standard_and_fast_service_tiers -- --nocapture`:
+  exit 101. The no-tier live model had no `serviceTier` descriptor and panicked at `Codex service
+  tier invariant`.
+- `vp test apps/web/src/components/chat/composerProviderState.test.tsx apps/web/src/components/chat/TraitsPicker.test.tsx apps/web/src/components/ChatView.hooks.test.tsx`:
+  115 passed and 3 failed. Composer state and the real first-send `thread.startTurn` boundary both
+  changed configured `{ serviceTier: "fast" }` to `default`; Traits visibility was false for an
+  empty Codex snapshot with configured Fast.
+- The follow-up empty-snapshot regression failed with `promptEffort: "fast"` instead of `null`,
+  proving that a service-tier-only descriptor needed to stay out of effort inference.
+
+## GREEN and final verification
+
+- Rust Codex model unit tests: 4 passed, 0 failed.
+- Rust provider inventory tests: 18 passed, 0 failed.
+- Rust `provider_codex` integration/fixture corpus: 8 passed, 0 failed.
+- Shared model/session-default plus settings, composer, TraitsPicker, ChatView first-send, panel,
+  worktree, add-project, and terminal tests: 13 files passed; 347 tests passed; 0 failed.
+- `vp check`: all 1562 files correctly formatted; no warnings or lint errors in 1182 files; exit 0.
+- `vp run typecheck`: exit 0. Existing finite-number suggestions were unchanged and non-failing.
+- `git diff --check`: exit 0.
+
+No native UI was launched. Existing QA screenshots and all prior report content were preserved.
+
+---
+
+# Task 6 Claude panel visible default fix
+
+Implementation commit: `91275d13aef0fe089eb48a25eac1e73ede900755`
+
+## Root cause and behavior fixed
+
+- The live composer correctly kept a raw prompt-injected Claude session default separate from the
+  normalized native dispatch options, but only prompt text activated the Ultrathink presentation.
+  `TraitsPicker` therefore rendered the normalized native default, High, and
+  `getComposerProviderState` omitted the Ultrathink frame/icon classes until a prefix was present.
+- Traits presentation now resolves the raw primary selection through the model descriptor's
+  `promptInjectedValues` metadata. A newly seeded Sonnet 5 panel with an empty prompt visibly shows
+  Ultrathink in both the trigger and selected radio item.
+- Composer presentation treats the resolved raw `ultrathink` value as active before first send.
+  The full `ChatComposer` boundary verifies the frame, surface, picker-icon class, prompt effort,
+  and native High dispatch options together.
+- Prompt-body locking remains based only on actual prompt text. Choosing High from the raw default
+  persists High without adding or stripping a prefix. Existing manual prefix insertion,
+  body-protection, first-send formatting, one-shot reset, and terminal argument behavior are
+  unchanged.
+
+## RED evidence
+
+Command:
+
+```text
+vp test apps/web/src/components/chat/TraitsPicker.test.tsx apps/web/src/components/chat/composerProviderState.test.tsx apps/web/src/components/chat/ChatComposer.test.tsx
+```
+
+Exit: `1`. The command reported 4 expected failures and 104 passing tests:
+
+- both raw-default Traits tests rendered High instead of Ultrathink;
+- composer state returned `promptEffort: "ultrathink"` and native High dispatch options but omitted
+  all three Ultrathink presentation classes;
+- the full ChatComposer boundary rendered High and omitted the Ultrathink frame, surface, and
+  provider-icon presentation.
+
+## GREEN and final verification
+
+- Initial focused GREEN: the three RED suites passed all 108 tests.
+- Broader composer/Traits/ChatView/panel/terminal/shared-model command: 8 files passed; 323 tests
+  passed; 0 failed. This includes the added-panel seed, first-send prefix and native High dispatch,
+  manual prefix/body protection, one-shot reset, center-panel state/actions, and provider terminal
+  vectors.
+- `vp check`: all 1562 files correctly formatted; no warnings or lint errors in 1182 files; exit
+  0.
+- `vp run typecheck`: exit 0. Existing finite-number suggestions remained non-failing.
+- `git diff --check`: exit 0.
+
+No native UI was launched. Existing QA artifacts and all prior report content were preserved.
+
+---
+
+# Task 6 final native retest
+
+Final QA source: `0b9df1349c3bee16aa93d2c4491ce5d794b53cbf`
+
+Full-matrix parent source: `0497caa3a308c9a85b3ebd0c6de5729ae98ef89d`
+
+Outcome: **PASS**
+
+The complete native workflow ran first on `0497caa3a3` using an isolated home and exact
+current-worktree desktop PIDs. It covered visible hidden-worktree project addition, Chat A
+immutability, Chat B and added-panel defaults, all five Codex and eight Claude models, provider
+off/on controls, three immediate/settled refresh cycles, settings-file and restart persistence,
+Claude prompt injection, and every requested terminal vector. That run exposed the final affected
+defect: a new Sonnet 5 panel displayed native High rather than the persisted prompt-injected
+Ultrathink default.
+
+The affected diff was retested at exact final HEAD after a normal close/reopen and exact-command
+restart. A genuine new Claude panel showed Sonnet 5 and `Ultrathink · 200k · claude` before any
+prompt text existed. Without touching the effort picker, typing `Reply with OK only.` and sending
+produced `Ultrathink: Reply with OK only.`, returned `OK`, reset the one-shot UI to High, and
+launched Claude with `--model claude-sonnet-5` and no unsupported Ultrathink effort flag. A fresh
+Codex panel showed Spark/High/Fast and its UI-launched terminal emitted model, High effort, and
+`service_tier="fast"`.
+
+The full terminal matrix passed: Codex Fast maps to `service_tier="fast"`, Standard maps to
+`service_tier="default"`, Claude High maps to native `--effort high`, Claude Ultrathink omits the
+unsupported effort flag, and OpenCode omits unsupported effort/Fast arguments. Exact identities,
+screenshots, redacted argv, superseded-evidence exclusions, and lifecycle cleanup are recorded in
+`.superpowers/qa/provider-defaults-stability/results.md`.
+
+Final gates passed: `vp check`, `vp run typecheck`, and `git diff --check`. No production/test
+source was edited during native QA, no QA commit was created, and final cleanup left no installed
+or worktree T4Code process.
+
+---
+
+# Task 6 final reviewed native verification
+
+Final reviewed source: `7ce2163bcb`
+
+Outcome: **PASS**
+
+The full provider-defaults change was reviewed after the final reconciliation fixes. No critical,
+important, or minor findings remained. The exact reviewed source then passed `vp test` (492 files,
+6,634 tests), `vp check` (1,562 formatted files and 1,182 linted files), `vp run typecheck` (11
+tasks), and `git diff --check`.
+
+Native verification used only the current worktree binaries. The desktop process was
+`/Users/admin/.codex/worktrees/6f54/t4code/target/debug/t4code-desktop` and the matching server was
+`/Users/admin/.codex/worktrees/6f54/t4code/target/debug/t4code serve --no-browser`; no installed
+T4Code application process was present.
+
+The Providers page preserved Codex GPT-5.5, xhigh, and Fast together with Claude Sonnet 5 and high
+through cross-provider edits, Codex disable/enable, provider refresh, and a normal application
+restart. Disabled provider controls stayed mounted but disabled, and Codex effort remained visible
+through every transition. A draft created before enabling Fast remained Standard, while the next
+new chat showed `GPT-5.5 / Extra High / Fast` and returned `OK`.
+
+UI-created provider terminals inherited the same defaults. The Codex process launched with
+`--model gpt-5.5`, `model_reasoning_effort="xhigh"`, and `service_tier="fast"`; the Claude process
+launched with `--model claude-sonnet-5 --effort high`. Final screenshots are retained in the
+gitignored `.superpowers/qa/provider-defaults-stability/final-evidence/` directory.
+
+---
+
+# Task 6 uniform provider controls follow-up
+
+Outcome: **PASS**
+
+Every provider card now keeps the same Default model, Default effort, and Fast by default controls
+mounted in the same row. Unsupported effort controls remain visible, disabled, and display `Not
+supported`; unsupported Fast switches remain visible, off, and disabled. When no selectable model
+inventory exists, the model control also remains visible but disabled. Disabling a provider
+disables its supported controls without changing the card layout or removing any control.
+
+The exact current-worktree desktop PID was visually verified across Codex, Claude, Cursor, Grok,
+and OpenCode. Codex exposed all three enabled controls, Claude exposed its enabled model/effort and
+disabled Fast control, and the remaining unsupported effort/Fast controls stayed visible and
+disabled. Claude off/on and a provider refresh preserved the full row.
+
+Verification passed: 492 test files and 6,636 tests, `vp check`, `vp run typecheck`, and `git diff
+--check`. The final screenshot is retained as
+`.superpowers/qa/provider-defaults-stability/final-evidence/uniform-controls-all-providers.png`.

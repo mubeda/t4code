@@ -467,6 +467,48 @@ export function isTerminalClearShortcut(
   );
 }
 
+export type TerminalClipboardAction = "copy" | "paste";
+
+/**
+ * Classifies a keydown as a terminal clipboard shortcut, or returns null.
+ *
+ * Copy/paste use the platform's primary modifier (Cmd on macOS, Ctrl
+ * elsewhere). Paste and the explicit Shift-copy variant always apply; a bare
+ * Ctrl+C must remain SIGINT unless text is selected, which the caller enforces
+ * via `onlyWithSelection`.
+ */
+export function terminalClipboardShortcut(
+  event: ShortcutEventLike,
+  platform = navigator.platform,
+): { action: TerminalClipboardAction; onlyWithSelection: boolean } | null {
+  if (event.type !== undefined && event.type !== "keydown") {
+    return null;
+  }
+  if (event.altKey) {
+    return null;
+  }
+
+  const mac = isMacPlatform(platform);
+  const primary = mac ? event.metaKey : event.ctrlKey;
+  if (!primary) {
+    return null;
+  }
+  // On macOS the primary modifier is Cmd, so a stray Ctrl must not also match.
+  if (mac && event.ctrlKey) {
+    return null;
+  }
+
+  const key = event.key.toLowerCase();
+  if (key === "v") {
+    return { action: "paste", onlyWithSelection: false };
+  }
+  if (key === "c") {
+    const explicitCopy = mac || event.shiftKey;
+    return { action: "copy", onlyWithSelection: !explicitCopy };
+  }
+  return null;
+}
+
 export function terminalDeleteShortcutData(
   event: ShortcutEventLike,
   platform = navigator.platform,

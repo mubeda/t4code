@@ -15,6 +15,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderInstanceConfig,
+  type ProviderSessionDefault,
   type ServerProvider,
 } from "@t4code/contracts";
 import type { DriverOption } from "./providerDriverMeta";
@@ -205,6 +206,13 @@ vi.mock("./ProviderModelsSection", () => ({
   ProviderModelsSection: (props: Record<string, unknown>) => {
     ui.record("ProviderModelsSection", props);
     return <div data-provider-models-section />;
+  },
+}));
+
+vi.mock("./ProviderSessionDefaultsControls", () => ({
+  ProviderSessionDefaultsControls: (props: Record<string, unknown>) => {
+    ui.record("ProviderSessionDefaultsControls", props);
+    return <div data-provider-session-defaults />;
   },
 }));
 
@@ -411,6 +419,58 @@ describe("header + status", () => {
     expect(render(baseProps({ liveProvider: liveProvider({ version: "1.2.3" }) }))).toContain(
       "v1.2.3",
     );
+  });
+
+  it("renders session defaults after status and before the collapsible content", () => {
+    const sessionDefaults: ProviderSessionDefault = { model: "model-alpha" };
+    const markup = render(
+      baseProps({
+        sessionDefaults,
+        onSessionDefaultsChange: vi.fn(),
+      }),
+    );
+
+    const statusIndex = markup.indexOf("Checking provider status");
+    const defaultsIndex = markup.indexOf("data-provider-session-defaults");
+    const collapsibleIndex = markup.indexOf("data-collapsible");
+    const collapsibleContentIndex = markup.indexOf("data-collapsible-content");
+
+    expect(statusIndex).toBeGreaterThanOrEqual(0);
+    expect(defaultsIndex).toBeGreaterThan(statusIndex);
+    expect(collapsibleIndex).toBeGreaterThan(defaultsIndex);
+    expect(collapsibleContentIndex).toBeGreaterThan(defaultsIndex);
+    expect(ui.find("ProviderSessionDefaultsControls")).toMatchObject({
+      driver: CODEX,
+      models: [],
+      value: sessionDefaults,
+      disabled: false,
+    });
+  });
+
+  it("omits session defaults when no change callback is provided", () => {
+    const markup = render(baseProps({ sessionDefaults: { model: "model-alpha" } }));
+
+    expect(markup).not.toContain("data-provider-session-defaults");
+    expect(ui.filter("ProviderSessionDefaultsControls")).toHaveLength(0);
+  });
+
+  it("renders as an independent rounded provider panel", () => {
+    const markup = render(baseProps());
+
+    expect(markup).toContain(
+      'class="relative overflow-visible rounded-2xl border bg-card text-card-foreground shadow-sm/4"',
+    );
+  });
+
+  it("disables session defaults when the provider instance is disabled", () => {
+    render(
+      baseProps({
+        instance: instanceConfig({ enabled: false }),
+        onSessionDefaultsChange: vi.fn(),
+      }),
+    );
+
+    expect(ui.find("ProviderSessionDefaultsControls").disabled).toBe(true);
   });
 });
 

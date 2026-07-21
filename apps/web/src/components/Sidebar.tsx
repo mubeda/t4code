@@ -46,9 +46,9 @@ import { restrictToFirstScrollableAncestor, restrictToVerticalAxis } from "@dnd-
 import { CSS } from "@dnd-kit/utilities";
 import {
   type ContextMenuItem,
-  DEFAULT_MODEL,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  DEFAULT_SERVER_SETTINGS,
   EDITORS,
   ProjectId,
   ProviderInstanceId,
@@ -57,7 +57,6 @@ import {
   type SidebarProjectGroupingMode,
   ThreadId,
 } from "@t4code/contracts";
-import { createModelSelection } from "@t4code/shared/model";
 import {
   parseScopedThreadKey,
   scopedProjectKey,
@@ -86,6 +85,7 @@ import { APP_BASE_NAME, APP_STAGE_LABEL } from "../branding";
 import { useOpenPrLink } from "../lib/openPullRequestLink";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { cn, isMacPlatform, newThreadId } from "../lib/utils";
+import { resolveProviderSessionSelectionForInstance } from "../providerSessionSelection";
 import {
   selectIsPinned,
   selectIsUnread,
@@ -2025,17 +2025,22 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     // TODO(orca-port): this fallback-provider selection is a client-side
     // safety net for the rare pre-backfill case; revisit once every project
     // is guaranteed a default thread server-side.
-    const fallbackProvider = serverConfigs
-      .get(project.environmentId)
-      ?.providers.find((provider) => provider.enabled);
-    const modelSelection =
-      project.defaultModelSelection ??
-      (fallbackProvider
-        ? createModelSelection(
-            fallbackProvider.instanceId,
-            fallbackProvider.models[0]?.slug ?? DEFAULT_MODEL,
-          )
-        : createModelSelection(ProviderInstanceId.make("codex"), DEFAULT_MODEL));
+    const serverConfig = serverConfigs.get(project.environmentId);
+    const settings = serverConfig?.settings ?? DEFAULT_SERVER_SETTINGS;
+    const fallbackProvider = serverConfig?.providers.find((provider) => provider.enabled);
+    const targetInstanceId =
+      project.defaultModelSelection?.instanceId ??
+      fallbackProvider?.instanceId ??
+      ProviderInstanceId.make("codex");
+    const resolution = resolveProviderSessionSelectionForInstance({
+      instanceId: targetInstanceId,
+      providers: serverConfig?.providers ?? [],
+      settings,
+      projectSelection: project.defaultModelSelection,
+    });
+    if (resolution.fallback) {
+      console.warn("Provider session default fallback", resolution.fallback);
+    }
     void (async () => {
       const result = await createDefaultThread({
         environmentId: project.environmentId,
@@ -2043,7 +2048,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           threadId,
           projectId: project.id,
           title: project.displayName,
-          modelSelection,
+          modelSelection: resolution.modelSelection,
           runtimeMode: DEFAULT_RUNTIME_MODE,
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           kind: "default",

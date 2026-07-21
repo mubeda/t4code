@@ -19,6 +19,7 @@ import {
   getProviderOptionBooleanSelectionValue,
   getProviderOptionCurrentLabel,
   getProviderOptionCurrentValue,
+  getProviderCapabilityDescriptors,
   getProviderOptionDescriptors,
   getProviderOptionSelectionValue,
   getProviderOptionStringSelectionValue,
@@ -83,6 +84,178 @@ const claudeCaps: ModelCapabilities = createModelCapabilities({
 });
 
 describe("descriptor helpers", () => {
+  it("enforces Codex service tiers across partial and empty capability snapshots only", () => {
+    const partialCaps = createModelCapabilities({
+      optionDescriptors: [
+        {
+          id: "reasoningEffort",
+          label: "Reasoning",
+          type: "select",
+          options: [
+            { id: "medium", label: "Medium", isDefault: true },
+            { id: "high", label: "High" },
+          ],
+        },
+        {
+          id: "serviceTier",
+          label: "Live tier",
+          description: "Live descriptor",
+          type: "select",
+          options: [
+            { id: "default", label: "Live Standard", isDefault: true },
+            { id: "priority", label: "Priority", description: "Priority processing" },
+          ],
+          currentValue: "default",
+        },
+      ],
+    });
+    const selections = [
+      { id: "reasoningEffort", value: "high" },
+      { id: "serviceTier", value: "fast" },
+    ] as const;
+
+    const codexDescriptors = getProviderCapabilityDescriptors({
+      provider: CODEX,
+      caps: partialCaps,
+      selections,
+    });
+    expect(codexDescriptors).toEqual([
+      expect.objectContaining({ id: "reasoningEffort", currentValue: "high" }),
+      {
+        id: "serviceTier",
+        label: "Live tier",
+        description: "Live descriptor",
+        type: "select",
+        options: [
+          { id: "default", label: "Live Standard", isDefault: true },
+          { id: "priority", label: "Priority", description: "Priority processing" },
+          { id: "fast", label: "Fast" },
+        ],
+        currentValue: "fast",
+      },
+    ]);
+
+    expect(
+      getProviderCapabilityDescriptors({
+        provider: CODEX,
+        caps: {},
+        selections: [
+          { id: "reasoningEffort", value: "xhigh" },
+          { id: "serviceTier", value: "fast" },
+        ],
+      }),
+    ).toEqual([
+      {
+        id: "reasoningEffort",
+        label: "Reasoning",
+        type: "select",
+        options: [
+          { id: "none", label: "None" },
+          { id: "minimal", label: "Minimal" },
+          { id: "low", label: "Low" },
+          { id: "medium", label: "Medium", isDefault: true },
+          { id: "high", label: "High" },
+          { id: "xhigh", label: "Extra High" },
+          { id: "max", label: "Max" },
+          { id: "ultra", label: "Ultra" },
+        ],
+        currentValue: "xhigh",
+      },
+      {
+        id: "serviceTier",
+        label: "Service Tier",
+        type: "select",
+        options: [
+          { id: "default", label: "Standard", isDefault: true },
+          { id: "fast", label: "Fast" },
+        ],
+        currentValue: "fast",
+      },
+    ]);
+
+    expect(
+      getProviderCapabilityDescriptors({
+        provider: CODEX,
+        caps: createModelCapabilities({
+          optionDescriptors: [
+            {
+              id: "reasoningEffort",
+              label: "Broken effort",
+              type: "boolean",
+              currentValue: false,
+            },
+            {
+              id: "reasoningEffort",
+              label: "Duplicate effort",
+              type: "select",
+              options: [],
+            },
+          ],
+        }),
+        selections: [{ id: "reasoningEffort", value: "high" }],
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        id: "reasoningEffort",
+        type: "select",
+        currentValue: "high",
+      }),
+      expect.objectContaining({ id: "serviceTier", type: "select" }),
+    ]);
+
+    const repairedMalformedValues = getProviderCapabilityDescriptors({
+      provider: CODEX,
+      caps: createModelCapabilities({
+        optionDescriptors: [
+          {
+            id: "reasoningEffort",
+            label: "Live effort",
+            type: "select",
+            options: [
+              { id: "medium", label: "Medium", isDefault: true },
+              { id: "medium", label: "Duplicate Medium" },
+              { id: "high", label: "High" },
+            ],
+            currentValue: "retired-effort",
+          },
+          {
+            id: "serviceTier",
+            label: "Live tier",
+            type: "select",
+            options: [],
+            currentValue: "retired-tier",
+          },
+        ],
+      }),
+    });
+    expect(repairedMalformedValues).toEqual([
+      expect.objectContaining({
+        id: "reasoningEffort",
+        currentValue: "medium",
+        options: [
+          { id: "medium", label: "Medium", isDefault: true },
+          { id: "high", label: "High" },
+        ],
+      }),
+      expect.objectContaining({
+        id: "serviceTier",
+        currentValue: "default",
+        options: [
+          { id: "default", label: "Standard", isDefault: true },
+          { id: "fast", label: "Fast" },
+        ],
+      }),
+    ]);
+
+    expect(
+      getProviderCapabilityDescriptors({
+        provider: CLAUDE,
+        caps: partialCaps,
+        selections,
+      }),
+    ).toEqual(getProviderOptionDescriptors({ caps: partialCaps, selections }));
+  });
+
   it("clones descriptor-owned arrays without mutating caller values", () => {
     const options = [{ id: "high", label: "High", isDefault: true }];
     const promptInjectedValues = ["ultrathink"];
@@ -303,6 +476,31 @@ describe("getProviderOptionDescriptors edge cases", () => {
     })[0]!;
     if (descriptor.type === "select") {
       expect(descriptor.currentValue).toBe("high");
+    }
+  });
+
+  it("preserves a prompt-injected selection only when explicitly requested", () => {
+    const caps = createModelCapabilities({
+      optionDescriptors: [
+        {
+          id: "effort",
+          label: "Reasoning",
+          type: "select",
+          options: [
+            { id: "high", label: "High", isDefault: true },
+            { id: "ultrathink", label: "Ultrathink" },
+          ],
+          promptInjectedValues: ["ultrathink"],
+        },
+      ],
+    });
+    const descriptor = getProviderOptionDescriptors({
+      caps,
+      selections: [{ id: "effort", value: "ultrathink" }],
+      preservePromptInjectedSelections: true,
+    })[0]!;
+    if (descriptor.type === "select") {
+      expect(descriptor.currentValue).toBe("ultrathink");
     }
   });
 
