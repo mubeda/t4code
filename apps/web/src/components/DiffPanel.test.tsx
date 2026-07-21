@@ -12,6 +12,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { ReactElement, ReactNode } from "react";
 import { EnvironmentId, ProjectId, ThreadId, TurnId } from "@t4code/contracts";
+import type { Thread } from "../types";
 
 const h = vi.hoisted(() => {
   const state = {
@@ -363,6 +364,20 @@ function render(mode?: "inline" | "sheet" | "sidebar" | "embedded"): string {
   );
 }
 
+function renderForDraft(draftThread: unknown): string {
+  h.captured = {};
+  h.capturedList.length = 0;
+  h.effects.length = 0;
+  h.stateIndex = 0;
+  return renderToStaticMarkup(
+    <DiffPanel
+      mode="embedded"
+      composerDraftTarget={routeRef as never}
+      thread={draftThread as Thread}
+    />,
+  );
+}
+
 function capturedAll<T = Record<string, unknown>>(name: string): T[] {
   return h.capturedList.filter((entry) => entry.name === name).map((entry) => entry.props as T);
 }
@@ -456,6 +471,21 @@ describe("DiffPanel: empty states", () => {
     h.turnDiffSummaries = [];
     const markup = render();
     expect(markup).toContain("No completed turns yet.");
+  });
+
+  it("renders branch changes for an unstarted worktree draft", () => {
+    h.routeThreadRef = null;
+    h.thread = null;
+
+    const markup = renderForDraft({
+      id: threadId,
+      environmentId,
+      projectId,
+      worktreePath: "/repo/.worktrees/feature",
+    });
+
+    expect(markup).toContain('data-mock="annotatable-code-view"');
+    expect(markup).not.toContain("Select a thread to inspect turn diffs.");
   });
 });
 
