@@ -50,6 +50,7 @@ const h = vi.hoisted(() => {
     // module collaborators
     desktopNavigateCalls: [] as Array<[string, string]>,
     desktopNavigateRejects: false,
+    navigationOrder: [] as string[],
     openPreviewSessionCalls: [] as unknown[],
     rememberPreviewUrlCalls: [] as unknown[],
     updateSnapshotCalls: [] as unknown[],
@@ -138,6 +139,7 @@ vi.mock("~/browser/browserTargetResolver", () => ({
 
 vi.mock("~/browser/desktopTabLifetime", () => ({
   navigateDesktopTab: (tabId: string, url: string) => {
+    h.navigationOrder.push("desktop");
     h.desktopNavigateCalls.push([tabId, url]);
     return h.desktopNavigateRejects
       ? Promise.reject(new Error("nav boom"))
@@ -165,6 +167,7 @@ vi.mock("~/state/use-atom-command", () => ({
       h.commandCalls.push({ label, input });
       if (label === "resize") return Promise.resolve(h.resizeResult);
       if (label === "navigate") {
+        h.navigationOrder.push("server");
         return Promise.resolve({
           _tag: "Success",
           value: {
@@ -485,6 +488,7 @@ beforeEach(() => {
   h.copyArtifactRejects = false;
   h.desktopNavigateCalls.length = 0;
   h.desktopNavigateRejects = false;
+  h.navigationOrder.length = 0;
   h.openPreviewSessionCalls.length = 0;
   h.rememberPreviewUrlCalls.length = 0;
   h.updateSnapshotCalls.length = 0;
@@ -671,6 +675,7 @@ describe("navigation handlers", () => {
     await flush();
 
     expect(h.desktopNavigateCalls).toEqual([["tab-1", "http://resolved.local/"]]);
+    expect(h.navigationOrder).toEqual(["server", "desktop"]);
     expect(h.commandCalls).toContainEqual({
       label: "navigate",
       input: {

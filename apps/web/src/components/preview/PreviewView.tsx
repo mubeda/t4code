@@ -123,10 +123,10 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
       try {
         const resolvedUrl = resolveDiscoveredServerUrl(threadRef.environmentId, next);
         if (tabId && previewBridge) {
-          // Drive the webview imperatively, then commit the same navigation
-          // through the server so a fast native load cannot leave a new tab
-          // stuck on its canonical Idle snapshot before status events arrive.
-          await navigateDesktopTab(tabId, resolvedUrl);
+          // Commit the canonical snapshot before driving the native webview.
+          // Native Loading/Success events can then enrich that snapshot
+          // without a fast load leaving a new tab stuck on Idle or allowing
+          // the initial server response to overwrite the final page title.
           const result = await navigate({
             environmentId: threadRef.environmentId,
             input: {
@@ -137,6 +137,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
           });
           if (result._tag === "Failure") throw squashAtomCommandFailure(result);
           updatePreviewServerSnapshot(threadRef, result.value);
+          await navigateDesktopTab(tabId, resolvedUrl);
           rememberPreviewUrl(threadRef, resolvedUrl);
         } else {
           await openPreviewSession({
