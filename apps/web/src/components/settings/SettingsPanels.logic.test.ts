@@ -3,12 +3,66 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderInstanceConfig,
+  type ProviderSessionDefault,
+  type ServerSettings,
 } from "@t4code/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import {
   buildProviderInstanceUpdatePatch,
+  createProviderSessionDefaultsDraft,
   formatDiagnosticsDescription,
 } from "./SettingsPanels.logic";
+
+const CODEX = ProviderDriverKind.make("codex");
+const CLAUDE = ProviderDriverKind.make("claudeAgent");
+
+function defaultValue(model: string): ProviderSessionDefault {
+  return { model };
+}
+
+function defaults(
+  codex = "codex-initial",
+  claude = "claude-initial",
+): ServerSettings["providerSessionDefaults"] {
+  return {
+    [CODEX]: defaultValue(codex),
+    [CLAUDE]: defaultValue(claude),
+  };
+}
+
+describe("createProviderSessionDefaultsDraft", () => {
+  it("keeps S2 over an acknowledged S1 snapshot and clears at the exact S2 acknowledgment", () => {
+    const initial = defaults();
+    const draft = createProviderSessionDefaultsDraft(initial);
+    const submittedS1 = draft.submit(CODEX, defaultValue("codex-s1"));
+    const submittedS2 = draft.submit(CODEX, defaultValue("codex-s2"));
+
+    expect(draft.reconcile(submittedS1)).toEqual(submittedS2);
+    expect(draft.reconcile(submittedS1)).toEqual(submittedS2);
+    expect(draft.reconcile(submittedS2)).toEqual(submittedS2);
+  });
+
+  it("accepts a rollback or divergent same-driver authority instead of masking it", () => {
+    const initial = defaults();
+    const rollbackDraft = createProviderSessionDefaultsDraft(initial);
+    rollbackDraft.submit(CODEX, defaultValue("codex-pending"));
+    expect(rollbackDraft.reconcile(initial)).toEqual(initial);
+
+    const externalDraft = createProviderSessionDefaultsDraft(initial);
+    externalDraft.submit(CODEX, defaultValue("codex-pending"));
+    const external = defaults("codex-external");
+    expect(externalDraft.reconcile(external)).toEqual(external);
+  });
+
+  it("accepts a later external update after the latest local edit is acknowledged", () => {
+    const draft = createProviderSessionDefaultsDraft(defaults());
+    const submitted = draft.submit(CLAUDE, defaultValue("claude-submitted"));
+
+    expect(draft.reconcile(submitted)).toEqual(submitted);
+    const external = defaults("codex-external", "claude-external");
+    expect(draft.reconcile(external)).toEqual(external);
+  });
+});
 
 describe("formatDiagnosticsDescription", () => {
   it("collapses trace and metric URLs that share the same OTEL base path", () => {

@@ -1146,10 +1146,23 @@ export function GeneralSettingsPanel() {
 }
 
 export function ProviderSettingsPanel() {
+  const primaryEnvironment = usePrimaryEnvironment();
+  return (
+    <EnvironmentScopedProviderSettingsPanel
+      key={primaryEnvironment?.environmentId ?? "disconnected"}
+      primaryEnvironment={primaryEnvironment}
+    />
+  );
+}
+
+function EnvironmentScopedProviderSettingsPanel({
+  primaryEnvironment,
+}: {
+  readonly primaryEnvironment: ReturnType<typeof usePrimaryEnvironment>;
+}) {
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
   const serverProviders = useAtomValue(primaryServerProvidersAtom);
-  const primaryEnvironment = usePrimaryEnvironment();
   const refreshServerProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -1171,9 +1184,7 @@ export function ProviderSettingsPanel() {
   );
 
   useEffect(() => {
-    const reconciled = sessionDefaultsDraftRef.current.reconcile(
-      settings.providerSessionDefaults,
-    );
+    const reconciled = sessionDefaultsDraftRef.current.reconcile(settings.providerSessionDefaults);
     setProviderSessionDefaults((current) =>
       Equal.equals(current, reconciled) ? current : reconciled,
     );

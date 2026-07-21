@@ -18,6 +18,12 @@ export interface ProviderSessionDefaultsDraft {
   readonly reconcile: (authoritative: ProviderSessionDefaultsMap) => ProviderSessionDefaultsMap;
 }
 
+interface ProviderSessionDefaultsSubmission {
+  readonly driver: ProviderDriverKind;
+  readonly next: ProviderSessionDefault;
+  readonly snapshot: ProviderSessionDefaultsMap;
+}
+
 function sameProviderSessionDefault(
   left: ProviderSessionDefault | undefined,
   right: ProviderSessionDefault | undefined,
@@ -35,29 +41,75 @@ function sameProviderSessionDefault(
   );
 }
 
+function cloneProviderSessionDefault(value: ProviderSessionDefault): ProviderSessionDefault {
+  return {
+    ...value,
+    ...(value.options ? { options: value.options.map((selection) => ({ ...selection })) } : {}),
+  };
+}
+
+function cloneProviderSessionDefaultsMap(
+  input: ProviderSessionDefaultsMap,
+): ProviderSessionDefaultsMap {
+  return Object.fromEntries(
+    Object.entries(input).map(([driver, value]) => [driver, cloneProviderSessionDefault(value)]),
+  );
+}
+
+function matchesSubmittedSnapshot(
+  authoritative: ProviderSessionDefaultsMap,
+  submitted: ProviderSessionDefaultsMap,
+): boolean {
+  return Object.entries(submitted).every(([driver, value]) =>
+    sameProviderSessionDefault(authoritative[driver as ProviderDriverKind], value),
+  );
+}
+
 export function createProviderSessionDefaultsDraft(
   initial: ProviderSessionDefaultsMap,
 ): ProviderSessionDefaultsDraft {
-  const pending = new Map<ProviderDriverKind, ProviderSessionDefault>();
-  let current = initial;
+  const submissions: Array<ProviderSessionDefaultsSubmission> = [];
+  let current = cloneProviderSessionDefaultsMap(initial);
 
   return {
     submit(driver, next) {
-      pending.set(driver, next);
-      current = { ...current, [driver]: next };
-      return current;
+      const clonedNext = cloneProviderSessionDefault(next);
+      current = { ...current, [driver]: clonedNext };
+      submissions.push({
+        driver,
+        next: clonedNext,
+        snapshot: cloneProviderSessionDefaultsMap(current),
+      });
+      return cloneProviderSessionDefaultsMap(current);
     },
     reconcile(authoritative) {
-      for (const [driver, next] of pending) {
-        if (sameProviderSessionDefault(authoritative[driver], next)) {
-          pending.delete(driver);
+      const authoritativeSnapshot = cloneProviderSessionDefaultsMap(authoritative);
+      let acknowledgedIndex = -1;
+      for (let index = submissions.length - 1; index >= 0; index -= 1) {
+        const submission = submissions[index];
+        if (submission && matchesSubmittedSnapshot(authoritativeSnapshot, submission.snapshot)) {
+          acknowledgedIndex = index;
+          break;
         }
       }
-      current = { ...authoritative };
-      for (const [driver, next] of pending) {
-        current = { ...current, [driver]: next };
+
+      if (acknowledgedIndex === -1) {
+        submissions.length = 0;
+        current = authoritativeSnapshot;
+        return cloneProviderSessionDefaultsMap(current);
       }
-      return current;
+
+      current = authoritativeSnapshot;
+      for (const submission of submissions.slice(acknowledgedIndex + 1)) {
+        current = {
+          ...current,
+          [submission.driver]: cloneProviderSessionDefault(submission.next),
+        };
+      }
+      if (acknowledgedIndex === submissions.length - 1) {
+        submissions.length = 0;
+      }
+      return cloneProviderSessionDefaultsMap(current);
     },
   };
 }

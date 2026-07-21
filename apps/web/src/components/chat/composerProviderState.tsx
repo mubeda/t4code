@@ -19,6 +19,8 @@ import type { DraftId } from "../../composerDraftStore";
 import { getProviderModelCapabilities } from "../../providerModels";
 import { shouldRenderTraitsControls, TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
 
+const CODEX_PROVIDER = "codex";
+
 export type ComposerProviderStateInput = {
   provider: ProviderDriverKind;
   model: string;
@@ -61,6 +63,7 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
     provider,
     caps,
     selections: modelOptions,
+    enforceCodexServiceTier: true,
   });
   const primarySelectDescriptor = descriptors.find(
     (descriptor): descriptor is Extract<(typeof descriptors)[number], { type: "select" }> =>
@@ -107,9 +110,19 @@ function renderTraitsControl(
     onPromptChange,
   } = input;
   const hasTarget = threadRef !== undefined || draftId !== undefined;
+  const modelOptionsForRender =
+    provider === CODEX_PROVIDER
+      ? getComposerProviderState({ provider, model, models, modelOptions }).modelOptionsForDispatch
+      : modelOptions;
   if (
     !hasTarget ||
-    !shouldRenderTraitsControls({ provider, models, model, modelOptions, prompt })
+    !shouldRenderTraitsControls({
+      provider,
+      models,
+      model,
+      modelOptions: modelOptionsForRender,
+      prompt,
+    })
   ) {
     return null;
   }
@@ -121,7 +134,7 @@ function renderTraitsControl(
       {...(threadRef ? { threadRef } : {})}
       {...(draftId ? { draftId } : {})}
       model={model}
-      modelOptions={modelOptions}
+      modelOptions={modelOptionsForRender}
       prompt={prompt}
       onPromptChange={onPromptChange}
     />
