@@ -16,7 +16,8 @@ import {
 // optionDescriptors, so these tests use a single synthetic provider/model and
 // vary only the descriptor shape per scenario.
 
-const PROVIDER: ProviderDriverKind = ProviderDriverKind.make("codex");
+const PROVIDER: ProviderDriverKind = ProviderDriverKind.make("testProvider");
+const CODEX: ProviderDriverKind = ProviderDriverKind.make("codex");
 const MODEL = "test-model";
 
 function selectDescriptor(
@@ -107,6 +108,42 @@ describe("getComposerProviderState", () => {
       provider: PROVIDER,
       promptEffort: "low",
       modelOptionsForDispatch: selections(["effort", "low"], ["fastMode", true]),
+    });
+  });
+
+  it("keeps Codex Fast selected when live service tier metadata is partial", () => {
+    const state = getComposerProviderState({
+      provider: CODEX,
+      model: MODEL,
+      models: modelWith([
+        selectDescriptor("reasoningEffort", [
+          { id: "medium", label: "Medium", isDefault: true },
+          { id: "high", label: "High" },
+        ]),
+        selectDescriptor("serviceTier", [{ id: "default", label: "Standard", isDefault: true }]),
+      ]),
+      modelOptions: selections(["reasoningEffort", "high"], ["serviceTier", "fast"]),
+    });
+
+    expect(state).toEqual({
+      provider: CODEX,
+      promptEffort: "high",
+      modelOptionsForDispatch: selections(["reasoningEffort", "high"], ["serviceTier", "fast"]),
+    });
+  });
+
+  it("does not reinterpret a service-tier-only Codex selection as reasoning effort", () => {
+    const state = getComposerProviderState({
+      provider: CODEX,
+      model: MODEL,
+      models: modelWith([]),
+      modelOptions: selections(["serviceTier", "fast"]),
+    });
+
+    expect(state).toEqual({
+      provider: CODEX,
+      promptEffort: null,
+      modelOptionsForDispatch: selections(["serviceTier", "fast"]),
     });
   });
 

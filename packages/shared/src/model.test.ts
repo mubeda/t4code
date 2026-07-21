@@ -19,6 +19,7 @@ import {
   getProviderOptionBooleanSelectionValue,
   getProviderOptionCurrentLabel,
   getProviderOptionCurrentValue,
+  getProviderCapabilityDescriptors,
   getProviderOptionDescriptors,
   getProviderOptionSelectionValue,
   getProviderOptionStringSelectionValue,
@@ -83,6 +84,85 @@ const claudeCaps: ModelCapabilities = createModelCapabilities({
 });
 
 describe("descriptor helpers", () => {
+  it("enforces Codex service tiers across partial and empty capability snapshots only", () => {
+    const partialCaps = createModelCapabilities({
+      optionDescriptors: [
+        {
+          id: "reasoningEffort",
+          label: "Reasoning",
+          type: "select",
+          options: [
+            { id: "medium", label: "Medium", isDefault: true },
+            { id: "high", label: "High" },
+          ],
+        },
+        {
+          id: "serviceTier",
+          label: "Live tier",
+          description: "Live descriptor",
+          type: "select",
+          options: [
+            { id: "default", label: "Live Standard", isDefault: true },
+            { id: "priority", label: "Priority", description: "Priority processing" },
+          ],
+          currentValue: "default",
+        },
+      ],
+    });
+    const selections = [
+      { id: "reasoningEffort", value: "high" },
+      { id: "serviceTier", value: "fast" },
+    ] as const;
+
+    const codexDescriptors = getProviderCapabilityDescriptors({
+      provider: CODEX,
+      caps: partialCaps,
+      selections,
+    });
+    expect(codexDescriptors).toEqual([
+      expect.objectContaining({ id: "reasoningEffort", currentValue: "high" }),
+      {
+        id: "serviceTier",
+        label: "Live tier",
+        description: "Live descriptor",
+        type: "select",
+        options: [
+          { id: "default", label: "Live Standard", isDefault: true },
+          { id: "priority", label: "Priority", description: "Priority processing" },
+          { id: "fast", label: "Fast" },
+        ],
+        currentValue: "fast",
+      },
+    ]);
+
+    expect(
+      getProviderCapabilityDescriptors({
+        provider: CODEX,
+        caps: {},
+        selections: [{ id: "serviceTier", value: "fast" }],
+      }),
+    ).toEqual([
+      {
+        id: "serviceTier",
+        label: "Service Tier",
+        type: "select",
+        options: [
+          { id: "default", label: "Standard", isDefault: true },
+          { id: "fast", label: "Fast" },
+        ],
+        currentValue: "fast",
+      },
+    ]);
+
+    expect(
+      getProviderCapabilityDescriptors({
+        provider: CLAUDE,
+        caps: partialCaps,
+        selections,
+      }),
+    ).toEqual(getProviderOptionDescriptors({ caps: partialCaps, selections }));
+  });
+
   it("clones descriptor-owned arrays without mutating caller values", () => {
     const options = [{ id: "high", label: "High", isDefault: true }];
     const promptInjectedValues = ["ultrathink"];
