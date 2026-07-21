@@ -501,7 +501,7 @@ describe("ProviderSessionDefaultsControls", () => {
     expect(entries("Select")[0]).toMatchObject({ disabled: false, value: "gpt-5.4" });
   });
 
-  it("emits model, effort, and fast changes using provider-native option ids", () => {
+  it("composes rapid model, effort, and fast changes without waiting for new props", () => {
     const onChange = vi.fn();
     render(baseProps({ onChange }));
     const [modelSelect, effortSelect] = entries("Select");
@@ -519,16 +519,16 @@ describe("ProviderSessionDefaultsControls", () => {
       ],
     });
     expect(onChange).toHaveBeenNthCalledWith(2, {
-      model: "gpt-rich",
+      model: "gpt-next",
       options: [
         { id: "reasoning", value: "low" },
         { id: "fastMode", value: false },
       ],
     });
     expect(onChange).toHaveBeenNthCalledWith(3, {
-      model: "gpt-rich",
+      model: "gpt-next",
       options: [
-        { id: "reasoning", value: "high" },
+        { id: "reasoning", value: "low" },
         { id: "fastMode", value: true },
       ],
     });

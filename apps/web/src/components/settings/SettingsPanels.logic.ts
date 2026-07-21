@@ -2,10 +2,65 @@ import type {
   ProviderDriverKind,
   ProviderInstanceConfig,
   ProviderInstanceId,
+  ProviderSessionDefault,
   ServerSettings,
   UnifiedSettings,
 } from "@t4code/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t4code/contracts/settings";
+
+type ProviderSessionDefaultsMap = ServerSettings["providerSessionDefaults"];
+
+export interface ProviderSessionDefaultsDraft {
+  readonly submit: (
+    driver: ProviderDriverKind,
+    next: ProviderSessionDefault,
+  ) => ProviderSessionDefaultsMap;
+  readonly reconcile: (authoritative: ProviderSessionDefaultsMap) => ProviderSessionDefaultsMap;
+}
+
+function sameProviderSessionDefault(
+  left: ProviderSessionDefault | undefined,
+  right: ProviderSessionDefault | undefined,
+): boolean {
+  if (left === right) return true;
+  if (!left || !right || left.model !== right.model) return false;
+  const leftOptions = left.options ?? [];
+  const rightOptions = right.options ?? [];
+  return (
+    leftOptions.length === rightOptions.length &&
+    leftOptions.every(
+      (selection, index) =>
+        selection.id === rightOptions[index]?.id && selection.value === rightOptions[index]?.value,
+    )
+  );
+}
+
+export function createProviderSessionDefaultsDraft(
+  initial: ProviderSessionDefaultsMap,
+): ProviderSessionDefaultsDraft {
+  const pending = new Map<ProviderDriverKind, ProviderSessionDefault>();
+  let current = initial;
+
+  return {
+    submit(driver, next) {
+      pending.set(driver, next);
+      current = { ...current, [driver]: next };
+      return current;
+    },
+    reconcile(authoritative) {
+      for (const [driver, next] of pending) {
+        if (sameProviderSessionDefault(authoritative[driver], next)) {
+          pending.delete(driver);
+        }
+      }
+      current = { ...authoritative };
+      for (const [driver, next] of pending) {
+        current = { ...current, [driver]: next };
+      }
+      return current;
+    },
+  };
+}
 
 function collapseOtelSignalsUrl(input: {
   readonly tracesUrl: string;

@@ -10,6 +10,7 @@ import {
   type ServerProvider,
 } from "@t4code/contracts";
 import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t4code/contracts/settings";
+import * as settingsPanelsLogic from "./SettingsPanels.logic";
 
 type AnyProps = Record<string, unknown>;
 
@@ -1133,6 +1134,83 @@ describe("ProviderSettingsPanel", () => {
         ...settings.providerSessionDefaults,
         [CODEX_DRIVER]: nextCodexDefault,
       },
+    });
+  });
+
+  it("composes rapid session-default edits across providers before settings acknowledgment", () => {
+    const settings = baseProviderSettings();
+    h.settings = settings;
+
+    render(<ProviderSettingsPanel />);
+    const codexCard = h.instanceCards.find((card) => String(card.instanceId) === "codex")!;
+    const claudeCard = h.instanceCards.find((card) => String(card.instanceId) === "claudeAgent")!;
+    const nextCodexDefault = {
+      model: "codex-next",
+      options: [{ id: "reasoningEffort", value: "xhigh" }],
+    };
+    const nextClaudeDefault = {
+      model: "claude-next",
+      options: [{ id: "effort", value: "ultrathink" }],
+    };
+
+    (codexCard.onSessionDefaultsChange as (next: typeof nextCodexDefault) => void)(
+      nextCodexDefault,
+    );
+    (claudeCard.onSessionDefaultsChange as (next: typeof nextClaudeDefault) => void)(
+      nextClaudeDefault,
+    );
+
+    expect(h.updateSettings).toHaveBeenNthCalledWith(1, {
+      providerSessionDefaults: {
+        ...settings.providerSessionDefaults,
+        [CODEX_DRIVER]: nextCodexDefault,
+      },
+    });
+    expect(h.updateSettings).toHaveBeenNthCalledWith(2, {
+      providerSessionDefaults: {
+        ...settings.providerSessionDefaults,
+        [CODEX_DRIVER]: nextCodexDefault,
+        [CLAUDE_DRIVER]: nextClaudeDefault,
+      },
+    });
+  });
+
+  it("keeps pending provider edits over stale acknowledgments and clears them at convergence", () => {
+    const createDraft = (
+      settingsPanelsLogic as typeof settingsPanelsLogic & {
+        createProviderSessionDefaultsDraft?: (
+          initial: UnifiedSettings["providerSessionDefaults"],
+        ) => {
+          readonly submit: (
+            driver: ProviderDriverKind,
+            next: UnifiedSettings["providerSessionDefaults"][ProviderDriverKind],
+          ) => UnifiedSettings["providerSessionDefaults"];
+          readonly reconcile: (
+            authoritative: UnifiedSettings["providerSessionDefaults"],
+          ) => UnifiedSettings["providerSessionDefaults"];
+        };
+      }
+    ).createProviderSessionDefaultsDraft;
+    expect(createDraft).toBeTypeOf("function");
+    if (!createDraft) return;
+
+    const initial = baseProviderSettings().providerSessionDefaults;
+    const draft = createDraft(initial);
+    const nextCodex = { model: "codex-next" };
+    const nextClaude = { model: "claude-next" };
+    const firstSubmission = draft.submit(CODEX_DRIVER, nextCodex);
+    const latestSubmission = draft.submit(CLAUDE_DRIVER, nextClaude);
+
+    expect(draft.reconcile(firstSubmission)).toEqual(latestSubmission);
+    expect(draft.reconcile(latestSubmission)).toEqual(latestSubmission);
+    expect(
+      draft.reconcile({
+        ...latestSubmission,
+        [ProviderDriverKind.make("futureDriver")]: { model: "future-external" },
+      }),
+    ).toEqual({
+      ...latestSubmission,
+      [ProviderDriverKind.make("futureDriver")]: { model: "future-external" },
     });
   });
 

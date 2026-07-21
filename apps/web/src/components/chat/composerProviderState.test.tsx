@@ -132,7 +132,7 @@ describe("getComposerProviderState", () => {
     });
   });
 
-  it("does not reinterpret a service-tier-only Codex selection as reasoning effort", () => {
+  it("supplies the Codex effort invariant when live metadata only has service tier", () => {
     const state = getComposerProviderState({
       provider: CODEX,
       model: MODEL,
@@ -142,8 +142,29 @@ describe("getComposerProviderState", () => {
 
     expect(state).toEqual({
       provider: CODEX,
-      promptEffort: null,
-      modelOptionsForDispatch: selections(["serviceTier", "fast"]),
+      promptEffort: "medium",
+      modelOptionsForDispatch: selections(
+        ["reasoningEffort", "medium"],
+        ["serviceTier", "fast"],
+      ),
+    });
+  });
+
+  it("preserves configured Codex effort and Fast through empty model capabilities", () => {
+    const state = getComposerProviderState({
+      provider: CODEX,
+      model: MODEL,
+      models: modelWith([]),
+      modelOptions: selections(["reasoningEffort", "xhigh"], ["serviceTier", "fast"]),
+    });
+
+    expect(state).toEqual({
+      provider: CODEX,
+      promptEffort: "xhigh",
+      modelOptionsForDispatch: selections(
+        ["reasoningEffort", "xhigh"],
+        ["serviceTier", "fast"],
+      ),
     });
   });
 

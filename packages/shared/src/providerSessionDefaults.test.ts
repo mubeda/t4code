@@ -388,6 +388,79 @@ describe("getProviderSessionDefaultControls", () => {
     expect(controls.fastMode).toBe(true);
   });
 
+  it.each([
+    {
+      name: "null capabilities",
+      model: {
+        slug: "gpt-null",
+        name: "GPT Null",
+        isCustom: false,
+        capabilities: null,
+      } satisfies ServerProviderModel,
+    },
+    {
+      name: "empty capabilities",
+      model: model("gpt-empty", []),
+    },
+    {
+      name: "malformed effort metadata",
+      model: model("gpt-malformed", [
+        {
+          id: "reasoningEffort",
+          label: "Broken effort",
+          type: "boolean",
+          currentValue: false,
+        },
+      ]),
+    },
+    {
+      name: "metadata that omits effort",
+      model: model("gpt-omitted", [contextWindowDescriptor]),
+    },
+    {
+      name: "fallback custom model",
+      model: {
+        slug: "gpt-custom",
+        name: "GPT Custom",
+        isCustom: true,
+        capabilities: null,
+      } satisfies ServerProviderModel,
+    },
+  ])("keeps Codex invariants through $name", ({ model: selectedModel }) => {
+    const configuredDefault: ProviderSessionDefault = {
+      model: selectedModel.slug,
+      options: [
+        { id: "reasoningEffort", value: "xhigh" },
+        { id: "serviceTier", value: "fast" },
+      ],
+    };
+
+    const controls = getProviderSessionDefaultControls({
+      driver: CODEX,
+      models: [selectedModel],
+      configuredDefault,
+    });
+    const resolution = resolveProviderSessionDefault({
+      driver: CODEX,
+      instanceId: CODEX_ID,
+      models: [selectedModel],
+      configuredDefault,
+    });
+
+    expect(controls.effortDescriptor?.id).toBe("reasoningEffort");
+    expect(controls.effort).toBe("xhigh");
+    expect(controls.fastModeSupported).toBe(true);
+    expect(controls.fastMode).toBe(true);
+    expect(resolution.modelSelection.options).toEqual(
+      expect.arrayContaining([
+        { id: "reasoningEffort", value: "xhigh" },
+        { id: "serviceTier", value: "fast" },
+      ]),
+    );
+    expect(resolution.effort).toBe("xhigh");
+    expect(resolution.fastMode).toBe(true);
+  });
+
   it("keeps Claude effort available during an empty discovery snapshot", () => {
     const controls = getProviderSessionDefaultControls({
       driver: CLAUDE,
