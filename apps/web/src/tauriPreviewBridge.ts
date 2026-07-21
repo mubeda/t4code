@@ -31,31 +31,52 @@ function unsupported(capability: string): () => Promise<never> {
 export function createTauriPreviewBridge(deps: PreviewBridgeDeps): DesktopPreviewBridge {
   const { invoke, listen } = deps;
   const zoomByTab = new Map<string, number>();
+  const pendingByTab = new Map<string, Promise<void>>();
 
-  const setZoom = (tabId: string, factor: number): Promise<void> => {
-    const clamped = Math.min(3, Math.max(0.25, factor));
-    zoomByTab.set(tabId, clamped);
-    return invoke("desktop_preview_set_zoom", { tabId, factor: clamped });
+  const enqueueTabOperation = (tabId: string, operation: () => Promise<void>): Promise<void> => {
+    const pending = pendingByTab.get(tabId);
+    let result: Promise<void>;
+    try {
+      result = pending === undefined ? operation() : pending.then(operation);
+    } catch (error) {
+      result = Promise.reject(error);
+    }
+
+    const tail = result.then(
+      () => {
+        if (pendingByTab.get(tabId) === tail) pendingByTab.delete(tabId);
+      },
+      () => {
+        if (pendingByTab.get(tabId) === tail) pendingByTab.delete(tabId);
+      },
+    );
+    pendingByTab.set(tabId, tail);
+    return result;
   };
 
-  const adjustZoom = (tabId: string, delta: number): Promise<void> =>
-    setZoom(tabId, (zoomByTab.get(tabId) ?? 1) + delta);
+  const setZoom = (tabId: string, getFactor: (committed: number) => number): Promise<void> =>
+    enqueueTabOperation(tabId, async () => {
+      const factor = Math.min(3, Math.max(0.25, getFactor(zoomByTab.get(tabId) ?? 1)));
+      await invoke("desktop_preview_set_zoom", { tabId, factor });
+      zoomByTab.set(tabId, factor);
+    });
 
   return {
     createTab: (tabId) => invoke("desktop_preview_create_tab", { tabId }),
-    closeTab: async (tabId) => {
-      await invoke("desktop_preview_close_tab", { tabId });
-      zoomByTab.delete(tabId);
-    },
+    closeTab: (tabId) =>
+      enqueueTabOperation(tabId, async () => {
+        await invoke("desktop_preview_close_tab", { tabId });
+        zoomByTab.delete(tabId);
+      }),
     setBounds: (tabId, bounds: DesktopPreviewBounds, visible) =>
       invoke("desktop_preview_set_bounds", { tabId, bounds, visible }),
     navigate: (tabId, url) => invoke("desktop_preview_navigate", { tabId, url }),
     goBack: (tabId) => invoke("desktop_preview_go_back", { tabId }),
     goForward: (tabId) => invoke("desktop_preview_go_forward", { tabId }),
     refresh: (tabId) => invoke("desktop_preview_refresh", { tabId }),
-    zoomIn: (tabId) => adjustZoom(tabId, 0.1),
-    zoomOut: (tabId) => adjustZoom(tabId, -0.1),
-    resetZoom: (tabId) => setZoom(tabId, 1),
+    zoomIn: (tabId) => setZoom(tabId, (factor) => factor + 0.1),
+    zoomOut: (tabId) => setZoom(tabId, (factor) => factor - 0.1),
+    resetZoom: (tabId) => setZoom(tabId, () => 1),
     hardReload: (tabId) => invoke("desktop_preview_hard_reload", { tabId }),
     openDevTools: (tabId) => invoke("desktop_preview_open_devtools", { tabId }),
     clearCookies: () =>
