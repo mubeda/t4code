@@ -91,15 +91,22 @@ pub const OSC_CURSOR_ENV: &str = "T4CODE_OSC_CURSOR";
 /// Whether `key` is one of the reserved OSC color env keys (case-sensitive, as
 /// these are internal keys the client always emits verbatim).
 pub fn is_reserved_osc_env_key(key: &str) -> bool {
-    matches!(key, OSC_BACKGROUND_ENV | OSC_FOREGROUND_ENV | OSC_CURSOR_ENV)
+    matches!(
+        key,
+        OSC_BACKGROUND_ENV | OSC_FOREGROUND_ENV | OSC_CURSOR_ENV
+    )
 }
 
 /// Reads the reserved OSC color env keys from a launch environment. Malformed
 /// values are ignored, leaving that color unanswered.
 pub fn colors_from_env(env: &std::collections::BTreeMap<String, String>) -> OscColors {
     OscColors {
-        foreground: env.get(OSC_FOREGROUND_ENV).and_then(|v| parse_rgb_triplet(v)),
-        background: env.get(OSC_BACKGROUND_ENV).and_then(|v| parse_rgb_triplet(v)),
+        foreground: env
+            .get(OSC_FOREGROUND_ENV)
+            .and_then(|v| parse_rgb_triplet(v)),
+        background: env
+            .get(OSC_BACKGROUND_ENV)
+            .and_then(|v| parse_rgb_triplet(v)),
         cursor: env.get(OSC_CURSOR_ENV).and_then(|v| parse_rgb_triplet(v)),
     }
 }
@@ -174,11 +181,21 @@ impl OscQueryScanner {
                 }
                 (_, 0x1b) => ScanState::Escape,
                 (ScanState::Escape, b']') => ScanState::Code { code: 0, digits: 0 },
-                (ScanState::Escape, b'[') => ScanState::CsiPrivate { param: 0, digits: 0 },
+                (ScanState::Escape, b'[') => ScanState::CsiPrivate {
+                    param: 0,
+                    digits: 0,
+                },
                 // CSI private modes: ESC [ ? <param> <final>. `?` only leads.
-                (ScanState::CsiPrivate { param: 0, digits: 0 }, b'?') => {
-                    ScanState::CsiPrivate { param: 0, digits: 0 }
-                }
+                (
+                    ScanState::CsiPrivate {
+                        param: 0,
+                        digits: 0,
+                    },
+                    b'?',
+                ) => ScanState::CsiPrivate {
+                    param: 0,
+                    digits: 0,
+                },
                 (ScanState::CsiPrivate { param, digits }, b'0'..=b'9') if digits < 4 => {
                     ScanState::CsiPrivate {
                         param: param.saturating_mul(10) + u16::from(byte - b'0'),
@@ -249,7 +266,11 @@ impl OscColorResponder {
                 ThemeQuery::ColorScheme => {
                     if let Some(dark) = self.colors.prefers_dark() {
                         // CSI ? 997 ; 1 n = dark, ; 2 n = light.
-                        let scheme = if dark { b"\x1b[?997;1n" } else { b"\x1b[?997;2n" };
+                        let scheme = if dark {
+                            b"\x1b[?997;1n"
+                        } else {
+                            b"\x1b[?997;2n"
+                        };
                         reply.extend_from_slice(scheme);
                     }
                 }
@@ -259,7 +280,12 @@ impl OscColorResponder {
     }
 }
 
-fn append_color_report(out: &mut Vec<u8>, color: SpecialColor, rgb: [u8; 3], terminator: Terminator) {
+fn append_color_report(
+    out: &mut Vec<u8>,
+    color: SpecialColor,
+    rgb: [u8; 3],
+    terminator: Terminator,
+) {
     // Scale each 8-bit channel to 16-bit the way xterm does (v * 0x101), so a
     // full channel reports ffff and matches what real terminals emit.
     let scaled = rgb.map(|channel| u16::from(channel) * 0x101);
@@ -318,8 +344,14 @@ mod tests {
             background: Some([255, 255, 255]),
             cursor: Some([180, 203, 255]),
         });
-        assert_eq!(responder.process(b"\x1b]10;?\x07"), b"\x1b]10;rgb:1c1c/2121/2929\x07");
-        assert_eq!(responder.process(b"\x1b]12;?\x07"), b"\x1b]12;rgb:b4b4/cbcb/ffff\x07");
+        assert_eq!(
+            responder.process(b"\x1b]10;?\x07"),
+            b"\x1b]10;rgb:1c1c/2121/2929\x07"
+        );
+        assert_eq!(
+            responder.process(b"\x1b]12;?\x07"),
+            b"\x1b]12;rgb:b4b4/cbcb/ffff\x07"
+        );
     }
 
     #[test]
