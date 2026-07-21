@@ -9,9 +9,9 @@ import {
 import {
   applyClaudePromptEffortPrefix,
   buildProviderOptionSelectionsFromDescriptors,
+  getProviderCapabilityDescriptors,
   getProviderOptionCurrentLabel,
   getProviderOptionCurrentValue,
-  getProviderOptionDescriptors,
   isClaudeUltrathinkPrompt,
 } from "@t4code/shared/model";
 import { memo, useCallback, useState } from "react";
@@ -85,7 +85,8 @@ function getSelectedTraits(
   allowPromptInjectedEffort: boolean,
 ) {
   const caps = getProviderModelCapabilities(models, model, provider);
-  const descriptors = getProviderOptionDescriptors({
+  const descriptors = getProviderCapabilityDescriptors({
+    provider,
     caps,
     selections: modelOptions,
   });

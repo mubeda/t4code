@@ -69,6 +69,10 @@
                 "label": "Priority",
                 "description": "Priority capacity",
                 "isDefault": true
+              },
+              {
+                "id": "fast",
+                "label": "Fast"
               }
             ],
             "currentValue": "priority"
@@ -117,6 +121,10 @@
                 "label": "Priority",
                 "description": "Priority capacity",
                 "isDefault": true
+              },
+              {
+                "id": "fast",
+                "label": "Fast"
               }
             ],
             "currentValue": "priority"

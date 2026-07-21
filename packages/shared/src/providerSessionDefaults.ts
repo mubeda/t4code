@@ -14,8 +14,8 @@ import {
 import {
   buildProviderOptionSelectionsFromDescriptors,
   createModelSelection,
+  getProviderCapabilityDescriptors,
   getProviderOptionCurrentValue,
-  getProviderOptionDescriptors,
   resolveSelectableModel,
 } from "./model.ts";
 
@@ -89,75 +89,6 @@ function selectedString(
   return typeof selection?.value === "string" ? selection.value : null;
 }
 
-function getCodexServiceTierDescriptor(
-  selections: ReadonlyArray<ProviderOptionSelection> | undefined,
-): ProviderOptionDescriptor {
-  const tier = selectedString(selections, [SERVICE_TIER_OPTION_ID]);
-  return {
-    id: SERVICE_TIER_OPTION_ID,
-    label: "Service Tier",
-    type: "select",
-    options: [
-      { id: DEFAULT_SERVICE_TIER_VALUE, label: "Standard", isDefault: true },
-      { id: FAST_SERVICE_TIER_VALUE, label: "Fast" },
-    ],
-    currentValue:
-      tier === FAST_SERVICE_TIER_VALUE ? FAST_SERVICE_TIER_VALUE : DEFAULT_SERVICE_TIER_VALUE,
-  };
-}
-
-function withCodexServiceTierInvariant(
-  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
-  selections: ReadonlyArray<ProviderOptionSelection> | undefined,
-): ReadonlyArray<ProviderOptionDescriptor> {
-  const descriptorIndex = descriptors.findIndex(
-    (descriptor) => descriptor.id === SERVICE_TIER_OPTION_ID,
-  );
-  if (descriptorIndex === -1) {
-    return [...descriptors, getCodexServiceTierDescriptor(selections)];
-  }
-
-  const descriptor = descriptors[descriptorIndex]!;
-  if (descriptor.type !== "select") {
-    const invariantDescriptor = getCodexServiceTierDescriptor(selections);
-    return descriptors.map((candidate, index) =>
-      index === descriptorIndex
-        ? {
-            ...invariantDescriptor,
-            label: descriptor.label,
-            ...(descriptor.description ? { description: descriptor.description } : {}),
-          }
-        : candidate,
-    );
-  }
-
-  const hasCurrentOrDefault =
-    descriptor.currentValue !== undefined || descriptor.options.some((option) => option.isDefault);
-  const hasDefault = descriptor.options.some((option) => option.id === DEFAULT_SERVICE_TIER_VALUE);
-  const hasFast = descriptor.options.some((option) => option.id === FAST_SERVICE_TIER_VALUE);
-  if (hasDefault && hasFast) {
-    return descriptors;
-  }
-
-  const options = [
-    ...(hasDefault
-      ? descriptor.options
-      : [
-          {
-            id: DEFAULT_SERVICE_TIER_VALUE,
-            label: "Standard",
-            ...(!hasCurrentOrDefault ? { isDefault: true } : {}),
-          },
-          ...descriptor.options,
-        ]),
-    ...(hasFast ? [] : [{ id: FAST_SERVICE_TIER_VALUE, label: "Fast" }]),
-  ];
-
-  return descriptors.map((candidate, index) =>
-    index === descriptorIndex ? { ...descriptor, options } : candidate,
-  );
-}
-
 function getInvariantProviderModel(
   driver: ProviderDriverKind,
   model: string,
@@ -180,10 +111,6 @@ function getInvariantProviderModel(
       currentValue: effort,
     },
   ];
-
-  if (driver === CODEX_DRIVER_KIND) {
-    optionDescriptors.push(getCodexServiceTierDescriptor(selections));
-  }
 
   return {
     slug: model,
@@ -273,18 +200,12 @@ function normalizeProviderOptions(
     };
   }
 
-  const liveDescriptors = model.capabilities?.optionDescriptors ?? [];
-  const optionDescriptors =
-    driver === CODEX_DRIVER_KIND
-      ? withCodexServiceTierInvariant(liveDescriptors, selections ?? undefined)
-      : liveDescriptors;
-  const descriptors = getProviderOptionDescriptors({
-    caps: {
-      ...model.capabilities,
-      optionDescriptors,
-    },
+  const descriptors = getProviderCapabilityDescriptors({
+    provider: driver,
+    caps: model.capabilities ?? {},
     selections,
     preservePromptInjectedSelections: true,
+    enforceCodexServiceTier: true,
   });
   const effortDescriptor = findEffortDescriptor(descriptors);
   const effortValue = getProviderOptionCurrentValue(effortDescriptor);

@@ -2799,6 +2799,86 @@ describe("ChatView send flows", () => {
     expect(input.input.bootstrap?.createThread?.modelSelection).toBe(storedSelection);
   });
 
+  it("dispatches Codex High and Fast on first send through partial live tier metadata", async () => {
+    const partialCodexModel: ServerProvider["models"][number] = {
+      slug: "gpt-5.5",
+      name: "GPT-5.5",
+      isCustom: false,
+      capabilities: {
+        optionDescriptors: [
+          {
+            id: "reasoningEffort",
+            label: "Reasoning",
+            type: "select",
+            options: [
+              { id: "medium", label: "Medium", isDefault: true },
+              { id: "high", label: "High" },
+            ],
+          },
+          {
+            id: "serviceTier",
+            label: "Service Tier",
+            type: "select",
+            options: [{ id: "default", label: "Standard", isDefault: true }],
+          },
+        ],
+      },
+    };
+    const seededSelection: ModelSelection = {
+      instanceId: codexInstanceId,
+      model: partialCodexModel.slug,
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "fast" },
+      ],
+    };
+    const draftId = seedFreshLocalDraft("codex-partial-fast-first-turn", seededSelection);
+    seedEnvironment(
+      makeEnvironmentPresentation({
+        serverConfig: {
+          providers: [{ ...codexProvider, models: [partialCodexModel] }],
+          environment: { label: "Local" },
+        },
+      }),
+    );
+    renderDraftRoute(draftId);
+
+    const composerState = getComposerProviderState({
+      provider: ProviderDriverKind.make("codex"),
+      model: partialCodexModel.slug,
+      models: [partialCodexModel],
+      modelOptions: seededSelection.options,
+    });
+    const dispatchSelection: ModelSelection = {
+      instanceId: codexInstanceId,
+      model: partialCodexModel.slug,
+      ...(composerState.modelOptionsForDispatch
+        ? { options: composerState.modelOptionsForDispatch }
+        : {}),
+    };
+    const { promptRef } = installComposerHandle({
+      getSendContext: () => ({
+        ...composerHandle().getSendContext(),
+        selectedPromptEffort: composerState.promptEffort,
+        selectedModelOptionsForDispatch: composerState.modelOptionsForDispatch,
+        selectedModelSelection: dispatchSelection,
+        selectedModel: partialCodexModel.slug,
+        selectedProviderModels: [partialCodexModel],
+      }),
+    });
+    promptRef.current = "dispatch fast";
+
+    await (capturedProps("chatComposer")["onSend"] as () => Promise<void>)();
+
+    expect(commandCallsFor("thread.startTurn")).toHaveLength(1);
+    expect(commandCallsFor("thread.startTurn")[0]?.input).toMatchObject({
+      input: {
+        modelSelection: seededSelection,
+        bootstrap: { createThread: { modelSelection: seededSelection } },
+      },
+    });
+  });
+
   it("prefixes the first prompt from a prompt-injected Claude session default", async () => {
     const claudeDriver = ProviderDriverKind.make("claudeAgent");
     const claudeInstanceId = ProviderInstanceId.make("claudeAgent");

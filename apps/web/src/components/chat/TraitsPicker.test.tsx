@@ -244,6 +244,46 @@ describe("TraitsPicker", () => {
     );
   });
 
+  it("shows configured Codex Fast through partial and empty capability snapshots", async () => {
+    const partialModels = modelsWith([
+      selectDescriptor("reasoningEffort", "Reasoning", [
+        { id: "medium", label: "Medium", isDefault: true },
+        { id: "high", label: "High" },
+      ]),
+      selectDescriptor("serviceTier", "Service Tier", [
+        { id: "default", label: "Standard", isDefault: true },
+      ]),
+    ]);
+    const modelOptions = selections(["reasoningEffort", "high"], ["serviceTier", "fast"]);
+    expect(
+      shouldRenderTraitsControls({
+        provider: CODEX,
+        models: modelsWith([]),
+        model: MODEL,
+        prompt: "",
+        modelOptions: selections(["serviceTier", "fast"]),
+      }),
+    ).toBe(true);
+
+    await mount(
+      <TraitsPicker
+        provider={CODEX}
+        models={partialModels}
+        model={MODEL}
+        prompt=""
+        modelOptions={modelOptions}
+        onPromptChange={vi.fn()}
+        onModelOptionsChange={vi.fn()}
+      />,
+    );
+
+    const trigger = buttonContaining("High");
+    expect(trigger.textContent).toContain("Fast");
+    await click(trigger);
+    expect(radioItem("Standard")).toBeDefined();
+    expect(radioItem("Fast")).toBeDefined();
+  });
+
   it("injects ultrathink into an empty prompt from the rendered option", async () => {
     const onPromptChange = vi.fn();
     await mount(

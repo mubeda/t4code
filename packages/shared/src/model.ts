@@ -11,6 +11,10 @@ import {
 } from "@t4code/contracts";
 
 const DEFAULT_PROVIDER_DRIVER_KIND = ProviderDriverKind.make("codex");
+const CODEX_PROVIDER_DRIVER_KIND = ProviderDriverKind.make("codex");
+const SERVICE_TIER_OPTION_ID = "serviceTier";
+const DEFAULT_SERVICE_TIER_VALUE = "default";
+const FAST_SERVICE_TIER_VALUE = "fast";
 
 export interface SelectableModelOption {
   slug: string;
@@ -118,6 +122,81 @@ function cloneSelection(selection: ProviderOptionSelection): ProviderOptionSelec
   return { ...selection };
 }
 
+function codexServiceTierDescriptor(
+  selections: ReadonlyArray<ProviderOptionSelection> | null | undefined,
+): ProviderOptionDescriptor {
+  const selectedTier = getProviderOptionStringSelectionValue(selections, SERVICE_TIER_OPTION_ID);
+  return {
+    id: SERVICE_TIER_OPTION_ID,
+    label: "Service Tier",
+    type: "select",
+    options: [
+      { id: DEFAULT_SERVICE_TIER_VALUE, label: "Standard", isDefault: true },
+      { id: FAST_SERVICE_TIER_VALUE, label: "Fast" },
+    ],
+    currentValue:
+      selectedTier === FAST_SERVICE_TIER_VALUE
+        ? FAST_SERVICE_TIER_VALUE
+        : DEFAULT_SERVICE_TIER_VALUE,
+  };
+}
+
+function withCodexServiceTierInvariant(
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+  selections: ReadonlyArray<ProviderOptionSelection> | null | undefined,
+): ReadonlyArray<ProviderOptionDescriptor> {
+  const descriptorIndex = descriptors.findIndex(
+    (descriptor) => descriptor.id === SERVICE_TIER_OPTION_ID,
+  );
+  if (descriptorIndex === -1) {
+    return [...descriptors, codexServiceTierDescriptor(selections)];
+  }
+
+  const descriptor = descriptors[descriptorIndex]!;
+  if (descriptor.type !== "select") {
+    const invariantDescriptor = codexServiceTierDescriptor(selections);
+    return descriptors.map((candidate, index) =>
+      index === descriptorIndex
+        ? {
+            ...invariantDescriptor,
+            label: descriptor.label,
+            ...(descriptor.description ? { description: descriptor.description } : {}),
+          }
+        : candidate,
+    );
+  }
+
+  const seen = new Set<string>();
+  const uniqueOptions = descriptor.options.filter((option) => {
+    if (seen.has(option.id)) {
+      return false;
+    }
+    seen.add(option.id);
+    return true;
+  });
+  const hasCurrentOrDefault =
+    descriptor.currentValue !== undefined || uniqueOptions.some((option) => option.isDefault);
+  const hasDefault = seen.has(DEFAULT_SERVICE_TIER_VALUE);
+  const hasFast = seen.has(FAST_SERVICE_TIER_VALUE);
+  const options = [
+    ...(hasDefault
+      ? uniqueOptions
+      : [
+          {
+            id: DEFAULT_SERVICE_TIER_VALUE,
+            label: "Standard",
+            ...(!hasCurrentOrDefault ? { isDefault: true } : {}),
+          },
+          ...uniqueOptions,
+        ]),
+    ...(hasFast ? [] : [{ id: FAST_SERVICE_TIER_VALUE, label: "Fast" }]),
+  ];
+
+  return descriptors.map((candidate, index) =>
+    index === descriptorIndex ? { ...descriptor, options } : candidate,
+  );
+}
+
 function withDescriptorCurrentValue(
   descriptor: ProviderOptionDescriptor,
   rawCurrentValue: string | boolean | undefined,
@@ -165,6 +244,34 @@ export function getProviderOptionDescriptors(input: {
       preservePromptInjectedSelections,
     ),
   );
+}
+
+export function getProviderCapabilityDescriptors(input: {
+  provider: ProviderDriverKind;
+  caps: ModelCapabilities;
+  selections?: ReadonlyArray<ProviderOptionSelection> | null | undefined;
+  preservePromptInjectedSelections?: boolean;
+  enforceCodexServiceTier?: boolean;
+}): ReadonlyArray<ProviderOptionDescriptor> {
+  const {
+    provider,
+    caps,
+    selections,
+    preservePromptInjectedSelections = false,
+    enforceCodexServiceTier = false,
+  } = input;
+  const liveDescriptors = caps.optionDescriptors ?? [];
+  const shouldEnforceCodexServiceTiers =
+    provider === CODEX_PROVIDER_DRIVER_KIND &&
+    (enforceCodexServiceTier || liveDescriptors.length > 0 || (selections?.length ?? 0) > 0);
+  const optionDescriptors = shouldEnforceCodexServiceTiers
+    ? withCodexServiceTierInvariant(liveDescriptors, selections)
+    : liveDescriptors;
+  return getProviderOptionDescriptors({
+    caps: { ...caps, optionDescriptors },
+    selections,
+    preservePromptInjectedSelections,
+  });
 }
 
 export function getProviderOptionCurrentValue(

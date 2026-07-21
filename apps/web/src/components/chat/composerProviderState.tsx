@@ -7,8 +7,8 @@ import {
 } from "@t4code/contracts";
 import {
   buildProviderOptionSelectionsFromDescriptors,
+  getProviderCapabilityDescriptors,
   getProviderOptionCurrentValue,
-  getProviderOptionDescriptors,
   getProviderOptionStringSelectionValue,
   isClaudeUltrathinkPrompt,
   resolvePromptInjectedEffort,
@@ -57,10 +57,14 @@ export function getComposerPromptInjectionState(prompt: string): ComposerPromptI
 export function getComposerProviderState(input: ComposerProviderStateInput): ComposerProviderState {
   const { provider, model, models, modelOptions, promptInjectionState = "none" } = input;
   const caps = getProviderModelCapabilities(models, model, provider);
-  const descriptors = getProviderOptionDescriptors({ caps, selections: modelOptions });
+  const descriptors = getProviderCapabilityDescriptors({
+    provider,
+    caps,
+    selections: modelOptions,
+  });
   const primarySelectDescriptor = descriptors.find(
     (descriptor): descriptor is Extract<(typeof descriptors)[number], { type: "select" }> =>
-      descriptor.type === "select",
+      descriptor.type === "select" && descriptor.id !== "serviceTier",
   );
   const primaryValue = getProviderOptionCurrentValue(primarySelectDescriptor ?? null);
   const rawPrimaryValue = primarySelectDescriptor
