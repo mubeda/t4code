@@ -11,6 +11,7 @@ import {
   type ProviderInstanceId,
   type ProviderSessionDefault,
   type ScopedThreadRef,
+  type ServerSettings,
 } from "@t4code/contracts";
 import { scopeThreadRef } from "@t4code/client-runtime/environment";
 import { safeErrorLogAttributes } from "@t4code/client-runtime/errors";
@@ -113,6 +114,39 @@ const THEME_OPTIONS = [
     label: "Dark",
   },
 ] as const;
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "then" in value &&
+    typeof value.then === "function"
+  );
+}
+
+function providerSessionDefaultsFromSuccess(
+  result: unknown,
+): ServerSettings["providerSessionDefaults"] | null {
+  if (typeof result !== "object" || result === null || !("_tag" in result)) return null;
+  if (result._tag !== "Success" || !("value" in result)) return null;
+  const value = result.value;
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("providerSessionDefaults" in value) ||
+    typeof value.providerSessionDefaults !== "object" ||
+    value.providerSessionDefaults === null
+  ) {
+    return null;
+  }
+  return value.providerSessionDefaults as ServerSettings["providerSessionDefaults"];
+}
+
+function isSettingsUpdateFailure(result: unknown): boolean {
+  return (
+    typeof result === "object" && result !== null && "_tag" in result && result._tag === "Failure"
+  );
+}
 
 const TERMINAL_FONT_OPTIONS = [
   {
@@ -1396,11 +1430,31 @@ function EnvironmentScopedProviderSettingsPanel({
   };
 
   const updateSessionDefaults = (driver: ProviderDriverKind, next: ProviderSessionDefault) => {
-    const providerSessionDefaults = sessionDefaultsDraftRef.current.submit(driver, next);
-    setProviderSessionDefaults(providerSessionDefaults);
-    updateSettings({
-      providerSessionDefaults,
+    const submission = sessionDefaultsDraftRef.current.submit(driver, next);
+    setProviderSessionDefaults(submission.defaults);
+    const updateResult: unknown = updateSettings({
+      providerSessionDefaults: submission.defaults,
     });
+    if (!isPromiseLike(updateResult)) return;
+
+    const applyRejectedSubmission = () => {
+      const rejected = sessionDefaultsDraftRef.current.reject(submission.revision);
+      setProviderSessionDefaults((current) =>
+        Equal.equals(current, rejected) ? current : rejected,
+      );
+    };
+    void Promise.resolve(updateResult).then((result) => {
+      if (isSettingsUpdateFailure(result)) {
+        applyRejectedSubmission();
+        return;
+      }
+      const authoritative = providerSessionDefaultsFromSuccess(result);
+      if (authoritative === null) return;
+      const reconciled = sessionDefaultsDraftRef.current.reconcile(authoritative);
+      setProviderSessionDefaults((current) =>
+        Equal.equals(current, reconciled) ? current : reconciled,
+      );
+    }, applyRejectedSubmission);
   };
 
   const updateProviderModelPreferences = (

@@ -14,14 +14,28 @@ export interface ProviderSessionDefaultsDraft {
   readonly submit: (
     driver: ProviderDriverKind,
     next: ProviderSessionDefault,
-  ) => ProviderSessionDefaultsMap;
+  ) => ProviderSessionDefaultsSubmission;
   readonly reconcile: (authoritative: ProviderSessionDefaultsMap) => ProviderSessionDefaultsMap;
+  readonly reject: (revision: ProviderSessionDefaultsRevision) => ProviderSessionDefaultsMap;
 }
 
-interface ProviderSessionDefaultsSubmission {
+declare const providerSessionDefaultsRevisionBrand: unique symbol;
+
+export type ProviderSessionDefaultsRevision = Readonly<{
+  [providerSessionDefaultsRevisionBrand]: true;
+}>;
+
+export interface ProviderSessionDefaultsSubmission {
+  readonly revision: ProviderSessionDefaultsRevision;
+  readonly defaults: ProviderSessionDefaultsMap;
+}
+
+interface PendingProviderSessionDefaultsSubmission {
+  readonly revision: ProviderSessionDefaultsRevision;
   readonly driver: ProviderDriverKind;
   readonly next: ProviderSessionDefault;
-  readonly snapshot: ProviderSessionDefaultsMap;
+  snapshot: ProviderSessionDefaultsMap;
+  acknowledged: boolean;
 }
 
 function sameProviderSessionDefault(
@@ -68,19 +82,44 @@ function matchesSubmittedSnapshot(
 export function createProviderSessionDefaultsDraft(
   initial: ProviderSessionDefaultsMap,
 ): ProviderSessionDefaultsDraft {
-  const submissions: Array<ProviderSessionDefaultsSubmission> = [];
-  let current = cloneProviderSessionDefaultsMap(initial);
+  const submissions: Array<PendingProviderSessionDefaultsSubmission> = [];
+  let latestAuthoritative = cloneProviderSessionDefaultsMap(initial);
+  let current = cloneProviderSessionDefaultsMap(latestAuthoritative);
+
+  const rebuildPendingState = (): ProviderSessionDefaultsMap => {
+    current = cloneProviderSessionDefaultsMap(latestAuthoritative);
+    let hasPending = false;
+    for (const submission of submissions) {
+      if (submission.acknowledged) continue;
+      hasPending = true;
+      current = {
+        ...current,
+        [submission.driver]: cloneProviderSessionDefault(submission.next),
+      };
+      submission.snapshot = cloneProviderSessionDefaultsMap(current);
+    }
+    if (!hasPending) {
+      submissions.length = 0;
+    }
+    return cloneProviderSessionDefaultsMap(current);
+  };
 
   return {
     submit(driver, next) {
       const clonedNext = cloneProviderSessionDefault(next);
       current = { ...current, [driver]: clonedNext };
+      const revision = Object.freeze({}) as ProviderSessionDefaultsRevision;
       submissions.push({
+        revision,
         driver,
         next: clonedNext,
         snapshot: cloneProviderSessionDefaultsMap(current),
+        acknowledged: false,
       });
-      return cloneProviderSessionDefaultsMap(current);
+      return {
+        revision,
+        defaults: cloneProviderSessionDefaultsMap(current),
+      };
     },
     reconcile(authoritative) {
       const authoritativeSnapshot = cloneProviderSessionDefaultsMap(authoritative);
@@ -95,21 +134,25 @@ export function createProviderSessionDefaultsDraft(
 
       if (acknowledgedIndex === -1) {
         submissions.length = 0;
-        current = authoritativeSnapshot;
+        latestAuthoritative = authoritativeSnapshot;
+        current = cloneProviderSessionDefaultsMap(authoritativeSnapshot);
         return cloneProviderSessionDefaultsMap(current);
       }
 
-      current = authoritativeSnapshot;
-      for (const submission of submissions.slice(acknowledgedIndex + 1)) {
-        current = {
-          ...current,
-          [submission.driver]: cloneProviderSessionDefault(submission.next),
-        };
+      latestAuthoritative = authoritativeSnapshot;
+      for (let index = 0; index <= acknowledgedIndex; index += 1) {
+        const submission = submissions[index];
+        if (submission) submission.acknowledged = true;
       }
-      if (acknowledgedIndex === submissions.length - 1) {
-        submissions.length = 0;
+      return rebuildPendingState();
+    },
+    reject(revision) {
+      const rejectedIndex = submissions.findIndex((submission) => submission.revision === revision);
+      if (rejectedIndex === -1) {
+        return cloneProviderSessionDefaultsMap(current);
       }
-      return cloneProviderSessionDefaultsMap(current);
+      submissions.splice(rejectedIndex, 1);
+      return rebuildPendingState();
     },
   };
 }

@@ -37,9 +37,9 @@ describe("createProviderSessionDefaultsDraft", () => {
     const submittedS1 = draft.submit(CODEX, defaultValue("codex-s1"));
     const submittedS2 = draft.submit(CODEX, defaultValue("codex-s2"));
 
-    expect(draft.reconcile(submittedS1)).toEqual(submittedS2);
-    expect(draft.reconcile(submittedS1)).toEqual(submittedS2);
-    expect(draft.reconcile(submittedS2)).toEqual(submittedS2);
+    expect(draft.reconcile(submittedS1.defaults)).toEqual(submittedS2.defaults);
+    expect(draft.reconcile(submittedS1.defaults)).toEqual(submittedS2.defaults);
+    expect(draft.reconcile(submittedS2.defaults)).toEqual(submittedS2.defaults);
   });
 
   it("accepts a rollback or divergent same-driver authority instead of masking it", () => {
@@ -58,9 +58,34 @@ describe("createProviderSessionDefaultsDraft", () => {
     const draft = createProviderSessionDefaultsDraft(defaults());
     const submitted = draft.submit(CLAUDE, defaultValue("claude-submitted"));
 
-    expect(draft.reconcile(submitted)).toEqual(submitted);
+    expect(draft.reconcile(submitted.defaults)).toEqual(submitted.defaults);
     const external = defaults("codex-external", "claude-external");
     expect(draft.reconcile(external)).toEqual(external);
+  });
+
+  it("rolls failed S2 back to the acknowledged S1 authority", () => {
+    const draft = createProviderSessionDefaultsDraft(defaults());
+    const submittedS1 = draft.submit(CODEX, defaultValue("codex-s1"));
+    const submittedS2 = draft.submit(CODEX, defaultValue("codex-s2"));
+    expect(submittedS1).toEqual(
+      expect.objectContaining({ revision: expect.anything(), defaults: expect.anything() }),
+    );
+
+    expect(draft.reconcile(submittedS1.defaults)).toEqual(submittedS2.defaults);
+    expect(draft.reject(submittedS2.revision)).toEqual(submittedS1.defaults);
+    expect(draft.reconcile(submittedS1.defaults)).toEqual(submittedS1.defaults);
+  });
+
+  it("keeps S2 pending when the older S1 mutation fails", () => {
+    const draft = createProviderSessionDefaultsDraft(defaults());
+    const submittedS1 = draft.submit(CODEX, defaultValue("codex-s1"));
+    const submittedS2 = draft.submit(CODEX, defaultValue("codex-s2"));
+    expect(submittedS2).toEqual(
+      expect.objectContaining({ revision: expect.anything(), defaults: expect.anything() }),
+    );
+
+    expect(draft.reject(submittedS1.revision)).toEqual(submittedS2.defaults);
+    expect(draft.reconcile(submittedS2.defaults)).toEqual(submittedS2.defaults);
   });
 });
 
