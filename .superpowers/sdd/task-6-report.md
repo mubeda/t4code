@@ -1251,3 +1251,24 @@ UI-created provider terminals inherited the same defaults. The Codex process lau
 `--model gpt-5.5`, `model_reasoning_effort="xhigh"`, and `service_tier="fast"`; the Claude process
 launched with `--model claude-sonnet-5 --effort high`. Final screenshots are retained in the
 gitignored `.superpowers/qa/provider-defaults-stability/final-evidence/` directory.
+
+---
+
+# Task 6 uniform provider controls follow-up
+
+Outcome: **PASS**
+
+Every provider card now keeps the same Default model, Default effort, and Fast by default controls
+mounted in the same row. Unsupported effort controls remain visible, disabled, and display `Not
+supported`; unsupported Fast switches remain visible, off, and disabled. When no selectable model
+inventory exists, the model control also remains visible but disabled. Disabling a provider
+disables its supported controls without changing the card layout or removing any control.
+
+The exact current-worktree desktop PID was visually verified across Codex, Claude, Cursor, Grok,
+and OpenCode. Codex exposed all three enabled controls, Claude exposed its enabled model/effort and
+disabled Fast control, and the remaining unsupported effort/Fast controls stayed visible and
+disabled. Claude off/on and a provider refresh preserved the full row.
+
+Verification passed: 492 test files and 6,636 tests, `vp check`, `vp run typecheck`, and `git diff
+--check`. The final screenshot is retained as
+`.superpowers/qa/provider-defaults-stability/final-evidence/uniform-controls-all-providers.png`.
