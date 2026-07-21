@@ -68,6 +68,7 @@ const h = vi.hoisted(() => {
     updateProviderCommand: vi.fn(),
     genericCommand: vi.fn(),
     toastAdd: vi.fn(),
+    dispatchStateUpdates: false,
     atoms: {
       observability: Symbol("primaryServerObservabilityAtom"),
       providers: Symbol("primaryServerProvidersAtom"),
@@ -83,13 +84,13 @@ const h = vi.hoisted(() => {
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
   const useState = (initial: unknown) => {
-    const [value] = (actual.useState as (input: unknown) => [unknown, (next: unknown) => void])(
-      initial,
-    );
+    const [value, dispatch] = (
+      actual.useState as (input: unknown) => [unknown, (next: unknown) => void]
+    )(initial);
     const setState = (next: unknown) => {
-      if (typeof next === "function") {
-        (next as (previous: unknown) => unknown)(value);
-      }
+      const resolved =
+        typeof next === "function" ? (next as (previous: unknown) => unknown)(value) : next;
+      if (h.dispatchStateUpdates) dispatch(resolved);
     };
     return [value, setState];
   };
@@ -555,6 +556,7 @@ beforeEach(() => {
   h.updateProviderCommand.mockResolvedValue({ _tag: "Success", value: { providers: [] } });
   h.genericCommand.mockReset();
   h.toastAdd.mockReset();
+  h.dispatchStateUpdates = false;
 });
 
 describe("GeneralSettingsPanel", () => {
@@ -1356,6 +1358,80 @@ describe("ProviderSettingsPanel", () => {
         [CLAUDE_DRIVER]: { model: "claude-after-failure" },
       },
     });
+  });
+
+  it("does not let an older Success response overwrite newer stream authority", async () => {
+    const previousActEnvironment = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT;
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    h.dispatchStateUpdates = true;
+    const settings = baseProviderSettings();
+    h.settings = settings;
+    const mutationResult = deferred<unknown>();
+    h.updateSettings.mockReturnValueOnce(mutationResult.promise);
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => root.render(<ProviderSettingsPanel />));
+      const codexCard = h.instanceCards.find((card) => String(card.instanceId) === "codex")!;
+      const submitted = { model: "codex-submitted" };
+      await act(async () => {
+        (codexCard.onSessionDefaultsChange as (next: ProviderSessionDefault) => void)(submitted);
+      });
+
+      const external = { model: "codex-newer-stream-authority" };
+      const rerenderCard = h.instanceCards.find((card) => String(card.instanceId) === "codex")!;
+      h.settings = {
+        ...settings,
+        providerSessionDefaults: {
+          ...settings.providerSessionDefaults,
+          [CODEX_DRIVER]: external,
+        },
+      };
+      clearRegistries();
+      await act(async () => {
+        (rerenderCard.onExpandedChange as (open: boolean) => void)(true);
+      });
+      const claudeCard = h.instanceCards.find((card) => String(card.instanceId) === "claudeAgent")!;
+
+      await act(async () => {
+        mutationResult.resolve(
+          AsyncResult.success({
+            ...settings,
+            providerSessionDefaults: {
+              ...settings.providerSessionDefaults,
+              [CODEX_DRIVER]: submitted,
+            },
+          }),
+        );
+        await flush();
+      });
+      await act(async () => {
+        (claudeCard.onSessionDefaultsChange as (next: ProviderSessionDefault) => void)({
+          model: "claude-after-success",
+        });
+      });
+
+      expect(h.updateSettings).toHaveBeenNthCalledWith(2, {
+        providerSessionDefaults: {
+          ...settings.providerSessionDefaults,
+          [CODEX_DRIVER]: external,
+          [CLAUDE_DRIVER]: { model: "claude-after-success" },
+        },
+      });
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      h.dispatchStateUpdates = false;
+      if (previousActEnvironment === undefined) {
+        Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+      } else {
+        (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
+          previousActEnvironment;
+      }
+    }
   });
 
   it("routes instance card callbacks into settings patches", () => {
