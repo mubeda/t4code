@@ -73,6 +73,7 @@ function shouldClearBrowserPointer(
 
 function projectDesktopState(state: DesktopPreviewTabState): DesktopPreviewOverlay {
   return {
+    url: state.navStatus.kind === "Idle" ? null : state.navStatus.url,
     canGoBack: state.canGoBack,
     canGoForward: state.canGoForward,
     loading: state.navStatus.kind === "Loading",

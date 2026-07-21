@@ -222,14 +222,14 @@ describe("tauriPreviewBridge", () => {
     });
   });
 
-  it("fans state events out independently and honors each unsubscribe", () => {
+  it("fans state events out through one native listener and honors each unsubscribe", () => {
     const { bridge, emit, listenerCount } = makeBridge();
     const first: string[] = [];
     const second: string[] = [];
     const unsubscribeFirst = bridge.onStateChange((tabId) => first.push(tabId));
     const unsubscribeSecond = bridge.onStateChange((tabId) => second.push(tabId));
 
-    expect(listenerCount("preview://state")).toBe(2);
+    expect(listenerCount("preview://state")).toBe(1);
     emit("preview://state", statePayload("t1"));
     unsubscribeFirst();
     emit("preview://state", statePayload("t2"));

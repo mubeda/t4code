@@ -50,6 +50,7 @@ const h = vi.hoisted(() => {
     // module collaborators
     desktopNavigateCalls: [] as Array<[string, string]>,
     desktopNavigateRejects: false,
+    navigationOrder: [] as string[],
     openPreviewSessionCalls: [] as unknown[],
     rememberPreviewUrlCalls: [] as unknown[],
     updateSnapshotCalls: [] as unknown[],
@@ -138,6 +139,7 @@ vi.mock("~/browser/browserTargetResolver", () => ({
 
 vi.mock("~/browser/desktopTabLifetime", () => ({
   navigateDesktopTab: (tabId: string, url: string) => {
+    h.navigationOrder.push("desktop");
     h.desktopNavigateCalls.push([tabId, url]);
     return h.desktopNavigateRejects
       ? Promise.reject(new Error("nav boom"))
@@ -153,6 +155,7 @@ vi.mock("~/state/environments", () => ({
 vi.mock("~/state/preview", () => ({
   previewEnvironment: {
     open: { label: "open" },
+    navigate: { label: "navigate" },
     resize: { label: "resize" },
   },
 }));
@@ -163,6 +166,24 @@ vi.mock("~/state/use-atom-command", () => ({
     return (input: unknown) => {
       h.commandCalls.push({ label, input });
       if (label === "resize") return Promise.resolve(h.resizeResult);
+      if (label === "navigate") {
+        h.navigationOrder.push("server");
+        return Promise.resolve({
+          _tag: "Success",
+          value: {
+            threadId: "thread-1",
+            tabId: "tab-1",
+            navStatus: {
+              _tag: "Success",
+              url: h.resolvedUrl,
+              title: "",
+            },
+            canGoBack: false,
+            canGoForward: false,
+            updatedAt: "2026-07-21T19:00:00.000Z",
+          },
+        });
+      }
       return Promise.resolve({ _tag: "Success", value: undefined });
     };
   },
@@ -385,6 +406,7 @@ function seedSession(
     options.overlay === null
       ? null
       : (options.overlay ?? {
+          url: "http://app.local/",
           loading: false,
           canGoBack: true,
           canGoForward: true,
@@ -467,6 +489,7 @@ beforeEach(() => {
   h.copyArtifactRejects = false;
   h.desktopNavigateCalls.length = 0;
   h.desktopNavigateRejects = false;
+  h.navigationOrder.length = 0;
   h.openPreviewSessionCalls.length = 0;
   h.rememberPreviewUrlCalls.length = 0;
   h.updateSnapshotCalls.length = 0;
@@ -566,6 +589,24 @@ describe("PreviewView rendering", () => {
     expect(hasCapture("agentCursor")).toBe(true);
   });
 
+  it("shows the native URL after browser history navigation", () => {
+    seedSession({
+      overlay: {
+        loading: false,
+        canGoBack: false,
+        canGoForward: true,
+        controller: "human",
+        zoomFactor: 1,
+        url: "http://previous.local/",
+      },
+    });
+    h.previewBridge = makeBridge();
+
+    renderView();
+
+    expect(captured("chromeRow").url).toBe("http://previous.local/");
+  });
+
   it("hides picker actions and disables recording gestures when deferred capabilities are unsupported", () => {
     seedSession();
     const bridge = makeBridge();
@@ -653,6 +694,19 @@ describe("navigation handlers", () => {
     await flush();
 
     expect(h.desktopNavigateCalls).toEqual([["tab-1", "http://resolved.local/"]]);
+    expect(h.navigationOrder).toEqual(["server", "desktop"]);
+    expect(h.commandCalls).toContainEqual({
+      label: "navigate",
+      input: {
+        environmentId: "environment-1",
+        input: {
+          threadId: "thread-1",
+          tabId: "tab-1",
+          url: "http://resolved.local/",
+        },
+      },
+    });
+    expect(h.updateSnapshotCalls).toHaveLength(1);
     expect(bridgeMethodCalls("navigate")).toHaveLength(0);
     expect(h.rememberPreviewUrlCalls).toHaveLength(1);
     expect(h.openPreviewSessionCalls).toHaveLength(0);

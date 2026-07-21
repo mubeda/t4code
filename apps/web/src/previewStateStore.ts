@@ -18,6 +18,7 @@ import { PREVIEW_RECENT_URL_LIMIT } from "./components/preview/previewConstants"
 import { appAtomRegistry } from "./rpc/atomRegistry";
 
 export interface DesktopPreviewOverlay {
+  url: string | null;
   canGoBack: boolean;
   canGoForward: boolean;
   loading: boolean;

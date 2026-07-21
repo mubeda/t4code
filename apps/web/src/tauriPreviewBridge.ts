@@ -33,6 +33,16 @@ export function createTauriPreviewBridge(deps: PreviewBridgeDeps): DesktopPrevie
   const { invoke, listen } = deps;
   const zoomByTab = new Map<string, number>();
   const pendingByTab = new Map<string, Promise<void>>();
+  const stateListeners = new Set<(tabId: string, state: DesktopPreviewTabState) => void>();
+  let stopStateEvents: (() => void) | null = null;
+
+  const startStateEvents = () => {
+    if (stopStateEvents) return;
+    stopStateEvents = listen<PreviewStateEventPayload>("preview://state", (payload) => {
+      zoomByTab.set(payload.tabId, payload.state.zoomFactor);
+      for (const listener of stateListeners) listener(payload.tabId, payload.state);
+    });
+  };
 
   const enqueueTabOperation = (tabId: string, operation: () => Promise<void>): Promise<void> => {
     const pending = pendingByTab.get(tabId);
@@ -108,11 +118,19 @@ export function createTauriPreviewBridge(deps: PreviewBridgeDeps): DesktopPrevie
       evaluate: unsupported("preview.automation"),
       waitFor: unsupported("preview.automation"),
     },
-    onStateChange: (listener) =>
-      listen<PreviewStateEventPayload>("preview://state", (payload) => {
-        zoomByTab.set(payload.tabId, payload.state.zoomFactor);
-        listener(payload.tabId, payload.state);
-      }),
+    onStateChange: (listener) => {
+      stateListeners.add(listener);
+      startStateEvents();
+      let active = true;
+      return () => {
+        if (!active) return;
+        active = false;
+        stateListeners.delete(listener);
+        if (stateListeners.size > 0) return;
+        stopStateEvents?.();
+        stopStateEvents = null;
+      };
+    },
     onPointerEvent: () => () => {},
   };
 
