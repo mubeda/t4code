@@ -1,6 +1,6 @@
 [package]
 name = "t4code-desktop"
-version = "0.2.4"
+version = "0.2.5"
 description = "T4Code Tauri desktop shell"
 authors = ["T4 Tools"]
 edition.workspace = true
