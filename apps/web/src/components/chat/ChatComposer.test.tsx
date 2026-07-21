@@ -933,6 +933,56 @@ describe("ChatComposer rendering", () => {
     expect(pathSearch["query"]).toBeNull();
   });
 
+  it("presents a raw Claude Ultrathink session default before the first send", () => {
+    const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
+    const claudeModel = {
+      slug: "claude-sonnet-5",
+      name: "Claude Sonnet 5",
+      isCustom: false,
+      capabilities: {
+        optionDescriptors: [
+          {
+            id: "effort",
+            label: "Effort",
+            type: "select" as const,
+            options: [
+              { id: "high", label: "High", isDefault: true },
+              { id: "ultrathink", label: "Ultrathink" },
+            ],
+            promptInjectedValues: ["ultrathink"],
+          },
+        ],
+      },
+    };
+    const claudeProvider: ServerProvider = {
+      ...codexProvider,
+      instanceId: claudeInstanceId,
+      driver: ProviderDriverKind.make("claudeAgent"),
+      models: [claudeModel],
+    };
+    const rawDefault = {
+      instanceId: claudeInstanceId,
+      model: claudeModel.slug,
+      options: [{ id: "effort", value: "ultrathink" }],
+    };
+
+    const { markup, handle } = renderComposer({
+      providerStatuses: [claudeProvider],
+      activeProjectDefaultModelSelection: null,
+      activeThreadModelSelection: rawDefault,
+    });
+
+    expect(markup).toContain("ultrathink-frame");
+    expect(markup).toContain("shadow-[0_0_0_1px_rgba(255,255,255,0.07)_inset]");
+    expect(findCapture("ProviderModelPicker")["activeProviderIconClassName"]).toBe(
+      "ultrathink-chroma",
+    );
+    expect(handle().getSendContext()).toMatchObject({
+      selectedPromptEffort: "ultrathink",
+      selectedModelOptionsForDispatch: [{ id: "effort", value: "high" }],
+    });
+  });
+
   it("disables the editor while connecting and when the environment is unavailable", () => {
     renderComposer({ isConnecting: true });
     expect(editorProps()["disabled"]).toBe(true);

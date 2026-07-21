@@ -302,6 +302,51 @@ describe("TraitsPicker", () => {
     expect(onPromptChange).toHaveBeenCalledWith("Ultrathink:\n");
   });
 
+  it("shows a raw prompt-injected session default as the selected effort", async () => {
+    await mount(
+      <TraitsPicker
+        provider={CLAUDE}
+        models={modelsWith([effort])}
+        model={MODEL}
+        prompt=""
+        modelOptions={selections(["effort", "ultrathink"])}
+        onPromptChange={vi.fn()}
+        onModelOptionsChange={vi.fn()}
+      />,
+    );
+
+    const trigger = buttonContaining("Ultrathink");
+    await click(trigger);
+    expect(radioItem("Ultrathink").getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("replaces a raw prompt-injected session default with a native effort", async () => {
+    const onPromptChange = vi.fn();
+    const onModelOptionsChange = vi.fn();
+    await mount(
+      <TraitsPicker
+        provider={CLAUDE}
+        models={modelsWith([effort])}
+        model={MODEL}
+        prompt=""
+        modelOptions={selections(["effort", "ultrathink"])}
+        onPromptChange={onPromptChange}
+        onModelOptionsChange={onModelOptionsChange}
+      />,
+    );
+
+    const trigger = document.querySelector<HTMLButtonElement>("button");
+    expect(trigger).not.toBeNull();
+    expect(trigger?.textContent).toContain("Ultrathink");
+    await click(trigger!);
+    await click(radioItem("High"));
+
+    expect(onPromptChange).not.toHaveBeenCalled();
+    expect(onModelOptionsChange).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ id: "effort", value: "high" })]),
+    );
+  });
+
   it("removes the generated ultrathink prefix before applying another effort", async () => {
     const onPromptChange = vi.fn();
     const onModelOptionsChange = vi.fn();
