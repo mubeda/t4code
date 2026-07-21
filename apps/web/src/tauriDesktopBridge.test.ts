@@ -3,8 +3,13 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 type TauriEventHandler = (event: { payload: unknown }) => void;
 
-const { showContextMenuFallbackMock } = vi.hoisted(() => ({
+const { showContextMenuFallbackMock, startBrowserSurfaceSyncMock } = vi.hoisted(() => ({
   showContextMenuFallbackMock: vi.fn(),
+  startBrowserSurfaceSyncMock: vi.fn(),
+}));
+
+vi.mock("./browser/browserSurfaceSync", () => ({
+  startBrowserSurfaceSync: startBrowserSurfaceSyncMock,
 }));
 
 vi.mock("./contextMenuFallback", () => ({
@@ -171,6 +176,39 @@ describe("tauriDesktopBridge", () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     showContextMenuFallbackMock.mockReset();
+    startBrowserSurfaceSyncMock.mockReset();
+  });
+
+  it("starts browser surface sync once when installing the Tauri preview bridge", async () => {
+    installTauriHarness();
+
+    const bridge = await installBridge();
+    await import("./tauriDesktopBridge");
+
+    expect(startBrowserSurfaceSyncMock).toHaveBeenCalledTimes(1);
+    expect(startBrowserSurfaceSyncMock).toHaveBeenCalledWith(bridge.preview);
+  });
+
+  it("does not start browser surface sync in a browser runtime", async () => {
+    vi.stubGlobal("window", { desktopBridge: undefined });
+
+    const { tauriDesktopBridgeReady } = await import("./tauriDesktopBridge");
+    await tauriDesktopBridgeReady;
+
+    expect(window.desktopBridge).toBeUndefined();
+    expect(startBrowserSurfaceSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("does not start browser surface sync when a desktop bridge already exists", async () => {
+    installTauriHarness();
+    const existingBridge = { preview: { setBounds: vi.fn() } } as unknown as DesktopBridge;
+    window.desktopBridge = existingBridge;
+
+    const { tauriDesktopBridgeReady } = await import("./tauriDesktopBridge");
+    await tauriDesktopBridgeReady;
+
+    expect(window.desktopBridge).toBe(existingBridge);
+    expect(startBrowserSurfaceSyncMock).not.toHaveBeenCalled();
   });
 
   it("waits for the primary bootstrap before reporting the Tauri bridge ready", async () => {
