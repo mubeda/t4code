@@ -157,6 +157,41 @@ describe("collectWrappedTerminalLinkLine", () => {
       segments: [{ bufferLineNumber: 1, text: "first", startIndex: 0, endIndex: 5 }],
     });
   });
+
+  it("bounds the window on enormous wrapped logical lines and keeps the hovered row inside", () => {
+    // ConPTY can mark an entire alt-screen TUI frame as one wrapped logical
+    // line; an unbounded hover-time walk previously assembled the whole
+    // scrollback per mouse event and exhausted the renderer heap.
+    const totalRows = 10_000;
+    const hoveredBufferLineNumber = 5_000;
+    const getLine = (index: number) => {
+      if (index < 0 || index >= totalRows) return undefined;
+      const text =
+        index === hoveredBufferLineNumber - 1 ? " https://example.com/hit " : `row ${index} `;
+      return createBufferLine(text, index > 0);
+    };
+
+    const wrappedLine = collectWrappedTerminalLinkLine(hoveredBufferLineNumber, getLine);
+
+    expect(wrappedLine).not.toBeNull();
+    expect(wrappedLine!.segments.length).toBeLessThanOrEqual(100);
+    const rowNumbers = wrappedLine!.segments.map((segment) => segment.bufferLineNumber);
+    expect(rowNumbers).toContain(hoveredBufferLineNumber);
+    expect(Math.min(...rowNumbers)).toBeGreaterThanOrEqual(hoveredBufferLineNumber - 50);
+    expect(wrappedLine!.text).toContain("https://example.com/hit");
+  });
+
+  it("trims very long unbalanced delimiter tails without quadratic blowup", () => {
+    const line = `see https://example.com/a${")".repeat(50_000)} end`;
+    expect(extractTerminalLinks(line)).toEqual([
+      {
+        kind: "url",
+        text: "https://example.com/a",
+        start: 4,
+        end: 25,
+      },
+    ]);
+  });
 });
 
 describe("resolveWrappedTerminalLinkRange", () => {

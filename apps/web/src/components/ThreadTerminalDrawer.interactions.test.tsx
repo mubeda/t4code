@@ -447,6 +447,7 @@ import ThreadTerminalDrawer, {
   releaseTerminalInputScheduler,
   TerminalViewport,
 } from "./ThreadTerminalDrawer";
+import { decodeTerminalLaunchCommand } from "../lib/terminalLaunchCommand";
 import { openTerminalLinkInPreview } from "./preview/openTerminalLinkInPreview";
 
 const ENVIRONMENT_ID = EnvironmentId.make("terminal-interactions");
@@ -772,6 +773,10 @@ async function mountViewport(
     },
     async setWebglEnabled(webglEnabled: boolean) {
       testState.webglEnabled = webglEnabled;
+      await rerender();
+    },
+    async setCwd(cwd: string) {
+      props = { ...props, cwd } as ViewportProps;
       await rerender();
     },
     async setTerminalFontPreference(terminalFontPreference: TerminalFontPreference) {
@@ -1503,6 +1508,69 @@ describe("TerminalViewport mounted lifecycle", () => {
     });
     await view.resolveWebglImport();
     expect(webglState.instances).toHaveLength(1);
+  });
+
+  it("reattaches webgl to the replacement terminal after launch parameters change", async () => {
+    const view = await mountViewport({ visible: true, webglEnabled: true });
+    await settleWebgl();
+    expect(webglState.instances).toHaveLength(1);
+
+    // A cwd change recreates the xterm instance; the replacement must get its
+    // own webgl addon instead of silently falling back to the DOM renderer.
+    await view.setCwd("C:\\somewhere\\else");
+    await settleWebgl();
+
+    expect(xtermState.terminals).toHaveLength(2);
+    expect(webglState.instances).toHaveLength(2);
+  });
+
+  it("merges launch command env into the spawn env with runtime env winning", async () => {
+    testState.attachedSessionInputs.length = 0;
+    await mount(
+      <TerminalViewport
+        {...viewportProps({
+          command: decodeTerminalLaunchCommand({
+            executable: "opencode",
+            args: [],
+            env: { OPENCODE_CONFIG_CONTENT: '{"theme":"system"}', SHARED: "command" },
+          })!,
+          runtimeEnv: { SHARED: "runtime" },
+        })}
+      />,
+    );
+
+    const spec = testState.attachedSessionInputs.at(-1) as {
+      terminal: { env?: Record<string, string> };
+    };
+    expect(spec.terminal.env).toMatchObject({
+      OPENCODE_CONFIG_CONTENT: '{"theme":"system"}',
+      SHARED: "runtime",
+    });
+  });
+
+  it("supplies resolved theme colors as reserved OSC env for the PTY responder", async () => {
+    testState.attachedSessionInputs.length = 0;
+    document.documentElement.classList.remove("dark");
+    await mount(<TerminalViewport {...viewportProps()} />);
+    const lightSpec = testState.attachedSessionInputs.at(-1) as {
+      terminal: { env?: Record<string, string> };
+    };
+    expect(lightSpec.terminal.env).toMatchObject({
+      T4CODE_OSC_BACKGROUND: "255,255,255",
+      T4CODE_OSC_FOREGROUND: "28,33,41",
+    });
+
+    testState.attachedSessionInputs.length = 0;
+    document.documentElement.classList.add("dark");
+    try {
+      await mount(<TerminalViewport {...viewportProps({ terminalId: "term-osc-dark" })} />);
+    } finally {
+      document.documentElement.classList.remove("dark");
+    }
+    const darkSpec = testState.attachedSessionInputs.at(-1) as {
+      terminal: { env?: Record<string, string> };
+    };
+    expect(darkSpec.terminal.env).toMatchObject({ T4CODE_OSC_BACKGROUND: "14,18,24" });
   });
 
   it("attaches the replacement generation after a deferred import is disabled and enabled", async () => {
@@ -2754,7 +2822,12 @@ describe("TerminalViewport mounted lifecycle", () => {
     const mounted = await mount(<TerminalViewport {...props} />);
     const terminal = xtermState.terminals[0]!;
     const observer = observerInstances[0]!;
-    observer.callback([], observer as never);
+    document.documentElement.classList.add("dark");
+    try {
+      observer.callback([], observer as never);
+    } finally {
+      document.documentElement.classList.remove("dark");
+    }
     expect(terminal.refresh).toHaveBeenCalledWith(0, 23);
 
     await act(async () => mounted.root.render(<TerminalViewport {...props} resizeEpoch={1} />));
@@ -2767,6 +2840,19 @@ describe("TerminalViewport mounted lifecycle", () => {
       environmentId: ENVIRONMENT_ID,
       input: { threadId: THREAD_ID, terminalId: "term-1", cols: 80, rows: 24 },
     });
+  });
+
+  it("skips the theme refresh when a document mutation leaves the resolved theme unchanged", async () => {
+    await mount(<TerminalViewport {...viewportProps()} />);
+    const terminal = xtermState.terminals[0]!;
+    const observer = observerInstances[0]!;
+    terminal.refresh.mockClear();
+
+    // Class/style churn on <html> (tooltips, scroll locks) must not force a
+    // full repaint when the terminal theme it resolves to is identical.
+    observer.callback([], observer as never);
+
+    expect(terminal.refresh).not.toHaveBeenCalled();
   });
 
   it("tolerates an unmeasurable terminal and applies the dark application theme", async () => {
@@ -3142,7 +3228,8 @@ describe("ThreadTerminalDrawer mounted controls", () => {
             terminalId: "term-2",
             cwd: "/alternate",
             worktreePath: null,
-            env: { TERMINAL_VARIANT: "secondary" },
+            // env now always carries the reserved OSC theme colors too.
+            env: expect.objectContaining({ TERMINAL_VARIANT: "secondary" }),
           }),
         }),
       ]),
