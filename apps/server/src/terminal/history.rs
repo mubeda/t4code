@@ -2,6 +2,11 @@ use std::collections::VecDeque;
 
 const DEQUE_SHRINK_OCCUPANCY_DENOMINATOR: usize = 4;
 
+/// ConPTY alt-screen TUIs redraw with cursor movement instead of newlines, so
+/// a line limit alone leaves retention unbounded in bytes. One mebibyte keeps
+/// ample replay headroom above the 512 KiB client transcript cap.
+const DEFAULT_BYTE_LIMIT: usize = 1_048_576;
+
 /// Bounded, chunked terminal scrollback.
 ///
 /// Each push scans only the new data for line boundaries. Eviction advances an
@@ -14,6 +19,8 @@ pub(crate) struct TerminalHistory {
     chunks: VecDeque<HistoryChunk>,
     total_lines: usize,
     line_limit: usize,
+    total_bytes: usize,
+    byte_limit: usize,
 }
 
 #[derive(Debug)]
@@ -36,7 +43,7 @@ impl HistoryChunk {
         &self.data[self.start..]
     }
 
-    fn discard_through_newline(&mut self, count: usize) {
+    fn discard_through_newline(&mut self, count: usize) -> usize {
         debug_assert!(count > 0);
         debug_assert!(count <= self.newline_count);
 
@@ -44,6 +51,23 @@ impl HistoryChunk {
         self.start += cut;
         self.newline_count -= count;
         self.compact_if_geometric();
+        cut
+    }
+
+    /// Discards at least `bytes` from the retained prefix, rounding the cut up
+    /// to the next character boundary so retention never splits a code point.
+    /// Returns the discarded byte and newline counts.
+    fn discard_prefix_bytes(&mut self, bytes: usize) -> (usize, usize) {
+        let retained = self.retained();
+        let mut cut = bytes.min(retained.len());
+        while cut < retained.len() && !retained.is_char_boundary(cut) {
+            cut += 1;
+        }
+        let discarded_newlines = count_newlines(&retained[..cut]);
+        self.start += cut;
+        self.newline_count -= discarded_newlines;
+        self.compact_if_geometric();
+        (cut, discarded_newlines)
     }
 
     fn compact_if_geometric(&mut self) {
@@ -67,10 +91,16 @@ impl HistoryChunk {
 
 impl TerminalHistory {
     pub(crate) fn new(line_limit: usize) -> Self {
+        Self::with_byte_limit(line_limit, DEFAULT_BYTE_LIMIT)
+    }
+
+    pub(crate) fn with_byte_limit(line_limit: usize, byte_limit: usize) -> Self {
         Self {
             chunks: VecDeque::new(),
             total_lines: 0,
             line_limit,
+            total_bytes: 0,
+            byte_limit,
         }
     }
 
@@ -79,7 +109,7 @@ impl TerminalHistory {
     }
 
     pub(crate) fn push(&mut self, data: &str) {
-        if self.line_limit == 0 {
+        if self.line_limit == 0 || self.byte_limit == 0 {
             self.clear();
             return;
         }
@@ -89,6 +119,7 @@ impl TerminalHistory {
 
         let chunk = HistoryChunk::new(data);
         self.total_lines += chunk.newline_count;
+        self.total_bytes += data.len();
         self.chunks.push_back(chunk);
         self.evict();
     }
@@ -96,6 +127,7 @@ impl TerminalHistory {
     pub(crate) fn clear(&mut self) {
         self.chunks = VecDeque::new();
         self.total_lines = 0;
+        self.total_bytes = 0;
     }
 
     pub(crate) fn snapshot(&self) -> String {
@@ -121,15 +153,36 @@ impl TerminalHistory {
             if front_lines < overflow {
                 let removed = self.chunks.pop_front().expect("front chunk exists");
                 self.total_lines -= removed.newline_count;
+                self.total_bytes -= removed.retained().len();
                 continue;
             }
 
             let front = self.chunks.front_mut().expect("front chunk exists");
-            front.discard_through_newline(overflow);
+            let discarded_bytes = front.discard_through_newline(overflow);
             self.total_lines -= overflow;
+            self.total_bytes -= discarded_bytes;
             if front.is_empty() {
                 self.chunks.pop_front();
             }
+        }
+        while self.total_bytes > self.byte_limit {
+            if self.chunks.len() > 1 {
+                let removed = self.chunks.pop_front().expect("front chunk exists");
+                self.total_lines -= removed.newline_count;
+                self.total_bytes -= removed.retained().len();
+                continue;
+            }
+            let Some(front) = self.chunks.front_mut() else {
+                break;
+            };
+            let overflow_bytes = self.total_bytes - self.byte_limit;
+            let (discarded_bytes, discarded_newlines) = front.discard_prefix_bytes(overflow_bytes);
+            self.total_lines -= discarded_newlines;
+            self.total_bytes -= discarded_bytes;
+            if front.is_empty() {
+                self.chunks.pop_front();
+            }
+            break;
         }
         self.compact_chunk_slots_after_eviction(chunks_before_eviction);
     }
@@ -251,6 +304,47 @@ mod tests {
         history.push("wörld");
         history.push(" 🌍\n");
         assert_eq!(history.snapshot(), "wörld 🌍\n");
+    }
+
+    #[test]
+    fn newline_free_output_is_bounded_by_the_byte_limit() {
+        let mut history = TerminalHistory::with_byte_limit(5_000, 1_024);
+        let chunk = "x".repeat(64);
+        for _ in 0..100 {
+            history.push(&chunk);
+        }
+        let snapshot = history.snapshot();
+        assert!(
+            snapshot.len() <= 1_024,
+            "snapshot retained {} bytes",
+            snapshot.len()
+        );
+        assert!(snapshot.ends_with(&chunk));
+    }
+
+    #[test]
+    fn byte_eviction_discards_prefixes_at_character_boundaries() {
+        let mut history = TerminalHistory::with_byte_limit(5_000, 32);
+        history.push(&"é".repeat(40));
+        let snapshot = history.snapshot();
+        assert!(
+            snapshot.len() <= 32,
+            "snapshot retained {} bytes",
+            snapshot.len()
+        );
+        assert!(!snapshot.is_empty());
+        assert!(snapshot.chars().all(|character| character == 'é'));
+    }
+
+    #[test]
+    fn byte_eviction_keeps_line_accounting_consistent() {
+        let mut history = TerminalHistory::with_byte_limit(2, 10);
+        history.push("aaaa\n");
+        history.push("bbbb\n");
+        history.push("c\n");
+        // Byte eviction removed "aaaa\n" and its newline; the remaining two
+        // lines fit the line limit, so nothing else may be discarded.
+        assert_eq!(history.snapshot(), "bbbb\nc\n");
     }
 
     #[test]
