@@ -7,15 +7,19 @@ import {
 } from "@t4code/contracts";
 import {
   buildProviderOptionSelectionsFromDescriptors,
+  getProviderCapabilityDescriptors,
   getProviderOptionCurrentValue,
-  getProviderOptionDescriptors,
+  getProviderOptionStringSelectionValue,
   isClaudeUltrathinkPrompt,
+  resolvePromptInjectedEffort,
 } from "@t4code/shared/model";
 import type { ReactNode } from "react";
 
 import type { DraftId } from "../../composerDraftStore";
 import { getProviderModelCapabilities } from "../../providerModels";
 import { shouldRenderTraitsControls, TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
+
+const CODEX_PROVIDER = "codex";
 
 export type ComposerProviderStateInput = {
   provider: ProviderDriverKind;
@@ -55,16 +59,26 @@ export function getComposerPromptInjectionState(prompt: string): ComposerPromptI
 export function getComposerProviderState(input: ComposerProviderStateInput): ComposerProviderState {
   const { provider, model, models, modelOptions, promptInjectionState = "none" } = input;
   const caps = getProviderModelCapabilities(models, model, provider);
-  const descriptors = getProviderOptionDescriptors({ caps, selections: modelOptions });
+  const descriptors = getProviderCapabilityDescriptors({
+    provider,
+    caps,
+    selections: modelOptions,
+    enforceCodexServiceTier: true,
+  });
   const primarySelectDescriptor = descriptors.find(
     (descriptor): descriptor is Extract<(typeof descriptors)[number], { type: "select" }> =>
-      descriptor.type === "select",
+      descriptor.type === "select" && descriptor.id !== "serviceTier",
   );
   const primaryValue = getProviderOptionCurrentValue(primarySelectDescriptor ?? null);
-  const promptEffort = typeof primaryValue === "string" ? primaryValue : null;
+  const rawPrimaryValue = primarySelectDescriptor
+    ? getProviderOptionStringSelectionValue(modelOptions, primarySelectDescriptor.id)
+    : undefined;
+  const promptInjectedEffort = resolvePromptInjectedEffort(caps, rawPrimaryValue);
+  const promptEffort =
+    promptInjectedEffort ?? (typeof primaryValue === "string" ? primaryValue : null);
   const ultrathinkActive =
     (primarySelectDescriptor?.promptInjectedValues?.length ?? 0) > 0 &&
-    promptInjectionState === "ultrathink";
+    (promptInjectedEffort === "ultrathink" || promptInjectionState === "ultrathink");
 
   return {
     provider,
@@ -96,9 +110,19 @@ function renderTraitsControl(
     onPromptChange,
   } = input;
   const hasTarget = threadRef !== undefined || draftId !== undefined;
+  const modelOptionsForRender =
+    provider === CODEX_PROVIDER
+      ? getComposerProviderState({ provider, model, models, modelOptions }).modelOptionsForDispatch
+      : modelOptions;
   if (
     !hasTarget ||
-    !shouldRenderTraitsControls({ provider, models, model, modelOptions, prompt })
+    !shouldRenderTraitsControls({
+      provider,
+      models,
+      model,
+      modelOptions: modelOptionsForRender,
+      prompt,
+    })
   ) {
     return null;
   }
@@ -110,7 +134,7 @@ function renderTraitsControl(
       {...(threadRef ? { threadRef } : {})}
       {...(draftId ? { draftId } : {})}
       model={model}
-      modelOptions={modelOptions}
+      modelOptions={modelOptionsForRender}
       prompt={prompt}
       onPromptChange={onPromptChange}
     />

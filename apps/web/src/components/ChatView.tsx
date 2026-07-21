@@ -31,11 +31,8 @@ import {
   scopeProjectRef,
   scopeThreadRef,
 } from "@t4code/client-runtime/environment";
-import {
-  applyClaudePromptEffortPrefix,
-  createModelSelection,
-  resolvePromptInjectedEffort,
-} from "@t4code/shared/model";
+import { applyClaudePromptEffortPrefix, resolvePromptInjectedEffort } from "@t4code/shared/model";
+import { resolveProviderSessionDefault } from "@t4code/shared/providerSessionDefaults";
 import { CHAT_LIST_ANCHOR_OFFSET } from "@t4code/shared/chatList";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t4code/shared/projectScripts";
 import { truncate } from "@t4code/shared/String";
@@ -114,6 +111,7 @@ import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { isCommandPaletteOpen } from "../commandPaletteContext";
 import { buildTemporaryWorktreeBranchName } from "@t4code/shared/git";
 import { useMediaQuery } from "../hooks/useMediaQuery";
+import { resolveProviderSessionSelectionForInstance } from "../providerSessionSelection";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import {
   selectActiveRightPanel,
@@ -1267,6 +1265,27 @@ function ChatViewContent(props: ChatViewProps) {
     ? scopeProjectRef(draftThread.environmentId, draftThread.projectId)
     : null;
   const fallbackDraftProject = useProject(fallbackDraftProjectRef);
+  const fallbackDraftResolution = useMemo(() => {
+    if (!draftThread) return null;
+    const targetInstanceId =
+      fallbackDraftProject?.defaultModelSelection?.instanceId ??
+      useComposerDraftStore.getState().stickyActiveProvider ??
+      defaultInstanceIdForDriver(ProviderDriverKind.make("codex"));
+    const providers = environmentById.get(draftThread.environmentId)?.serverConfig?.providers ?? [];
+    return resolveProviderSessionSelectionForInstance({
+      instanceId: targetInstanceId,
+      providers,
+      settings,
+      projectSelection: fallbackDraftProject?.defaultModelSelection ?? null,
+    });
+  }, [draftThread, environmentById, fallbackDraftProject?.defaultModelSelection, settings]);
+  const fallbackDraftModelSelection = fallbackDraftResolution?.modelSelection ?? null;
+  const legacyDraftMissingStoredModelSelection = useMemo(() => {
+    if (!draftThread) return false;
+    const composerDraft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+    return Object.keys(composerDraft?.modelSelectionByProvider ?? {}).length === 0;
+  }, [composerDraftTarget, draftThread]);
+  const warnedLegacyDraftFallbacksRef = useRef(new Set<string>());
   const localDraftError =
     routeKind === "server" && serverThread
       ? null
@@ -1278,13 +1297,13 @@ function ChatViewContent(props: ChatViewProps) {
         ? buildLocalDraftThread(
             threadId,
             draftThread,
-            fallbackDraftProject?.defaultModelSelection ?? {
+            fallbackDraftModelSelection ?? {
               instanceId: ProviderInstanceId.make("codex"),
               model: DEFAULT_MODEL,
             },
           )
         : undefined,
-    [draftThread, fallbackDraftProject?.defaultModelSelection, threadId],
+    [draftThread, fallbackDraftModelSelection, threadId],
   );
   const isServerThread = routeKind === "server" && serverThread !== null;
   const activeThread = isServerThread ? serverThread : localDraftThread;
@@ -1656,6 +1675,16 @@ function ChatViewContent(props: ChatViewProps) {
 
       const nextDraftId = newDraftId();
       const nextThreadId = newThreadId();
+      const targetInstanceId =
+        activeProject.defaultModelSelection?.instanceId ??
+        useComposerDraftStore.getState().stickyActiveProvider ??
+        defaultInstanceIdForDriver(ProviderDriverKind.make("codex"));
+      const resolution = resolveProviderSessionSelectionForInstance({
+        instanceId: targetInstanceId,
+        providers: activeEnvironment?.serverConfig?.providers ?? [],
+        settings,
+        projectSelection: activeProject.defaultModelSelection,
+      });
       setLogicalProjectDraftThreadId(logicalProjectKey, activeProjectRef, nextDraftId, {
         threadId: nextThreadId,
         createdAt: new Date().toISOString(),
@@ -1663,6 +1692,10 @@ function ChatViewContent(props: ChatViewProps) {
         interactionMode: DEFAULT_INTERACTION_MODE,
         ...input,
       });
+      setComposerDraftModelSelection(nextDraftId, resolution.modelSelection);
+      if (resolution.fallback) {
+        console.warn("Provider session default fallback", resolution.fallback);
+      }
       await navigate({
         to: "/draft/$draftId",
         params: buildDraftThreadRouteParams(nextDraftId),
@@ -1671,6 +1704,7 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [
       activeProject,
+      activeEnvironment?.serverConfig?.providers,
       draftId,
       getDraftSession,
       getDraftSessionByLogicalProjectKey,
@@ -1678,8 +1712,11 @@ function ChatViewContent(props: ChatViewProps) {
       navigate,
       projectGroupingSettings,
       routeKind,
+      setComposerDraftModelSelection,
       setDraftThreadContext,
       setLogicalProjectDraftThreadId,
+      settings.providerInstances,
+      settings.providerSessionDefaults,
     ],
   );
 
@@ -3741,18 +3778,38 @@ function ChatViewContent(props: ChatViewProps) {
   const handleCreateChatPanel = useCallback(
     (entry: ProviderInstanceEntry) => {
       if (!activeThread || !activeThreadRef || !centerPanelLaunchContext) return;
-      const model = entry.models[0]?.slug;
+      const configuredDefault = settings.providerSessionDefaults[entry.driverKind];
+      const projectSelection =
+        activeProject?.defaultModelSelection?.instanceId === entry.instanceId
+          ? activeProject.defaultModelSelection
+          : null;
+      const resolution = resolveProviderSessionDefault({
+        driver: entry.driverKind,
+        instanceId: entry.instanceId,
+        models: entry.models,
+        ...(configuredDefault === undefined ? {} : { configuredDefault }),
+        ...(projectSelection === null ? {} : { projectSelection }),
+      });
+      if (resolution.fallback) {
+        console.warn("Provider session default fallback", resolution.fallback);
+      }
       void centerPanelActions.createChatPanel({
         hostRef: activeThreadRef,
         projectId: activeThread.projectId,
         worktreePath: centerPanelLaunchContext.worktreePath,
         branch: activeThread.branch ?? null,
-        instanceId: entry.instanceId,
-        ...(model ? { model } : {}),
+        modelSelection: resolution.modelSelection,
         providerLabel: entry.displayName,
       });
     },
-    [activeThread, activeThreadRef, centerPanelActions, centerPanelLaunchContext],
+    [
+      activeProject?.defaultModelSelection,
+      activeThread,
+      activeThreadRef,
+      centerPanelActions,
+      centerPanelLaunchContext,
+      settings.providerSessionDefaults,
+    ],
   );
   const openCenterTerminal = useCallback(
     (options?: OpenTerminalPanelOptions) => {
@@ -4295,11 +4352,7 @@ function ChatViewContent(props: ChatViewProps) {
       }
     }
     const title = truncate(titleSeed);
-    const threadCreateModelSelection = createModelSelection(
-      ctxSelectedModelSelection.instanceId,
-      ctxSelectedModel || activeProject.defaultModelSelection?.model || DEFAULT_MODEL,
-      ctxSelectedModelSelection.options,
-    );
+    const threadCreateModelSelection = ctxSelectedModelSelection;
 
     let failure: AtomCommandResult<unknown, unknown> | null = null;
     // Auto-title from first message
@@ -4367,6 +4420,21 @@ function ChatViewContent(props: ChatViewProps) {
             }
           : undefined;
       beginLocalDispatch({ preparingWorktree: false });
+      const legacyDraftFallback = fallbackDraftResolution?.fallback ?? null;
+      const warningKey = routeThreadKey;
+      if (
+        isLocalDraftThread &&
+        legacyDraftMissingStoredModelSelection &&
+        fallbackDraftResolution !== null &&
+        legacyDraftFallback &&
+        ctxSelectedModelSelection.instanceId ===
+          fallbackDraftResolution.modelSelection.instanceId &&
+        ctxSelectedModelSelection.model === fallbackDraftResolution.modelSelection.model &&
+        !warnedLegacyDraftFallbacksRef.current.has(warningKey)
+      ) {
+        warnedLegacyDraftFallbacksRef.current.add(warningKey);
+        console.warn("Provider session default fallback", legacyDraftFallback);
+      }
       const startResult = await startThreadTurn({
         environmentId,
         input: {

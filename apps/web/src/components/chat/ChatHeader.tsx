@@ -37,7 +37,7 @@ interface ChatHeaderProps {
   rightPanelOpen: boolean;
   gitCwd: string | null;
   providerStatuses: ReadonlyArray<ServerProvider>;
-  settings: Pick<ServerSettings, "providerInstances" | "providers">;
+  settings: Pick<ServerSettings, "providerInstances" | "providers" | "providerSessionDefaults">;
   canCreatePanel: boolean;
   onCreateChatPanel: (entry: ProviderInstanceEntry) => void;
   onOpenTerminalPanel: () => void;

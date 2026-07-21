@@ -6,6 +6,8 @@ import {
 import {
   DEFAULT_RUNTIME_MODE,
   DEFAULT_SERVER_SETTINGS,
+  defaultInstanceIdForDriver,
+  ProviderDriverKind,
   type ScopedProjectRef,
 } from "@t4code/contracts";
 import { useParams, useRouter } from "@tanstack/react-router";
@@ -26,6 +28,7 @@ import {
 import { readThreadShell, useProjects, useServerConfigs, useThread } from "../state/entities";
 import { resolveNewDraftStartFromOrigin } from "../lib/chatThreadActions";
 import { resolveThreadRouteTarget } from "../threadRoutes";
+import { resolveProviderSessionSelectionForInstance } from "../providerSessionSelection";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
 import { useClientSettings } from "./useSettings";
 
@@ -53,9 +56,10 @@ export function useNewThreadHandler() {
         getDraftSessionByLogicalProjectKey,
         getDraftSession,
         getDraftThread,
-        applyStickyState,
+        setModelSelection,
         setDraftThreadContext,
         setLogicalProjectDraftThreadId,
+        stickyActiveProvider,
       } = useComposerDraftStore.getState();
       const currentRouteTarget = getCurrentRouteTarget();
       const project = projects.find(
@@ -63,8 +67,9 @@ export function useNewThreadHandler() {
           candidate.id === projectRef.projectId &&
           candidate.environmentId === projectRef.environmentId,
       );
-      const environmentSettings =
-        serverConfigs.get(projectRef.environmentId)?.settings ?? DEFAULT_SERVER_SETTINGS;
+      const environmentConfig = serverConfigs.get(projectRef.environmentId);
+      const environmentSettings = environmentConfig?.settings ?? DEFAULT_SERVER_SETTINGS;
+      const environmentProviders = environmentConfig?.providers ?? [];
       const logicalProjectKey = project
         ? deriveLogicalProjectKeyFromSettings(project, projectGroupingSettings)
         : scopedProjectKey(projectRef);
@@ -160,6 +165,16 @@ export function useNewThreadHandler() {
       const threadId = newThreadId();
       const createdAt = new Date().toISOString();
       const initialEnvMode = options?.envMode ?? environmentSettings.defaultThreadEnvMode;
+      const targetInstanceId =
+        project?.defaultModelSelection?.instanceId ??
+        stickyActiveProvider ??
+        defaultInstanceIdForDriver(ProviderDriverKind.make("codex"));
+      const resolution = resolveProviderSessionSelectionForInstance({
+        instanceId: targetInstanceId,
+        providers: environmentProviders,
+        settings: environmentSettings,
+        ...(project === undefined ? {} : { projectSelection: project.defaultModelSelection }),
+      });
       return (async () => {
         setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, draftId, {
           threadId,
@@ -175,7 +190,10 @@ export function useNewThreadHandler() {
             }),
           runtimeMode: DEFAULT_RUNTIME_MODE,
         });
-        applyStickyState(draftId);
+        setModelSelection(draftId, resolution.modelSelection);
+        if (resolution.fallback) {
+          console.warn("Provider session default fallback", resolution.fallback);
+        }
 
         await router.navigate({
           to: "/draft/$draftId",

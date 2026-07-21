@@ -19,6 +19,7 @@ import {
   type ProviderInstanceEnvironmentVariable,
   type ProviderInstanceId,
   type ProviderDriverKind,
+  type ProviderSessionDefault,
   type ServerProvider,
   type ServerProviderModel,
 } from "@t4code/contracts";
@@ -40,6 +41,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { DriverOption } from "./providerDriverMeta";
 import { ProviderSettingsForm } from "./ProviderSettingsForm";
 import { ProviderModelsSection } from "./ProviderModelsSection";
+import { ProviderSessionDefaultsControls } from "./ProviderSessionDefaultsControls";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { ProviderAccentColorPicker } from "./ProviderAccentColorPicker";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
@@ -326,6 +328,8 @@ interface ProviderInstanceCardProps {
   readonly isExpanded: boolean;
   readonly onExpandedChange: (open: boolean) => void;
   readonly onUpdate: (nextInstance: ProviderInstanceConfig) => void;
+  readonly sessionDefaults?: ProviderSessionDefault | undefined;
+  readonly onSessionDefaultsChange?: ((next: ProviderSessionDefault) => void) | undefined;
   /**
    * Pass `undefined` to hide the delete button entirely. Built-in default
    * instance slots use `undefined` — they can't be deleted without losing
@@ -383,6 +387,8 @@ export function ProviderInstanceCard({
   isExpanded,
   onExpandedChange,
   onUpdate,
+  sessionDefaults,
+  onSessionDefaultsChange,
   onDelete,
   headerAction,
   hiddenModels,
@@ -600,7 +606,7 @@ export function ProviderInstanceCard({
   ) : null;
 
   return (
-    <div className="border-t border-border/60 first:border-t-0">
+    <div className="relative overflow-visible rounded-2xl border bg-card text-card-foreground shadow-sm/4">
       <div className="px-4 py-3.5 sm:px-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0 flex-1 space-y-1">
@@ -705,6 +711,15 @@ export function ProviderInstanceCard({
               {titleTailNode}
             </div>
             {authRowNode}
+            {onSessionDefaultsChange ? (
+              <ProviderSessionDefaultsControls
+                driver={instance.driver}
+                models={modelsForDisplay}
+                value={sessionDefaults}
+                disabled={!enabled}
+                onChange={onSessionDefaultsChange}
+              />
+            ) : null}
           </div>
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
             <Button

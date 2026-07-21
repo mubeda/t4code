@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 
 const DEFAULT_MODEL: &str = "gpt-5.4";
 const DEFAULT_SERVICE_TIER_ID: &str = "default";
+const FAST_SERVICE_TIER_ID: &str = "fast";
 
 const T4CODE_BROWSER_TOOL_INSTRUCTIONS: &str = r#"
 
@@ -384,6 +385,94 @@ pub fn parse_model_list_response(
     Ok(models)
 }
 
+pub fn fallback_models(
+    configured_model: Option<&str>,
+    configured_effort: Option<&str>,
+    configured_service_tier: Option<&str>,
+    custom_models: &[String],
+) -> Vec<Value> {
+    const EFFORTS: [&str; 8] = [
+        "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+    ];
+    let model = configured_model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_MODEL);
+    let selected_effort = configured_effort
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("medium");
+    let selected_service_tier = if configured_service_tier == Some("fast") {
+        "fast"
+    } else {
+        "default"
+    };
+    let mut efforts = EFFORTS.into_iter().collect::<Vec<_>>();
+    if !efforts.contains(&selected_effort) {
+        efforts.push(selected_effort);
+    }
+    let effort_options = efforts
+        .into_iter()
+        .map(|effort| {
+            let mut option = json!({
+                "id": effort,
+                "label": reasoning_effort_label(effort),
+            });
+            if effort == selected_effort {
+                option["isDefault"] = json!(true);
+            }
+            option
+        })
+        .collect::<Vec<_>>();
+    let mut models = vec![json!({
+        "slug": model,
+        "name": to_display_name(model),
+        "isCustom": false,
+        "capabilities": {
+            "optionDescriptors": [
+                {
+                    "id": "reasoningEffort",
+                    "label": "Reasoning",
+                    "type": "select",
+                    "options": effort_options,
+                    "currentValue": selected_effort,
+                },
+                {
+                    "id": "serviceTier",
+                    "label": "Service Tier",
+                    "type": "select",
+                    "options": [
+                        {
+                            "id": "default",
+                            "label": "Standard",
+                            "isDefault": selected_service_tier == "default"
+                        },
+                        {
+                            "id": "fast",
+                            "label": "Fast",
+                            "isDefault": selected_service_tier == "fast"
+                        }
+                    ],
+                    "currentValue": selected_service_tier,
+                }
+            ]
+        }
+    })];
+    let mut seen = std::collections::HashSet::from([model.to_owned()]);
+    models.extend(custom_models.iter().filter_map(|custom| {
+        let slug = custom.trim();
+        (!slug.is_empty() && seen.insert(slug.to_owned())).then(|| {
+            json!({
+                "slug": slug,
+                "name": slug,
+                "isCustom": true,
+                "capabilities": null,
+            })
+        })
+    }));
+    models
+}
+
 pub fn parse_skills_list_response(
     response: &Value,
     cwd: &str,
@@ -531,12 +620,38 @@ fn map_model_capabilities(model: &Value) -> Value {
                 tier.as_str().map(|id| {
                     json!({
                         "id": id,
-                        "name": if id == "fast" { "Fast" } else { id },
+                        "name": if id == FAST_SERVICE_TIER_ID { "Fast" } else { id },
                         "description": "",
                     })
                 })
             })
             .collect();
+    }
+
+    let mut seen_service_tiers = std::collections::HashSet::new();
+    service_tiers.retain(|tier| {
+        tier.get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .is_some_and(|id| seen_service_tiers.insert(id.to_owned()))
+    });
+    if !seen_service_tiers.contains(DEFAULT_SERVICE_TIER_ID) {
+        service_tiers.insert(
+            0,
+            json!({
+                "id": DEFAULT_SERVICE_TIER_ID,
+                "name": "Standard",
+                "description": "",
+            }),
+        );
+        seen_service_tiers.insert(DEFAULT_SERVICE_TIER_ID.to_owned());
+    }
+    if !seen_service_tiers.contains(FAST_SERVICE_TIER_ID) {
+        service_tiers.push(json!({
+            "id": FAST_SERVICE_TIER_ID,
+            "name": "Fast",
+            "description": "",
+        }));
     }
 
     let default_service_tier = model
@@ -559,20 +674,9 @@ fn map_model_capabilities(model: &Value) -> Value {
             "currentValue": default_reasoning_effort,
         }));
     }
-    if !service_tiers.is_empty() {
-        let mut standard = json!({
-            "id": DEFAULT_SERVICE_TIER_ID,
-            "label": "Standard",
-            "isDefault": default_service_tier == DEFAULT_SERVICE_TIER_ID,
-        });
-        if default_service_tier != DEFAULT_SERVICE_TIER_ID {
-            standard
-                .as_object_mut()
-                .expect("service tier option is an object")
-                .remove("isDefault");
-        }
-        let mut options = vec![standard];
-        options.extend(service_tiers.iter().map(|tier| {
+    let options = service_tiers
+        .iter()
+        .map(|tier| {
             let id = tier.get("id").and_then(Value::as_str).unwrap_or_default();
             let name = tier.get("name").and_then(Value::as_str).unwrap_or(id);
             let description = tier
@@ -585,7 +689,8 @@ fn map_model_capabilities(model: &Value) -> Value {
                 "description": if description.is_empty() { Value::Null } else { json!(description) },
                 "isDefault": default_service_tier == id,
             })
-        }).map(|value| {
+        })
+        .map(|value| {
             let mut object = value.as_object().cloned().unwrap_or_default();
             if object.get("description").is_some_and(Value::is_null) {
                 object.remove("description");
@@ -594,22 +699,22 @@ fn map_model_capabilities(model: &Value) -> Value {
                 object.remove("isDefault");
             }
             Value::Object(object)
-        }));
-        option_descriptors.push(json!({
-            "id": "serviceTier",
-            "label": "Service Tier",
-            "type": "select",
-            "options": options,
-            "currentValue": default_service_tier,
-        }));
-    }
+        })
+        .collect::<Vec<_>>();
+    option_descriptors.push(json!({
+        "id": "serviceTier",
+        "label": "Service Tier",
+        "type": "select",
+        "options": options,
+        "currentValue": default_service_tier,
+    }));
 
     json!({
         "optionDescriptors": option_descriptors,
     })
 }
 
-fn reasoning_effort_label(value: &str) -> &'static str {
+fn reasoning_effort_label(value: &str) -> &str {
     match value {
         "none" => "None",
         "minimal" => "Minimal",
@@ -617,7 +722,9 @@ fn reasoning_effort_label(value: &str) -> &'static str {
         "medium" => "Medium",
         "high" => "High",
         "xhigh" => "Extra High",
-        _ => "Medium",
+        "max" => "Max",
+        "ultra" => "Ultra",
+        _ => value,
     }
 }
 
@@ -659,6 +766,126 @@ fn to_display_name(display_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fallback_models_expose_codex_effort_and_fast_service_tiers() {
+        let models = fallback_models(Some("gpt-private"), Some("max"), Some("fast"), &[]);
+        let model = &models[0];
+        let descriptors = model["capabilities"]["optionDescriptors"]
+            .as_array()
+            .expect("fallback option descriptors");
+        let effort = descriptors
+            .iter()
+            .find(|descriptor| descriptor["id"] == "reasoningEffort")
+            .expect("reasoning effort descriptor");
+        let service_tier = descriptors
+            .iter()
+            .find(|descriptor| descriptor["id"] == "serviceTier")
+            .expect("service tier descriptor");
+
+        assert_eq!(model["slug"], "gpt-private");
+        assert!(
+            effort["options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|option| { option["id"] == "max" && option["isDefault"] == true })
+        );
+        assert_eq!(service_tier["options"][0]["id"], "default");
+        assert_eq!(service_tier["options"][1]["id"], "fast");
+        assert_eq!(service_tier["currentValue"], "fast");
+    }
+
+    #[test]
+    fn fallback_models_keep_custom_models_unique_and_label_all_known_efforts() {
+        let models = fallback_models(
+            None,
+            Some("ultra"),
+            None,
+            &["gpt-custom".to_owned(), "gpt-custom".to_owned()],
+        );
+
+        assert_eq!(
+            models
+                .iter()
+                .filter(|model| model["slug"] == "gpt-custom")
+                .count(),
+            1
+        );
+        assert_eq!(reasoning_effort_label("max"), "Max");
+        assert_eq!(reasoning_effort_label("ultra"), "Ultra");
+    }
+
+    #[test]
+    fn live_models_always_expose_unique_standard_and_fast_service_tiers() {
+        let models = parse_model_list_response(
+            &json!({
+                "data":[
+                    {
+                        "model":"gpt-no-tiers",
+                        "supportedReasoningEfforts":[{"reasoningEffort":"high"}]
+                    },
+                    {
+                        "model":"gpt-partial-tiers",
+                        "serviceTiers":[
+                            {
+                                "id":"default",
+                                "name":"Live Standard",
+                                "description":"Ordinary latency"
+                            },
+                            {
+                                "id":"priority",
+                                "name":"Priority",
+                                "description":"Priority processing"
+                            },
+                            {"id":"default","name":"Duplicate Standard"},
+                            {"id":"priority","name":"Duplicate Priority"}
+                        ],
+                        "defaultServiceTier":"priority"
+                    }
+                ]
+            }),
+            &[],
+        )
+        .expect("live models should parse");
+
+        let no_tiers = models[0].capabilities["optionDescriptors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|descriptor| descriptor["id"] == "serviceTier")
+            .expect("Codex service tier invariant");
+        let no_tier_options = no_tiers["options"].as_array().unwrap();
+        assert_eq!(
+            no_tier_options
+                .iter()
+                .filter_map(|option| option["id"].as_str())
+                .collect::<Vec<_>>(),
+            vec!["default", "fast"]
+        );
+        assert_eq!(no_tiers["currentValue"], "default");
+
+        let partial = models[1].capabilities["optionDescriptors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|descriptor| descriptor["id"] == "serviceTier")
+            .expect("Codex service tier invariant");
+        let partial_options = partial["options"].as_array().unwrap();
+        let ids = partial_options
+            .iter()
+            .filter_map(|option| option["id"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["default", "priority", "fast"]);
+        assert_eq!(ids.iter().filter(|id| **id == "default").count(), 1);
+        assert_eq!(ids.iter().filter(|id| **id == "fast").count(), 1);
+        assert_eq!(partial_options[0]["label"], "Live Standard");
+        assert_eq!(partial_options[0]["description"], "Ordinary latency");
+        assert_eq!(partial_options[1]["label"], "Priority");
+        assert_eq!(partial_options[1]["description"], "Priority processing");
+        assert_eq!(partial_options[1]["isDefault"], true);
+        assert_eq!(partial["currentValue"], "priority");
+    }
 
     #[test]
     fn malformed_and_fallback_payloads_cover_codex_model_boundaries() {

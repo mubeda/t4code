@@ -12,18 +12,18 @@ import {
 } from "@t4code/client-runtime/state/runtime";
 import type { EnvironmentId, ProjectId } from "@t4code/contracts";
 import {
-  DEFAULT_MODEL,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  DEFAULT_SERVER_SETTINGS,
   ProviderInstanceId,
 } from "@t4code/contracts";
-import { createModelSelection } from "@t4code/shared/model";
 import { useNavigate } from "@tanstack/react-router";
 import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { newThreadId } from "~/lib/utils";
 import { applyProviderInstanceSettings, deriveProviderInstanceEntries } from "~/providerInstances";
+import { resolveProviderSessionSelectionForInstance } from "~/providerSessionSelection";
 import { useProjects, useServerConfigs } from "~/state/entities";
 import { useEnvironmentQuery } from "~/state/query";
 import { threadEnvironment } from "~/state/threads";
@@ -99,8 +99,9 @@ export function CreateWorktreeDialog({
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [createMore, setCreateMore] = useState(false);
   const [instanceId, setInstanceId] = useState<string | null>(null);
-  const [model, setModel] = useState<string>(DEFAULT_MODEL);
   const [formError, setFormError] = useState<string | null>(null);
+  const instanceSelectionTouchedRef = useRef(false);
+  const previousOpenRef = useRef(false);
 
   // A fresh query/tab invalidates whatever branch row was previously picked.
   useEffect(() => {
@@ -108,7 +109,12 @@ export function CreateWorktreeDialog({
   }, [nameText, mode]);
 
   useEffect(() => {
+    const wasOpen = previousOpenRef.current;
+    previousOpenRef.current = open;
     if (!open) return;
+    if (!wasOpen) {
+      instanceSelectionTouchedRef.current = false;
+    }
     setProjectId((current) => current ?? defaultProjectId ?? projects[0]?.id ?? null);
     const frame = window.requestAnimationFrame(() => {
       nameInputRef.current?.focus();
@@ -152,25 +158,28 @@ export function CreateWorktreeDialog({
     [mode, nameText, refs],
   );
 
+  const serverConfig = environmentId ? serverConfigs.get(environmentId) : undefined;
   const providers = useMemo(() => {
-    if (!environmentId) return [];
-    const serverConfig = serverConfigs.get(environmentId);
     if (!serverConfig) return [];
     return applyProviderInstanceSettings(
       deriveProviderInstanceEntries(serverConfig.providers),
       serverConfig.settings,
     ).filter((entry) => entry.enabled && entry.installed);
-  }, [serverConfigs, environmentId]);
+  }, [serverConfig]);
 
   useEffect(() => {
-    if (instanceId && providers.some((p) => p.instanceId === instanceId)) return;
-    const first = providers[0];
-    setInstanceId(first?.instanceId ?? null);
-    // TODO(orca-port): ServerProviderModel's id field name is assumed to be
-    // `id` — verify against packages/contracts/src/server.ts.
-    const firstModel = (first?.models?.[0] as { id?: string } | undefined)?.id;
-    setModel(firstModel ?? DEFAULT_MODEL);
-  }, [providers, instanceId]);
+    if (!open) return;
+    const selectionAvailable =
+      instanceId !== null && providers.some((provider) => provider.instanceId === instanceId);
+    if (instanceSelectionTouchedRef.current && selectionAvailable) return;
+    if (!selectionAvailable) {
+      instanceSelectionTouchedRef.current = false;
+    }
+    const projectInstanceId = project?.defaultModelSelection?.instanceId;
+    const preferredProvider =
+      providers.find((provider) => provider.instanceId === projectInstanceId) ?? providers[0];
+    setInstanceId(preferredProvider?.instanceId ?? null);
+  }, [instanceId, open, project?.defaultModelSelection?.instanceId, providers]);
 
   const resolution = useMemo(
     () =>
@@ -240,12 +249,20 @@ export function CreateWorktreeDialog({
 
       const worktreePath = worktreeResult.value.worktree.path;
       const threadId = newThreadId();
-      const modelSelection =
-        (instanceId
-          ? createModelSelection(ProviderInstanceId.make(instanceId), model || DEFAULT_MODEL)
-          : null) ??
-        project.defaultModelSelection ??
-        createModelSelection(ProviderInstanceId.make("codex"), DEFAULT_MODEL);
+      const settings = serverConfig?.settings ?? DEFAULT_SERVER_SETTINGS;
+      const targetInstanceId =
+        (instanceId ? ProviderInstanceId.make(instanceId) : null) ??
+        project.defaultModelSelection?.instanceId ??
+        ProviderInstanceId.make("codex");
+      const resolvedDefault = resolveProviderSessionSelectionForInstance({
+        instanceId: targetInstanceId,
+        providers: serverConfig?.providers ?? [],
+        settings,
+        projectSelection: project.defaultModelSelection,
+      });
+      if (resolvedDefault.fallback) {
+        console.warn("Provider session default fallback", resolvedDefault.fallback);
+      }
 
       const threadResult = await createThread({
         environmentId,
@@ -253,7 +270,7 @@ export function CreateWorktreeDialog({
           threadId,
           projectId: project.id,
           title: resolution.branchName,
-          modelSelection,
+          modelSelection: resolvedDefault.modelSelection,
           runtimeMode: DEFAULT_RUNTIME_MODE,
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           branch: resolution.branchName,
@@ -294,7 +311,8 @@ export function CreateWorktreeDialog({
     createWorktree,
     createThread,
     instanceId,
-    model,
+    providers,
+    serverConfig,
     createMore,
     resetForNextCreate,
     onOpenChange,
@@ -445,7 +463,10 @@ export function CreateWorktreeDialog({
             <Select
               modal={false}
               value={instanceId ?? undefined}
-              onValueChange={(value) => setInstanceId(value as string)}
+              onValueChange={(value) => {
+                instanceSelectionTouchedRef.current = true;
+                setInstanceId(value as string);
+              }}
               items={providers.map((p) => ({
                 value: p.instanceId,
                 label: p.displayName,

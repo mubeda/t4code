@@ -9,7 +9,7 @@ import {
   type AtomCommandResult,
 } from "@t4code/client-runtime/state/runtime";
 import {
-  DEFAULT_MODEL,
+  DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   PRIMARY_LOCAL_ENVIRONMENT_ID,
   ProviderInstanceId,
@@ -25,6 +25,7 @@ import { useProjects } from "~/state/entities";
 import { projectEnvironment } from "~/state/projects";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { vcsEnvironment } from "~/state/vcs";
+import { resolveProviderSessionSelectionForInstance } from "~/providerSessionSelection";
 
 import { resolveEnvironmentOptionLabel } from "../BranchToolbar.logic";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -596,8 +597,20 @@ export function useAddProjectWorkflow(input: {
     () =>
       createAddProjectOperations({
         getProjects: () => projectsRef.current,
-        createProject: async (commandInput) =>
-          adaptAtomResult(
+        createProject: async (commandInput) => {
+          const environment = environments.find(
+            (candidate) => candidate.environmentId === commandInput.environmentId,
+          );
+          const serverConfig = environment?.serverConfig;
+          const resolution = resolveProviderSessionSelectionForInstance({
+            instanceId: ProviderInstanceId.make("codex"),
+            providers: serverConfig?.providers ?? [],
+            settings: serverConfig?.settings ?? DEFAULT_SERVER_SETTINGS,
+          });
+          if (resolution.fallback) {
+            console.warn("Provider session default fallback", resolution.fallback);
+          }
+          return adaptAtomResult(
             mapAtomCommandResult(
               await createProject({
                 environmentId: commandInput.environmentId,
@@ -607,17 +620,15 @@ export function useAddProjectWorkflow(input: {
                   workspaceRoot: commandInput.workspaceRoot,
                   createWorkspaceRootIfMissing: commandInput.createWorkspaceRootIfMissing,
                   initializeGit: commandInput.initializeGit,
-                  defaultModelSelection: {
-                    instanceId: ProviderInstanceId.make("codex"),
-                    model: DEFAULT_MODEL,
-                  },
+                  defaultModelSelection: resolution.modelSelection,
                 },
               }),
               (result) => ({
                 projectId: result.projectId ?? commandInput.projectId,
               }),
             ),
-          ),
+          );
+        },
         cloneRepository: async (commandInput) =>
           adaptAtomResult(
             await cloneRepository({
@@ -644,7 +655,7 @@ export function useAddProjectWorkflow(input: {
           );
         },
       }),
-    [cloneRepository, createProject, handleNewThread],
+    [cloneRepository, createProject, environments, handleNewThread],
   );
 
   const wslCandidates = useMemo(

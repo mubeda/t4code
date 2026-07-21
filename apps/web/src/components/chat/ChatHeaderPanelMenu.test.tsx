@@ -7,6 +7,7 @@ const harness = vi.hoisted(() => ({
   tooltipReasons: [] as string[],
   providerTerminalActionsAvailable: true,
   providerTerminalActionDisabledReason: null as string | null,
+  providerTerminalFallback: null as Record<string, unknown> | null,
 }));
 
 vi.mock("~/providerInstances", () => ({
@@ -30,6 +31,9 @@ vi.mock("./providerTerminalActions", () => ({
                 label: `${entry.displayName} Terminal`,
               },
           disabledReason: harness.providerTerminalActionDisabledReason,
+          ...(harness.providerTerminalFallback
+            ? { fallback: harness.providerTerminalFallback }
+            : {}),
         }
       : null,
 }));
@@ -73,6 +77,7 @@ beforeEach(() => {
   harness.tooltipReasons.length = 0;
   harness.providerTerminalActionsAvailable = true;
   harness.providerTerminalActionDisabledReason = null;
+  harness.providerTerminalFallback = null;
 });
 
 function panelItem(overrides: Record<string, unknown> = {}) {
@@ -92,7 +97,7 @@ function panelItem(overrides: Record<string, unknown> = {}) {
 function render(canCreatePanel: boolean) {
   const props = {
     providerStatuses: [],
-    settings: { providerInstances: {}, providers: {} },
+    settings: { providerInstances: {}, providers: {}, providerSessionDefaults: {} },
     canCreatePanel,
     onCreateChatPanel: vi.fn(),
     onOpenTerminalPanel: vi.fn(),
@@ -193,6 +198,59 @@ describe("ChatHeaderPanelMenu", () => {
       "Provider terminal command exceeds supported limits. Shorten the provider name or configured binary path.",
     ]);
     (harness.menuItems[2]!.onClick as () => void)();
+    expect(props.onOpenProviderTerminalPanel).not.toHaveBeenCalled();
+  });
+
+  it("emits the safe structured fallback diagnostic only when the terminal action launches", () => {
+    harness.items = [panelItem()];
+    harness.providerTerminalFallback = {
+      driver: "codex",
+      instanceId: "codex",
+      configuredModel: "retired-model",
+      resolvedModel: "gpt-5.4",
+      reason: "configured-model-unavailable",
+    };
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const { props } = render(true);
+    expect(warning).not.toHaveBeenCalled();
+    (harness.menuItems[2]!.onClick as () => void)();
+
+    expect(warning).toHaveBeenCalledWith(
+      "Provider session default fallback",
+      harness.providerTerminalFallback,
+    );
+    expect(props.onOpenProviderTerminalPanel).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    {
+      state: "provider-disabled",
+      item: panelItem({ disabled: true, disabledReason: "Provider unavailable" }),
+      canCreatePanel: true,
+    },
+    {
+      state: "thread-disabled",
+      item: panelItem(),
+      canCreatePanel: false,
+    },
+  ])("does not warn or launch a $state provider terminal action", ({ item, canCreatePanel }) => {
+    harness.items = [item];
+    harness.providerTerminalFallback = {
+      driver: "codex",
+      instanceId: "codex",
+      configuredModel: "retired-model",
+      resolvedModel: "gpt-5.4",
+      reason: "configured-model-unavailable",
+    };
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    warning.mockClear();
+
+    const { props } = render(canCreatePanel);
+    expect(harness.menuItems[2]).toMatchObject({ disabled: true });
+    (harness.menuItems[2]!.onClick as () => void)();
+
+    expect(warning).not.toHaveBeenCalled();
     expect(props.onOpenProviderTerminalPanel).not.toHaveBeenCalled();
   });
 });

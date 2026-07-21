@@ -1,15 +1,23 @@
+// @vitest-environment happy-dom
+
 import type { ReactElement, ReactNode } from "react";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import * as Duration from "effect/Duration";
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/unstable/reactivity";
 import {
   type DesktopUpdateState,
   EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
+  type ProviderSessionDefault,
 } from "@t4code/contracts";
 import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t4code/contracts/settings";
+import * as settingsPanelsLogic from "./SettingsPanels.logic";
 
 type AnyProps = Record<string, unknown>;
 
@@ -37,6 +45,7 @@ const h = vi.hoisted(() => {
     modelPickers: [] as Array<Record<string, unknown>>,
     traitsPickers: [] as Array<Record<string, unknown>>,
     instanceCards: [] as Array<Record<string, unknown>>,
+    sections: [] as Array<Record<string, unknown>>,
     theme: "system" as string,
     setTheme: vi.fn(),
     settings: null as unknown,
@@ -59,6 +68,7 @@ const h = vi.hoisted(() => {
     updateProviderCommand: vi.fn(),
     genericCommand: vi.fn(),
     toastAdd: vi.fn(),
+    dispatchStateUpdates: false,
     atoms: {
       observability: Symbol("primaryServerObservabilityAtom"),
       providers: Symbol("primaryServerProvidersAtom"),
@@ -74,13 +84,13 @@ const h = vi.hoisted(() => {
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
   const useState = (initial: unknown) => {
-    const [value] = (actual.useState as (input: unknown) => [unknown, (next: unknown) => void])(
-      initial,
-    );
+    const [value, dispatch] = (
+      actual.useState as (input: unknown) => [unknown, (next: unknown) => void]
+    )(initial);
     const setState = (next: unknown) => {
-      if (typeof next === "function") {
-        (next as (previous: unknown) => unknown)(value);
-      }
+      const resolved =
+        typeof next === "function" ? (next as (previous: unknown) => unknown)(value) : next;
+      if (h.dispatchStateUpdates) dispatch(resolved);
     };
     return [value, setState];
   };
@@ -230,14 +240,17 @@ vi.mock("./settingsLayout", () => ({
   SettingsPageContainer: (props: AnyProps) => (
     <div data-testid="settings-page">{props.children as ReactNode}</div>
   ),
-  SettingsSection: (props: AnyProps) => (
-    <section data-section-title={typeof props.title === "string" ? props.title : "custom"}>
-      {props.icon as ReactNode}
-      {props.title as ReactNode}
-      {props.headerAction as ReactNode}
-      {props.children as ReactNode}
-    </section>
-  ),
+  SettingsSection: (props: AnyProps) => {
+    h.sections.push(props);
+    return (
+      <section data-section-title={typeof props.title === "string" ? props.title : "custom"}>
+        {props.icon as ReactNode}
+        {props.title as ReactNode}
+        {props.headerAction as ReactNode}
+        {props.children as ReactNode}
+      </section>
+    );
+  },
   SettingsRow: (props: AnyProps) => {
     h.rows.push(props);
     return (
@@ -369,6 +382,7 @@ function clearRegistries(): void {
   h.modelPickers.length = 0;
   h.traitsPickers.length = 0;
   h.instanceCards.length = 0;
+  h.sections.length = 0;
 }
 
 function render(node: ReactElement): string {
@@ -408,6 +422,14 @@ async function flush(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 function makeUpdateState(overrides: Partial<DesktopUpdateState>): DesktopUpdateState {
@@ -534,6 +556,7 @@ beforeEach(() => {
   h.updateProviderCommand.mockResolvedValue({ _tag: "Success", value: { providers: [] } });
   h.genericCommand.mockReset();
   h.toastAdd.mockReset();
+  h.dispatchStateUpdates = false;
 });
 
 describe("GeneralSettingsPanel", () => {
@@ -1017,8 +1040,14 @@ describe("useSettingsRestore", () => {
 
 describe("ProviderSettingsPanel", () => {
   function baseProviderSettings(): UnifiedSettings {
+    const futureDriver = ProviderDriverKind.make("futureDriver");
     return {
       ...DEFAULT_UNIFIED_SETTINGS,
+      providerSessionDefaults: {
+        [CODEX_DRIVER]: { model: "codex-default", options: [{ id: "fastMode", value: false }] },
+        [CLAUDE_DRIVER]: { model: "claude-default", options: [{ id: "reasoning", value: "high" }] },
+        [futureDriver]: { model: "future-default" },
+      },
       providerInstances: {
         [ProviderInstanceId.make("codex")]: {
           driver: CODEX_DRIVER,
@@ -1052,7 +1081,8 @@ describe("ProviderSettingsPanel", () => {
   }
 
   it("renders provider rows including custom and orphaned instances", () => {
-    h.settings = baseProviderSettings();
+    const settings = baseProviderSettings();
+    h.settings = settings;
     h.serverProviders = [
       makeServerProvider({
         instanceId: "codex",
@@ -1066,6 +1096,9 @@ describe("ProviderSettingsPanel", () => {
     const markup = render(<ProviderSettingsPanel />);
     expect(markup).toContain("Providers");
     expect(markup).toContain("Checked");
+    expect(h.sections.find((section) => section.title === "Providers")?.contentVariant).toBe(
+      "stack",
+    );
 
     const cardIds = h.instanceCards.map((card) => String(card.instanceId));
     // Cursor's default slot is hidden (no live cursor provider), but the
@@ -1083,6 +1116,8 @@ describe("ProviderSettingsPanel", () => {
     expect(codexCard.headerAction).not.toBeNull();
     expect(codexCard.hiddenModels).toEqual(["model-hidden"]);
     expect(codexCard.favoriteModels).toEqual(["model-alpha"]);
+    expect(codexCard.sessionDefaults).toEqual(settings.providerSessionDefaults[CODEX_DRIVER]);
+    expect(typeof codexCard.onSessionDefaultsChange).toBe("function");
 
     const grokCard = h.instanceCards.find((card) => String(card.instanceId) === "grok")!;
     expect(grokCard.headerAction).toBeNull();
@@ -1092,6 +1127,311 @@ describe("ProviderSettingsPanel", () => {
       (card) => String(card.instanceId) === "codex_personal",
     )!;
     expect(typeof personalCard.onDelete).toBe("function");
+    expect(personalCard).not.toHaveProperty("sessionDefaults");
+    expect(personalCard).not.toHaveProperty("onSessionDefaultsChange");
+  });
+
+  it("replaces only the edited driver session default", () => {
+    const settings = baseProviderSettings();
+    h.settings = settings;
+
+    render(<ProviderSettingsPanel />);
+    const codexCard = h.instanceCards.find((card) => String(card.instanceId) === "codex")!;
+    const nextCodexDefault = {
+      model: "codex-next",
+      options: [{ id: "reasoning", value: "medium" }],
+    };
+
+    (codexCard.onSessionDefaultsChange as (next: typeof nextCodexDefault) => void)(
+      nextCodexDefault,
+    );
+
+    expect(h.updateSettings).toHaveBeenCalledWith({
+      providerSessionDefaults: {
+        ...settings.providerSessionDefaults,
+        [CODEX_DRIVER]: nextCodexDefault,
+      },
+    });
+  });
+
+  it("composes rapid session-default edits across providers before settings acknowledgment", () => {
+    const settings = baseProviderSettings();
+    h.settings = settings;
+
+    render(<ProviderSettingsPanel />);
+    const codexCard = h.instanceCards.find((card) => String(card.instanceId) === "codex")!;
+    const claudeCard = h.instanceCards.find((card) => String(card.instanceId) === "claudeAgent")!;
+    const nextCodexDefault = {
+      model: "codex-next",
+      options: [{ id: "reasoningEffort", value: "xhigh" }],
+    };
+    const nextClaudeDefault = {
+      model: "claude-next",
+      options: [{ id: "effort", value: "ultrathink" }],
+    };
+
+    (codexCard.onSessionDefaultsChange as (next: typeof nextCodexDefault) => void)(
+      nextCodexDefault,
+    );
+    (claudeCard.onSessionDefaultsChange as (next: typeof nextClaudeDefault) => void)(
+      nextClaudeDefault,
+    );
+
+    expect(h.updateSettings).toHaveBeenNthCalledWith(1, {
+      providerSessionDefaults: {
+        ...settings.providerSessionDefaults,
+        [CODEX_DRIVER]: nextCodexDefault,
+      },
+    });
+    expect(h.updateSettings).toHaveBeenNthCalledWith(2, {
+      providerSessionDefaults: {
+        ...settings.providerSessionDefaults,
+        [CODEX_DRIVER]: nextCodexDefault,
+        [CLAUDE_DRIVER]: nextClaudeDefault,
+      },
+    });
+  });
+
+  it("keeps pending provider edits over stale acknowledgments and clears them at convergence", () => {
+    const createDraft = (
+      settingsPanelsLogic as typeof settingsPanelsLogic & {
+        createProviderSessionDefaultsDraft?: (
+          initial: UnifiedSettings["providerSessionDefaults"],
+        ) => {
+          readonly submit: (
+            driver: ProviderDriverKind,
+            next: UnifiedSettings["providerSessionDefaults"][ProviderDriverKind],
+          ) => {
+            readonly revision: object;
+            readonly defaults: UnifiedSettings["providerSessionDefaults"];
+          };
+          readonly reconcile: (
+            authoritative: UnifiedSettings["providerSessionDefaults"],
+          ) => UnifiedSettings["providerSessionDefaults"];
+        };
+      }
+    ).createProviderSessionDefaultsDraft;
+    expect(createDraft).toBeTypeOf("function");
+    if (!createDraft) return;
+
+    const initial = baseProviderSettings().providerSessionDefaults;
+    const draft = createDraft(initial);
+    const nextCodex = { model: "codex-next" };
+    const nextClaude = { model: "claude-next" };
+    const firstSubmission = draft.submit(CODEX_DRIVER, nextCodex);
+    const latestSubmission = draft.submit(CLAUDE_DRIVER, nextClaude);
+
+    expect(draft.reconcile(firstSubmission.defaults)).toEqual(latestSubmission.defaults);
+    expect(draft.reconcile(latestSubmission.defaults)).toEqual(latestSubmission.defaults);
+    expect(
+      draft.reconcile({
+        ...latestSubmission.defaults,
+        [ProviderDriverKind.make("futureDriver")]: { model: "future-external" },
+      }),
+    ).toEqual({
+      ...latestSubmission.defaults,
+      [ProviderDriverKind.make("futureDriver")]: { model: "future-external" },
+    });
+  });
+
+  it("resets displayed provider defaults when the primary environment changes", async () => {
+    const previousActEnvironment = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT;
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const firstEnvironmentId = EnvironmentId.make("environment-first");
+    const secondEnvironmentId = EnvironmentId.make("environment-second");
+    const firstSettings = baseProviderSettings();
+    const secondSettings: UnifiedSettings = {
+      ...baseProviderSettings(),
+      providerSessionDefaults: {
+        ...baseProviderSettings().providerSessionDefaults,
+        [CODEX_DRIVER]: { model: "codex-second-environment" },
+      },
+    };
+    h.primaryEnvironment = { environmentId: firstEnvironmentId };
+    h.settings = firstSettings;
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => root.render(<ProviderSettingsPanel />));
+      const firstCodexCard = h.instanceCards.find((card) => String(card.instanceId) === "codex")!;
+      (firstCodexCard.onSessionDefaultsChange as (next: ProviderSessionDefault) => void)({
+        model: "codex-pending-first-environment",
+      });
+
+      h.primaryEnvironment = { environmentId: secondEnvironmentId };
+      h.settings = secondSettings;
+      clearRegistries();
+      await act(async () => root.render(<ProviderSettingsPanel />));
+
+      const secondCodexCard = h.instanceCards.find((card) => String(card.instanceId) === "codex")!;
+      expect(secondCodexCard.sessionDefaults).toEqual(
+        secondSettings.providerSessionDefaults[CODEX_DRIVER],
+      );
+      expect(secondCodexCard.sessionDefaults).not.toEqual({
+        model: "codex-pending-first-environment",
+      });
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      if (previousActEnvironment === undefined) {
+        Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+      } else {
+        (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
+          previousActEnvironment;
+      }
+    }
+  });
+
+  it("rolls a failed latest provider-default mutation back to its acknowledged predecessor", async () => {
+    const settings = baseProviderSettings();
+    h.settings = settings;
+    const firstResult = deferred<unknown>();
+    const secondResult = deferred<unknown>();
+    h.updateSettings
+      .mockReturnValueOnce(firstResult.promise)
+      .mockReturnValueOnce(secondResult.promise);
+
+    render(<ProviderSettingsPanel />);
+    const codexCard = h.instanceCards.find((card) => String(card.instanceId) === "codex")!;
+    const claudeCard = h.instanceCards.find((card) => String(card.instanceId) === "claudeAgent")!;
+    const submittedS1 = { model: "codex-s1" };
+    const submittedS2 = { model: "codex-s2" };
+    (codexCard.onSessionDefaultsChange as (next: ProviderSessionDefault) => void)(submittedS1);
+    (codexCard.onSessionDefaultsChange as (next: ProviderSessionDefault) => void)(submittedS2);
+
+    firstResult.resolve(
+      AsyncResult.success({
+        ...settings,
+        providerSessionDefaults: {
+          ...settings.providerSessionDefaults,
+          [CODEX_DRIVER]: submittedS1,
+        },
+      }),
+    );
+    await flush();
+    secondResult.resolve(AsyncResult.failure(Cause.fail(new Error("S2 rejected"))));
+    await flush();
+
+    (claudeCard.onSessionDefaultsChange as (next: ProviderSessionDefault) => void)({
+      model: "claude-after-failure",
+    });
+    expect(h.updateSettings).toHaveBeenNthCalledWith(3, {
+      providerSessionDefaults: {
+        ...settings.providerSessionDefaults,
+        [CODEX_DRIVER]: submittedS1,
+        [CLAUDE_DRIVER]: { model: "claude-after-failure" },
+      },
+    });
+  });
+
+  it("keeps the latest provider default when an older mutation fails", async () => {
+    const settings = baseProviderSettings();
+    h.settings = settings;
+    const firstResult = deferred<unknown>();
+    const secondResult = deferred<unknown>();
+    h.updateSettings
+      .mockReturnValueOnce(firstResult.promise)
+      .mockReturnValueOnce(secondResult.promise);
+
+    render(<ProviderSettingsPanel />);
+    const codexCard = h.instanceCards.find((card) => String(card.instanceId) === "codex")!;
+    const claudeCard = h.instanceCards.find((card) => String(card.instanceId) === "claudeAgent")!;
+    const submittedS2 = { model: "codex-s2" };
+    (codexCard.onSessionDefaultsChange as (next: ProviderSessionDefault) => void)({
+      model: "codex-s1",
+    });
+    (codexCard.onSessionDefaultsChange as (next: ProviderSessionDefault) => void)(submittedS2);
+
+    firstResult.resolve(AsyncResult.failure(Cause.fail(new Error("S1 rejected"))));
+    await flush();
+    (claudeCard.onSessionDefaultsChange as (next: ProviderSessionDefault) => void)({
+      model: "claude-after-failure",
+    });
+
+    expect(h.updateSettings).toHaveBeenNthCalledWith(3, {
+      providerSessionDefaults: {
+        ...settings.providerSessionDefaults,
+        [CODEX_DRIVER]: submittedS2,
+        [CLAUDE_DRIVER]: { model: "claude-after-failure" },
+      },
+    });
+  });
+
+  it("does not let an older Success response overwrite newer stream authority", async () => {
+    const previousActEnvironment = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT;
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    h.dispatchStateUpdates = true;
+    const settings = baseProviderSettings();
+    h.settings = settings;
+    const mutationResult = deferred<unknown>();
+    h.updateSettings.mockReturnValueOnce(mutationResult.promise);
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => root.render(<ProviderSettingsPanel />));
+      const codexCard = h.instanceCards.find((card) => String(card.instanceId) === "codex")!;
+      const submitted = { model: "codex-submitted" };
+      await act(async () => {
+        (codexCard.onSessionDefaultsChange as (next: ProviderSessionDefault) => void)(submitted);
+      });
+
+      const external = { model: "codex-newer-stream-authority" };
+      const rerenderCard = h.instanceCards.find((card) => String(card.instanceId) === "codex")!;
+      h.settings = {
+        ...settings,
+        providerSessionDefaults: {
+          ...settings.providerSessionDefaults,
+          [CODEX_DRIVER]: external,
+        },
+      };
+      clearRegistries();
+      await act(async () => {
+        (rerenderCard.onExpandedChange as (open: boolean) => void)(true);
+      });
+      const claudeCard = h.instanceCards.find((card) => String(card.instanceId) === "claudeAgent")!;
+
+      await act(async () => {
+        mutationResult.resolve(
+          AsyncResult.success({
+            ...settings,
+            providerSessionDefaults: {
+              ...settings.providerSessionDefaults,
+              [CODEX_DRIVER]: submitted,
+            },
+          }),
+        );
+        await flush();
+      });
+      await act(async () => {
+        (claudeCard.onSessionDefaultsChange as (next: ProviderSessionDefault) => void)({
+          model: "claude-after-success",
+        });
+      });
+
+      expect(h.updateSettings).toHaveBeenNthCalledWith(2, {
+        providerSessionDefaults: {
+          ...settings.providerSessionDefaults,
+          [CODEX_DRIVER]: external,
+          [CLAUDE_DRIVER]: { model: "claude-after-success" },
+        },
+      });
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      h.dispatchStateUpdates = false;
+      if (previousActEnvironment === undefined) {
+        Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+      } else {
+        (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
+          previousActEnvironment;
+      }
+    }
   });
 
   it("routes instance card callbacks into settings patches", () => {

@@ -16,6 +16,7 @@ import {
 } from "@t4code/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t4code/contracts/settings";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { AsyncResult } from "effect/unstable/reactivity";
 
 const h = vi.hoisted(() => ({
   persisted: null as Record<string, unknown> | null,
@@ -326,6 +327,17 @@ describe("useUpdateEnvironmentSettings routing", () => {
 });
 
 describe("useUpdatePrimarySettings", () => {
+  it("returns the settled server command result", async () => {
+    h.primaryEnv = { environmentId };
+    const settled = AsyncResult.success({ ...DEFAULT_SERVER_SETTINGS });
+    h.persistServerSettings = vi.fn(() => Promise.resolve(settled));
+
+    const result = useUpdatePrimarySettings()({ providerInstances: {} } as never);
+
+    expect(result).toBeInstanceOf(Promise);
+    await expect(result).resolves.toBe(settled);
+  });
+
   it("targets the primary environment when one is active", () => {
     h.primaryEnv = { environmentId };
     useUpdatePrimarySettings()({ providerInstances: {} } as never);
