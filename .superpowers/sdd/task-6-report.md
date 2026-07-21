@@ -1186,3 +1186,39 @@ Exit: `1`. The command reported 4 expected failures and 104 passing tests:
 - `git diff --check`: exit 0.
 
 No native UI was launched. Existing QA artifacts and all prior report content were preserved.
+
+---
+
+# Task 6 final native retest
+
+Final QA source: `0b9df1349c3bee16aa93d2c4491ce5d794b53cbf`
+
+Full-matrix parent source: `0497caa3a308c9a85b3ebd0c6de5729ae98ef89d`
+
+Outcome: **PASS**
+
+The complete native workflow ran first on `0497caa3a3` using an isolated home and exact
+current-worktree desktop PIDs. It covered visible hidden-worktree project addition, Chat A
+immutability, Chat B and added-panel defaults, all five Codex and eight Claude models, provider
+off/on controls, three immediate/settled refresh cycles, settings-file and restart persistence,
+Claude prompt injection, and every requested terminal vector. That run exposed the final affected
+defect: a new Sonnet 5 panel displayed native High rather than the persisted prompt-injected
+Ultrathink default.
+
+The affected diff was retested at exact final HEAD after a normal close/reopen and exact-command
+restart. A genuine new Claude panel showed Sonnet 5 and `Ultrathink · 200k · claude` before any
+prompt text existed. Without touching the effort picker, typing `Reply with OK only.` and sending
+produced `Ultrathink: Reply with OK only.`, returned `OK`, reset the one-shot UI to High, and
+launched Claude with `--model claude-sonnet-5` and no unsupported Ultrathink effort flag. A fresh
+Codex panel showed Spark/High/Fast and its UI-launched terminal emitted model, High effort, and
+`service_tier="fast"`.
+
+The full terminal matrix passed: Codex Fast maps to `service_tier="fast"`, Standard maps to
+`service_tier="default"`, Claude High maps to native `--effort high`, Claude Ultrathink omits the
+unsupported effort flag, and OpenCode omits unsupported effort/Fast arguments. Exact identities,
+screenshots, redacted argv, superseded-evidence exclusions, and lifecycle cleanup are recorded in
+`.superpowers/qa/provider-defaults-stability/results.md`.
+
+Final gates passed: `vp check`, `vp run typecheck`, and `git diff --check`. No production/test
+source was edited during native QA, no QA commit was created, and final cleanup left no installed
+or worktree T4Code process.
