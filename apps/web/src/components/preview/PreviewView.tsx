@@ -93,7 +93,8 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   const snapshot = tabId ? (previewState.sessions[tabId] ?? null) : null;
   const desktopOverlay = tabId ? (previewState.desktopByTabId[tabId] ?? null) : null;
   const navStatus = snapshot?.navStatus ?? { _tag: "Idle" as const };
-  const url = navStatus._tag === "Idle" ? "" : navStatus.url;
+  const snapshotUrl = navStatus._tag === "Idle" ? "" : navStatus.url;
+  const url = desktopOverlay?.url ?? snapshotUrl;
   const loading = desktopOverlay?.loading ?? navStatus._tag === "Loading";
   const canGoBack = desktopOverlay?.canGoBack ?? snapshot?.canGoBack ?? false;
   const canGoForward = desktopOverlay?.canGoForward ?? snapshot?.canGoForward ?? false;

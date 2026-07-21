@@ -406,6 +406,7 @@ function seedSession(
     options.overlay === null
       ? null
       : (options.overlay ?? {
+          url: "http://app.local/",
           loading: false,
           canGoBack: true,
           canGoForward: true,
@@ -586,6 +587,24 @@ describe("PreviewView rendering", () => {
     // Zoom indicator + agent cursor render when a desktop overlay exists.
     expect(hasCapture("zoomIndicator")).toBe(true);
     expect(hasCapture("agentCursor")).toBe(true);
+  });
+
+  it("shows the native URL after browser history navigation", () => {
+    seedSession({
+      overlay: {
+        loading: false,
+        canGoBack: false,
+        canGoForward: true,
+        controller: "human",
+        zoomFactor: 1,
+        url: "http://previous.local/",
+      },
+    });
+    h.previewBridge = makeBridge();
+
+    renderView();
+
+    expect(captured("chromeRow").url).toBe("http://previous.local/");
   });
 
   it("hides picker actions and disables recording gestures when deferred capabilities are unsupported", () => {

@@ -355,6 +355,7 @@ describe("NativePreviewTabHost native lifecycle", () => {
     const inactiveState = desktopState("tab-a");
     for (const listener of h.listeners) listener("tab-a", inactiveState);
     expect(h.applyPreviewDesktopState).toHaveBeenCalledExactlyOnceWith(threadRef, "tab-a", {
+      url: "https://tab-a.test/",
       canGoBack: true,
       canGoForward: false,
       loading: false,
