@@ -353,7 +353,11 @@ mod tests {
                 .contains("non-UTF-8")
         );
 
-        assert!(parse_tailscale_status("nope").unwrap_err().contains("decode"));
+        assert!(
+            parse_tailscale_status("nope")
+                .unwrap_err()
+                .contains("decode")
+        );
 
         let slow = executable_script(
             directory.path(),

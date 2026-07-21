@@ -37,6 +37,7 @@ fn merge_provider_snapshot(
     current: Option<&Value>,
     refreshed: provider_inventory::ProviderProbeResult,
 ) -> Value {
+    let models_authoritative = refreshed.models_authoritative;
     let mut next = refreshed.snapshot;
     if refreshed.rich_metadata == provider_inventory::RichMetadataOutcome::Succeeded {
         return next;
@@ -50,7 +51,10 @@ fn merge_provider_snapshot(
     if provider_snapshot_identity(&next) != Some(current_identity) {
         return next;
     }
-    for field in ["models", "slashCommands", "skills", "agents"] {
+    if !models_authoritative && let Some(value) = current.get("models") {
+        next["models"] = value.clone();
+    }
+    for field in ["slashCommands", "skills", "agents"] {
         if let Some(value) = current.get(field) {
             next[field] = value.clone();
         }
@@ -1329,6 +1333,7 @@ mod tests {
                 "agents": []
             }),
             rich_metadata: provider_inventory::RichMetadataOutcome::NotRequested,
+            models_authoritative: false,
         };
         let failed = provider_inventory::ProviderProbeResult {
             rich_metadata: provider_inventory::RichMetadataOutcome::Failed,
@@ -1343,6 +1348,37 @@ mod tests {
             assert_eq!(merged["skills"], current["skills"]);
             assert_eq!(merged["agents"], current["agents"]);
         }
+    }
+
+    #[test]
+    fn authoritative_models_survive_a_failed_capabilities_probe() {
+        let current = json!({
+            "instanceId": "claudeAgent",
+            "driver": "claudeAgent",
+            "models": [{ "slug": "claude-too-new" }],
+            "slashCommands": [{ "name": "old-command" }],
+            "skills": [{ "name": "old-skill" }],
+            "agents": [{ "name": "old-agent" }]
+        });
+        let refreshed = provider_inventory::ProviderProbeResult {
+            snapshot: json!({
+                "instanceId": "claudeAgent",
+                "driver": "claudeAgent",
+                "models": [{ "slug": "claude-supported" }],
+                "slashCommands": [],
+                "skills": [],
+                "agents": []
+            }),
+            rich_metadata: provider_inventory::RichMetadataOutcome::Failed,
+            models_authoritative: true,
+        };
+
+        let merged = merge_provider_snapshot(Some(&current), refreshed);
+
+        assert_eq!(merged["models"], json!([{ "slug": "claude-supported" }]));
+        assert_eq!(merged["slashCommands"], current["slashCommands"]);
+        assert_eq!(merged["skills"], current["skills"]);
+        assert_eq!(merged["agents"], current["agents"]);
     }
 
     #[test]
@@ -1367,6 +1403,7 @@ mod tests {
                 "agents": []
             }),
             rich_metadata: provider_inventory::RichMetadataOutcome::NotRequested,
+            models_authoritative: false,
         };
 
         let merged = merge_provider_snapshot(Some(&current), replacement);
@@ -1399,6 +1436,7 @@ mod tests {
                     "agents": []
                 }),
                 rich_metadata: provider_inventory::RichMetadataOutcome::Succeeded,
+                models_authoritative: true,
             },
         );
 
@@ -1628,6 +1666,7 @@ mod tests {
                                 "agents": []
                             }),
                             rich_metadata: provider_inventory::RichMetadataOutcome::Succeeded,
+                            models_authoritative: true,
                         }],
                         false,
                         generation,
@@ -1652,6 +1691,7 @@ mod tests {
                         "agents": []
                     }),
                     rich_metadata: provider_inventory::RichMetadataOutcome::Succeeded,
+                    models_authoritative: true,
                 }],
                 false,
                 generation,
@@ -2250,6 +2290,7 @@ mod tests {
                 vec![provider_inventory::ProviderProbeResult {
                     snapshot: json!({"instanceId":"unit-provider","status":"disabled"}),
                     rich_metadata: provider_inventory::RichMetadataOutcome::Succeeded,
+                    models_authoritative: true,
                 }],
                 true,
             )
