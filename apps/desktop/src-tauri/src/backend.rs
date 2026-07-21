@@ -449,12 +449,15 @@ fn backend_slot_key(plan: &BackendLaunchPlan) -> String {
     plan.config.environment_id.clone()
 }
 
+#[cfg(test)]
+type BackendStartPublishGate = (oneshot::Sender<()>, oneshot::Receiver<()>);
+
 #[derive(Debug, Clone, Default)]
 pub struct BackendSupervisor {
     state: Arc<Mutex<BackendState>>,
     start_completed: Arc<Notify>,
     #[cfg(test)]
-    start_publish_gate: Arc<Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>>,
+    start_publish_gate: Arc<Mutex<Option<BackendStartPublishGate>>>,
     #[cfg(test)]
     shutdown_cleanup_reached: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     #[cfg(test)]

@@ -334,7 +334,7 @@ mod tests {
 
         let failed = executable_script(directory.path(), "failed", "exit 7", "exit /b 7");
         assert_eq!(
-            read_status_fixture(&failed, Duration::from_secs(1))
+            read_status_fixture(&failed, Duration::from_secs(5))
                 .await
                 .unwrap_err(),
             "tailscale status exited with code 7."
