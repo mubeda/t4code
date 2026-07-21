@@ -10,7 +10,12 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t4code/client-runtime/state/runtime";
-import type { EnvironmentId, ProjectId } from "@t4code/contracts";
+import {
+  parseScopedProjectKey,
+  scopedProjectKey,
+  scopeProjectRef,
+} from "@t4code/client-runtime/environment";
+import type { EnvironmentId, ScopedProjectRef } from "@t4code/contracts";
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
@@ -70,7 +75,22 @@ import { stackedThreadToast, toastManager } from "./ui/toast";
 export interface CreateWorktreeDialogProps {
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
-  readonly defaultProjectId?: ProjectId | null;
+  readonly defaultProjectRef?: ScopedProjectRef | null;
+}
+
+interface WorktreeProjectSelection {
+  readonly projectRef: ScopedProjectRef | null;
+  readonly branchRefName: string | null;
+}
+
+function sameProjectRef(left: ScopedProjectRef | null, right: ScopedProjectRef | null): boolean {
+  return (
+    left === right ||
+    (left !== null &&
+      right !== null &&
+      left.environmentId === right.environmentId &&
+      left.projectId === right.projectId)
+  );
 }
 
 const TAB_OPTIONS: ReadonlyArray<{ value: WorktreeNameMode; label: string }> = [
@@ -83,7 +103,7 @@ const TAB_OPTIONS: ReadonlyArray<{ value: WorktreeNameMode; label: string }> = [
 export function CreateWorktreeDialog({
   open,
   onOpenChange,
-  defaultProjectId = null,
+  defaultProjectRef = null,
 }: CreateWorktreeDialogProps) {
   const navigate = useNavigate();
   const nameInputRef = useRef<HTMLInputElement>(null);
@@ -91,10 +111,13 @@ export function CreateWorktreeDialog({
   const projects = useProjects();
   const serverConfigs = useServerConfigs();
 
-  const [projectId, setProjectId] = useState<ProjectId | null>(defaultProjectId);
+  const [projectSelection, setProjectSelection] = useState<WorktreeProjectSelection>(() => ({
+    projectRef: defaultProjectRef,
+    branchRefName: null,
+  }));
+  const { projectRef, branchRefName } = projectSelection;
   const [mode, setMode] = useState<WorktreeNameMode>("smart");
   const [nameText, setNameText] = useState("");
-  const [selectedBranchRefName, setSelectedBranchRefName] = useState<string | null>(null);
   const [baseBranchOverride, setBaseBranchOverride] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [createMore, setCreateMore] = useState(false);
@@ -103,10 +126,21 @@ export function CreateWorktreeDialog({
   const instanceSelectionTouchedRef = useRef(false);
   const previousOpenRef = useRef(false);
 
+  const selectProjectTarget = useCallback((nextProjectRef: ScopedProjectRef | null) => {
+    setProjectSelection((current) =>
+      sameProjectRef(current.projectRef, nextProjectRef)
+        ? current
+        : { projectRef: nextProjectRef, branchRefName: null },
+    );
+  }, []);
+  const selectBranchRef = useCallback((branchRef: RefLike | null) => {
+    setProjectSelection((current) => ({ ...current, branchRefName: branchRef?.name ?? null }));
+  }, []);
+
   // A fresh query/tab invalidates whatever branch row was previously picked.
   useEffect(() => {
-    setSelectedBranchRefName(null);
-  }, [nameText, mode]);
+    selectBranchRef(null);
+  }, [nameText, mode, selectBranchRef]);
 
   useEffect(() => {
     const wasOpen = previousOpenRef.current;
@@ -115,16 +149,34 @@ export function CreateWorktreeDialog({
     if (!wasOpen) {
       instanceSelectionTouchedRef.current = false;
     }
-    setProjectId((current) => current ?? defaultProjectId ?? projects[0]?.id ?? null);
+    const firstProject = projects[0];
+    const firstProjectRef = firstProject
+      ? scopeProjectRef(firstProject.environmentId, firstProject.id)
+      : null;
+    setProjectSelection((current) => {
+      const nextProjectRef = defaultProjectRef ?? current.projectRef ?? firstProjectRef;
+      if (!wasOpen) {
+        return { projectRef: nextProjectRef, branchRefName: null };
+      }
+      if (current.projectRef !== null) return current;
+      return sameProjectRef(current.projectRef, nextProjectRef)
+        ? current
+        : { projectRef: nextProjectRef, branchRefName: null };
+    });
     const frame = window.requestAnimationFrame(() => {
       nameInputRef.current?.focus();
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [open, defaultProjectId, projects]);
+  }, [open, defaultProjectRef, projects]);
 
   const project = useMemo(
-    () => projects.find((candidate) => candidate.id === projectId) ?? null,
-    [projects, projectId],
+    () =>
+      projects.find(
+        (candidate) =>
+          candidate.id === projectRef?.projectId &&
+          candidate.environmentId === projectRef.environmentId,
+      ) ?? null,
+    [projects, projectRef],
   );
   const environmentId: EnvironmentId | null = project?.environmentId ?? null;
   const cwd = project?.workspaceRoot ?? null;
@@ -141,6 +193,11 @@ export function CreateWorktreeDialog({
   );
   // TODO(orca-port): confirm VcsListRefsResult field name is `refs`.
   const refs: ReadonlyArray<RefLike> = refsQuery.data?.refs ?? [];
+  const selectedBranchRef = useMemo(
+    () => refs.find((ref) => ref.name === branchRefName) ?? null,
+    [branchRefName, refs],
+  );
+  const selectedBranchRefName = selectedBranchRef?.name ?? null;
 
   const githubItem: GitHubWorkItemRef | null =
     mode === "github" || mode === "smart" ? parseGitHubWorkItem(nameText) : null;
@@ -206,10 +263,10 @@ export function CreateWorktreeDialog({
 
   const resetForNextCreate = useCallback(() => {
     setNameText("");
-    setSelectedBranchRefName(null);
+    selectBranchRef(null);
     setFormError(null);
     window.requestAnimationFrame(() => nameInputRef.current?.focus());
-  }, []);
+  }, [selectBranchRef]);
 
   const handleSubmit = useCallback(async () => {
     if (!project || !environmentId || !cwd || !resolution) {
@@ -219,17 +276,13 @@ export function CreateWorktreeDialog({
     setFormError(null);
     setIsSubmitting(true);
     try {
-      const baseRefName = resolution.baseRefName ?? "HEAD";
-      // Pinned interface (00-port-plan.md item 6 / w2-findings.md): refName is
-      // the REQUIRED base ref to check out from; newRefName is the branch
-      // being created; path:null lets the server compute the worktree path.
       const worktreeResult = await createWorktree({
         environmentId,
         input: {
           cwd,
-          refName: baseRefName,
-          newRefName: resolution.branchName,
-          baseRefName,
+          refName: resolution.refName,
+          newRefName: resolution.newRefName,
+          baseRefName: resolution.baseRefName,
           path: null,
         },
       });
@@ -248,6 +301,7 @@ export function CreateWorktreeDialog({
       }
 
       const worktreePath = worktreeResult.value.worktree.path;
+      const finalRefName = worktreeResult.value.worktree.refName;
       const threadId = newThreadId();
       const settings = serverConfig?.settings ?? DEFAULT_SERVER_SETTINGS;
       const targetInstanceId =
@@ -269,11 +323,11 @@ export function CreateWorktreeDialog({
         input: {
           threadId,
           projectId: project.id,
-          title: resolution.branchName,
+          title: finalRefName,
           modelSelection: resolvedDefault.modelSelection,
           runtimeMode: DEFAULT_RUNTIME_MODE,
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          branch: resolution.branchName,
+          branch: finalRefName,
           worktreePath,
         },
       });
@@ -348,9 +402,16 @@ export function CreateWorktreeDialog({
             <span className="text-foreground text-xs font-medium">Project</span>
             <Select
               modal={false}
-              value={projectId ?? undefined}
-              onValueChange={(value) => setProjectId(value as ProjectId)}
-              items={projects.map((p) => ({ value: p.id, label: p.title }))}
+              value={projectRef ? scopedProjectKey(projectRef) : undefined}
+              onValueChange={(value) => {
+                if (value === null) return;
+                const nextProjectRef = parseScopedProjectKey(value);
+                if (nextProjectRef) selectProjectTarget(nextProjectRef);
+              }}
+              items={projects.map((p) => ({
+                value: scopedProjectKey(scopeProjectRef(p.environmentId, p.id)),
+                label: p.title,
+              }))}
             >
               <SelectTrigger aria-label="Project">
                 <SelectValue placeholder="Select a project" />
@@ -358,7 +419,10 @@ export function CreateWorktreeDialog({
               <SelectPopup>
                 <SelectGroup>
                   {projects.map((p) => (
-                    <SelectItem key={p.id} value={p.id}>
+                    <SelectItem
+                      key={scopedProjectKey(scopeProjectRef(p.environmentId, p.id))}
+                      value={scopedProjectKey(scopeProjectRef(p.environmentId, p.id))}
+                    >
                       {p.title}
                     </SelectItem>
                   ))}
@@ -417,7 +481,9 @@ export function CreateWorktreeDialog({
                       row.kind === "branch" && row.refName === selectedBranchRefName && "bg-accent",
                     )}
                     onClick={() => {
-                      if (row.kind === "branch") setSelectedBranchRefName(row.refName);
+                      if (row.kind === "branch") {
+                        selectBranchRef(refs.find((ref) => ref.name === row.refName) ?? null);
+                      }
                     }}
                   >
                     <span>
@@ -443,12 +509,22 @@ export function CreateWorktreeDialog({
                       "hover:bg-accent flex w-full items-center px-3 py-1.5 text-left text-sm",
                       ref.name === selectedBranchRefName && "bg-accent",
                     )}
-                    onClick={() => setSelectedBranchRefName(ref.name)}
+                    onClick={() => selectBranchRef(ref)}
                   >
                     {ref.name}
                   </button>
                 ))}
               </div>
+            ) : null}
+
+            {selectedBranchRef &&
+            selectedBranchRef.isRemote !== true &&
+            (selectedBranchRef.current === true || selectedBranchRef.worktreePath != null) ? (
+              <p className="text-muted-foreground text-xs" role="status">
+                &quot;{selectedBranchRef.name}&quot; is already checked out. A new branch (&quot;
+                {selectedBranchRef.name}-2&quot; or the next available name) will be created from
+                it.
+              </p>
             ) : null}
 
             {mode === "smart" ? (

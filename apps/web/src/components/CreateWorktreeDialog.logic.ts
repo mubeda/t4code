@@ -60,6 +60,9 @@ export function sanitizeBranchName(input: string): string {
 
 export interface RefLike {
   readonly name: string;
+  readonly isRemote?: boolean | undefined;
+  readonly current?: boolean | undefined;
+  readonly worktreePath?: string | null | undefined;
 }
 
 /** Client-side substring filter for the Branch tab result list. */
@@ -135,15 +138,26 @@ export function detectSmartMode(
   return hasPrefixMatch ? "branch" : "name";
 }
 
-export interface WorktreeCreateResolution {
-  readonly branchName: string;
-  readonly baseRefName: string | null;
-}
+export type WorktreeCreateResolution =
+  | {
+      readonly kind: "existing-ref";
+      readonly branchName: string;
+      readonly refName: string;
+      readonly newRefName: null;
+      readonly baseRefName: null;
+    }
+  | {
+      readonly kind: "new-branch";
+      readonly branchName: string;
+      readonly refName: string;
+      readonly newRefName: string;
+      readonly baseRefName: string;
+    };
 
 /**
- * Resolves the final `{branchName, baseRefName}` pair to submit from the
- * current tab/selection state. Returns `null` when nothing resolvable yet
- * (submit should stay disabled).
+ * Resolves the final worktree creation intent from the current tab/selection
+ * state. Returns `null` when nothing resolvable yet (submit should stay
+ * disabled).
  */
 export function resolveWorktreeCreateInput(input: {
   readonly mode: WorktreeNameMode;
@@ -153,32 +167,41 @@ export function resolveWorktreeCreateInput(input: {
   readonly advancedBaseBranchOverride: string | null;
   readonly defaultBaseBranch: string | null;
 }): WorktreeCreateResolution | null {
-  const baseRefName =
-    (input.advancedBaseBranchOverride?.trim() || null) ?? input.defaultBaseBranch ?? null;
+  const existingRef = (refName: string): WorktreeCreateResolution => ({
+    kind: "existing-ref",
+    branchName: refName,
+    refName,
+    newRefName: null,
+    baseRefName: null,
+  });
+  const newBranch = (branchName: string): WorktreeCreateResolution => {
+    const baseRefName =
+      (input.advancedBaseBranchOverride?.trim() || null) ?? input.defaultBaseBranch ?? "HEAD";
+    return {
+      kind: "new-branch",
+      branchName,
+      refName: baseRefName,
+      newRefName: branchName,
+      baseRefName,
+    };
+  };
 
   if (input.mode === "branch") {
-    if (!input.selectedBranchRefName) return null;
-    return { branchName: sanitizeBranchName(input.selectedBranchRefName), baseRefName };
+    return input.selectedBranchRefName ? existingRef(input.selectedBranchRefName) : null;
   }
 
   if (input.mode === "github") {
-    if (!input.githubItem) return null;
-    return { branchName: githubWorkItemBranchName(input.githubItem), baseRefName };
+    return input.githubItem ? newBranch(githubWorkItemBranchName(input.githubItem)) : null;
   }
 
   if (input.mode === "smart") {
-    if (input.githubItem) {
-      return { branchName: githubWorkItemBranchName(input.githubItem), baseRefName };
-    }
-    if (input.selectedBranchRefName) {
-      return { branchName: sanitizeBranchName(input.selectedBranchRefName), baseRefName };
-    }
+    if (input.githubItem) return newBranch(githubWorkItemBranchName(input.githubItem));
+    if (input.selectedBranchRefName) return existingRef(input.selectedBranchRefName);
   }
 
   // "name" mode, or Smart falling back to plain text.
-  const sanitized = sanitizeBranchName(input.nameText);
-  if (sanitized.length === 0) return null;
-  return { branchName: sanitized, baseRefName };
+  const branchName = sanitizeBranchName(input.nameText);
+  return branchName.length > 0 ? newBranch(branchName) : null;
 }
 
 /** Gate for the primary "Create worktree" button. */

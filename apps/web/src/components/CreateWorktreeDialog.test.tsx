@@ -1,4 +1,10 @@
-import { DEFAULT_SERVER_SETTINGS, EnvironmentId, ProjectId } from "@t4code/contracts";
+import { scopedProjectKey, scopeProjectRef } from "@t4code/client-runtime/environment";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  EnvironmentId,
+  ProjectId,
+  type ScopedProjectRef,
+} from "@t4code/contracts";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import * as React from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -129,7 +135,12 @@ const captured = vi.hoisted(() => ({
 const testState = vi.hoisted(() => ({
   projects: [] as Array<Record<string, unknown>>,
   serverConfigs: new Map<string, Record<string, unknown>>(),
-  refs: [] as Array<{ name: string }>,
+  refs: [] as Array<{
+    name: string;
+    isRemote?: boolean;
+    current?: boolean;
+    worktreePath?: string | null;
+  }>,
   queryAtoms: [] as unknown[],
   createWorktree: vi.fn(),
   createThread: vi.fn(),
@@ -210,7 +221,7 @@ vi.mock("./ui/input", () => ({
 vi.mock("./ui/select", () => ({
   Select: (props: CapturedSelectProps) => {
     captured.selects.push(props);
-    return <div>{props.children}</div>;
+    return <div data-select-value={props.value}>{props.children}</div>;
   },
   SelectGroup: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   SelectGroupLabel: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
@@ -288,6 +299,7 @@ const { CreateWorktreeDialog } = await import("./CreateWorktreeDialog");
 
 const ENVIRONMENT_ID = EnvironmentId.make("local");
 const PROJECT_ID = ProjectId.make("project-one");
+const PROJECT_REF = scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID);
 
 function project(overrides: Record<string, unknown> = {}) {
   return {
@@ -318,14 +330,14 @@ function collectText(node: ReactNode): string {
   return "";
 }
 
-function render(open = true, defaultProjectId?: ProjectId | null): string {
+function render(open = true, defaultProjectRef?: ScopedProjectRef | null): string {
   const renderPass = () => {
     hooks.beginRender();
     return renderToStaticMarkup(
       <CreateWorktreeDialog
         open={open}
         onOpenChange={testState.onOpenChange}
-        {...(defaultProjectId === undefined ? {} : { defaultProjectId })}
+        {...(defaultProjectRef === undefined ? {} : { defaultProjectRef })}
       />,
     );
   };
@@ -401,6 +413,50 @@ staticDescribe("CreateWorktreeDialog", () => {
     expect(window.cancelAnimationFrame).not.toHaveBeenCalled();
   });
 
+  it("adopts an explicit row target when opening after mounting closed", () => {
+    const targetProjectId = ProjectId.make("project-two");
+    const targetEnvironmentId = EnvironmentId.make("remote");
+    testState.projects = [
+      project(),
+      project({
+        id: targetProjectId,
+        environmentId: targetEnvironmentId,
+        title: "Remote project",
+        workspaceRoot: "/remote/repo",
+      }),
+    ];
+
+    render(false, PROJECT_REF);
+    render(true, scopeProjectRef(targetEnvironmentId, targetProjectId));
+
+    expect(captured.selects[0]?.value).toBe(
+      scopedProjectKey(scopeProjectRef(targetEnvironmentId, targetProjectId)),
+    );
+    expect(testState.queryAtoms.at(-1)).toEqual({
+      kind: "vcs.listRefs",
+      args: {
+        environmentId: targetEnvironmentId,
+        input: { cwd: "/remote/repo", query: undefined },
+      },
+    });
+  });
+
+  it("preserves an open dialog's selected project across unrelated project updates", () => {
+    const secondProjectId = ProjectId.make("project-two");
+    testState.projects = [project(), project({ id: secondProjectId, title: "Second" })];
+
+    render(true, PROJECT_REF);
+    captured.selects[0]?.onValueChange?.(
+      scopedProjectKey(scopeProjectRef(ENVIRONMENT_ID, secondProjectId)),
+    );
+    testState.projects = [...testState.projects];
+    render(true, PROJECT_REF);
+
+    expect(captured.selects[0]?.value).toBe(
+      scopedProjectKey(scopeProjectRef(ENVIRONMENT_ID, secondProjectId)),
+    );
+  });
+
   it("selects the first project, filters providers, and requests refs for smart mode", () => {
     testState.serverConfigs.set(ENVIRONMENT_ID, {
       providers: [
@@ -426,7 +482,7 @@ staticDescribe("CreateWorktreeDialog", () => {
 
     const markup = render();
 
-    expect(captured.selects[0]?.value).toBe(PROJECT_ID);
+    expect(captured.selects[0]?.value).toBe(scopedProjectKey(PROJECT_REF));
     expect(captured.selects[1]?.value).toBe("claude");
     expect(captured.selects[1]?.items).toEqual([{ value: "claude", label: "Claude" }]);
     expect(testState.queryAtoms.at(-1)).toEqual({
@@ -435,6 +491,24 @@ staticDescribe("CreateWorktreeDialog", () => {
     });
     expect(markup).toContain("Interpreting as:");
     expect(input("Type a name, #1234, or a branch").value).toBe("");
+  });
+
+  it("adopts the first scoped project when projects load after the dialog opens", () => {
+    testState.projects = [];
+    render();
+    expect(captured.selects[0]?.value).toBeUndefined();
+
+    testState.projects = [project()];
+    render();
+
+    expect(captured.selects[0]?.value).toBe(scopedProjectKey(PROJECT_REF));
+    expect(testState.queryAtoms.at(-1)).toEqual({
+      kind: "vcs.listRefs",
+      args: {
+        environmentId: ENVIRONMENT_ID,
+        input: { cwd: "/repo", query: undefined },
+      },
+    });
   });
 
   it("uses canonical and configured provider names in the Agent selector", () => {
@@ -537,12 +611,16 @@ staticDescribe("CreateWorktreeDialog", () => {
       },
     });
 
-    render(true, PROJECT_ID);
-    captured.selects[0]?.onValueChange?.(secondId);
+    render(true, PROJECT_REF);
+    captured.selects[0]?.onValueChange?.(
+      scopedProjectKey(scopeProjectRef(secondEnvironmentId, secondId)),
+    );
     render();
-    expect(captured.selects[0]?.value).toBe(secondId);
+    expect(captured.selects[0]?.value).toBe(
+      scopedProjectKey(scopeProjectRef(secondEnvironmentId, secondId)),
+    );
 
-    captured.selects[0]?.onValueChange?.(PROJECT_ID);
+    captured.selects[0]?.onValueChange?.(scopedProjectKey(PROJECT_REF));
     render();
     captured.selects[1]?.onValueChange?.("claude");
     captured.collapsibles[0]?.onOpenChange?.(true);
@@ -970,18 +1048,307 @@ if (browserRuntime) {
       await dispatch(input, new Event("input", { bubbles: true, cancelable: true }));
     }
 
-    async function mountDialog(): Promise<{
+    async function renderDialog(
+      root: Root,
+      open: boolean,
+      defaultProjectRef?: ScopedProjectRef | null,
+    ): Promise<void> {
+      await React.act(async () => {
+        root.render(
+          <CreateWorktreeDialog
+            open={open}
+            onOpenChange={testState.onOpenChange}
+            {...(defaultProjectRef === undefined ? {} : { defaultProjectRef })}
+          />,
+        );
+      });
+    }
+
+    async function mountDialog(
+      open = true,
+      defaultProjectRef?: ScopedProjectRef | null,
+    ): Promise<{
       container: HTMLDivElement;
       root: Root;
     }> {
       const container = document.createElement("div");
       document.body.append(container);
       const root = createRoot(container);
-      await React.act(async () => {
-        root.render(<CreateWorktreeDialog open onOpenChange={testState.onOpenChange} />);
-      });
+      await renderDialog(root, open, defaultProjectRef);
       return { container, root };
     }
+
+    it("adopts an explicit project target when transitioning from closed to open", async () => {
+      const targetProjectId = ProjectId.make("project-two");
+      const targetEnvironmentId = EnvironmentId.make("remote");
+      testState.projects = [
+        project(),
+        project({
+          id: targetProjectId,
+          environmentId: targetEnvironmentId,
+          title: "Remote project",
+          workspaceRoot: "/remote/repo",
+        }),
+      ];
+      const { container, root } = await mountDialog(false, PROJECT_REF);
+
+      testState.queryAtoms = [];
+      await renderDialog(root, true, scopeProjectRef(targetEnvironmentId, targetProjectId));
+
+      expect(
+        requiredElement<HTMLDivElement>(container, "[data-select-value]").dataset["selectValue"],
+      ).toBe(scopedProjectKey(scopeProjectRef(targetEnvironmentId, targetProjectId)));
+      expect(testState.queryAtoms.at(-1)).toEqual({
+        kind: "vcs.listRefs",
+        args: {
+          environmentId: targetEnvironmentId,
+          input: { cwd: "/remote/repo", query: undefined },
+        },
+      });
+
+      await React.act(async () => root.unmount());
+      container.remove();
+    });
+
+    it("submits a selected existing branch without requesting a new branch", async () => {
+      testState.refs = [{ name: "main" }, { name: "feature/login" }];
+      testState.createWorktree.mockResolvedValue(
+        success({
+          worktree: { path: "/repo/.worktrees/feature-login-2", refName: "feature/login-2" },
+        }),
+      );
+      const { container, root } = await mountDialog();
+
+      await React.act(async () => requiredButton(container, "Branch").click());
+      await React.act(async () => requiredButton(container, "feature/login").click());
+      await React.act(async () => requiredButton(container, "Create worktree").click());
+      await React.act(async () => flushPromises());
+
+      expect(testState.createWorktree).toHaveBeenCalledWith({
+        environmentId: ENVIRONMENT_ID,
+        input: {
+          cwd: "/repo",
+          refName: "feature/login",
+          newRefName: null,
+          baseRefName: null,
+          path: null,
+        },
+      });
+      expect(testState.createThread).toHaveBeenCalledWith(
+        expect.objectContaining({
+          input: expect.objectContaining({
+            title: "feature/login-2",
+            branch: "feature/login-2",
+          }),
+        }),
+      );
+
+      await React.act(async () => root.unmount());
+      container.remove();
+    });
+
+    it("explains when the selected local branch is already checked out", async () => {
+      testState.refs = [
+        {
+          name: "main",
+          isRemote: false,
+          current: true,
+          worktreePath: "/repo",
+        },
+      ];
+      const { container, root } = await mountDialog();
+
+      await React.act(async () => requiredButton(container, "Branch").click());
+      await React.act(async () => requiredButton(container, "main").click());
+
+      expect(container.textContent).toContain(
+        '"main" is already checked out. A new branch ("main-2" or the next available name) will be created from it.',
+      );
+
+      await React.act(async () => root.unmount());
+      container.remove();
+    });
+
+    it("uses the scoped environment when projects share the same project id", async () => {
+      const remoteEnvironmentId = EnvironmentId.make("remote");
+      const remoteProjectRef = scopeProjectRef(remoteEnvironmentId, PROJECT_ID);
+      testState.projects = [
+        project({ title: "Local copy", workspaceRoot: "/local/repo" }),
+        project({
+          environmentId: remoteEnvironmentId,
+          title: "Remote copy",
+          workspaceRoot: "/remote/repo",
+        }),
+      ];
+      testState.refs = [{ name: "remote-feature" }];
+      testState.createWorktree.mockResolvedValue(
+        success({ worktree: { path: "/remote/worktree", refName: "remote-feature" } }),
+      );
+      const { container, root } = await mountDialog(true, remoteProjectRef);
+
+      expect(
+        requiredElement<HTMLDivElement>(container, "[data-select-value]").dataset["selectValue"],
+      ).toBe(scopedProjectKey(remoteProjectRef));
+      expect(testState.queryAtoms.at(-1)).toEqual({
+        kind: "vcs.listRefs",
+        args: {
+          environmentId: remoteEnvironmentId,
+          input: { cwd: "/remote/repo", query: undefined },
+        },
+      });
+
+      await React.act(async () => requiredButton(container, "Branch").click());
+      await React.act(async () => requiredButton(container, "remote-feature").click());
+      await React.act(async () => requiredButton(container, "Create worktree").click());
+      await React.act(async () => flushPromises());
+
+      expect(testState.createWorktree).toHaveBeenCalledWith({
+        environmentId: remoteEnvironmentId,
+        input: {
+          cwd: "/remote/repo",
+          refName: "remote-feature",
+          newRefName: null,
+          baseRefName: null,
+          path: null,
+        },
+      });
+
+      await React.act(async () => root.unmount());
+      container.remove();
+    });
+
+    it("clears a selected branch when the Project select changes", async () => {
+      const secondProjectId = ProjectId.make("project-two");
+      const secondEnvironmentId = EnvironmentId.make("remote");
+      const secondProjectRef = scopeProjectRef(secondEnvironmentId, secondProjectId);
+      testState.projects = [
+        project(),
+        project({
+          id: secondProjectId,
+          environmentId: secondEnvironmentId,
+          title: "Repo B",
+          workspaceRoot: "/repo-b",
+        }),
+      ];
+      testState.refs = [{ name: "main" }];
+      const { container, root } = await mountDialog(true, PROJECT_REF);
+
+      await React.act(async () => requiredButton(container, "Branch").click());
+      await React.act(async () => requiredButton(container, "main").click());
+      expect(requiredButton(container, "Create worktree").disabled).toBe(false);
+
+      const projectSelect = captured.selects.find((select) =>
+        select.items?.some((item) => item.label === "Repo B"),
+      );
+      await React.act(async () =>
+        projectSelect?.onValueChange?.(scopedProjectKey(secondProjectRef)),
+      );
+
+      expect(requiredButton(container, "Create worktree").disabled).toBe(true);
+      expect(testState.queryAtoms.at(-1)).toEqual({
+        kind: "vcs.listRefs",
+        args: {
+          environmentId: secondEnvironmentId,
+          input: { cwd: "/repo-b", query: undefined },
+        },
+      });
+
+      await React.act(async () => requiredButton(container, "main").click());
+      expect(requiredButton(container, "Create worktree").disabled).toBe(false);
+
+      await React.act(async () => root.unmount());
+      container.remove();
+    });
+
+    it("clears a selected branch when reopening for another row", async () => {
+      const secondProjectId = ProjectId.make("project-two");
+      const secondEnvironmentId = EnvironmentId.make("remote");
+      const secondProjectRef = scopeProjectRef(secondEnvironmentId, secondProjectId);
+      testState.projects = [
+        project(),
+        project({
+          id: secondProjectId,
+          environmentId: secondEnvironmentId,
+          title: "Repo B",
+          workspaceRoot: "/repo-b",
+        }),
+      ];
+      testState.refs = [{ name: "main" }];
+      const { container, root } = await mountDialog(true, PROJECT_REF);
+
+      await React.act(async () => requiredButton(container, "Branch").click());
+      await React.act(async () => requiredButton(container, "main").click());
+      expect(requiredButton(container, "Create worktree").disabled).toBe(false);
+
+      await renderDialog(root, false, PROJECT_REF);
+      await renderDialog(root, true, secondProjectRef);
+
+      expect(requiredButton(container, "Create worktree").disabled).toBe(true);
+      expect(testState.queryAtoms.at(-1)).toEqual({
+        kind: "vcs.listRefs",
+        args: {
+          environmentId: secondEnvironmentId,
+          input: { cwd: "/repo-b", query: undefined },
+        },
+      });
+
+      await React.act(async () => root.unmount());
+      container.remove();
+    });
+
+    it("disables Create when the selected ref disappears from refreshed results", async () => {
+      testState.refs = [{ name: "main", current: false, worktreePath: null }];
+      const { container, root } = await mountDialog(true, PROJECT_REF);
+
+      await React.act(async () => requiredButton(container, "Branch").click());
+      await React.act(async () => requiredButton(container, "main").click());
+      expect(requiredButton(container, "Create worktree").disabled).toBe(false);
+
+      testState.refs = [];
+      await renderDialog(root, true, PROJECT_REF);
+
+      expect(requiredButton(container, "Create worktree").disabled).toBe(true);
+
+      await React.act(async () => root.unmount());
+      container.remove();
+    });
+
+    it("updates the occupied explanation from refreshed ref metadata", async () => {
+      testState.refs = [{ name: "main", current: false, worktreePath: null }];
+      const { container, root } = await mountDialog(true, PROJECT_REF);
+
+      await React.act(async () => requiredButton(container, "Branch").click());
+      await React.act(async () => requiredButton(container, "main").click());
+      expect(container.textContent).not.toContain("is already checked out");
+
+      testState.refs = [{ name: "main", current: true, worktreePath: "/repo" }];
+      await renderDialog(root, true, PROJECT_REF);
+      expect(container.textContent).toContain('"main" is already checked out.');
+
+      testState.refs = [{ name: "main", current: false, worktreePath: null }];
+      await renderDialog(root, true, PROJECT_REF);
+      expect(container.textContent).not.toContain("is already checked out");
+
+      await React.act(async () => root.unmount());
+      container.remove();
+    });
+
+    it("clears a selected branch when reopening the same scoped project", async () => {
+      testState.refs = [{ name: "main", current: false, worktreePath: null }];
+      const { container, root } = await mountDialog(true, PROJECT_REF);
+
+      await React.act(async () => requiredButton(container, "Branch").click());
+      await React.act(async () => requiredButton(container, "main").click());
+      expect(requiredButton(container, "Create worktree").disabled).toBe(false);
+
+      await renderDialog(root, false, PROJECT_REF);
+      await renderDialog(root, true, PROJECT_REF);
+
+      expect(requiredButton(container, "Create worktree").disabled).toBe(true);
+
+      await React.act(async () => root.unmount());
+      container.remove();
+    });
 
     it("enables and submits the worktree form through real input and Ctrl+Enter events", async () => {
       testState.serverConfigs.set(ENVIRONMENT_ID, {
@@ -992,10 +1359,11 @@ if (browserRuntime) {
             displayName: "Claude",
             enabled: true,
             installed: true,
-            models: [{ id: "sonnet" }],
+            models: [{ slug: "sonnet", name: "Sonnet", isCustom: false, capabilities: null }],
           },
         ],
         settings: {
+          ...DEFAULT_SERVER_SETTINGS,
           providers: {},
           providerInstances: { claude: { driver: "claudeAgent" } },
         },

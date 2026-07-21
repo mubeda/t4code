@@ -2,7 +2,13 @@
 
 use t4code_server::{git, source_control, vcs};
 
-use std::{fs, path::Path, process::Command, sync::Arc, time::Duration};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::Arc,
+    time::Duration,
+};
 
 use git::{
     CreateWorktreeInput, GitRepository, OutputPolicy, ProcessError, ProcessRequest, ProcessRunner,
@@ -29,6 +35,15 @@ fn git(cwd: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+fn has_registered_worktree(cwd: &Path, expected: &Path) -> bool {
+    let expected = fs::canonicalize(expected).unwrap_or_else(|_| expected.to_path_buf());
+    git(cwd, &["worktree", "list", "--porcelain"])
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(PathBuf::from)
+        .any(|path| fs::canonicalize(&path).unwrap_or(path) == expected)
 }
 
 fn init_repo() -> TempDir {
@@ -397,6 +412,423 @@ async fn worktree_lifecycle_is_reflected_in_ref_listing() {
         .await
         .expect("remove worktree");
     assert!(!worktree_path.exists());
+}
+
+#[tokio::test]
+async fn current_local_branch_creates_the_first_available_suffixed_branch() {
+    let repo = init_repo();
+    commit_file(repo.path(), "README.md", "hello\n", "initial");
+    let worktree_parent = tempfile::tempdir().expect("temporary worktree parent");
+    let worktree_path = worktree_parent.path().join("main-sibling");
+
+    let created = GitRepository::default()
+        .create_worktree(
+            CreateWorktreeInput {
+                cwd: repo.path().to_path_buf(),
+                ref_name: "main".into(),
+                new_ref_name: None,
+                base_ref_name: None,
+                path: Some(worktree_path.clone()),
+            },
+            &cancellation(),
+        )
+        .await
+        .expect("checked-out main creates a sibling branch");
+
+    assert_eq!(created.worktree.ref_name, "main-2");
+    assert_eq!(git(&worktree_path, &["branch", "--show-current"]), "main-2");
+    assert_eq!(
+        git(&worktree_path, &["rev-parse", "HEAD"]),
+        git(repo.path(), &["rev-parse", "main"])
+    );
+}
+
+#[tokio::test]
+async fn occupied_suffix_branches_and_default_paths_are_skipped() {
+    let repo = init_repo();
+    commit_file(repo.path(), "README.md", "hello\n", "initial");
+    git(repo.path(), &["branch", "main-2"]);
+    let repo_name = repo.path().file_name().expect("temporary repository name");
+    let default_root = repo
+        .path()
+        .parent()
+        .expect("temporary repository parent")
+        .join(".t4code-worktrees")
+        .join(repo_name);
+    fs::create_dir_all(default_root.join("main-3")).expect("colliding default path");
+
+    let created = GitRepository::default()
+        .create_worktree(
+            CreateWorktreeInput {
+                cwd: repo.path().to_path_buf(),
+                ref_name: "main".into(),
+                new_ref_name: None,
+                base_ref_name: None,
+                path: None,
+            },
+            &cancellation(),
+        )
+        .await
+        .expect("available suffix is selected");
+
+    assert_eq!(created.worktree.ref_name, "main-4");
+    assert!(
+        created
+            .worktree
+            .path
+            .replace('\\', "/")
+            .ends_with("/main-4")
+    );
+    GitRepository::default()
+        .remove_worktree(
+            repo.path(),
+            Path::new(&created.worktree.path),
+            true,
+            &cancellation(),
+        )
+        .await
+        .expect("remove generated worktree");
+    fs::remove_dir_all(default_root).expect("remove default worktree fixtures");
+}
+
+#[tokio::test]
+async fn unoccupied_local_branch_is_checked_out_without_creating_a_sibling() {
+    let repo = init_repo();
+    commit_file(repo.path(), "README.md", "hello\n", "initial");
+    git(repo.path(), &["branch", "feature/free"]);
+    let worktree_parent = tempfile::tempdir().expect("temporary worktree parent");
+    let worktree_path = worktree_parent.path().join("free");
+
+    let created = GitRepository::default()
+        .create_worktree(
+            CreateWorktreeInput {
+                cwd: repo.path().to_path_buf(),
+                ref_name: "feature/free".into(),
+                new_ref_name: None,
+                base_ref_name: None,
+                path: Some(worktree_path.clone()),
+            },
+            &cancellation(),
+        )
+        .await
+        .expect("free local branch is reused");
+
+    assert_eq!(created.worktree.ref_name, "feature/free");
+    assert_eq!(
+        git(&worktree_path, &["branch", "--show-current"]),
+        "feature/free"
+    );
+    assert!(git(repo.path(), &["branch", "--list", "feature/free-2"]).is_empty());
+}
+
+#[tokio::test]
+async fn remote_ref_remains_an_exact_detached_worktree_source() {
+    let repo = init_repo();
+    commit_file(repo.path(), "README.md", "hello\n", "initial");
+    git(
+        repo.path(),
+        &["update-ref", "refs/remotes/origin/feature", "HEAD"],
+    );
+    let worktree_parent = tempfile::tempdir().expect("temporary worktree parent");
+    let worktree_path = worktree_parent.path().join("remote-feature");
+
+    let created = GitRepository::default()
+        .create_worktree(
+            CreateWorktreeInput {
+                cwd: repo.path().to_path_buf(),
+                ref_name: "origin/feature".into(),
+                new_ref_name: None,
+                base_ref_name: None,
+                path: Some(worktree_path.clone()),
+            },
+            &cancellation(),
+        )
+        .await
+        .expect("remote ref creates from the exact ref");
+
+    assert_eq!(created.worktree.ref_name, "origin/feature");
+    assert!(git(&worktree_path, &["branch", "--show-current"]).is_empty());
+    assert_eq!(
+        git(&worktree_path, &["rev-parse", "HEAD"]),
+        git(repo.path(), &["rev-parse", "origin/feature"])
+    );
+}
+
+#[tokio::test]
+async fn failed_occupied_branch_fallback_preserves_preexisting_suffix_branches() {
+    let repo = init_repo();
+    commit_file(repo.path(), "README.md", "hello\n", "initial");
+    git(repo.path(), &["branch", "main-2"]);
+    let blocked_parent = repo.path().join("not-a-directory");
+    fs::write(&blocked_parent, "blocked\n").expect("blocking path fixture");
+
+    GitRepository::default()
+        .create_worktree(
+            CreateWorktreeInput {
+                cwd: repo.path().to_path_buf(),
+                ref_name: "main".into(),
+                new_ref_name: None,
+                base_ref_name: None,
+                path: Some(blocked_parent.join("worktree")),
+            },
+            &cancellation(),
+        )
+        .await
+        .expect_err("invalid worktree path fails");
+
+    assert_eq!(git(repo.path(), &["branch", "--list", "main-2"]), "main-2");
+    assert!(git(repo.path(), &["branch", "--list", "main-3"]).is_empty());
+}
+
+#[tokio::test]
+async fn occupied_branch_fallback_does_not_claim_a_preexisting_explicit_path() {
+    let repo = init_repo();
+    commit_file(repo.path(), "README.md", "hello\n", "initial");
+    let worktree_parent = tempfile::tempdir().expect("temporary worktree parent");
+    let preexisting_path = worktree_parent.path().join("already-there");
+    fs::create_dir(&preexisting_path).expect("pre-existing empty path");
+
+    GitRepository::default()
+        .create_worktree(
+            CreateWorktreeInput {
+                cwd: repo.path().to_path_buf(),
+                ref_name: "main".into(),
+                new_ref_name: None,
+                base_ref_name: None,
+                path: Some(preexisting_path.clone()),
+            },
+            &cancellation(),
+        )
+        .await
+        .expect_err("an explicit path must be absent before T4Code can own it");
+
+    assert!(preexisting_path.is_dir());
+    assert!(
+        fs::read_dir(&preexisting_path)
+            .expect("pre-existing path remains readable")
+            .next()
+            .is_none()
+    );
+    assert!(git(repo.path(), &["branch", "--list", "main-2"]).is_empty());
+}
+
+#[tokio::test]
+async fn missing_registered_worktree_still_owns_its_local_branch() {
+    let repo = init_repo();
+    commit_file(repo.path(), "README.md", "hello\n", "initial");
+    git(repo.path(), &["branch", "feature/stale"]);
+    let stale_parent = tempfile::tempdir().expect("stale worktree parent");
+    let stale_path = stale_parent.path().join("stale");
+    git(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            &stale_path.to_string_lossy(),
+            "feature/stale",
+        ],
+    );
+    fs::remove_dir_all(&stale_path).expect("simulate a missing registered worktree");
+
+    let repository = GitRepository::default();
+    let refs = repository
+        .list_refs(repo.path(), None, 0, 100, true, None, &cancellation())
+        .await
+        .expect("list refs with stale registration");
+    let stale_ref = refs
+        .refs
+        .iter()
+        .find(|reference| reference.name == "feature/stale")
+        .expect("registered branch remains listed");
+    assert_eq!(
+        stale_ref
+            .worktree_path
+            .as_deref()
+            .map(|path| path.replace('\\', "/")),
+        Some(stale_path.to_string_lossy().replace('\\', "/"))
+    );
+
+    let replacement_parent = tempfile::tempdir().expect("replacement worktree parent");
+    let replacement_path = replacement_parent.path().join("replacement");
+    let created = repository
+        .create_worktree(
+            CreateWorktreeInput {
+                cwd: repo.path().to_path_buf(),
+                ref_name: "feature/stale".into(),
+                new_ref_name: None,
+                base_ref_name: None,
+                path: Some(replacement_path.clone()),
+            },
+            &cancellation(),
+        )
+        .await
+        .expect("registered missing worktree triggers sibling fallback");
+    assert_eq!(created.worktree.ref_name, "feature/stale-2");
+    assert_eq!(
+        git(&replacement_path, &["branch", "--show-current"]),
+        "feature/stale-2"
+    );
+}
+
+#[tokio::test]
+async fn occupied_branch_relative_path_uses_one_repository_relative_target() {
+    let repo = init_repo();
+    commit_file(repo.path(), "README.md", "hello\n", "initial");
+    let leaf = format!(
+        "t4code-relative-occupied-{}",
+        repo.path()
+            .file_name()
+            .expect("temporary repository name")
+            .to_string_lossy()
+    );
+    let relative_path = PathBuf::from("..").join(&leaf);
+    let expected_path = repo
+        .path()
+        .parent()
+        .expect("temporary repository parent")
+        .join(&leaf);
+    let process_relative_path = std::env::current_dir()
+        .expect("process working directory")
+        .join(&relative_path);
+    assert!(!expected_path.exists());
+    assert!(!process_relative_path.exists());
+    let repository = GitRepository::default();
+
+    let created = repository
+        .create_worktree(
+            CreateWorktreeInput {
+                cwd: repo.path().to_path_buf(),
+                ref_name: "main".into(),
+                new_ref_name: None,
+                base_ref_name: None,
+                path: Some(relative_path),
+            },
+            &cancellation(),
+        )
+        .await
+        .expect("relative occupied-branch target creates successfully");
+
+    let canonical_expected = fs::canonicalize(&expected_path).expect("canonical created worktree");
+    assert_eq!(
+        fs::canonicalize(&created.worktree.path).expect("canonical returned worktree path"),
+        canonical_expected
+    );
+    assert_eq!(created.worktree.ref_name, "main-2");
+    assert_eq!(git(&expected_path, &["branch", "--show-current"]), "main-2");
+    assert!(has_registered_worktree(repo.path(), &canonical_expected));
+    assert!(!process_relative_path.exists());
+
+    repository
+        .remove_worktree(repo.path(), &expected_path, true, &cancellation())
+        .await
+        .expect("remove repository-relative worktree");
+    assert!(!expected_path.exists());
+    assert!(!has_registered_worktree(repo.path(), &canonical_expected));
+}
+
+#[tokio::test]
+async fn occupied_branch_relative_path_preserves_a_preexisting_repository_relative_target() {
+    let repo = init_repo();
+    commit_file(repo.path(), "README.md", "hello\n", "initial");
+    let leaf = format!(
+        "t4code-relative-preexisting-{}",
+        repo.path()
+            .file_name()
+            .expect("temporary repository name")
+            .to_string_lossy()
+    );
+    let relative_path = PathBuf::from("..").join(&leaf);
+    let expected_path = repo
+        .path()
+        .parent()
+        .expect("temporary repository parent")
+        .join(&leaf);
+    fs::create_dir(&expected_path).expect("pre-existing repository-relative target");
+
+    GitRepository::default()
+        .create_worktree(
+            CreateWorktreeInput {
+                cwd: repo.path().to_path_buf(),
+                ref_name: "main".into(),
+                new_ref_name: None,
+                base_ref_name: None,
+                path: Some(relative_path),
+            },
+            &cancellation(),
+        )
+        .await
+        .expect_err("pre-existing repository-relative target is not owned");
+
+    assert!(expected_path.is_dir());
+    assert!(
+        fs::read_dir(&expected_path)
+            .expect("pre-existing target remains readable")
+            .next()
+            .is_none()
+    );
+    assert!(
+        !git(repo.path(), &["worktree", "list", "--porcelain"])
+            .replace('\\', "/")
+            .contains(&expected_path.to_string_lossy().replace('\\', "/"))
+    );
+    fs::remove_dir(&expected_path).expect("remove preserved fixture directory");
+}
+
+#[tokio::test]
+async fn direct_existing_and_new_branch_relative_paths_return_the_repository_relative_location() {
+    let repo = init_repo();
+    commit_file(repo.path(), "README.md", "hello\n", "initial");
+    git(repo.path(), &["branch", "feature/free-relative"]);
+    let repository = GitRepository::default();
+    let repo_name = repo
+        .path()
+        .file_name()
+        .expect("temporary repository name")
+        .to_string_lossy();
+
+    for (leaf, ref_name, new_ref_name) in [
+        (
+            format!("t4code-relative-free-{repo_name}"),
+            "feature/free-relative",
+            None,
+        ),
+        (
+            format!("t4code-relative-new-{repo_name}"),
+            "main",
+            Some("feature/new-relative"),
+        ),
+    ] {
+        let relative_path = PathBuf::from("..").join(&leaf);
+        let expected_path = repo
+            .path()
+            .parent()
+            .expect("temporary repository parent")
+            .join(&leaf);
+        let created = repository
+            .create_worktree(
+                CreateWorktreeInput {
+                    cwd: repo.path().to_path_buf(),
+                    ref_name: ref_name.into(),
+                    new_ref_name: new_ref_name.map(str::to_owned),
+                    base_ref_name: None,
+                    path: Some(relative_path),
+                },
+                &cancellation(),
+            )
+            .await
+            .expect("direct relative worktree creation");
+        let canonical_expected = fs::canonicalize(&expected_path).expect("canonical worktree");
+        assert_eq!(
+            fs::canonicalize(&created.worktree.path).expect("canonical returned worktree path"),
+            canonical_expected
+        );
+        assert!(has_registered_worktree(repo.path(), &canonical_expected));
+        repository
+            .remove_worktree(repo.path(), &expected_path, true, &cancellation())
+            .await
+            .expect("remove direct relative worktree");
+        assert!(!has_registered_worktree(repo.path(), &canonical_expected));
+    }
 }
 
 #[cfg(windows)]

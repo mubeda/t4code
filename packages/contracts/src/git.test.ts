@@ -42,6 +42,19 @@ describe("VcsCreateWorktreeInput", () => {
     expect(parsed.refName).toBe("feature/existing");
   });
 
+  it("accepts explicit null refs for existing-ref worktrees", () => {
+    const parsed = decodeCreateWorktreeInput({
+      cwd: "/repo",
+      refName: "feature/existing",
+      newRefName: null,
+      baseRefName: null,
+      path: null,
+    });
+
+    expect(parsed.newRefName).toBeNull();
+    expect(parsed.baseRefName).toBeNull();
+  });
+
   it("accepts baseRefName metadata for a new worktree ref", () => {
     const parsed = decodeCreateWorktreeInput({
       cwd: "/repo",

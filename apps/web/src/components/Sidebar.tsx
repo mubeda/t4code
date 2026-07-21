@@ -52,6 +52,7 @@ import {
   EDITORS,
   ProjectId,
   ProviderInstanceId,
+  type ScopedProjectRef,
   type ScopedThreadRef,
   type ResolvedKeybindingsConfig,
   type SidebarProjectGroupingMode,
@@ -1304,8 +1305,8 @@ interface SidebarProjectItemProps {
   project: SidebarProjectSnapshot;
   isThreadListExpanded: boolean;
   activeRouteThreadKey: string | null;
-  newThreadShortcutLabel: string | null;
   handleNewThread: ReturnType<typeof useNewThreadHandler>;
+  openCreateWorktreeDialog: (projectRef?: ScopedProjectRef | null) => void;
   archiveThread: ReturnType<typeof useThreadActions>["archiveThread"];
   deleteThread: ReturnType<typeof useThreadActions>["deleteThread"];
   threadJumpLabelByKey: ReadonlyMap<string, string>;
@@ -1324,8 +1325,8 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     project,
     isThreadListExpanded,
     activeRouteThreadKey,
-    newThreadShortcutLabel,
     handleNewThread,
+    openCreateWorktreeDialog,
     archiveThread,
     deleteThread,
     threadJumpLabelByKey,
@@ -2200,28 +2201,50 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     [handleNewThread, isMobile, setOpenMobile],
   );
 
-  const handleCreateThreadClick = useCallback(
-    (event: React.MouseEvent<HTMLButtonElement>) => {
+  const runProjectMemberAction = useCallback(
+    (
+      event: React.MouseEvent<HTMLButtonElement>,
+      action: (member: SidebarProjectGroupMember) => void,
+    ) => {
       event.preventDefault();
       event.stopPropagation();
 
       if (project.memberProjects.length === 1) {
-        createMainChatForProjectMember(project.memberProjects[0]!);
+        action(project.memberProjects[0]!);
         return;
       }
 
       void (async () => {
-        const targetMember = await chooseProjectMember(project.memberProjects, {
+        const member = await chooseProjectMember(project.memberProjects, {
           x: event.clientX,
           y: event.clientY,
         });
-        if (!targetMember) {
-          return;
-        }
-        createMainChatForProjectMember(targetMember);
+        if (member) action(member);
       })();
     },
-    [createMainChatForProjectMember, project.memberProjects],
+    [project.memberProjects],
+  );
+
+  const handleCreateThreadClick = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      runProjectMemberAction(event, createMainChatForProjectMember);
+    },
+    [createMainChatForProjectMember, runProjectMemberAction],
+  );
+
+  const openWorktreeForProjectMember = useCallback(
+    (member: SidebarProjectGroupMember) => {
+      if (isMobile) setOpenMobile(false);
+      openCreateWorktreeDialog(scopeProjectRef(member.environmentId, member.id));
+    },
+    [isMobile, openCreateWorktreeDialog, setOpenMobile],
+  );
+
+  const handleCreateWorktreeClick = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      runProjectMemberAction(event, openWorktreeForProjectMember);
+    },
+    [openWorktreeForProjectMember, runProjectMemberAction],
   );
 
   const attemptArchiveThread = useCallback(
@@ -2680,9 +2703,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         <SidebarMenuButton
           ref={isManualProjectSorting ? dragHandleProps?.setActivatorNodeRef : undefined}
           size="sm"
-          className={`gap-2 px-2 py-1.5 pr-8 text-left hover:bg-accent group-hover/project-header:bg-accent group-hover/project-header:text-sidebar-accent-foreground max-sm:pr-14 ${
-            isManualProjectSorting ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
-          }`}
+          className={`gap-2 px-2 py-1.5 text-left hover:bg-accent group-hover/project-header:bg-accent group-hover/project-header:text-sidebar-accent-foreground ${
+            project.environmentPresence === "remote-only" ? "pr-20" : "pr-14"
+          } ${isManualProjectSorting ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"}`}
           {...(isManualProjectSorting && dragHandleProps ? dragHandleProps.attributes : {})}
           {...(isManualProjectSorting && dragHandleProps ? dragHandleProps.listeners : {})}
           onPointerDownCapture={handleProjectButtonPointerDownCapture}
@@ -2743,7 +2766,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
                       ? "Local sandbox project"
                       : "Remote project"
                   }
-                  className="pointer-events-none absolute top-1 right-1.5 inline-flex size-5 items-center justify-center rounded-md text-muted-foreground/60 transition-opacity duration-150 max-sm:right-7 group-hover/project-header:opacity-0 group-focus-within/project-header:opacity-0 max-sm:group-hover/project-header:opacity-100 max-sm:group-focus-within/project-header:opacity-100"
+                  className="pointer-events-none absolute top-1 right-1.5 inline-flex size-5 items-center justify-center rounded-md text-muted-foreground/60 transition-opacity duration-150 max-sm:right-14 group-hover/project-header:opacity-0 group-focus-within/project-header:opacity-0 max-sm:group-hover/project-header:opacity-100 max-sm:group-focus-within/project-header:opacity-100"
                 />
               }
             >
@@ -2760,26 +2783,40 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
             </TooltipPopup>
           </Tooltip>
         )}
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <div className="pointer-events-none absolute top-[calc(50%+1px)] right-0.5 -translate-y-1/2 opacity-0 transition-opacity duration-150 max-sm:pointer-events-auto max-sm:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100">
+        <div className="pointer-events-none absolute top-[calc(50%+1px)] right-0.5 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity duration-150 max-sm:pointer-events-auto max-sm:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100">
+          <Tooltip>
+            <TooltipTrigger
+              render={
                 <button
                   type="button"
-                  aria-label={`Create new thread in ${project.displayName}`}
-                  data-testid="new-thread-button"
+                  aria-label={`New main-branch chat in ${project.displayName}`}
+                  data-testid="new-main-chat-button"
                   className={SIDEBAR_ICON_ACTION_BUTTON_CLASS}
                   onClick={handleCreateThreadClick}
-                >
-                  <SquarePenIcon className="size-3.5" />
-                </button>
-              </div>
-            }
-          />
-          <TooltipPopup side="top">
-            {newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"}
-          </TooltipPopup>
-        </Tooltip>
+                />
+              }
+            >
+              <MessageSquarePlusIcon className="size-3.5" />
+            </TooltipTrigger>
+            <TooltipPopup side="top">New main-branch chat</TooltipPopup>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label={`New worktree in ${project.displayName}`}
+                  data-testid="new-worktree-button"
+                  className={SIDEBAR_ICON_ACTION_BUTTON_CLASS}
+                  onClick={handleCreateWorktreeClick}
+                />
+              }
+            >
+              <SquarePenIcon className="size-3.5" />
+            </TooltipTrigger>
+            <TooltipPopup side="top">New worktree</TooltipPopup>
+          </Tooltip>
+        </div>
       </div>
 
       {shouldShowThreadPanel && (
@@ -3324,7 +3361,6 @@ interface SidebarProjectsContentProps {
   threadPreviewCount: SidebarThreadPreviewCount;
   updateSettings: ReturnType<typeof useUpdateClientSettings>;
   openAddProject: () => void;
-  selectedProjectId: ProjectId | null;
   isManualProjectSorting: boolean;
   projectDnDSensors: ReturnType<typeof useSensors>;
   projectCollisionDetection: CollisionDetection;
@@ -3332,14 +3368,13 @@ interface SidebarProjectsContentProps {
   handleProjectDragEnd: (event: DragEndEvent) => void;
   handleProjectDragCancel: (event: DragCancelEvent) => void;
   handleNewThread: ReturnType<typeof useNewThreadHandler>;
-  openCreateWorktreeDialog: (projectId?: ProjectId | null) => void;
+  openCreateWorktreeDialog: (projectRef?: ScopedProjectRef | null) => void;
   archiveThread: ReturnType<typeof useThreadActions>["archiveThread"];
   deleteThread: ReturnType<typeof useThreadActions>["deleteThread"];
   sortedProjects: readonly SidebarProjectSnapshot[];
   expandedThreadListsByProject: ReadonlySet<string>;
   activeRouteProjectKey: string | null;
   routeThreadKey: string | null;
-  newThreadShortcutLabel: string | null;
   commandPaletteShortcutLabel: string | null;
   threadJumpLabelByKey: ReadonlyMap<string, string>;
   attachThreadListAutoAnimateRef: (node: HTMLElement | null) => void;
@@ -3367,7 +3402,6 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     threadPreviewCount,
     updateSettings,
     openAddProject,
-    selectedProjectId,
     isManualProjectSorting,
     projectDnDSensors,
     projectCollisionDetection,
@@ -3382,7 +3416,6 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     expandedThreadListsByProject,
     activeRouteProjectKey,
     routeThreadKey,
-    newThreadShortcutLabel,
     commandPaletteShortcutLabel,
     threadJumpLabelByKey,
     attachThreadListAutoAnimateRef,
@@ -3400,36 +3433,6 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
       updateSettings({ sidebarProjectSortOrder: sortOrder });
     },
     [updateSettings],
-  );
-  const toolbarProjectMembers = useMemo(
-    () => sortedProjects.flatMap((project) => project.memberProjects),
-    [sortedProjects],
-  );
-  const handleNewMainChatClick = useCallback(
-    (event: React.MouseEvent<HTMLButtonElement>) => {
-      if (toolbarProjectMembers.length === 1) {
-        const member = toolbarProjectMembers[0]!;
-        void handleNewThread(scopeProjectRef(member.environmentId, member.id), {
-          branch: null,
-          worktreePath: null,
-          envMode: "local",
-        });
-        return;
-      }
-      void (async () => {
-        const member = await chooseProjectMember(toolbarProjectMembers, {
-          x: event.clientX,
-          y: event.clientY,
-        });
-        if (!member) return;
-        await handleNewThread(scopeProjectRef(member.environmentId, member.id), {
-          branch: null,
-          worktreePath: null,
-          envMode: "local",
-        });
-      })();
-    },
-    [handleNewThread, toolbarProjectMembers],
   );
   const handleThreadSortOrderChange = useCallback(
     (sortOrder: SidebarThreadSortOrder) => {
@@ -3520,43 +3523,6 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                 render={
                   <button
                     type="button"
-                    aria-label="New main-branch chat"
-                    data-testid="sidebar-new-main-chat-trigger"
-                    disabled={toolbarProjectMembers.length === 0}
-                    className="inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-                    onClick={handleNewMainChatClick}
-                  />
-                }
-              >
-                <MessageSquarePlusIcon className="size-3.5" />
-              </TooltipTrigger>
-              <TooltipPopup side="right">New main-branch chat</TooltipPopup>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    aria-label="New worktree"
-                    data-testid="sidebar-new-worktree-trigger"
-                    disabled={selectedProjectId === null}
-                    className="inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-                    onClick={() => {
-                      if (selectedProjectId === null) return;
-                      openCreateWorktreeDialog(selectedProjectId);
-                    }}
-                  />
-                }
-              >
-                <SquarePenIcon className="size-3.5" />
-              </TooltipTrigger>
-              <TooltipPopup side="right">New worktree</TooltipPopup>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
                     aria-label="Add project"
                     data-testid="sidebar-add-project-trigger"
                     className="inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
@@ -3594,8 +3560,8 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                         activeRouteThreadKey={
                           activeRouteProjectKey === project.projectKey ? routeThreadKey : null
                         }
-                        newThreadShortcutLabel={newThreadShortcutLabel}
                         handleNewThread={handleNewThread}
+                        openCreateWorktreeDialog={openCreateWorktreeDialog}
                         archiveThread={archiveThread}
                         deleteThread={deleteThread}
                         threadJumpLabelByKey={threadJumpLabelByKey}
@@ -3626,8 +3592,8 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                 activeRouteThreadKey={
                   activeRouteProjectKey === project.projectKey ? routeThreadKey : null
                 }
-                newThreadShortcutLabel={newThreadShortcutLabel}
                 handleNewThread={handleNewThread}
+                openCreateWorktreeDialog={openCreateWorktreeDialog}
                 archiveThread={archiveThread}
                 deleteThread={deleteThread}
                 threadJumpLabelByKey={threadJumpLabelByKey}
@@ -3671,15 +3637,15 @@ export default function Sidebar() {
   const updateSettings = useUpdateClientSettings();
   const handleNewThread = useNewThreadHandler();
   // Orca port item 5/6: "new workspace" entry points open CreateWorktreeDialog
-  // instead of seeding a draft thread. `createWorktreeDialogProjectId` is the
+  // instead of seeding a draft thread. `createWorktreeDialogProjectRef` is the
   // project the dialog's "Project" select defaults to (null = the global "+"
   // entry point, no preselection) — kept separate from the dialog's open
   // state so "no project preselected" isn't confused with "closed".
   const [createWorktreeDialogOpen, setCreateWorktreeDialogOpen] = useState(false);
-  const [createWorktreeDialogProjectId, setCreateWorktreeDialogProjectId] =
-    useState<ProjectId | null>(null);
-  const openCreateWorktreeDialog = useCallback((projectId: ProjectId | null = null) => {
-    setCreateWorktreeDialogProjectId(projectId);
+  const [createWorktreeDialogProjectRef, setCreateWorktreeDialogProjectRef] =
+    useState<ScopedProjectRef | null>(null);
+  const openCreateWorktreeDialog = useCallback((projectRef: ScopedProjectRef | null = null) => {
+    setCreateWorktreeDialogProjectRef(projectRef);
     setCreateWorktreeDialogOpen(true);
   }, []);
   const { archiveThread, deleteThread } = useThreadActions();
@@ -3801,11 +3767,11 @@ export default function Sidebar() {
         scopedProjectKey(scopeProjectRef(activeThread.environmentId, activeThread.projectId)),
       ) ?? scopedProjectKey(scopeProjectRef(activeThread.environmentId, activeThread.projectId));
     return {
-      projectId: activeThread.projectId,
+      projectRef: scopeProjectRef(activeThread.environmentId, activeThread.projectId),
       projectKey: physicalToLogicalKey.get(physicalKey) ?? physicalKey,
     };
   }, [routeThreadKey, sidebarThreadByKey, physicalToLogicalKey, projectPhysicalKeyByScopedRef]);
-  const activeRouteProjectId = activeRouteProject?.projectId ?? null;
+  const activeRouteProjectRef = activeRouteProject?.projectRef ?? null;
   const activeRouteProjectKey = activeRouteProject?.projectKey ?? null;
 
   // Group threads by logical project key so all threads from grouped projects
@@ -3845,10 +3811,6 @@ export default function Sidebar() {
     }),
     [platform],
   );
-  const newThreadShortcutLabel =
-    shortcutLabelForCommand(keybindings, "chat.newLocal", newThreadShortcutLabelOptions) ??
-    shortcutLabelForCommand(keybindings, "chat.new", newThreadShortcutLabelOptions);
-
   const navigateToThread = useCallback(
     (threadRef: ScopedThreadRef) => {
       if (useThreadSelectionStore.getState().selectedThreadKeys.size > 0) {
@@ -4254,9 +4216,9 @@ export default function Sidebar() {
         open={createWorktreeDialogOpen}
         onOpenChange={(open) => {
           setCreateWorktreeDialogOpen(open);
-          if (!open) setCreateWorktreeDialogProjectId(null);
+          if (!open) setCreateWorktreeDialogProjectRef(null);
         }}
-        defaultProjectId={createWorktreeDialogProjectId ?? activeRouteProjectId}
+        defaultProjectRef={createWorktreeDialogProjectRef ?? activeRouteProjectRef}
       />
       {prewarmedSidebarThreadRefs.map((threadRef) => (
         <SidebarThreadDetailPrewarmer key={scopedThreadKey(threadRef)} threadRef={threadRef} />
@@ -4279,7 +4241,6 @@ export default function Sidebar() {
             threadPreviewCount={sidebarThreadPreviewCount}
             updateSettings={updateSettings}
             openAddProject={openAddProjectCommandPalette}
-            selectedProjectId={activeRouteProjectId}
             isManualProjectSorting={isManualProjectSorting}
             projectDnDSensors={projectDnDSensors}
             projectCollisionDetection={projectCollisionDetection}
@@ -4294,7 +4255,6 @@ export default function Sidebar() {
             expandedThreadListsByProject={expandedThreadListsByProject}
             activeRouteProjectKey={activeRouteProjectKey}
             routeThreadKey={routeThreadKey}
-            newThreadShortcutLabel={newThreadShortcutLabel}
             commandPaletteShortcutLabel={commandPaletteShortcutLabel}
             threadJumpLabelByKey={visibleThreadJumpLabelByKey}
             attachThreadListAutoAnimateRef={attachThreadListAutoAnimateRef}
