@@ -2050,7 +2050,7 @@ describe("ChatView project script handlers", () => {
     return capturedProps("chatHeader");
   }
 
-  it("creates a chat panel with configured provider defaults and copied workspace values", async () => {
+  it("creates a chat panel from configured defaults instead of stale project options", async () => {
     const reasoningEffort: ProviderOptionDescriptor = {
       id: "reasoningEffort",
       label: "Reasoning",
@@ -2068,7 +2068,19 @@ describe("ChatView project script handlers", () => {
       capabilities: { optionDescriptors: [reasoningEffort] },
     };
     seedEnvironment(makeEnvironmentPresentation());
-    seedProject(makeProject({ defaultModelSelection: null, scripts: [script] }));
+    seedProject(
+      makeProject({
+        defaultModelSelection: {
+          instanceId: codexInstanceId,
+          model: "gpt-stale",
+          options: [
+            { id: "reasoningEffort", value: "medium" },
+            { id: "serviceTier", value: "default" },
+          ],
+        },
+        scripts: [script],
+      }),
+    );
     seedServerThread(
       makeThread({
         branch: "feature/panels",
@@ -2095,7 +2107,12 @@ describe("ChatView project script handlers", () => {
       driverKind: ProviderDriverKind.make("codex"),
       displayName: "Codex",
       models: [
-        { slug: "gpt-first", name: "First", isCustom: false, capabilities: null },
+        {
+          slug: "gpt-stale",
+          name: "Stale",
+          isCustom: false,
+          capabilities: { optionDescriptors: [reasoningEffort] },
+        },
         configuredModel,
       ],
     } as unknown as ProviderInstanceEntry;
