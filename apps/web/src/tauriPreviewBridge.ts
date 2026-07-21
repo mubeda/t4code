@@ -6,6 +6,7 @@ import type {
 } from "@t4code/contracts";
 
 import { TauriDesktopCapabilityUnsupportedError } from "./tauriDesktopBridge";
+import { registerPreviewRuntimeCapabilities } from "./previewRuntimeCapabilities";
 
 interface PreviewBridgeDeps {
   readonly invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -61,7 +62,7 @@ export function createTauriPreviewBridge(deps: PreviewBridgeDeps): DesktopPrevie
       zoomByTab.set(tabId, factor);
     });
 
-  return {
+  const bridge: DesktopPreviewBridge = {
     createTab: (tabId) =>
       enqueueTabOperation(tabId, () => invoke("desktop_preview_create_tab", { tabId })),
     closeTab: (tabId) =>
@@ -114,4 +115,11 @@ export function createTauriPreviewBridge(deps: PreviewBridgeDeps): DesktopPrevie
       }),
     onPointerEvent: () => () => {},
   };
+
+  registerPreviewRuntimeCapabilities(bridge, {
+    picker: false,
+    recording: false,
+    automation: false,
+  });
+  return bridge;
 }

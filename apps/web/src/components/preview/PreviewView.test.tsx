@@ -309,6 +309,7 @@ vi.mock("~/components/ui/toast", () => ({
 }));
 
 import { PreviewView } from "./PreviewView";
+import { registerPreviewRuntimeCapabilities } from "~/previewRuntimeCapabilities";
 
 const environmentId = EnvironmentId.make("environment-1");
 const threadId = ThreadId.make("thread-1");
@@ -553,6 +554,7 @@ describe("PreviewView rendering", () => {
     expect(chrome.canGoForward).toBe(true);
     expect(chrome.refreshDisabled).toBe(false);
     expect(typeof chrome.onCapture).toBe("function");
+    expect(chrome.recordingSupported).toBe(true);
     expect(typeof chrome.onPickElement).toBe("function");
     expect(chrome.pickDisabled).toBe(false);
 
@@ -562,6 +564,24 @@ describe("PreviewView rendering", () => {
     // Zoom indicator + agent cursor render when a desktop overlay exists.
     expect(hasCapture("zoomIndicator")).toBe(true);
     expect(hasCapture("agentCursor")).toBe(true);
+  });
+
+  it("hides picker actions and disables recording gestures when deferred capabilities are unsupported", () => {
+    seedSession();
+    const bridge = makeBridge();
+    registerPreviewRuntimeCapabilities(bridge as never, {
+      picker: false,
+      recording: false,
+      automation: false,
+    });
+    h.previewBridge = bridge;
+
+    renderView();
+
+    const chrome = captured("chromeRow");
+    expect(chrome.onPickElement).toBeUndefined();
+    expect(chrome.recordingSupported).toBe(false);
+    expect(typeof chrome.onCapture).toBe("function");
   });
 
   it("renders the unreachable overlay and controller banner for a failed load", () => {

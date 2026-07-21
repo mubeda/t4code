@@ -277,6 +277,22 @@ describe("PreviewChromeRow", () => {
     expect(mounted.container.querySelector("[data-trailing]")?.textContent).toBe("More");
   });
 
+  it("uses screenshot-only behavior when recording is unsupported", async () => {
+    const mounted = await mount(
+      renderRow({
+        onCapture: callbacks.onCapture,
+        recording: false,
+        recordingSupported: false,
+      }),
+    );
+
+    await click(button(mounted.container, "Capture screenshot"), { shiftKey: true });
+
+    expect(callbacks.onCapture).toHaveBeenCalledWith(false);
+    expect(mounted.container.textContent).toContain("Capture screenshot");
+    expect(mounted.container.textContent).not.toContain("Shift-click to record");
+  });
+
   it("disables optional actions and reports their active labels", async () => {
     const mounted = await mount(
       renderRow({

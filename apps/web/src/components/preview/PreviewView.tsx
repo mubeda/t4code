@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { previewAnnotationScreenshotFile } from "~/lib/previewAnnotation";
 import { ensureLocalApi } from "~/localApi";
+import { supportsPreviewRuntimeCapability } from "~/previewRuntimeCapabilities";
 import {
   rememberPreviewUrl,
   updatePreviewServerSnapshot,
@@ -112,6 +113,8 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   const panelRect = useBrowserSurfaceStore((state) =>
     tabId ? (state.byTabId[tabId]?.rect ?? null) : null,
   );
+  const pickerSupported = supportsPreviewRuntimeCapability(previewBridge, "picker");
+  const recordingSupported = supportsPreviewRuntimeCapability(previewBridge, "recording");
 
   const handleSubmitUrl = useCallback(
     async (next: string) => {
@@ -578,7 +581,8 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         onCapture={previewBridge && tabId ? handleCapture : undefined}
         captureDisabled={!desktopOverlay || isUnreachable}
         recording={tabId !== null && activeRecordingTabId === tabId}
-        onPickElement={previewBridge && tabId ? handlePickElement : undefined}
+        recordingSupported={recordingSupported}
+        onPickElement={previewBridge && tabId && pickerSupported ? handlePickElement : undefined}
         pickActive={pickActive}
         // Disable when there's no tab (nothing to pick on) OR the page
         // failed to load (a React overlay covers the webview, so the

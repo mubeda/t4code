@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import { TauriDesktopCapabilityUnsupportedError } from "./tauriDesktopBridge";
 import { createTauriPreviewBridge } from "./tauriPreviewBridge";
+import { supportsPreviewRuntimeCapability } from "./previewRuntimeCapabilities";
 
 const screenshotArtifact = {
   id: "shot-1",
@@ -176,6 +177,14 @@ const commandCases: readonly CommandCase[] = [
 ];
 
 describe("tauriPreviewBridge", () => {
+  it("reports deferred picker, recording, and automation capabilities as unsupported", () => {
+    const { bridge } = makeBridge();
+
+    expect(supportsPreviewRuntimeCapability(bridge, "picker")).toBe(false);
+    expect(supportsPreviewRuntimeCapability(bridge, "recording")).toBe(false);
+    expect(supportsPreviewRuntimeCapability(bridge, "automation")).toBe(false);
+  });
+
   it.each(commandCases)(
     "maps $name to its exact desktop_preview command and payload",
     async (entry) => {

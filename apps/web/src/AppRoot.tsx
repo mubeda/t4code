@@ -1,6 +1,8 @@
 import { RouterProvider } from "@tanstack/react-router";
 
 import { PreviewAutomationHosts } from "./components/preview/PreviewAutomationHosts";
+import { previewBridge } from "./components/preview/previewBridge";
+import { supportsPreviewRuntimeCapability } from "./previewRuntimeCapabilities";
 import { AppAtomRegistryProvider } from "./rpc/atomRegistry";
 import type { AppRouter } from "./router";
 
@@ -9,7 +11,9 @@ export function AppRoot({ router }: { readonly router: AppRouter }) {
   return (
     <AppAtomRegistryProvider>
       <RouterProvider router={router} />
-      <PreviewAutomationHosts />
+      {supportsPreviewRuntimeCapability(previewBridge, "automation") ? (
+        <PreviewAutomationHosts />
+      ) : null}
     </AppAtomRegistryProvider>
   );
 }
