@@ -1,6 +1,7 @@
 mod history;
 mod manager;
 mod model;
+mod osc;
 mod pty;
 
 pub use manager::{

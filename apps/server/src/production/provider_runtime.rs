@@ -4217,10 +4217,7 @@ done
         std::fs::write(&windows_shim, b"@echo off\r\n").expect("write Windows provider shim");
 
         assert_eq!(
-            super::resolve_provider_executable_in_path(
-                "codex",
-                Some(directory.path().as_os_str())
-            ),
+            super::resolve_provider_executable_in_path("codex", Some(directory.path().as_os_str())),
             Some(windows_shim)
         );
     }
