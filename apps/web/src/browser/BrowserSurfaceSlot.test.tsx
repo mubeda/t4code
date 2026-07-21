@@ -75,7 +75,7 @@ const { BrowserSurfaceSlot } = browserSurfaceModule;
 type NativePreviewTabHostComponent = ComponentType<{
   readonly threadRef: ScopedThreadRef;
   readonly tabId: string;
-  readonly initialUrl: string;
+  readonly initialUrl: string | null;
 }>;
 
 type DesktopPreviewTabHostsComponent = ComponentType<{
@@ -124,7 +124,7 @@ function requireDesktopPreviewTabHosts(): DesktopPreviewTabHostsComponent {
 function host(
   Host: NativePreviewTabHostComponent,
   tabId: string,
-  initialUrl: string,
+  initialUrl: string | null,
 ): ReactElement {
   return createElement(Host, { key: tabId, threadRef, tabId, initialUrl });
 }
@@ -400,7 +400,7 @@ describe("NativePreviewTabHost native lifecycle", () => {
     expect(h.closeTab).not.toHaveBeenCalledWith("tab-b");
   });
 
-  it("excludes new, idle, missing-session, and non-preview surfaces", async () => {
+  it("hosts idle preview surfaces so their first navigation can reach the native tab", async () => {
     const Hosts = requireDesktopPreviewTabHosts();
     const mounted = await mount(
       hosts(
@@ -420,8 +420,9 @@ describe("NativePreviewTabHost native lifecycle", () => {
     );
     await flush();
 
-    expect(h.createTab.mock.calls).toEqual([["tab-live"]]);
+    expect(h.createTab.mock.calls).toEqual([["tab-idle"], ["tab-live"]]);
     expect(h.navigate.mock.calls).toEqual([["tab-live", "https://live.test/"]]);
+    expect(h.listeners).toHaveLength(2);
 
     await unmount(mounted);
   });

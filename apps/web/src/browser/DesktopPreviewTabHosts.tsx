@@ -10,7 +10,7 @@ import { acquireDesktopTab } from "./desktopTabLifetime";
 
 export interface DesktopPreviewTabHostDescriptor {
   readonly tabId: string;
-  readonly initialUrl: string;
+  readonly initialUrl: string | null;
 }
 
 export function selectDesktopPreviewTabHosts(
@@ -20,15 +20,20 @@ export function selectDesktopPreviewTabHosts(
   return surfaces.flatMap((surface) => {
     if (surface.kind !== "preview" || surface.resourceId === null) return [];
     const session = sessions[surface.resourceId];
-    if (!session || session.navStatus._tag === "Idle") return [];
-    return [{ tabId: surface.resourceId, initialUrl: session.navStatus.url }];
+    if (!session) return [];
+    return [
+      {
+        tabId: surface.resourceId,
+        initialUrl: session.navStatus._tag === "Idle" ? null : session.navStatus.url,
+      },
+    ];
   });
 }
 
 export function NativePreviewTabHost(props: {
   readonly threadRef: ScopedThreadRef;
   readonly tabId: string;
-  readonly initialUrl: string;
+  readonly initialUrl: string | null;
 }) {
   const { threadRef, tabId, initialUrl } = props;
   const initialUrlRef = useRef(initialUrl);
@@ -38,7 +43,10 @@ export function NativePreviewTabHost(props: {
   useEffect(() => {
     let disposed = false;
     const lease = acquireDesktopTab(tabId);
-    void lease.navigate(initialUrlRef.current, () => !disposed).catch(() => undefined);
+    const initialUrl = initialUrlRef.current;
+    if (initialUrl !== null) {
+      void lease.navigate(initialUrl, () => !disposed).catch(() => undefined);
+    }
     return () => {
       disposed = true;
       lease.release();
