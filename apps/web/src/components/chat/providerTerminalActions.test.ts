@@ -199,6 +199,7 @@ describe("resolveProviderTerminalAction", () => {
       expected: {
         executable: "opencode",
         args: ["--model", "openai/gpt-5"],
+        env: { OPENCODE_CONFIG_CONTENT: '{"theme":"system"}' },
         label: "OpenCode Terminal",
       },
     },
