@@ -195,6 +195,15 @@ describe("tauriDesktopBridge", () => {
     expect(startBrowserSurfaceSyncMock).toHaveBeenCalledWith(bridge.preview);
   });
 
+  it("publishes supported preview before readiness-gated consumers cache it", async () => {
+    installTauriHarness({ previewSupported: true });
+
+    const bridge = await installBridge();
+    const { previewBridge } = await import("./components/preview/previewBridge");
+
+    expect(previewBridge).toBe(bridge.preview);
+  });
+
   it("omits the preview bridge when the native host reports it unsupported", async () => {
     installTauriHarness({ previewSupported: false });
 
