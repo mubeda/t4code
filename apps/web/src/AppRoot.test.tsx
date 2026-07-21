@@ -40,6 +40,7 @@ describe("AppRoot", () => {
       picker: false,
       recording: false,
       automation: false,
+      imageClipboard: false,
     });
     h.previewBridge = bridge;
 

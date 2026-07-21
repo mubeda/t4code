@@ -177,6 +177,15 @@ const commandCases: readonly CommandCase[] = [
 ];
 
 describe("tauriPreviewBridge", () => {
+  it("reports image clipboard unsupported while retaining its rejecting stub", async () => {
+    const { bridge } = makeBridge();
+
+    await expect(bridge.copyArtifactToClipboard("/tmp/shot-1.png")).rejects.toMatchObject({
+      code: "tauri_capability_unsupported",
+    });
+    expect(supportsPreviewRuntimeCapability(bridge, "imageClipboard")).toBe(false);
+  });
+
   it("reports deferred picker, recording, and automation capabilities as unsupported", () => {
     const { bridge } = makeBridge();
 

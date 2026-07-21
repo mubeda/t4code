@@ -115,6 +115,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   );
   const pickerSupported = supportsPreviewRuntimeCapability(previewBridge, "picker");
   const recordingSupported = supportsPreviewRuntimeCapability(previewBridge, "recording");
+  const imageClipboardSupported = supportsPreviewRuntimeCapability(previewBridge, "imageClipboard");
 
   const handleSubmitUrl = useCallback(
     async (next: string) => {
@@ -349,11 +350,15 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
                 type,
                 title,
                 description,
-                actionProps: {
-                  children: imageCopied ? "Copied!" : "Copy image",
-                  disabled: imageCopied,
-                  onClick: copyImage,
-                },
+                ...(imageClipboardSupported
+                  ? {
+                      actionProps: {
+                        children: imageCopied ? "Copied!" : "Copy image",
+                        disabled: imageCopied,
+                        onClick: copyImage,
+                      },
+                    }
+                  : {}),
                 data: {
                   additionalActions: [
                     {
@@ -427,10 +432,14 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
             stackedThreadToast({
               type: "success",
               title: "Screenshot saved",
-              actionProps: {
-                children: "Copy image",
-                onClick: copyImage,
-              },
+              ...(imageClipboardSupported
+                ? {
+                    actionProps: {
+                      children: "Copy image",
+                      onClick: copyImage,
+                    },
+                  }
+                : {}),
               data: {
                 additionalActions: [
                   {
@@ -458,7 +467,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         },
       );
     },
-    [activeRecordingTabId, tabId],
+    [activeRecordingTabId, imageClipboardSupported, tabId],
   );
 
   const handlePickElement = useCallback(() => {

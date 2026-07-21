@@ -573,6 +573,7 @@ describe("PreviewView rendering", () => {
       picker: false,
       recording: false,
       automation: false,
+      imageClipboard: false,
     });
     h.previewBridge = bridge;
 
@@ -807,6 +808,7 @@ describe("handleCapture: screenshots", () => {
     const saved = h.toasts.find((t) => t.toast.title === "Screenshot saved");
     expect(saved).toBeDefined();
     const toast = saved!.toast;
+    expect(toast.actionProps).toMatchObject({ children: "Copy image" });
 
     // Copy image → bridge clipboard copy, then reset after the timeout.
     (toast.actionProps as { onClick: () => void }).onClick();
@@ -826,6 +828,44 @@ describe("handleCapture: screenshots", () => {
       toast.data as { secondaryActionProps: { onClick: () => void } }
     ).secondaryActionProps.onClick();
     expect(bridgeMethodCalls("revealArtifact")).toHaveLength(1);
+  });
+
+  it("omits unsupported image copy while preserving path and reveal actions across updates", async () => {
+    seedSession();
+    const bridge = makeBridge();
+    registerPreviewRuntimeCapabilities(bridge as never, {
+      picker: false,
+      recording: false,
+      automation: false,
+      imageClipboard: false,
+    });
+    h.previewBridge = bridge;
+    renderView();
+
+    const onCapture = captured("chromeRow").onCapture as (record: boolean) => void;
+    onCapture(false);
+    await flush();
+
+    const toast = h.toasts.find((entry) => entry.toast.title === "Screenshot saved")!.toast;
+    expect(toast).not.toHaveProperty("actionProps");
+
+    const additional = (
+      toast.data as { additionalActions: Array<{ props: { onClick: () => void } }> }
+    ).additionalActions;
+    additional[0]!.props.onClick();
+    await flush();
+
+    expect(h.clipboardWriteCalls).toContain("/shot.png");
+    expect(h.toastUpdates.length).toBeGreaterThan(0);
+    for (const update of h.toastUpdates) {
+      expect(update.toast).not.toHaveProperty("actionProps");
+    }
+
+    (
+      toast.data as { secondaryActionProps: { onClick: () => void } }
+    ).secondaryActionProps.onClick();
+    expect(bridgeMethodCalls("revealArtifact")).toHaveLength(1);
+    expect(bridgeMethodCalls("copyArtifactToClipboard")).toHaveLength(0);
   });
 
   it("reports a clipboard-copy-image failure through a toast update", async () => {

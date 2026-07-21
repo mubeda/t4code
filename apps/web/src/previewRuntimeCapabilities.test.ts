@@ -10,5 +10,6 @@ describe("previewRuntimeCapabilities", () => {
     expect(supportsPreviewRuntimeCapability(bridge, "picker")).toBe(true);
     expect(supportsPreviewRuntimeCapability(bridge, "recording")).toBe(true);
     expect(supportsPreviewRuntimeCapability(bridge, "automation")).toBe(true);
+    expect(supportsPreviewRuntimeCapability(bridge, "imageClipboard")).toBe(true);
   });
 });

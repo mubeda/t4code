@@ -1,11 +1,12 @@
 import type { DesktopPreviewBridge } from "@t4code/contracts";
 
-export type PreviewRuntimeCapability = "picker" | "recording" | "automation";
+export type PreviewRuntimeCapability = "picker" | "recording" | "automation" | "imageClipboard";
 
 export interface PreviewRuntimeCapabilities {
   readonly picker: boolean;
   readonly recording: boolean;
   readonly automation: boolean;
+  readonly imageClipboard: boolean;
 }
 
 const capabilitiesByBridge = new WeakMap<DesktopPreviewBridge, PreviewRuntimeCapabilities>();
