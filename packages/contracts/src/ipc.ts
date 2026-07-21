@@ -1066,7 +1066,7 @@ export interface DesktopBridge {
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
   /**
    * Desktop-only preview surface. Present iff the renderer is hosted by the
-   * Native preview host when supported; current Tauri and web builds leave
+   * native preview host. Tauri installs this bridge; web builds leave
    * `preview === undefined`.
    */
   preview?: DesktopPreviewBridge;
