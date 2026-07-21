@@ -1086,3 +1086,50 @@ tests remained green.
 - `git diff --check`: exit 0.
 
 No native UI was launched. Existing QA artifacts and report content were preserved.
+
+---
+
+# Task 6 composer Fast invariant fix
+
+Implementation commit: `f20ce3d3c54c35488eb0ebaf1f53cef77012c480`
+
+## Root cause and behavior fixed
+
+- Live Codex model parsing omitted the `serviceTier` descriptor when the CLI returned no tiers and
+  duplicated `default` when partial metadata already contained it. Parsing now always emits one
+  explicit `default` and one `fast`, deduplicates every live tier ID, and preserves live labels,
+  descriptions, extra tiers, and the valid live default/current value.
+- Client normalization previously enforced this invariant only inside provider session defaults.
+  The shared model layer now owns Codex capability normalization, and Settings, ChatComposer, and
+  TraitsPicker all consume it. Partial and older snapshots keep configured Fast; empty/custom
+  snapshots recover it when a selection exists; non-Codex capabilities remain untouched.
+- A service-tier-only selection is excluded from prompt-effort inference, so the defensive empty
+  snapshot path dispatches Fast without interpreting `fast` as reasoning effort.
+- Canonical Codex discovery/probe fixtures now record the invariant Fast choice. Existing settings,
+  session defaults, Claude prompt injection, added panels, worktrees, and provider-terminal paths
+  remain covered.
+
+## RED evidence
+
+- `cargo test -p t4code-server --lib provider::codex::model::tests::live_models_always_expose_unique_standard_and_fast_service_tiers -- --nocapture`:
+  exit 101. The no-tier live model had no `serviceTier` descriptor and panicked at `Codex service
+  tier invariant`.
+- `vp test apps/web/src/components/chat/composerProviderState.test.tsx apps/web/src/components/chat/TraitsPicker.test.tsx apps/web/src/components/ChatView.hooks.test.tsx`:
+  115 passed and 3 failed. Composer state and the real first-send `thread.startTurn` boundary both
+  changed configured `{ serviceTier: "fast" }` to `default`; Traits visibility was false for an
+  empty Codex snapshot with configured Fast.
+- The follow-up empty-snapshot regression failed with `promptEffort: "fast"` instead of `null`,
+  proving that a service-tier-only descriptor needed to stay out of effort inference.
+
+## GREEN and final verification
+
+- Rust Codex model unit tests: 4 passed, 0 failed.
+- Rust provider inventory tests: 18 passed, 0 failed.
+- Rust `provider_codex` integration/fixture corpus: 8 passed, 0 failed.
+- Shared model/session-default plus settings, composer, TraitsPicker, ChatView first-send, panel,
+  worktree, add-project, and terminal tests: 13 files passed; 347 tests passed; 0 failed.
+- `vp check`: all 1562 files correctly formatted; no warnings or lint errors in 1182 files; exit 0.
+- `vp run typecheck`: exit 0. Existing finite-number suggestions were unchanged and non-failing.
+- `git diff --check`: exit 0.
+
+No native UI was launched. Existing QA screenshots and all prior report content were preserved.
