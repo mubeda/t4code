@@ -45,29 +45,29 @@ uuid.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
-objc2-foundation = "0.3"
-objc2-app-kit = { version = "0.3", features = ["NSImage", "NSBitmapImageRep", "NSGraphics"] }
-objc2-web-kit = { version = "0.3", features = [
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-app-kit.workspace = true
+objc2-web-kit = { workspace = true, features = [
   "WKWebView",
   "WKWebViewConfiguration",
   "WKWebsiteDataStore",
   "WKBackForwardList",
 ] }
-block2 = "0.6"
+block2.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
-webview2-com = "0.38"
-windows = { version = "0.61", features = [
+webview2-com.workspace = true
+windows = { workspace = true, features = [
   "Win32_System_Com",
   "Win32_System_Com_StructuredStorage",
   "Win32_System_Memory",
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-webkit2gtk = { version = "2.0", features = ["v2_40"] }
-gtk = "0.18"
-cairo-rs = { version = "0.18", features = ["png"] }
+webkit2gtk.workspace = true
+gtk.workspace = true
+cairo-rs.workspace = true
 
 [dev-dependencies]
 futures-util.workspace = true
