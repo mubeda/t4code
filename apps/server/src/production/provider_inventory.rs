@@ -231,35 +231,38 @@ fn provider_session_defaults(settings: &Value, driver: &str) -> ProviderSessionD
         .get("providerSessionDefaults")
         .and_then(Value::as_object)
         .and_then(|defaults| defaults.get(driver));
+    let effort = ["reasoningEffort", "effort", "reasoning"]
+        .into_iter()
+        .find_map(|id| provider_option_value(session_default, id))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let service_tier = provider_option_value(session_default, "serviceTier")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            provider_option_value(session_default, "fastMode")
+                .and_then(Value::as_bool)
+                .map(|fast| if fast { "fast" } else { "default" }.to_owned())
+        });
     ProviderSessionDefaults {
         model: session_default
             .and_then(|value| value.get("model"))
             .and_then(Value::as_str)
             .map(str::to_owned),
-        effort: session_default
-            .and_then(|value| value.get("options"))
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .find(|selection| {
-                matches!(
-                    selection.get("id").and_then(Value::as_str),
-                    Some("reasoningEffort" | "effort" | "reasoning")
-                )
-            })
-            .and_then(|selection| selection.get("value"))
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        service_tier: session_default
-            .and_then(|value| value.get("options"))
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .find(|selection| selection.get("id").and_then(Value::as_str) == Some("serviceTier"))
-            .and_then(|selection| selection.get("value"))
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        effort,
+        service_tier,
     }
+}
+
+fn provider_option_value<'a>(session_default: Option<&'a Value>, id: &str) -> Option<&'a Value> {
+    let options = session_default?.get("options")?;
+    if let Some(selections) = options.as_array() {
+        return selections
+            .iter()
+            .find(|selection| selection.get("id").and_then(Value::as_str) == Some(id))
+            .and_then(|selection| selection.get("value"));
+    }
+    options.as_object()?.get(id)
 }
 
 fn string_setting<'a>(value: Option<&'a Value>, name: &str) -> Option<&'a str> {
@@ -734,25 +737,25 @@ fn parse_claude_skills_response(response: &Value) -> Option<Vec<Value>> {
     let mut seen = HashSet::new();
     Some(
         response
-        .get("skills")?
-        .as_array()?
-        .iter()
-        .filter_map(|skill| {
-            let name = skill.get("name")?.as_str()?.trim().trim_start_matches('/');
-            if name.is_empty() || !seen.insert(name.to_ascii_lowercase()) {
-                return None;
-            }
-            let mut result = json!({
-                "name": name,
-                "path": format!("claude://skill/{name}"),
-                "scope": "provider",
-                "enabled": true,
-                "invocation": "slash",
-            });
-            copy_non_empty_string(skill, &mut result, "description");
-            Some(result)
-        })
-        .collect(),
+            .get("skills")?
+            .as_array()?
+            .iter()
+            .filter_map(|skill| {
+                let name = skill.get("name")?.as_str()?.trim().trim_start_matches('/');
+                if name.is_empty() || !seen.insert(name.to_ascii_lowercase()) {
+                    return None;
+                }
+                let mut result = json!({
+                    "name": name,
+                    "path": format!("claude://skill/{name}"),
+                    "scope": "provider",
+                    "enabled": true,
+                    "invocation": "slash",
+                });
+                copy_non_empty_string(skill, &mut result, "description");
+                Some(result)
+            })
+            .collect(),
     )
 }
 
@@ -1496,6 +1499,35 @@ mod tests {
         let models = provider_models_without_version(&definitions[0]);
 
         assert_eq!(models[0]["slug"], "gpt-configured");
+        assert_eq!(
+            models[0]["capabilities"]["optionDescriptors"][0]["currentValue"],
+            "xhigh"
+        );
+        assert_eq!(
+            models[0]["capabilities"]["optionDescriptors"][1]["currentValue"],
+            "fast"
+        );
+    }
+
+    #[test]
+    fn codex_inventory_uses_legacy_object_saved_defaults_before_live_discovery() {
+        let definitions = definitions(&json!({
+            "providerInstances": {
+                "codex": { "driver": "codex", "enabled": true, "config": {} }
+            },
+            "providerSessionDefaults": {
+                "codex": {
+                    "model": "gpt-legacy",
+                    "options": {
+                        "effort": "xhigh",
+                        "fastMode": true
+                    }
+                }
+            }
+        }));
+        let models = provider_models_without_version(&definitions[0]);
+
+        assert_eq!(models[0]["slug"], "gpt-legacy");
         assert_eq!(
             models[0]["capabilities"]["optionDescriptors"][0]["currentValue"],
             "xhigh"

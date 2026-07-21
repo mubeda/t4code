@@ -26,6 +26,13 @@ use crate::{
 
 const MAX_KEYBINDINGS: usize = 256;
 
+fn provider_snapshot_identity(snapshot: &Value) -> Option<(&str, &str)> {
+    Some((
+        snapshot.get("instanceId")?.as_str()?,
+        snapshot.get("driver")?.as_str()?,
+    ))
+}
+
 fn merge_provider_snapshot(
     current: Option<&Value>,
     refreshed: provider_inventory::ProviderProbeResult,
@@ -37,6 +44,12 @@ fn merge_provider_snapshot(
     let Some(current) = current else {
         return next;
     };
+    let Some(current_identity) = provider_snapshot_identity(current) else {
+        return next;
+    };
+    if provider_snapshot_identity(&next) != Some(current_identity) {
+        return next;
+    }
     for field in ["models", "slashCommands", "skills", "agents"] {
         if let Some(value) = current.get(field) {
             next[field] = value.clone();
@@ -80,6 +93,8 @@ pub struct NativeServerControl {
     settings: Arc<RwLock<Value>>,
     settings_update_lock: Arc<Mutex<()>>,
     settings_generation: Arc<AtomicU64>,
+    next_provider_probe_sequence: Arc<AtomicU64>,
+    latest_published_provider_probe_sequence: Arc<AtomicU64>,
     settings_load_error: Option<Value>,
     #[cfg(test)]
     settings_update_barrier: Arc<RwLock<Option<Arc<Barrier>>>>,
@@ -147,6 +162,8 @@ impl NativeServerControl {
             settings: Arc::new(RwLock::new(settings.clone())),
             settings_update_lock: Arc::new(Mutex::new(())),
             settings_generation: Arc::new(AtomicU64::new(0)),
+            next_provider_probe_sequence: Arc::new(AtomicU64::new(0)),
+            latest_published_provider_probe_sequence: Arc::new(AtomicU64::new(0)),
             settings_load_error,
             #[cfg(test)]
             settings_update_barrier: Arc::new(RwLock::new(None)),
@@ -228,9 +245,16 @@ impl NativeServerControl {
         drop(_update_guard);
 
         let cwd = std::env::current_dir().unwrap_or_else(|_| self.config.base_dir.clone());
+        let probe_sequence = self.begin_provider_probe();
         let providers = self.probe_provider_snapshots(&next, None, &cwd).await;
-        self.publish_provider_snapshots_if_current(providers, false, generation, &next)
-            .await;
+        self.publish_provider_snapshots_if_current(
+            providers,
+            false,
+            generation,
+            &next,
+            probe_sequence,
+        )
+        .await;
         self.spawn_full_provider_refresh(generation, next.clone(), cwd);
         Ok(next)
     }
@@ -258,6 +282,7 @@ impl NativeServerControl {
         let instance_id = payload.get("instanceId").and_then(Value::as_str);
         let (generation, settings) = self.settings_snapshot().await;
         let cwd = std::env::current_dir().unwrap_or_else(|_| self.config.base_dir.clone());
+        let probe_sequence = self.begin_provider_probe();
         let refreshed = self
             .probe_full_provider_snapshots(&settings, instance_id, &cwd)
             .await;
@@ -267,6 +292,7 @@ impl NativeServerControl {
                 instance_id.is_some(),
                 generation,
                 &settings,
+                probe_sequence,
             )
             .await
         {
@@ -282,6 +308,12 @@ impl NativeServerControl {
             self.settings_generation.load(Ordering::Acquire),
             self.settings.read().await.clone(),
         )
+    }
+
+    fn begin_provider_probe(&self) -> u64 {
+        self.next_provider_probe_sequence
+            .fetch_add(1, Ordering::AcqRel)
+            + 1
     }
 
     async fn probe_provider_snapshots(
@@ -322,13 +354,22 @@ impl NativeServerControl {
         partial: bool,
         generation: u64,
         expected_settings: &Value,
+        probe_sequence: u64,
     ) -> Option<Vec<Value>> {
         let _update_guard = self.settings_update_lock.lock().await;
         let settings_are_current = self.settings.read().await.eq(expected_settings);
-        if self.settings_generation.load(Ordering::Acquire) != generation || !settings_are_current {
+        if self.settings_generation.load(Ordering::Acquire) != generation
+            || !settings_are_current
+            || probe_sequence
+                <= self
+                    .latest_published_provider_probe_sequence
+                    .load(Ordering::Acquire)
+        {
             return None;
         }
         let providers = self.merge_provider_snapshots(refreshed, partial).await;
+        self.latest_published_provider_probe_sequence
+            .store(probe_sequence, Ordering::Release);
         self.publish_provider_snapshots(&providers);
         Some(providers)
     }
@@ -393,11 +434,18 @@ impl NativeServerControl {
         let control = self.clone();
         tokio::spawn(async move {
             loop {
+                let probe_sequence = control.begin_provider_probe();
                 let providers = control
                     .probe_full_provider_snapshots(&settings, None, &cwd)
                     .await;
                 if control
-                    .publish_provider_snapshots_if_current(providers, false, generation, &settings)
+                    .publish_provider_snapshots_if_current(
+                        providers,
+                        false,
+                        generation,
+                        &settings,
+                        probe_sequence,
+                    )
                     .await
                     .is_some()
                 {
@@ -1261,6 +1309,7 @@ mod tests {
     fn quick_and_failed_probes_retain_rich_metadata_but_update_health() {
         let current = json!({
             "instanceId": "codex",
+            "driver": "codex",
             "status": "ready",
             "checkedAt": "old",
             "models": [{ "slug": "gpt-rich" }],
@@ -1271,6 +1320,7 @@ mod tests {
         let quick = provider_inventory::ProviderProbeResult {
             snapshot: json!({
                 "instanceId": "codex",
+                "driver": "codex",
                 "status": "warning",
                 "checkedAt": "new",
                 "models": [{ "slug": "gpt-fallback" }],
@@ -1293,6 +1343,40 @@ mod tests {
             assert_eq!(merged["skills"], current["skills"]);
             assert_eq!(merged["agents"], current["agents"]);
         }
+    }
+
+    #[test]
+    fn disabled_replacement_does_not_retain_metadata_from_another_driver() {
+        let current = json!({
+            "instanceId": "shared",
+            "driver": "codex",
+            "enabled": true,
+            "models": [{ "slug": "gpt-rich" }],
+            "slashCommands": [{ "name": "goal" }],
+            "skills": [{ "name": "review" }],
+            "agents": [{ "name": "builder" }]
+        });
+        let replacement = provider_inventory::ProviderProbeResult {
+            snapshot: json!({
+                "instanceId": "shared",
+                "driver": "claudeAgent",
+                "enabled": false,
+                "models": [{ "slug": "claude-disabled" }],
+                "slashCommands": [{ "name": "loop" }],
+                "skills": [],
+                "agents": []
+            }),
+            rich_metadata: provider_inventory::RichMetadataOutcome::NotRequested,
+        };
+
+        let merged = merge_provider_snapshot(Some(&current), replacement);
+
+        assert_eq!(merged["driver"], "claudeAgent");
+        assert_eq!(merged["enabled"], false);
+        assert_eq!(merged["models"], json!([{ "slug": "claude-disabled" }]));
+        assert_eq!(merged["slashCommands"], json!([{ "name": "loop" }]));
+        assert_eq!(merged["skills"], json!([]));
+        assert_eq!(merged["agents"], json!([]));
     }
 
     #[test]
@@ -1489,6 +1573,105 @@ mod tests {
         assert_eq!(
             persisted["concurrentUpdates"],
             settings["concurrentUpdates"]
+        );
+    }
+
+    #[tokio::test]
+    async fn older_probe_completion_cannot_overwrite_newer_same_generation_snapshot() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
+        let temp = tempfile::tempdir().expect("state directory");
+        let mut config = ServerConfig::new(temp.path());
+        config.environment_id = "environment-provider-probe-order".to_owned();
+        let settings_path = config.state_dir().join("settings.json");
+        tokio::fs::create_dir_all(config.state_dir())
+            .await
+            .expect("state directory exists");
+        tokio::fs::write(
+            settings_path,
+            br#"{
+                "providers": {
+                    "codex": {"enabled": false},
+                    "claudeAgent": {"enabled": false},
+                    "cursor": {"enabled": false},
+                    "grok": {"enabled": false},
+                    "opencode": {"enabled": false}
+                }
+            }"#,
+        )
+        .await
+        .expect("disabled provider fixture");
+        let control = NativeServerControl::new(config, json!({"policy": "test"})).await;
+        let (generation, settings) = control.settings_snapshot().await;
+
+        let older_sequence = control.begin_provider_probe();
+        let newer_sequence = control.begin_provider_probe();
+        let older_release = Arc::new(Notify::new());
+        let older_entered = Arc::new(Notify::new());
+        let older_completion = {
+            let control = control.clone();
+            let settings = settings.clone();
+            let older_release = older_release.clone();
+            let older_entered = older_entered.clone();
+            tokio::spawn(async move {
+                older_entered.notify_one();
+                older_release.notified().await;
+                control
+                    .publish_provider_snapshots_if_current(
+                        vec![provider_inventory::ProviderProbeResult {
+                            snapshot: json!({
+                                "instanceId": "codex",
+                                "driver": "codex",
+                                "checkedAt": "older-completion",
+                                "models": [],
+                                "slashCommands": [],
+                                "skills": [],
+                                "agents": []
+                            }),
+                            rich_metadata: provider_inventory::RichMetadataOutcome::Succeeded,
+                        }],
+                        false,
+                        generation,
+                        &settings,
+                        older_sequence,
+                    )
+                    .await
+            })
+        };
+        older_entered.notified().await;
+
+        control
+            .publish_provider_snapshots_if_current(
+                vec![provider_inventory::ProviderProbeResult {
+                    snapshot: json!({
+                        "instanceId": "codex",
+                        "driver": "codex",
+                        "checkedAt": "newer-completion",
+                        "models": [],
+                        "slashCommands": [],
+                        "skills": [],
+                        "agents": []
+                    }),
+                    rich_metadata: provider_inventory::RichMetadataOutcome::Succeeded,
+                }],
+                false,
+                generation,
+                &settings,
+                newer_sequence,
+            )
+            .await
+            .expect("newer probe publishes");
+        older_release.notify_one();
+
+        assert!(
+            older_completion
+                .await
+                .expect("older completion joins")
+                .is_none(),
+            "older probe request must not publish after a newer request"
+        );
+        assert_eq!(
+            control.providers.read().await[0]["checkedAt"],
+            "newer-completion"
         );
     }
 
