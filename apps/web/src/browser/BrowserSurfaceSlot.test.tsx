@@ -1,16 +1,22 @@
 // @vitest-environment happy-dom
 
-import type { ScopedThreadRef } from "@t4code/contracts";
-import { StrictMode, type ReactElement } from "react";
+import type {
+  DesktopPreviewTabState,
+  PreviewSessionSnapshot,
+  ScopedThreadRef,
+} from "@t4code/contracts";
+import { createElement, StrictMode, type ComponentType, type ReactElement } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const h = vi.hoisted(() => ({
+  applyPreviewDesktopState: vi.fn(),
   clearBrowserPointer: vi.fn(),
   closeTab: vi.fn<(tabId: string) => Promise<void>>(),
   createTab: vi.fn<(tabId: string) => Promise<void>>(),
   events: [] as string[],
+  listeners: new Set<(tabId: string, state: DesktopPreviewTabState) => void>(),
   navigate: vi.fn<(tabId: string, url: string) => Promise<void>>(),
   present: vi.fn(),
   releaseSurface: vi.fn(),
@@ -22,9 +28,13 @@ vi.mock("~/components/preview/previewBridge", () => ({
     closeTab: h.closeTab,
     createTab: h.createTab,
     navigate: h.navigate,
-    onStateChange: () => {
+    onStateChange: (listener: (tabId: string, state: DesktopPreviewTabState) => void) => {
       h.events.push("subscribe");
-      return () => h.events.push("unsubscribe");
+      h.listeners.add(listener);
+      return () => {
+        h.events.push("unsubscribe");
+        h.listeners.delete(listener);
+      };
     },
   },
 }));
@@ -35,7 +45,7 @@ vi.mock("~/browser/browserPointerStore", () => ({
 }));
 
 vi.mock("~/previewStateStore", () => ({
-  applyPreviewDesktopState: vi.fn(),
+  applyPreviewDesktopState: h.applyPreviewDesktopState,
 }));
 
 vi.mock("~/state/preview", () => ({
@@ -47,13 +57,32 @@ vi.mock("~/state/use-atom-command", () => ({
 }));
 
 vi.mock("./browserSurfaceStore", () => ({
-  acquireBrowserSurface: () => ({
-    present: h.present,
+  acquireBrowserSurface: (tabId: string) => ({
+    present: (...args: unknown[]) => {
+      h.events.push(`bounds:${tabId}:${String(args[1])}`);
+      h.present(...args);
+    },
     release: h.releaseSurface,
   }),
 }));
 
-import { BrowserSurfaceSlot } from "./BrowserSurfaceSlot";
+import * as browserSurfaceModule from "./BrowserSurfaceSlot";
+import * as desktopPreviewTabHostsModule from "./DesktopPreviewTabHosts";
+import type { RightPanelSurface } from "~/rightPanelStore";
+
+const { BrowserSurfaceSlot } = browserSurfaceModule;
+
+type NativePreviewTabHostComponent = ComponentType<{
+  readonly threadRef: ScopedThreadRef;
+  readonly tabId: string;
+  readonly initialUrl: string;
+}>;
+
+type DesktopPreviewTabHostsComponent = ComponentType<{
+  readonly threadRef: ScopedThreadRef;
+  readonly surfaces: readonly RightPanelSurface[];
+  readonly sessions: Readonly<Record<string, PreviewSessionSnapshot>>;
+}>;
 
 interface Deferred {
   readonly promise: Promise<void>;
@@ -78,6 +107,62 @@ function deferred(): Deferred {
     resolve = next;
   });
   return { promise, resolve };
+}
+
+function requireNativePreviewTabHost(): NativePreviewTabHostComponent {
+  const component = Reflect.get(desktopPreviewTabHostsModule, "NativePreviewTabHost") as unknown;
+  expect(component).toEqual(expect.any(Function));
+  return component as NativePreviewTabHostComponent;
+}
+
+function requireDesktopPreviewTabHosts(): DesktopPreviewTabHostsComponent {
+  const component = Reflect.get(desktopPreviewTabHostsModule, "DesktopPreviewTabHosts") as unknown;
+  expect(component).toEqual(expect.any(Function));
+  return component as DesktopPreviewTabHostsComponent;
+}
+
+function host(
+  Host: NativePreviewTabHostComponent,
+  tabId: string,
+  initialUrl: string,
+): ReactElement {
+  return createElement(Host, { key: tabId, threadRef, tabId, initialUrl });
+}
+
+function desktopState(tabId: string): DesktopPreviewTabState {
+  return {
+    tabId,
+    webContentsId: 42,
+    navStatus: { kind: "Success", url: `https://${tabId}.test/`, title: tabId },
+    canGoBack: true,
+    canGoForward: false,
+    zoomFactor: 1.25,
+    controller: "human",
+    updatedAt: "2026-07-20T00:00:00.000Z",
+  };
+}
+
+function snapshot(tabId: string, url: string | null): PreviewSessionSnapshot {
+  return {
+    threadId: threadRef.threadId,
+    tabId,
+    navStatus: url === null ? { _tag: "Idle" } : { _tag: "Success", url, title: `Title ${tabId}` },
+    canGoBack: false,
+    canGoForward: false,
+    updatedAt: "2026-07-20T00:00:00.000Z",
+  };
+}
+
+function previewSurface(tabId: string): RightPanelSurface {
+  return { id: `browser:${tabId}`, kind: "preview", resourceId: tabId };
+}
+
+function hosts(
+  Hosts: DesktopPreviewTabHostsComponent,
+  surfaces: readonly RightPanelSurface[],
+  sessions: Readonly<Record<string, PreviewSessionSnapshot>>,
+): ReactElement {
+  return <Hosts threadRef={threadRef} surfaces={surfaces} sessions={sessions} />;
 }
 
 async function mount(element: ReactElement): Promise<MountedTree> {
@@ -110,10 +195,6 @@ async function runCloseTimers(): Promise<void> {
   await act(async () => vi.runAllTimersAsync());
 }
 
-function surface(initialUrl: string, tabId = "tab-1"): ReactElement {
-  return <BrowserSurfaceSlot threadRef={threadRef} tabId={tabId} initialUrl={initialUrl} visible />;
-}
-
 beforeEach(() => {
   vi.useFakeTimers();
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -135,6 +216,7 @@ beforeEach(() => {
     left: 1,
     toJSON: () => ({}),
   });
+  h.applyPreviewDesktopState.mockClear();
   h.clearBrowserPointer.mockClear();
   h.closeTab.mockReset().mockImplementation(async (tabId) => {
     h.events.push(`close:${tabId}`);
@@ -143,6 +225,7 @@ beforeEach(() => {
     h.events.push(`create:${tabId}`);
   });
   h.events.length = 0;
+  h.listeners.clear();
   h.navigate.mockReset().mockImplementation(async (tabId, url) => {
     h.events.push(`navigate:${tabId}:${url}`);
   });
@@ -164,105 +247,208 @@ afterEach(async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
 });
 
-describe("BrowserSurfaceSlot native lifecycle", () => {
-  it("subscribes before creating and waits for creation before the captured initial navigation", async () => {
+describe("BrowserSurfaceSlot bounds lifecycle", () => {
+  it("only publishes native bounds and visibility", async () => {
+    const mounted = await mount(<BrowserSurfaceSlot tabId="tab-1" visible />);
+
+    expect(h.present).toHaveBeenCalledOnce();
+    expect(h.events).toEqual(["bounds:tab-1:true"]);
+    expect(h.createTab).not.toHaveBeenCalled();
+    expect(h.navigate).not.toHaveBeenCalled();
+    expect(h.listeners).toHaveLength(0);
+
+    await rerender(mounted, <BrowserSurfaceSlot tabId="tab-1" visible={false} />);
+
+    expect(h.events).toEqual(["bounds:tab-1:true", "bounds:tab-1:false"]);
+    expect(h.releaseSurface).toHaveBeenCalledOnce();
+    expect(h.createTab).not.toHaveBeenCalled();
+
+    await unmount(mounted);
+    await runCloseTimers();
+    expect(h.closeTab).not.toHaveBeenCalled();
+    expect(h.listeners).toHaveLength(0);
+  });
+});
+
+describe("NativePreviewTabHost native lifecycle", () => {
+  it("subscribes before creating while the active slot publishes bounds first", async () => {
+    const Host = requireNativePreviewTabHost();
     const creation = deferred();
     h.createTab.mockImplementationOnce((tabId) => {
       h.events.push(`create:${tabId}`);
       return creation.promise;
     });
 
-    const mounted = await mount(surface("https://initial.test/"));
-    await rerender(mounted, surface("https://stale.test/"));
+    const mounted = await mount(
+      <>
+        {host(Host, "tab-1", "https://initial.test/")}
+        <BrowserSurfaceSlot tabId="tab-1" visible />
+      </>,
+    );
+    await rerender(
+      mounted,
+      <>
+        {host(Host, "tab-1", "https://stale.test/")}
+        <BrowserSurfaceSlot tabId="tab-1" visible />
+      </>,
+    );
 
-    expect(h.events).toEqual(["subscribe", "create:tab-1"]);
+    expect(h.events).toEqual(["bounds:tab-1:true", "subscribe", "create:tab-1"]);
     expect(h.navigate).not.toHaveBeenCalled();
 
     creation.resolve();
     await flush();
 
-    expect(h.events).toEqual(["subscribe", "create:tab-1", "navigate:tab-1:https://initial.test/"]);
-    expect(h.navigate).toHaveBeenCalledOnce();
+    expect(h.navigate).toHaveBeenCalledExactlyOnceWith("tab-1", "https://initial.test/");
   });
 
-  it("shares creation across StrictMode reacquisition and closes after the final release", async () => {
+  it("keeps two tabs and their subscriptions alive across preview, terminal, and hidden states", async () => {
+    const Hosts = requireDesktopPreviewTabHosts();
+    const surfaces = [previewSurface("tab-a"), previewSurface("tab-b")];
+    const sessions = {
+      "tab-a": snapshot("tab-a", "https://a.test/"),
+      "tab-b": snapshot("tab-b", "https://b.test/"),
+    };
+    const mounted = await mount(
+      <>
+        {hosts(Hosts, surfaces, sessions)}
+        <BrowserSurfaceSlot tabId="tab-a" visible />
+      </>,
+    );
+    await flush();
+
+    expect(h.createTab.mock.calls).toEqual([["tab-a"], ["tab-b"]]);
+    expect(h.navigate.mock.calls).toEqual([
+      ["tab-a", "https://a.test/"],
+      ["tab-b", "https://b.test/"],
+    ]);
+    expect(h.listeners).toHaveLength(2);
+
+    await rerender(
+      mounted,
+      <>
+        {hosts(Hosts, surfaces, sessions)}
+        <BrowserSurfaceSlot tabId="tab-b" visible />
+      </>,
+    );
+    await rerender(
+      mounted,
+      <>
+        {hosts(Hosts, surfaces, sessions)}
+        <div data-active-surface="terminal" />
+      </>,
+    );
+    await rerender(
+      mounted,
+      <>
+        {hosts(Hosts, surfaces, sessions)}
+        <BrowserSurfaceSlot tabId="tab-a" visible />
+      </>,
+    );
+    await rerender(mounted, hosts(Hosts, surfaces, sessions));
+    await runCloseTimers();
+
+    expect(h.createTab).toHaveBeenCalledTimes(2);
+    expect(h.closeTab).not.toHaveBeenCalled();
+    expect(h.listeners).toHaveLength(2);
+
+    const inactiveState = desktopState("tab-a");
+    for (const listener of h.listeners) listener("tab-a", inactiveState);
+    expect(h.applyPreviewDesktopState).toHaveBeenCalledExactlyOnceWith(threadRef, "tab-a", {
+      canGoBack: true,
+      canGoForward: false,
+      loading: false,
+      zoomFactor: 1.25,
+      controller: "human",
+    });
+  });
+
+  it("closes only a removed tab and recreates it after actual removal", async () => {
+    const Hosts = requireDesktopPreviewTabHosts();
+    const bothSurfaces = [previewSurface("tab-a"), previewSurface("tab-b")];
+    const initialSessions = {
+      "tab-a": snapshot("tab-a", "https://a.test/"),
+      "tab-b": snapshot("tab-b", "https://b.test/"),
+    };
+    const mounted = await mount(hosts(Hosts, bothSurfaces, initialSessions));
+    await flush();
+
+    await rerender(
+      mounted,
+      hosts(Hosts, [previewSurface("tab-b")], { "tab-b": initialSessions["tab-b"] }),
+    );
+    await runCloseTimers();
+
+    expect(h.closeTab.mock.calls).toEqual([["tab-a"]]);
+    expect(h.listeners).toHaveLength(1);
+
+    await rerender(
+      mounted,
+      hosts(Hosts, bothSurfaces, {
+        "tab-a": snapshot("tab-a", "https://a-reopened.test/"),
+        "tab-b": initialSessions["tab-b"],
+      }),
+    );
+    await flush();
+
+    expect(h.createTab.mock.calls).toEqual([["tab-a"], ["tab-b"], ["tab-a"]]);
+    expect(h.navigate.mock.calls).toEqual([
+      ["tab-a", "https://a.test/"],
+      ["tab-b", "https://b.test/"],
+      ["tab-a", "https://a-reopened.test/"],
+    ]);
+    expect(h.closeTab).not.toHaveBeenCalledWith("tab-b");
+  });
+
+  it("excludes new, idle, missing-session, and non-preview surfaces", async () => {
+    const Hosts = requireDesktopPreviewTabHosts();
+    const mounted = await mount(
+      hosts(
+        Hosts,
+        [
+          { id: "browser:new", kind: "preview", resourceId: null },
+          previewSurface("tab-idle"),
+          previewSurface("tab-missing"),
+          previewSurface("tab-live"),
+          { id: "plan", kind: "plan" },
+        ],
+        {
+          "tab-idle": snapshot("tab-idle", null),
+          "tab-live": snapshot("tab-live", "https://live.test/"),
+        },
+      ),
+    );
+    await flush();
+
+    expect(h.createTab.mock.calls).toEqual([["tab-live"]]);
+    expect(h.navigate.mock.calls).toEqual([["tab-live", "https://live.test/"]]);
+
+    await unmount(mounted);
+  });
+
+  it("shares creation across StrictMode reacquisition and closes after final release", async () => {
+    const Host = requireNativePreviewTabHost();
     const creation = deferred();
     h.createTab.mockImplementationOnce((tabId) => {
       h.events.push(`create:${tabId}`);
       return creation.promise;
     });
 
-    const mounted = await mount(<StrictMode>{surface("https://strict.test/")}</StrictMode>);
+    const mounted = await mount(
+      <StrictMode>{host(Host, "tab-strict", "https://strict.test/")}</StrictMode>,
+    );
 
     expect(h.createTab).toHaveBeenCalledOnce();
     expect(h.closeTab).not.toHaveBeenCalled();
+    expect(h.listeners).toHaveLength(1);
 
     creation.resolve();
     await flush();
-
-    expect(h.navigate).toHaveBeenCalledExactlyOnceWith("tab-1", "https://strict.test/");
+    expect(h.navigate).toHaveBeenCalledExactlyOnceWith("tab-strict", "https://strict.test/");
 
     await unmount(mounted);
     expect(h.closeTab).not.toHaveBeenCalled();
     await runCloseTimers();
-    expect(h.closeTab).toHaveBeenCalledExactlyOnceWith("tab-1");
-  });
-
-  it("recreates a finally released tab without stale or duplicate initial navigation", async () => {
-    const first = await mount(surface("https://first.test/"));
-    await flush();
-    expect(h.navigate.mock.calls).toEqual([["tab-1", "https://first.test/"]]);
-
-    await unmount(first);
-    await runCloseTimers();
-
-    const secondCreation = deferred();
-    h.createTab.mockImplementationOnce((tabId) => {
-      h.events.push(`create:${tabId}`);
-      return secondCreation.promise;
-    });
-    const second = await mount(surface("https://second.test/"));
-    expect(h.createTab).toHaveBeenCalledTimes(2);
-    expect(h.navigate.mock.calls).toEqual([["tab-1", "https://first.test/"]]);
-
-    secondCreation.resolve();
-    await flush();
-
-    expect(h.navigate.mock.calls).toEqual([
-      ["tab-1", "https://first.test/"],
-      ["tab-1", "https://second.test/"],
-    ]);
-    await unmount(second);
-    await runCloseTimers();
-    expect(h.closeTab).toHaveBeenCalledTimes(2);
-  });
-
-  it("captures a fresh initial URL when the rendered slot changes tabs", async () => {
-    const mounted = await mount(surface("https://first-tab.test/"));
-    await flush();
-
-    await rerender(mounted, surface("https://second-tab.test/", "tab-2"));
-    await flush();
-
-    expect(h.navigate.mock.calls).toEqual([
-      ["tab-1", "https://first-tab.test/"],
-      ["tab-2", "https://second-tab.test/"],
-    ]);
-  });
-
-  it("releases the lifecycle promptly when unmounted during creation", async () => {
-    const creation = deferred();
-    h.createTab.mockReturnValueOnce(creation.promise);
-    const mounted = await mount(surface("https://pending.test/"));
-
-    await unmount(mounted);
-    await runCloseTimers();
-
-    expect(h.closeTab).toHaveBeenCalledExactlyOnceWith("tab-1");
-    expect(h.navigate).not.toHaveBeenCalled();
-
-    creation.resolve();
-    await flush();
-    expect(h.navigate).not.toHaveBeenCalled();
+    expect(h.closeTab).toHaveBeenCalledExactlyOnceWith("tab-strict");
   });
 });

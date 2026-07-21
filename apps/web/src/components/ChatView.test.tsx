@@ -370,6 +370,13 @@ vi.mock("./RightPanelTabs", () => ({
   },
 }));
 
+vi.mock("../browser/DesktopPreviewTabHosts", () => ({
+  DesktopPreviewTabHosts: (props: Record<string, unknown>) => {
+    h.captured["desktopPreviewTabHosts"] = props;
+    return <div data-mock="desktop-preview-tab-hosts" />;
+  },
+}));
+
 vi.mock("./RightPanelSheet", () => ({
   RightPanelSheet: ({ children }: { children?: ReactNode }) => (
     <div data-mock="right-panel-sheet">{children}</div>
@@ -923,6 +930,60 @@ describe("ChatView", () => {
       const planSidebar = capturedProps<Record<string, unknown>>("planSidebar");
       expect(planSidebar["label"]).toBe("Tasks");
       expect(planSidebar["environmentId"]).toBe(environmentId);
+    });
+  });
+
+  describe("when: native preview tabs are owned by the host chat view", () => {
+    it("passes every right-panel surface to persistent hosts while the panel is hidden", () => {
+      seedEnvironment(makeEnvironmentPresentation());
+      seedProject(makeProject());
+      seedServerThread(makeThread());
+      seedGitStatus(true);
+      h.previewState = {
+        ...h.previewState,
+        sessions: {
+          "tab-a": {
+            threadId,
+            tabId: "tab-a",
+            navStatus: { _tag: "Success", url: "https://a.test/", title: "A" },
+            canGoBack: false,
+            canGoForward: false,
+            updatedAt: now,
+          },
+          "tab-b": {
+            threadId,
+            tabId: "tab-b",
+            navStatus: { _tag: "Success", url: "https://b.test/", title: "B" },
+            canGoBack: false,
+            canGoForward: false,
+            updatedAt: now,
+          },
+        },
+      };
+      useRightPanelStore.getState().openBrowser(threadRef, "tab-a");
+      useRightPanelStore.getState().openBrowser(threadRef, "tab-b");
+      useRightPanelStore.getState().openTerminal(threadRef, "term-active");
+      useRightPanelStore.getState().close(threadRef);
+      publishSeededStoreState(useRightPanelStore);
+
+      const markup = renderServerRoute();
+
+      expect(markup).toContain('data-mock="desktop-preview-tab-hosts"');
+      expect(markup).not.toContain('data-mock="right-panel-tabs"');
+      const hosts = capturedProps<Record<string, unknown>>("desktopPreviewTabHosts");
+      expect(hosts["threadRef"]).toEqual(threadRef);
+      expect(hosts["surfaces"]).toEqual([
+        { id: "browser:tab-a", kind: "preview", resourceId: "tab-a" },
+        { id: "browser:tab-b", kind: "preview", resourceId: "tab-b" },
+        {
+          id: "terminal:term-active",
+          kind: "terminal",
+          resourceId: "term-active",
+          terminalIds: ["term-active"],
+          activeTerminalId: "term-active",
+        },
+      ]);
+      expect(hosts["sessions"]).toBe(h.previewState.sessions);
     });
   });
 

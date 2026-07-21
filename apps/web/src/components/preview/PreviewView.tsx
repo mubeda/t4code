@@ -608,9 +608,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         {tabId && snapshot && !showEmptyState ? (
           <BrowserSurfaceSlot
             key={tabId}
-            threadRef={threadRef}
             tabId={tabId}
-            initialUrl={url || null}
             visible={visible && !isUnreachable}
             className="absolute inset-0 h-full w-full"
           />

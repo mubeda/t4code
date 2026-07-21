@@ -164,6 +164,7 @@ import { getProviderModelCapabilities, resolveSelectableProvider } from "../prov
 import { useEnvironmentSettings } from "../hooks/useSettings";
 import { resolveAppModelSelectionForInstance } from "../modelSelection";
 import { getTerminalFocusOwner } from "../lib/terminalFocus";
+import { DesktopPreviewTabHosts } from "../browser/DesktopPreviewTabHosts";
 import {
   deriveLogicalProjectKeyFromSettings,
   selectProjectGroupingSettings,
@@ -5261,6 +5262,13 @@ function ChatViewContent(props: ChatViewProps) {
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
+      {!isPanel && activeThreadRef ? (
+        <DesktopPreviewTabHosts
+          threadRef={activeThreadRef}
+          surfaces={rightPanelState.surfaces}
+          sessions={activePreviewState.sessions}
+        />
+      ) : null}
       {!isPanel && rightPanelOpen && !shouldUsePlanSidebarSheet ? panelLayoutControls : null}
       <div
         className={cn(
