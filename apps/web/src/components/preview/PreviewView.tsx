@@ -77,6 +77,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   const environment = useEnvironment(threadRef.environmentId);
   const environmentHttpBaseUrl = useEnvironmentHttpBaseUrl(threadRef.environmentId);
   const open = useAtomCommand(previewEnvironment.open);
+  const navigate = useAtomCommand(previewEnvironment.navigate, "preview navigation");
   const resize = useAtomCommand(previewEnvironment.resize, "preview viewport resize");
 
   usePreviewSession(threadRef);
@@ -122,9 +123,20 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
       try {
         const resolvedUrl = resolveDiscoveredServerUrl(threadRef.environmentId, next);
         if (tabId && previewBridge) {
-          // Drive the webview imperatively; `usePreviewBridge` mirrors the
-          // resolved URL back to the server so other clients stay in sync.
+          // Drive the webview imperatively, then commit the same navigation
+          // through the server so a fast native load cannot leave a new tab
+          // stuck on its canonical Idle snapshot before status events arrive.
           await navigateDesktopTab(tabId, resolvedUrl);
+          const result = await navigate({
+            environmentId: threadRef.environmentId,
+            input: {
+              threadId: threadRef.threadId,
+              tabId,
+              url: resolvedUrl,
+            },
+          });
+          if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+          updatePreviewServerSnapshot(threadRef, result.value);
           rememberPreviewUrl(threadRef, resolvedUrl);
         } else {
           await openPreviewSession({
@@ -137,7 +149,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         // Server-side `failed` event renders the unreachable view.
       }
     },
-    [open, tabId, threadRef],
+    [navigate, open, tabId, threadRef],
   );
 
   const handleRefresh = useCallback(() => {

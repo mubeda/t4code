@@ -153,6 +153,7 @@ vi.mock("~/state/environments", () => ({
 vi.mock("~/state/preview", () => ({
   previewEnvironment: {
     open: { label: "open" },
+    navigate: { label: "navigate" },
     resize: { label: "resize" },
   },
 }));
@@ -163,6 +164,23 @@ vi.mock("~/state/use-atom-command", () => ({
     return (input: unknown) => {
       h.commandCalls.push({ label, input });
       if (label === "resize") return Promise.resolve(h.resizeResult);
+      if (label === "navigate") {
+        return Promise.resolve({
+          _tag: "Success",
+          value: {
+            threadId: "thread-1",
+            tabId: "tab-1",
+            navStatus: {
+              _tag: "Success",
+              url: h.resolvedUrl,
+              title: "",
+            },
+            canGoBack: false,
+            canGoForward: false,
+            updatedAt: "2026-07-21T19:00:00.000Z",
+          },
+        });
+      }
       return Promise.resolve({ _tag: "Success", value: undefined });
     };
   },
@@ -653,6 +671,18 @@ describe("navigation handlers", () => {
     await flush();
 
     expect(h.desktopNavigateCalls).toEqual([["tab-1", "http://resolved.local/"]]);
+    expect(h.commandCalls).toContainEqual({
+      label: "navigate",
+      input: {
+        environmentId: "environment-1",
+        input: {
+          threadId: "thread-1",
+          tabId: "tab-1",
+          url: "http://resolved.local/",
+        },
+      },
+    });
+    expect(h.updateSnapshotCalls).toHaveLength(1);
     expect(bridgeMethodCalls("navigate")).toHaveLength(0);
     expect(h.rememberPreviewUrlCalls).toHaveLength(1);
     expect(h.openPreviewSessionCalls).toHaveLength(0);
