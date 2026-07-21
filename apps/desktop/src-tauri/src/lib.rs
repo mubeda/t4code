@@ -230,6 +230,7 @@ const DESKTOP_PREVIEW_COMMAND_NAMES: &[&str] = desktop_preview_commands!(bridge_
 #[cfg(test)]
 mod tests {
     use serde::Deserialize;
+    use serde_json::Value;
 
     use super::{DESKTOP_BRIDGE_COMMAND_NAMES, DESKTOP_PREVIEW_COMMAND_NAMES};
 
@@ -247,6 +248,35 @@ mod tests {
     #[derive(Debug, Deserialize)]
     struct PermissionCommands {
         allow: Vec<String>,
+    }
+
+    fn assert_main_webview_only(capability: &Value) {
+        assert_eq!(
+            capability.get("webviews"),
+            Some(&serde_json::json!(["main"])),
+            "capability must target only the trusted main webview",
+        );
+        assert!(
+            capability.get("windows").is_none(),
+            "window-wide capability scope would also authorize preview child webviews",
+        );
+    }
+
+    #[test]
+    fn production_capability_is_scoped_to_the_main_webview() {
+        let capability: Value = serde_json::from_str(include_str!("../capabilities/default.json"))
+            .expect("default capability JSON should parse");
+
+        assert_main_webview_only(&capability);
+    }
+
+    #[test]
+    fn desktop_e2e_capability_is_scoped_to_the_main_webview() {
+        let config: Value = serde_json::from_str(include_str!("../tauri.e2e.conf.json"))
+            .expect("desktop E2E config JSON should parse");
+        let capability = &config["app"]["security"]["capabilities"][0];
+
+        assert_main_webview_only(capability);
     }
 
     #[test]

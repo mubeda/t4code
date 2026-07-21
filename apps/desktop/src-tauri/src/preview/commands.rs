@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, Url};
 use uuid::Uuid;
 
+use super::PendingBounds;
 use super::host;
 use super::platform::{ClearDataKinds, Platform, PlatformWebviewOps};
-use super::{PendingBounds, PreviewHostState};
 
 const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -134,16 +134,7 @@ pub fn desktop_preview_hard_reload(app: AppHandle, tab_id: String) -> Result<(),
 
 #[tauri::command]
 pub fn desktop_preview_set_zoom(app: AppHandle, tab_id: String, factor: f64) -> Result<(), String> {
-    host::with_tab_webview(&app, &tab_id, |webview| {
-        webview.set_zoom(factor).map_err(|error| error.to_string())
-    })?;
-
-    let state = app.state::<PreviewHostState>();
-    let mut registry = state.0.lock().map_err(|error| error.to_string())?;
-    if let Some(entry) = registry.get_mut(&tab_id) {
-        entry.zoom = factor;
-    }
-    Ok(())
+    host::set_zoom(&app, &tab_id, factor)
 }
 
 #[tauri::command]

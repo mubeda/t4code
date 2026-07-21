@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default permissions for the T4Code Tauri desktop shell.",
-  "windows": ["main"],
+  "webviews": ["main"],
   "permissions": ["allow-desktop-bridge", "allow-desktop-preview", "core:default"]
 }
