@@ -1222,3 +1222,32 @@ screenshots, redacted argv, superseded-evidence exclusions, and lifecycle cleanu
 Final gates passed: `vp check`, `vp run typecheck`, and `git diff --check`. No production/test
 source was edited during native QA, no QA commit was created, and final cleanup left no installed
 or worktree T4Code process.
+
+---
+
+# Task 6 final reviewed native verification
+
+Final reviewed source: `7ce2163bcb`
+
+Outcome: **PASS**
+
+The full provider-defaults change was reviewed after the final reconciliation fixes. No critical,
+important, or minor findings remained. The exact reviewed source then passed `vp test` (492 files,
+6,634 tests), `vp check` (1,562 formatted files and 1,182 linted files), `vp run typecheck` (11
+tasks), and `git diff --check`.
+
+Native verification used only the current worktree binaries. The desktop process was
+`/Users/admin/.codex/worktrees/6f54/t4code/target/debug/t4code-desktop` and the matching server was
+`/Users/admin/.codex/worktrees/6f54/t4code/target/debug/t4code serve --no-browser`; no installed
+T4Code application process was present.
+
+The Providers page preserved Codex GPT-5.5, xhigh, and Fast together with Claude Sonnet 5 and high
+through cross-provider edits, Codex disable/enable, provider refresh, and a normal application
+restart. Disabled provider controls stayed mounted but disabled, and Codex effort remained visible
+through every transition. A draft created before enabling Fast remained Standard, while the next
+new chat showed `GPT-5.5 / Extra High / Fast` and returned `OK`.
+
+UI-created provider terminals inherited the same defaults. The Codex process launched with
+`--model gpt-5.5`, `model_reasoning_effort="xhigh"`, and `service_tier="fast"`; the Claude process
+launched with `--model claude-sonnet-5 --effort high`. Final screenshots are retained in the
+gitignored `.superpowers/qa/provider-defaults-stability/final-evidence/` directory.
