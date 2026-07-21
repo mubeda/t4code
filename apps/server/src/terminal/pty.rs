@@ -415,11 +415,7 @@ fn build_pty_command_from_launch(
         command.raw_windows_args(raw_windows_args);
     }
     command.cwd(&input.cwd);
-    if !input
-        .env
-        .keys()
-        .any(|key| key.eq_ignore_ascii_case("TERM"))
-    {
+    if !input.env.keys().any(|key| key.eq_ignore_ascii_case("TERM")) {
         command.env("TERM", DEFAULT_TERMINAL_TYPE);
     }
     for (key, value) in &input.env {
@@ -464,11 +460,7 @@ fn resolve_pty_executable_on(
     )
 }
 
-fn decode_pty_output(
-    pending: &mut Vec<u8>,
-    bytes: &[u8],
-    end_of_stream: bool,
-) -> String {
+fn decode_pty_output(pending: &mut Vec<u8>, bytes: &[u8], end_of_stream: bool) -> String {
     pending.extend_from_slice(bytes);
     let mut output = String::with_capacity(pending.len());
     let mut consumed = 0;
@@ -793,7 +785,10 @@ mod tests {
     #[test]
     fn strip_focus_reports_drops_embedded_and_repeated_focus_events() {
         // The reported symptom: bursts of focus in/out while switching panels.
-        assert_eq!(strip_focus_reports("\u{1b}[O\u{1b}[O\u{1b}[I\u{1b}[O\u{1b}[I").as_ref(), "");
+        assert_eq!(
+            strip_focus_reports("\u{1b}[O\u{1b}[O\u{1b}[I\u{1b}[O\u{1b}[I").as_ref(),
+            ""
+        );
         // Focus reports interleaved with real typed input keep the input.
         assert_eq!(strip_focus_reports("a\u{1b}[Ob\u{1b}[Ic").as_ref(), "abc");
     }
