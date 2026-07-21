@@ -86,6 +86,7 @@ pub(crate) enum RichMetadataOutcome {
 pub(crate) struct ProviderProbeResult {
     pub(crate) snapshot: Value,
     pub(crate) rich_metadata: RichMetadataOutcome,
+    pub(crate) models_authoritative: bool,
 }
 
 impl ProviderProbeResult {
@@ -93,7 +94,13 @@ impl ProviderProbeResult {
         Self {
             snapshot,
             rich_metadata,
+            models_authoritative: rich_metadata == RichMetadataOutcome::Succeeded,
         }
+    }
+
+    fn with_authoritative_models(mut self) -> Self {
+        self.models_authoritative = true;
+        self
     }
 }
 
@@ -476,6 +483,7 @@ async fn probe_one(
         Some(_) => None,
     };
 
+    let mut versioned_model_catalog = false;
     match definition.driver.as_str() {
         "codex" => {
             if include_slow_capabilities
@@ -555,6 +563,7 @@ async fn probe_one(
             {
                 models = claude::model::models_for_version(version, &definition.custom_models);
                 model_catalog_complete = true;
+                versioned_model_catalog = true;
             }
             if let Some(output) = run_command(
                 &executable,
@@ -615,7 +624,7 @@ async fn probe_one(
         _ => {}
     }
 
-    ProviderProbeResult::new(
+    let result = ProviderProbeResult::new(
         snapshot(
             &definition,
             installed,
@@ -629,7 +638,12 @@ async fn probe_one(
             "available",
         ),
         rich_metadata,
-    )
+    );
+    if versioned_model_catalog {
+        result.with_authoritative_models()
+    } else {
+        result
+    }
 }
 
 fn provider_models_without_version(definition: &ProviderDefinition) -> Vec<Value> {
