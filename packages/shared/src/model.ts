@@ -161,11 +161,8 @@ function codexReasoningEffortDescriptor(
   metadata?: Pick<ProviderOptionDescriptor, "label" | "description">,
 ): ProviderOptionDescriptor {
   const selectedEffort =
-    selectedStringByIds(selections, PROVIDER_EFFORT_OPTION_IDS) ??
-    DEFAULT_CODEX_REASONING_EFFORT;
-  const options = CODEX_REASONING_EFFORT_OPTIONS.some(
-    (option) => option.id === selectedEffort,
-  )
+    selectedStringByIds(selections, PROVIDER_EFFORT_OPTION_IDS) ?? DEFAULT_CODEX_REASONING_EFFORT;
+  const options = CODEX_REASONING_EFFORT_OPTIONS.some((option) => option.id === selectedEffort)
     ? [...CODEX_REASONING_EFFORT_OPTIONS]
     : [...CODEX_REASONING_EFFORT_OPTIONS, { id: selectedEffort, label: selectedEffort }];
   return {

@@ -1,4 +1,8 @@
+// @vitest-environment happy-dom
+
 import type { ReactElement, ReactNode } from "react";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import * as Duration from "effect/Duration";
@@ -8,6 +12,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
+  type ProviderSessionDefault,
 } from "@t4code/contracts";
 import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t4code/contracts/settings";
 import * as settingsPanelsLogic from "./SettingsPanels.logic";
@@ -1212,6 +1217,57 @@ describe("ProviderSettingsPanel", () => {
       ...latestSubmission,
       [ProviderDriverKind.make("futureDriver")]: { model: "future-external" },
     });
+  });
+
+  it("resets displayed provider defaults when the primary environment changes", async () => {
+    const previousActEnvironment = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT;
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const firstEnvironmentId = EnvironmentId.make("environment-first");
+    const secondEnvironmentId = EnvironmentId.make("environment-second");
+    const firstSettings = baseProviderSettings();
+    const secondSettings: UnifiedSettings = {
+      ...baseProviderSettings(),
+      providerSessionDefaults: {
+        ...baseProviderSettings().providerSessionDefaults,
+        [CODEX_DRIVER]: { model: "codex-second-environment" },
+      },
+    };
+    h.primaryEnvironment = { environmentId: firstEnvironmentId };
+    h.settings = firstSettings;
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => root.render(<ProviderSettingsPanel />));
+      const firstCodexCard = h.instanceCards.find((card) => String(card.instanceId) === "codex")!;
+      (firstCodexCard.onSessionDefaultsChange as (next: ProviderSessionDefault) => void)({
+        model: "codex-pending-first-environment",
+      });
+
+      h.primaryEnvironment = { environmentId: secondEnvironmentId };
+      h.settings = secondSettings;
+      clearRegistries();
+      await act(async () => root.render(<ProviderSettingsPanel />));
+
+      const secondCodexCard = h.instanceCards.find((card) => String(card.instanceId) === "codex")!;
+      expect(secondCodexCard.sessionDefaults).toEqual(
+        secondSettings.providerSessionDefaults[CODEX_DRIVER],
+      );
+      expect(secondCodexCard.sessionDefaults).not.toEqual({
+        model: "codex-pending-first-environment",
+      });
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      if (previousActEnvironment === undefined) {
+        Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+      } else {
+        (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
+          previousActEnvironment;
+      }
+    }
   });
 
   it("routes instance card callbacks into settings patches", () => {

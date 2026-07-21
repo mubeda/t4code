@@ -2743,7 +2743,10 @@ describe("ChatView send flows", () => {
       expect(resolvedSelection).toEqual({
         instanceId: codexInstanceId,
         model: "gpt-5.4",
-        options: [{ id: "serviceTier", value: "default" }],
+        options: [
+          { id: "reasoningEffort", value: "medium" },
+          { id: "serviceTier", value: "default" },
+        ],
       });
       const promptRef = installComposerModelSelection(resolvedSelection, "medium");
       const onSend = capturedProps("chatComposer")["onSend"] as () => Promise<void>;

@@ -5,6 +5,8 @@ import {
   type ProviderOptionSelection,
   type ServerProviderModel,
 } from "@t4code/contracts";
+import { isValidElement } from "react";
+import { DraftId } from "../../composerDraftStore";
 import {
   getComposerPromptInjectionState,
   getComposerProviderState,
@@ -143,10 +145,7 @@ describe("getComposerProviderState", () => {
     expect(state).toEqual({
       provider: CODEX,
       promptEffort: "medium",
-      modelOptionsForDispatch: selections(
-        ["reasoningEffort", "medium"],
-        ["serviceTier", "fast"],
-      ),
+      modelOptionsForDispatch: selections(["reasoningEffort", "medium"], ["serviceTier", "fast"]),
     });
   });
 
@@ -161,9 +160,24 @@ describe("getComposerProviderState", () => {
     expect(state).toEqual({
       provider: CODEX,
       promptEffort: "xhigh",
+      modelOptionsForDispatch: selections(["reasoningEffort", "xhigh"], ["serviceTier", "fast"]),
+    });
+  });
+
+  it("supplies Codex dispatch defaults when capabilities and saved options are absent", () => {
+    const state = getComposerProviderState({
+      provider: CODEX,
+      model: MODEL,
+      models: modelWith([]),
+      modelOptions: undefined,
+    });
+
+    expect(state).toEqual({
+      provider: CODEX,
+      promptEffort: "medium",
       modelOptionsForDispatch: selections(
-        ["reasoningEffort", "xhigh"],
-        ["serviceTier", "fast"],
+        ["reasoningEffort", "medium"],
+        ["serviceTier", "default"],
       ),
     });
   });
@@ -327,5 +341,23 @@ describe("provider traits render guards", () => {
 
     expect(renderProviderTraitsPicker(args)).toBeNull();
     expect(renderProviderTraitsMenuContent(args)).toBeNull();
+  });
+
+  it("exposes Codex default effort and service tiers without live capabilities", () => {
+    const picker = renderProviderTraitsPicker({
+      provider: CODEX,
+      draftId: DraftId.make("codex-empty-capabilities"),
+      model: MODEL,
+      models: modelWith([]),
+      modelOptions: undefined,
+      prompt: "",
+      onPromptChange: () => {},
+    });
+
+    expect(isValidElement(picker)).toBe(true);
+    if (!isValidElement<{ modelOptions?: ReadonlyArray<ProviderOptionSelection> }>(picker)) return;
+    expect(picker.props.modelOptions).toEqual(
+      selections(["reasoningEffort", "medium"], ["serviceTier", "default"]),
+    );
   });
 });
