@@ -491,7 +491,7 @@ impl GitVcsRpcServices {
                 "Pull request has no head branch.",
             ));
         }
-        let worktree_path = if input.mode == "worktree" {
+        let (branch, worktree_path) = if input.mode == "worktree" {
             let created = self
                 .repository
                 .create_worktree(
@@ -506,13 +506,13 @@ impl GitVcsRpcServices {
                 )
                 .await
                 .map_err(serialize_error)?;
-            Some(created.worktree.path)
+            prepared_worktree_response_fields(branch, created)
         } else {
             self.repository
                 .switch_ref(&input.cwd, &branch, cancellation)
                 .await
                 .map_err(serialize_error)?;
-            None
+            (branch, None)
         };
         Ok(json!({ "pullRequest": pull_request, "branch": branch, "worktreePath": worktree_path }))
     }
@@ -1387,9 +1387,20 @@ fn summarize_commit_context(context: &str, paths: Option<&[String]>) -> String {
         )
 }
 
+fn prepared_worktree_response_fields(
+    _requested_branch: String,
+    created: crate::git::VcsCreateWorktreeResult,
+) -> (String, Option<String>) {
+    (created.worktree.ref_name, Some(created.worktree.path))
+}
+
 #[cfg(all(test, windows))]
 mod tests {
-    use super::{EditorLaunchStrategy, editor_launch_strategy, open_in_editor_with};
+    use super::{
+        EditorLaunchStrategy, editor_launch_strategy, open_in_editor_with,
+        prepared_worktree_response_fields,
+    };
+    use crate::git::{VcsCreateWorktreeResult, VcsWorktree};
     use serde_json::json;
 
     #[test]
@@ -1431,6 +1442,25 @@ mod tests {
         assert_eq!(error["command"], "rustrover");
         assert_eq!(error["args"], json!(["C:\\repo"]));
         assert_eq!(error["cause"], "missing fixture editor");
+    }
+
+    #[test]
+    fn pull_request_worktree_response_uses_the_repository_returned_ref() {
+        let (branch, worktree_path) = prepared_worktree_response_fields(
+            "feature".to_owned(),
+            VcsCreateWorktreeResult {
+                worktree: VcsWorktree {
+                    path: "C:/repo/.t4code-worktrees/feature-2".to_owned(),
+                    ref_name: "feature-2".to_owned(),
+                },
+            },
+        );
+
+        assert_eq!(branch, "feature-2");
+        assert_eq!(
+            worktree_path.as_deref(),
+            Some("C:/repo/.t4code-worktrees/feature-2")
+        );
     }
 }
 

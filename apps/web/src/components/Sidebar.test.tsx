@@ -23,7 +23,11 @@ import {
 } from "@t4code/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t4code/contracts/settings";
 import { createModelSelection } from "@t4code/shared/model";
-import { scopedThreadKey, scopeThreadRef } from "@t4code/client-runtime/environment";
+import {
+  scopedThreadKey,
+  scopeProjectRef,
+  scopeThreadRef,
+} from "@t4code/client-runtime/environment";
 import { derivePhysicalProjectKey } from "../logicalProject";
 import type {
   EnvironmentProject,
@@ -880,6 +884,45 @@ function baseScenario() {
   };
 }
 
+const groupedRepoIdentity = {
+  canonicalKey: "github.com/acme/repo-a",
+  locator: {
+    source: "git-remote" as const,
+    remoteName: "origin",
+    remoteUrl: "https://github.com/acme/repo-a.git",
+  },
+  rootPath: "C:/repo-a",
+  displayName: "Repo A",
+  name: "repo-a",
+};
+
+function groupedScenario() {
+  const localMember = makeProject("project-a", {
+    repositoryIdentity: groupedRepoIdentity,
+  });
+  const remoteMember = makeProject("project-a-remote", {
+    workspaceRoot: "C:/remote/repo-a",
+    repositoryIdentity: { ...groupedRepoIdentity, rootPath: "C:/remote/repo-a" },
+    environmentId: ENV_REMOTE,
+  });
+  const remoteThread = makeThread("thread-remote", {
+    projectId: ProjectId.make("project-a-remote"),
+    environmentId: ENV_REMOTE,
+    title: "Remote thread",
+  });
+  h.state.projects = [localMember, remoteMember];
+  h.state.threads = [threadDefault, threadIdle, remoteThread];
+  h.state.environments = [
+    environmentFixture({ environmentId: ENV_MAIN, label: "Main", connectionId: "primary" }),
+    environmentFixture({
+      environmentId: ENV_REMOTE,
+      label: "Remote Box",
+      connectionId: "remote",
+    }),
+  ];
+  return { remoteThread };
+}
+
 function fakeLocalApi() {
   const api = {
     contextMenu: { show: h.spies.contextMenuShow },
@@ -1141,21 +1184,6 @@ staticDescribe("Sidebar full render", () => {
   it("renders the empty projects state", () => {
     const markup = render(<Sidebar />);
     expect(markup).toContain("No projects yet");
-  });
-
-  it("disables new worktree when no project is selected", () => {
-    h.state.projects = [projectA];
-    h.state.threads = [threadDefault];
-    h.state.environments = [
-      environmentFixture({ environmentId: ENV_MAIN, label: "Main", connectionId: "primary" }),
-    ];
-    h.state.primaryEnvironmentId = ENV_MAIN;
-    h.state.routeParams = {};
-
-    render(<Sidebar />);
-
-    const newWorktree = mustFindProps(byTestId("sidebar-new-worktree-trigger"), "new worktree");
-    expect(newWorktree["disabled"]).toBe(true);
   });
 
   it("shows the empty-thread state for an expanded project without workspace threads", () => {
@@ -1437,24 +1465,23 @@ staticDescribe("Sidebar full render", () => {
     expect(h.spies.autoAnimate).toHaveBeenCalledTimes(2);
   });
 
-  it("opens the create-worktree dialog from the header button and resets on close", () => {
+  it("opens worktree creation for the row clicked instead of the active project", () => {
     baseScenario();
+    const projectB = makeProject("project-b", {
+      title: "Repo B",
+      workspaceRoot: "C:/repo-b",
+    });
+    h.state.projects = [projectA, projectB];
     render(<Sidebar />);
 
-    const dialog = captured("CreateWorktreeDialog")[0]!;
-    expect(dialog.props["defaultProjectId"]).toBe(projectA.id);
-
-    const newWorktree = mustFindProps(byTestId("sidebar-new-worktree-trigger"), "new worktree");
-    expect(newWorktree["disabled"]).toBe(false);
-    invoke(newWorktree, "onClick", mouseEvent());
-
-    const addProject = mustFindProps(byTestId("sidebar-add-project-trigger"), "add project");
-    invoke(addProject, "onClick", mouseEvent());
-    expect(h.spies.openAddProject).toHaveBeenCalled();
-
-    const onOpenChange = dialog.props["onOpenChange"] as (open: boolean) => void;
-    onOpenChange(true);
-    onOpenChange(false);
+    const click = mouseEvent();
+    invoke(
+      mustFindProps(byAriaLabel("New worktree in Repo B"), "Repo B worktree action"),
+      "onClick",
+      click,
+    );
+    expect(click.preventDefault).toHaveBeenCalled();
+    expect(click.stopPropagation).toHaveBeenCalled();
   });
 
   it("navigates to settings from the footer, closing the mobile sheet when needed", () => {
@@ -2388,8 +2415,11 @@ staticDescribe("new thread entry points", () => {
   it("creates a main-branch chat for a single-member project", () => {
     baseScenario();
     render(<Sidebar />);
-    const newThread = mustFindProps(byTestId("new-thread-button"), "new thread button");
-    invoke(newThread, "onClick", mouseEvent());
+    const newThread = mustFindProps(byTestId("new-main-chat-button"), "new main chat button");
+    const click = mouseEvent();
+    invoke(newThread, "onClick", click);
+    expect(click.preventDefault).toHaveBeenCalled();
+    expect(click.stopPropagation).toHaveBeenCalled();
     expect(h.spies.newThreadHandler).toHaveBeenCalledWith(
       expect.objectContaining({ environmentId: ENV_MAIN, projectId: projectA.id }),
       { branch: null, worktreePath: null, envMode: "local" },
@@ -2400,67 +2430,38 @@ staticDescribe("new thread entry points", () => {
     baseScenario();
     h.state.sidebarCtx = { isMobile: true, setOpenMobile: h.spies.setOpenMobile };
     render(<Sidebar />);
-    const newThread = mustFindProps(byTestId("new-thread-button"), "new thread button");
+    const newThread = mustFindProps(byTestId("new-main-chat-button"), "new main chat button");
     invoke(newThread, "onClick", mouseEvent());
     expect(h.spies.setOpenMobile).toHaveBeenCalledWith(false);
   });
 
-  it("exposes separate main-chat and worktree actions in the projects toolbar", () => {
+  it("closes the mobile sheet before creating a worktree from its project row", () => {
+    baseScenario();
+    h.state.sidebarCtx = { isMobile: true, setOpenMobile: h.spies.setOpenMobile };
+    render(<Sidebar />);
+
+    const click = mouseEvent();
+    invoke(mustFindProps(byTestId("new-worktree-button"), "new worktree button"), "onClick", click);
+
+    expect(click.preventDefault).toHaveBeenCalled();
+    expect(click.stopPropagation).toHaveBeenCalled();
+    expect(h.spies.setOpenMobile).toHaveBeenCalledWith(false);
+  });
+
+  it("renders both actions in the project row and removes them from the Projects toolbar", () => {
     baseScenario();
     render(<Sidebar />);
 
-    const newMainChat = mustFindProps(byTestId("sidebar-new-main-chat-trigger"), "new main chat");
-    invoke(newMainChat, "onClick", mouseEvent());
-    expect(h.spies.newThreadHandler).toHaveBeenCalledWith(
-      expect.objectContaining({ environmentId: ENV_MAIN, projectId: projectA.id }),
-      { branch: null, worktreePath: null, envMode: "local" },
-    );
-
-    const newWorktree = mustFindProps(byTestId("sidebar-new-worktree-trigger"), "new worktree");
-    invoke(newWorktree, "onClick", mouseEvent());
+    expect(findProps(byTestId("sidebar-new-main-chat-trigger"))).toBeNull();
+    expect(findProps(byTestId("sidebar-new-worktree-trigger"))).toBeNull();
+    expect(
+      mustFindProps(byAriaLabel("New main-branch chat in Repo A"), "row main chat"),
+    ).toBeDefined();
+    expect(mustFindProps(byAriaLabel("New worktree in Repo A"), "row worktree")).toBeDefined();
   });
 });
 
 staticDescribe("grouped and remote projects", () => {
-  const repoIdentity = {
-    canonicalKey: "github.com/acme/repo-a",
-    locator: {
-      source: "git-remote" as const,
-      remoteName: "origin",
-      remoteUrl: "https://github.com/acme/repo-a.git",
-    },
-    rootPath: "C:/repo-a",
-    displayName: "Repo A",
-    name: "repo-a",
-  };
-
-  function groupedScenario() {
-    const localMember = makeProject("project-a", {
-      repositoryIdentity: repoIdentity,
-    });
-    const remoteMember = makeProject("project-a-remote", {
-      workspaceRoot: "C:/remote/repo-a",
-      repositoryIdentity: { ...repoIdentity, rootPath: "C:/remote/repo-a" },
-      environmentId: ENV_REMOTE,
-    });
-    const remoteThread = makeThread("thread-remote", {
-      projectId: ProjectId.make("project-a-remote"),
-      environmentId: ENV_REMOTE,
-      title: "Remote thread",
-    });
-    h.state.projects = [localMember, remoteMember];
-    h.state.threads = [threadDefault, threadIdle, remoteThread];
-    h.state.environments = [
-      environmentFixture({ environmentId: ENV_MAIN, label: "Main", connectionId: "primary" }),
-      environmentFixture({
-        environmentId: ENV_REMOTE,
-        label: "Remote Box",
-        connectionId: "remote",
-      }),
-    ];
-    return { remoteThread };
-  }
-
   it("groups projects by repository and renders remote thread markers", () => {
     groupedScenario();
     const markup = render(<Sidebar />);
@@ -2476,7 +2477,7 @@ staticDescribe("grouped and remote projects", () => {
     h.spies.contextMenuShow.mockImplementation(
       async (items: Array<{ id: string }>) => items[1]!.id,
     );
-    const newThread = mustFindProps(byTestId("new-thread-button"), "new thread button");
+    const newThread = mustFindProps(byTestId("new-main-chat-button"), "new main chat button");
     invoke(newThread, "onClick", mouseEvent());
     await flush();
     expect(h.spies.contextMenuShow).toHaveBeenCalled();
@@ -2486,10 +2487,25 @@ staticDescribe("grouped and remote projects", () => {
     );
   });
 
+  it("uses the chosen grouped-project member for worktree creation", async () => {
+    groupedScenario();
+    render(<Sidebar />);
+    fakeLocalApi();
+    h.spies.contextMenuShow.mockImplementation(
+      async (items: Array<{ id: string }>) => items[1]!.id,
+    );
+
+    const worktree = mustFindProps(byTestId("new-worktree-button"), "new worktree button");
+    invoke(worktree, "onClick", mouseEvent());
+    await flush();
+
+    expect(h.spies.contextMenuShow).toHaveBeenCalled();
+  });
+
   it("does not create a grouped-project chat when its picker is unavailable or cancelled", async () => {
     groupedScenario();
     render(<Sidebar />);
-    const newThread = mustFindProps(byTestId("new-thread-button"), "new thread button");
+    const newThread = mustFindProps(byTestId("new-main-chat-button"), "new main chat button");
     invoke(newThread, "onClick", mouseEvent());
     await flush();
     expect(h.spies.newThreadHandler).not.toHaveBeenCalled();
@@ -2513,7 +2529,7 @@ staticDescribe("grouped and remote projects", () => {
       expect(items.every((item) => item.label.includes("C:/"))).toBe(true);
       return null;
     });
-    const newThread = mustFindProps(byTestId("new-thread-button"), "new thread button");
+    const newThread = mustFindProps(byTestId("new-main-chat-button"), "new main chat button");
     invoke(newThread, "onClick", mouseEvent());
     await flush();
     expect(h.spies.contextMenuShow).toHaveBeenCalled();
@@ -2524,7 +2540,7 @@ staticDescribe("grouped and remote projects", () => {
     render(<Sidebar />);
     fakeLocalApi();
     h.spies.contextMenuShow.mockRejectedValue("opaque picker failure");
-    const newThread = mustFindProps(byTestId("new-thread-button"), "new thread button");
+    const newThread = mustFindProps(byTestId("new-main-chat-button"), "new main chat button");
     invoke(newThread, "onClick", mouseEvent());
     await flush();
     expect(h.spies.toastAdd).toHaveBeenCalledWith(
@@ -2537,7 +2553,7 @@ staticDescribe("grouped and remote projects", () => {
     render(<Sidebar />);
     fakeLocalApi();
     h.spies.contextMenuShow.mockRejectedValue(new Error("picker broke"));
-    const newThread = mustFindProps(byTestId("new-thread-button"), "new thread button");
+    const newThread = mustFindProps(byTestId("new-main-chat-button"), "new main chat button");
     invoke(newThread, "onClick", mouseEvent());
     await flush();
     expect(h.spies.toastAdd).toHaveBeenCalledWith(
@@ -2947,6 +2963,55 @@ if (browserRuntime) {
       await React.act(async () => root.unmount());
       container.remove();
     }
+
+    it("opens the dialog for the clicked worktree row project", async () => {
+      const projectB = makeProject("project-browser-b", {
+        title: "Repo B",
+        workspaceRoot: "C:/repo-b",
+      });
+      baseScenario();
+      h.state.projects = [projectA, projectB];
+      h.state.sidebarCtx = { isMobile: true, setOpenMobile: h.spies.setOpenMobile };
+      const { container, root } = await mount(<Sidebar />);
+
+      h.state.captures.length = 0;
+      const worktree = requiredElement<HTMLButtonElement>(
+        container,
+        "[aria-label='New worktree in Repo B']",
+      );
+      const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+      await dispatch(worktree, click);
+
+      expect(click.defaultPrevented).toBe(true);
+      expect(h.spies.setOpenMobile).toHaveBeenCalledWith(false);
+      expect(captured("CreateWorktreeDialog").at(-1)?.props["defaultProjectRef"]).toEqual(
+        scopeProjectRef(projectB.environmentId, projectB.id),
+      );
+      await unmount(root, container);
+    });
+
+    it("opens the dialog for the remote member chosen from a grouped worktree row", async () => {
+      groupedScenario();
+      fakeLocalApi();
+      h.spies.contextMenuShow.mockImplementation(
+        async (items: Array<{ id: string }>) => items[1]!.id,
+      );
+      const { container, root } = await mount(<Sidebar />);
+
+      h.state.captures.length = 0;
+      const worktree = requiredElement<HTMLButtonElement>(
+        container,
+        "[data-testid='new-worktree-button']",
+      );
+      await dispatch(worktree, new MouseEvent("click", { bubbles: true, cancelable: true }));
+      await React.act(async () => flush());
+
+      expect(h.spies.contextMenuShow).toHaveBeenCalled();
+      expect(captured("CreateWorktreeDialog").at(-1)?.props["defaultProjectRef"]).toEqual(
+        scopeProjectRef(ENV_REMOTE, ProjectId.make("project-a-remote")),
+      );
+      await unmount(root, container);
+    });
 
     it("starts inline rename only for an unmodified row-body double-click", async () => {
       const thread = makeThread("thread-browser-rename", { title: "Rename me" });
