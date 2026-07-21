@@ -1043,3 +1043,46 @@ Implementation commit: `be6bbc1846a0c35fe7ce05b7b130ca97c8268049`
 
 None for the requested code paths. Native UI QA was intentionally not launched; the root task owns
 the exact-worktree retest.
+
+---
+
+# Task 6 session precedence fix
+
+Implementation commit: `6dfd3ec0a9c7bf679b938633ea5b9745422ba0c4`
+
+## Root cause and behavior fixed
+
+- `resolveProviderSessionDefault` ranked a matching `projectSelection` ahead of the configured
+  provider session default. Projects therefore carried their add-project model/options snapshot
+  into every later new-session boundary, even after the provider-wide defaults changed.
+- The resolver now chooses one complete source in this order: matching explicit selection,
+  configured provider default, matching project fallback, then live model fallback. Model and
+  options always come from that same source.
+- Project selection still determines provider-instance routing at the creation boundaries. When
+  no configured provider default exists, the matching project selection remains the fallback.
+- Existing-session immutability, provider fallback reporting, custom-instance routing, offline
+  behavior, and Claude prompt-injected handling remain covered by the focused suites.
+
+## RED evidence
+
+Command:
+
+```text
+vp test packages/shared/src/providerSessionDefaults.test.ts apps/web/src/hooks/useHandleNewThread.test.tsx apps/web/src/components/ChatView.hooks.test.tsx apps/web/src/components/CreateWorktreeDialog.test.tsx apps/web/src/components/Sidebar.test.tsx
+```
+
+Exit: `1`. Five test files reported 7 expected failures and 259 passing tests. The shared resolver,
+normal new-thread, routed-provider new-thread, added chat panel, new worktree, and default-thread
+boundaries all received stale project model/options instead of the configured provider source.
+Representative failures received `gpt-stale` + Low + Standard where the assertions required
+`gpt-configured` + Medium + Fast. The existing immutable-session and no-config project-fallback
+tests remained green.
+
+## GREEN and final verification
+
+- Focused command above: 5 files passed; 266 tests passed; exit 0.
+- `vp check`: all 1562 files correctly formatted; no warnings or lint errors in 1182 files; exit 0.
+- `vp run typecheck`: exit 0.
+- `git diff --check`: exit 0.
+
+No native UI was launched. Existing QA artifacts and report content were preserved.
