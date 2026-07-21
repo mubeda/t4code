@@ -423,8 +423,7 @@ mod tests {
     use super::*;
 
     fn attributed_process(
-        pid: u32,
-        started_at: u64,
+        identity: ProcessIdentity,
         scope: AttributionScope,
         kind: AttributionKind,
         label: &str,
@@ -432,7 +431,6 @@ mod tests {
         cpu_percent: f64,
         rss_bytes: u64,
     ) -> AttributedProcess {
-        let identity = ProcessIdentity { pid, started_at };
         AttributedProcess {
             identity,
             process_key: identity.key(),
@@ -454,8 +452,10 @@ mod tests {
         coverage_status: UiCoverageStatus,
     ) -> Arc<AttributedProcessSample> {
         let core = attributed_process(
-            10,
-            100,
+            ProcessIdentity {
+                pid: 10,
+                started_at: 100,
+            },
             AttributionScope::Core,
             AttributionKind::Server,
             "core/server",
@@ -464,8 +464,10 @@ mod tests {
             core_rss_bytes,
         );
         let external = attributed_process(
-            20,
-            200,
+            ProcessIdentity {
+                pid: 20,
+                started_at: 200,
+            },
             AttributionScope::External,
             AttributionKind::Provider,
             "external/provider",
@@ -645,8 +647,7 @@ mod tests {
             server_identity,
             native_rows: Arc::from([native_row]),
             processes: vec![attributed_process(
-                server_identity.pid,
-                server_identity.started_at,
+                server_identity,
                 AttributionScope::Core,
                 AttributionKind::Server,
                 "core/server",

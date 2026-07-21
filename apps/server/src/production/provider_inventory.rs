@@ -616,10 +616,8 @@ async fn probe_one(
                 message = None;
             }
         }
-        "grok" => {
-            if version_output.as_ref().is_some_and(|output| output.success) {
-                rich_metadata = RichMetadataOutcome::Succeeded;
-            }
+        "grok" if version_output.as_ref().is_some_and(|output| output.success) => {
+            rich_metadata = RichMetadataOutcome::Succeeded;
         }
         _ => {}
     }

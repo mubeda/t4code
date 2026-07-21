@@ -106,6 +106,9 @@ fn run_process_tree_fixture() {
     }
 }
 
+// The fixture deliberately transfers the child to the process-tree cleanup test. Waiting here
+// would prevent the child and grandchild roles from reaching their ready state.
+#[allow(clippy::zombie_processes)]
 fn spawn_process_tree_role(role: &str) {
     Command::new(std::env::current_exe().expect("current test executable"))
         .args([
