@@ -39,6 +39,8 @@ const defaultLocalEnvironmentBootstrap = {
 };
 
 function installTauriHarness(options?: {
+  readonly previewSupported?: boolean;
+  readonly rejectMetadata?: boolean;
   readonly contextMenuResult?: string | null;
   readonly rejectContextMenu?: unknown;
   readonly rejectSshProvisioning?: boolean;
@@ -52,6 +54,9 @@ function installTauriHarness(options?: {
   const invoke = vi.fn((command: string, args?: Record<string, unknown>) => {
     switch (command) {
       case "desktop_bridge_get_bridge_metadata":
+        if (options?.rejectMetadata) {
+          return Promise.reject(new Error("bridge metadata unavailable"));
+        }
         return Promise.resolve({
           host: "tauri",
           bridgeVersion: 1,
@@ -63,7 +68,7 @@ function installTauriHarness(options?: {
             wslDiscovery: true,
             sshRemoteHttp: true,
             connectionCatalog: true,
-            preview: false,
+            preview: options?.previewSupported ?? false,
             updater: false,
             menuEvents: true,
             sshProvisioning: true,
@@ -162,7 +167,8 @@ function installTauriHarness(options?: {
 }
 
 async function installBridge(): Promise<DesktopBridge> {
-  await import("./tauriDesktopBridge");
+  const { tauriDesktopBridgeReady } = await import("./tauriDesktopBridge");
+  await tauriDesktopBridgeReady;
   const bridge = window.desktopBridge;
   if (!bridge) {
     throw new Error("Expected Tauri adapter to install window.desktopBridge.");
@@ -180,13 +186,31 @@ describe("tauriDesktopBridge", () => {
   });
 
   it("starts browser surface sync once when installing the Tauri preview bridge", async () => {
-    installTauriHarness();
+    installTauriHarness({ previewSupported: true });
 
     const bridge = await installBridge();
     await import("./tauriDesktopBridge");
 
     expect(startBrowserSurfaceSyncMock).toHaveBeenCalledTimes(1);
     expect(startBrowserSurfaceSyncMock).toHaveBeenCalledWith(bridge.preview);
+  });
+
+  it("omits the preview bridge when the native host reports it unsupported", async () => {
+    installTauriHarness({ previewSupported: false });
+
+    const bridge = await installBridge();
+
+    expect(bridge.preview).toBeUndefined();
+    expect(startBrowserSurfaceSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when native preview support cannot be determined", async () => {
+    installTauriHarness({ rejectMetadata: true });
+
+    const bridge = await installBridge();
+
+    expect(bridge.preview).toBeUndefined();
+    expect(startBrowserSurfaceSyncMock).not.toHaveBeenCalled();
   });
 
   it("does not start browser surface sync in a browser runtime", async () => {

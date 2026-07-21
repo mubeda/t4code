@@ -692,9 +692,21 @@ fn ensure_macos_isolated_profile_available(available: bool) -> Result<(), String
     }
 }
 
+pub fn is_supported() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        objc2::available!(macos = 14.0)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
 pub fn create_tab(app: &AppHandle, tab_id: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    ensure_macos_isolated_profile_available(objc2::available!(macos = 14.0))?;
+    ensure_macos_isolated_profile_available(is_supported())?;
 
     let blank_url = Url::parse("about:blank").map_err(|error| error.to_string())?;
     let window = app
