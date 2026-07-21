@@ -1540,7 +1540,7 @@ git commit -m "feat(web): tauri preview bridge lights up isPreviewSupportedInRun
 - Consumes: `useBrowserSurfaceStore` (zustand, `apps/web/src/browser/browserSurfaceStore.ts:73`), `DesktopPreviewBridge.setBounds` (Task 1/8).
 - Produces: `startBrowserSurfaceSync(bridge: Pick<DesktopPreviewBridge, "setBounds">): () => void`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // apps/web/src/browser/browserSurfaceSync.test.ts
@@ -1570,12 +1570,12 @@ describe("browserSurfaceSync", () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `pnpm --filter @t4code/web test -- browserSurfaceSync`
 Expected: FAIL — module does not exist.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```ts
 // apps/web/src/browser/browserSurfaceSync.ts
@@ -1648,12 +1648,12 @@ if (isTauriDesktopRuntime && window.desktopBridge === undefined) {
 
 (import `startBrowserSurfaceSync` from `./browser/browserSurfaceSync` — verify the relative path from `apps/web/src/tauriDesktopBridge.ts` is `./browser/browserSurfaceSync`.)
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `pnpm --filter @t4code/web test -- browserSurfaceSync && pnpm --filter @t4code/web typecheck`
 Expected: PASS / clean.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/browser/browserSurfaceSync.ts apps/web/src/browser/browserSurfaceSync.test.ts apps/web/src/tauriDesktopBridge.ts

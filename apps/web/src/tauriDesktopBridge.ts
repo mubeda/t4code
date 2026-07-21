@@ -23,6 +23,7 @@ import {
 import { invoke as importedTauriInvoke, isTauri as isImportedTauri } from "@tauri-apps/api/core";
 import { listen as importedTauriListen } from "@tauri-apps/api/event";
 
+import { startBrowserSurfaceSync } from "./browser/browserSurfaceSync";
 import { readBrowserClientSettings, writeBrowserClientSettings } from "./clientPersistenceStorage";
 import { showContextMenuFallback } from "./contextMenuFallback";
 import { invokeTauriCommand, type TauriCommandMock } from "./tauriInvokeRouting";
@@ -508,6 +509,8 @@ const isTauriDesktopRuntime =
 
 if (isTauriDesktopRuntime && window.desktopBridge === undefined) {
   window.desktopBridge = createTauriDesktopBridge();
+  const preview = window.desktopBridge.preview;
+  if (preview) startBrowserSurfaceSync(preview);
   tauriListen<TauriDesktopBackendReadyPayload>(BACKEND_READY_EVENT, applyBackendReady);
 }
 
