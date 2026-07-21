@@ -40,6 +40,7 @@ export const TerminalLaunchCommand = Schema.Struct({
   label: Schema.optional(
     TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(TERMINAL_LAUNCH_LABEL_MAX_LENGTH)),
   ),
+  env: Schema.optional(TerminalEnvSchema),
 });
 export type TerminalLaunchCommand = typeof TerminalLaunchCommand.Type;
 

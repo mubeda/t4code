@@ -479,6 +479,25 @@ describe("resolveProviderTerminalAction", () => {
     });
   });
 
+  it("launches opencode with the system theme so the TUI follows the app theme", () => {
+    const action = resolveProviderTerminalAction(
+      entry("opencode", "opencode", "OpenCode"),
+      DEFAULT_SERVER_SETTINGS,
+    );
+    expect(action?.command).toMatchObject({
+      executable: "opencode",
+      env: { OPENCODE_CONFIG_CONTENT: '{"theme":"system"}' },
+    });
+  });
+
+  it("leaves the launch environment unset for providers without env defaults", () => {
+    const action = resolveProviderTerminalAction(
+      entry("claudeAgent", "claudeAgent", "Claude"),
+      DEFAULT_SERVER_SETTINGS,
+    );
+    expect(action?.command?.env).toBe(undefined);
+  });
+
   it("prefers instance paths, then legacy paths, and preserves custom names", () => {
     const customId = ProviderInstanceId.make("codex_personal");
     const settings = {

@@ -41,17 +41,29 @@ const FILE_PATH_PATTERN =
   /(?:~\/|\.{1,2}\/|\/|[A-Za-z]:[\\/]|\\\\)[^\s"'`<>]+|[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+(?::\d+){0,2}/g;
 const TRAILING_PUNCTUATION_PATTERN = /[.,;!?]+$/;
 
+// ConPTY full-screen repaints can mark an entire alt-screen TUI frame as one
+// wrapped logical line, so the hover-time walk must stay bounded: an unbounded
+// walk assembles the whole scrollback per mouse event and exhausts the V8 heap.
+const MAX_WRAPPED_LINK_LOOKBEHIND_SEGMENTS = 50;
+const MAX_WRAPPED_LINK_SEGMENTS = 100;
+
 function trimClosingDelimiters(value: string): string {
   let output = value.replace(TRAILING_PUNCTUATION_PATTERN, "");
   if (output.length === 0) return output;
 
   const trimUnbalanced = (open: string, close: string) => {
-    while (output.endsWith(close)) {
-      const opens = output.split(open).length - 1;
-      const closes = output.split(close).length - 1;
-      if (opens >= closes) return;
-      output = output.slice(0, -1);
+    let opens = 0;
+    let closes = 0;
+    for (const character of output) {
+      if (character === open) opens += 1;
+      else if (character === close) closes += 1;
     }
+    let end = output.length;
+    while (end > 0 && output[end - 1] === close && closes > opens) {
+      end -= 1;
+      closes -= 1;
+    }
+    if (end < output.length) output = output.slice(0, end);
   };
 
   trimUnbalanced("(", ")");
@@ -89,7 +101,9 @@ function collectMatches(
       end: start + trimmed.length,
     };
 
-    const collides = [...existing, ...matches].some((other) => overlaps(candidate, other));
+    const collides =
+      existing.some((other) => overlaps(candidate, other)) ||
+      matches.some((other) => overlaps(candidate, other));
     if (collides) continue;
 
     matches.push(candidate);
@@ -182,7 +196,13 @@ export function collectWrappedTerminalLinkLine(
   let startBufferLineNumber = bufferLineNumber;
   let startLine = anchorLine;
 
-  while (startBufferLineNumber > 1 && startLine.isWrapped) {
+  // Walk back at most a bounded number of wrapped rows. Starting the window
+  // mid-logical-line only costs detection of links that span past the window.
+  while (
+    startBufferLineNumber > 1 &&
+    startLine.isWrapped &&
+    bufferLineNumber - startBufferLineNumber < MAX_WRAPPED_LINK_LOOKBEHIND_SEGMENTS
+  ) {
     const previousLine = getLine(startBufferLineNumber - 2);
     if (!previousLine) return null;
     startBufferLineNumber -= 1;
@@ -193,7 +213,7 @@ export function collectWrappedTerminalLinkLine(
   let nextStartIndex = 0;
   let currentBufferLineNumber = startBufferLineNumber;
 
-  while (true) {
+  while (segments.length < MAX_WRAPPED_LINK_SEGMENTS) {
     const currentLine = getLine(currentBufferLineNumber - 1);
     if (!currentLine) break;
 

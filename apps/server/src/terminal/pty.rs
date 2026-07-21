@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     env,
     ffi::OsStr,
@@ -17,6 +18,9 @@ use crate::process::{
     Platform, launch_executable_extensions, locate_executable, wrap_launch_program,
     wrap_windows_batch_command,
 };
+use crate::terminal::osc::{OscColorResponder, colors_from_env, is_reserved_osc_env_key};
+
+type SharedPtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
 #[cfg(windows)]
 use crate::process::WindowsJob;
@@ -264,8 +268,8 @@ impl PortablePtyBackend {
             Ok(reader) => reader,
             Err(error) => return Err(error.to_string()),
         };
-        let writer = match pair.master.take_writer() {
-            Ok(writer) => writer,
+        let writer: SharedPtyWriter = match pair.master.take_writer() {
+            Ok(writer) => Arc::new(Mutex::new(writer)),
             Err(error) => return Err(error.to_string()),
         };
         #[cfg(not(windows))]
@@ -274,10 +278,18 @@ impl PortablePtyBackend {
         let (exit, _) = watch::channel(None);
         let (resize, resize_requests) = mpsc::sync_channel(1);
 
+        // Answer OSC color queries (e.g. OpenCode's OSC 11 light/dark probe) at
+        // the PTY layer, using the app's resolved theme colors, so detection
+        // does not depend on the client's slower round-trip reply.
+        let osc_responder = {
+            let colors = colors_from_env(&input.env);
+            (!colors.is_empty()).then(|| (OscColorResponder::new(colors), Arc::clone(&writer)))
+        };
+
         let output_sender = output.clone();
         if let Err(error) = thread::Builder::new()
             .name(format!("t4code-pty-output-{pid}"))
-            .spawn(move || read_output(&mut reader, &output_sender))
+            .spawn(move || read_output(&mut reader, &output_sender, osc_responder))
         {
             return Err(error.to_string());
         }
@@ -320,7 +332,7 @@ impl PortablePtyBackend {
             pid,
             process_identity,
             resize,
-            writer: Mutex::new(writer),
+            writer,
             #[cfg(not(windows))]
             killer: Mutex::new(killer),
             output,
@@ -411,6 +423,11 @@ fn build_pty_command_from_launch(
         command.env("TERM", DEFAULT_TERMINAL_TYPE);
     }
     for (key, value) in &input.env {
+        // Reserved OSC color keys configure the PTY-layer query responder; they
+        // must not reach the child process's environment.
+        if is_reserved_osc_env_key(key) {
+            continue;
+        }
         command.env(key, value);
     }
     command
@@ -493,7 +510,11 @@ fn decode_pty_output(
     output
 }
 
-fn read_output(reader: &mut dyn Read, sender: &broadcast::Sender<String>) {
+fn read_output(
+    reader: &mut dyn Read,
+    sender: &broadcast::Sender<String>,
+    mut osc_responder: Option<(OscColorResponder, SharedPtyWriter)>,
+) {
     let mut buffer = [0u8; 8 * 1024];
     let mut pending = Vec::with_capacity(4);
     loop {
@@ -506,6 +527,7 @@ fn read_output(reader: &mut dyn Read, sender: &broadcast::Sender<String>) {
                 return;
             }
             Ok(read) => {
+                answer_osc_color_queries(osc_responder.as_mut(), &buffer[..read]);
                 let text = decode_pty_output(&mut pending, &buffer[..read], false);
                 if !text.is_empty() {
                     let _ = sender.send(text);
@@ -513,6 +535,54 @@ fn read_output(reader: &mut dyn Read, sender: &broadcast::Sender<String>) {
             }
         }
     }
+}
+
+/// Feeds raw output bytes to the OSC responder and writes any reply back to the
+/// PTY input. Runs on the raw byte stream so split queries are tracked before
+/// UTF-8 decoding; write failures are ignored because a lost reply only leaves
+/// the provider on its default theme.
+fn answer_osc_color_queries(
+    responder: Option<&mut (OscColorResponder, SharedPtyWriter)>,
+    bytes: &[u8],
+) {
+    let Some((responder, writer)) = responder else {
+        return;
+    };
+    let reply = responder.process(bytes);
+    if reply.is_empty() {
+        return;
+    }
+    if let Ok(mut writer) = writer.lock() {
+        let _ = writer.write_all(&reply);
+        let _ = writer.flush();
+    }
+}
+
+/// Removes DEC private mode 1004 focus reports (`ESC [ I` focus-in, `ESC [ O`
+/// focus-out) from terminal input.
+///
+/// On Windows, ConPTY unconditionally advertises focus tracking to the host
+/// terminal at pseudoconsole startup, so xterm enables focus reporting and emits
+/// one of these on every panel focus change. ConPTY's console-input translation
+/// does not round-trip them back to the child faithfully, so provider TUIs (for
+/// example Codex) insert them as literal `[I` / `[O` text in their input line.
+/// They carry no value for the embedded terminals, so the Windows write path
+/// drops them. Real PTYs on other platforms are left untouched, so a TUI that
+/// explicitly requested focus events there still receives them.
+///
+/// Only the bare sequences are removed: a parameterised CSI such as `ESC [ 2 I`
+/// (cursor horizontal tab) is not a focus report and is preserved.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn strip_focus_reports(data: &str) -> Cow<'_, str> {
+    // Fast path: both focus reports begin with ESC, so input without an ESC
+    // (the common keystroke case) needs no scanning or allocation.
+    if !data.as_bytes().contains(&0x1b) {
+        return Cow::Borrowed(data);
+    }
+    if !data.contains("\u{1b}[I") && !data.contains("\u{1b}[O") {
+        return Cow::Borrowed(data);
+    }
+    Cow::Owned(data.replace("\u{1b}[I", "").replace("\u{1b}[O", ""))
 }
 
 fn retain_captured_identity_if_child_live(
@@ -526,7 +596,7 @@ struct PortablePtyProcess {
     pid: u32,
     process_identity: Option<ProcessIdentity>,
     resize: mpsc::SyncSender<PtySize>,
-    writer: Mutex<Box<dyn Write + Send>>,
+    writer: SharedPtyWriter,
     #[cfg(not(windows))]
     killer: Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
     output: broadcast::Sender<String>,
@@ -556,6 +626,18 @@ impl PtyProcess for PortablePtyProcess {
     }
 
     fn write(&self, data: &str) -> Result<(), String> {
+        // On Windows, ConPTY makes xterm emit focus reports that provider TUIs
+        // render as literal `[I` / `[O` text; drop them before they reach the
+        // pseudoconsole. See strip_focus_reports.
+        #[cfg(windows)]
+        let owned = strip_focus_reports(data);
+        #[cfg(windows)]
+        let data: &str = owned.as_ref();
+        #[cfg(windows)]
+        if data.is_empty() {
+            return Ok(());
+        }
+
         let mut writer = match self.writer.lock() {
             Ok(writer) => writer,
             Err(error) => return Err(error.to_string()),
@@ -679,10 +761,41 @@ mod tests {
             bytes: expected.as_bytes().to_vec().into_iter(),
         };
 
-        read_output(&mut reader, &sender);
+        read_output(&mut reader, &sender, None);
 
         let output: String = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
         assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn strip_focus_reports_drops_standalone_focus_events() {
+        // xterm delivers each DEC 1004 focus report as its own write.
+        assert_eq!(strip_focus_reports("\u{1b}[I").as_ref(), "");
+        assert_eq!(strip_focus_reports("\u{1b}[O").as_ref(), "");
+    }
+
+    #[test]
+    fn strip_focus_reports_preserves_ordinary_and_other_escape_input() {
+        assert_eq!(strip_focus_reports("hello").as_ref(), "hello");
+        // Cursor keys and other CSI sequences must pass through untouched.
+        assert_eq!(strip_focus_reports("\u{1b}[A").as_ref(), "\u{1b}[A");
+        assert_eq!(strip_focus_reports("\u{1b}[D").as_ref(), "\u{1b}[D");
+        // CHT with an explicit parameter (ESC [ 2 I) is not a focus report.
+        assert_eq!(strip_focus_reports("\u{1b}[2I").as_ref(), "\u{1b}[2I");
+        // A bracketed-paste payload that merely contains the bytes is preserved
+        // as-is because it is not a bare focus report.
+        assert_eq!(
+            strip_focus_reports("\u{1b}[200~\u{1b}[201~").as_ref(),
+            "\u{1b}[200~\u{1b}[201~"
+        );
+    }
+
+    #[test]
+    fn strip_focus_reports_drops_embedded_and_repeated_focus_events() {
+        // The reported symptom: bursts of focus in/out while switching panels.
+        assert_eq!(strip_focus_reports("\u{1b}[O\u{1b}[O\u{1b}[I\u{1b}[O\u{1b}[I").as_ref(), "");
+        // Focus reports interleaved with real typed input keep the input.
+        assert_eq!(strip_focus_reports("a\u{1b}[Ob\u{1b}[Ic").as_ref(), "abc");
     }
 
     #[test]
@@ -692,7 +805,7 @@ mod tests {
             bytes: vec![b'a', 0x80, b'b', 0xe2, 0x97].into_iter(),
         };
 
-        read_output(&mut reader, &sender);
+        read_output(&mut reader, &sender, None);
 
         let output: String = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
         assert_eq!(output, "a\u{fffd}b\u{fffd}");
@@ -1594,7 +1707,7 @@ mod tests {
             pid: 42,
             process_identity: None,
             resize,
-            writer: Mutex::new(Box::new(TestWriter::WriteError)),
+            writer: Arc::new(Mutex::new(Box::new(TestWriter::WriteError))),
             killer: Mutex::new(Box::new(TestKiller { fail: true })),
             output,
             exit,
@@ -1637,7 +1750,7 @@ mod tests {
             pid: 43,
             process_identity: None,
             resize,
-            writer: Mutex::new(Box::new(TestWriter::FlushError)),
+            writer: Arc::new(Mutex::new(Box::new(TestWriter::FlushError))),
             killer: Mutex::new(Box::new(TestKiller { fail: false })),
             output,
             exit,

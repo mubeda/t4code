@@ -1,4 +1,5 @@
 mod history;
+mod osc;
 mod manager;
 mod model;
 mod pty;

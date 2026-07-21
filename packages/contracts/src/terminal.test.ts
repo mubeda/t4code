@@ -213,6 +213,25 @@ describe("TerminalLaunchCommand", () => {
     ).toBeUndefined();
   });
 
+  it("accepts an optional launch environment and rejects invalid env keys", () => {
+    const parsed = decodeSync(TerminalLaunchCommand, {
+      executable: "opencode",
+      args: [],
+      env: { OPENCODE_CONFIG_CONTENT: '{"theme":"system"}' },
+    });
+    expect(parsed.env).toEqual({ OPENCODE_CONFIG_CONTENT: '{"theme":"system"}' });
+    expect(decodeSync(TerminalLaunchCommand, { executable: "opencode", args: [] }).env).toBe(
+      undefined,
+    );
+    expect(() =>
+      decodeSync(TerminalLaunchCommand, {
+        executable: "opencode",
+        args: [],
+        env: { "invalid key!": "value" },
+      }),
+    ).toThrow();
+  });
+
   it("rejects invalid executable, argument, count, and label bounds", () => {
     expect(() => decodeSync(TerminalLaunchCommand, { executable: " ", args: [] })).toThrow();
     expect(() =>
