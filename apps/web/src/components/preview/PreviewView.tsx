@@ -18,6 +18,7 @@ import {
   useThreadPreviewState,
 } from "~/previewStateStore";
 import { resolveDiscoveredServerUrl } from "~/browser/browserTargetResolver";
+import { navigateDesktopTab } from "~/browser/desktopTabLifetime";
 import { useEnvironment, useEnvironmentHttpBaseUrl } from "~/state/environments";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -119,7 +120,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         if (tabId && previewBridge) {
           // Drive the webview imperatively; `usePreviewBridge` mirrors the
           // resolved URL back to the server so other clients stay in sync.
-          await previewBridge.navigate(tabId, resolvedUrl);
+          await navigateDesktopTab(tabId, resolvedUrl);
           rememberPreviewUrl(threadRef, resolvedUrl);
         } else {
           await openPreviewSession({
@@ -603,7 +604,9 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         {tabId && snapshot && !showEmptyState ? (
           <BrowserSurfaceSlot
             key={tabId}
+            threadRef={threadRef}
             tabId={tabId}
+            initialUrl={url || null}
             visible={visible && !isUnreachable}
             className="absolute inset-0 h-full w-full"
           />

@@ -48,6 +48,8 @@ const h = vi.hoisted(() => {
     screenshotRejects: false,
     copyArtifactRejects: false,
     // module collaborators
+    desktopNavigateCalls: [] as Array<[string, string]>,
+    desktopNavigateRejects: false,
     openPreviewSessionCalls: [] as unknown[],
     rememberPreviewUrlCalls: [] as unknown[],
     updateSnapshotCalls: [] as unknown[],
@@ -132,6 +134,15 @@ vi.mock("~/previewStateStore", () => ({
 
 vi.mock("~/browser/browserTargetResolver", () => ({
   resolveDiscoveredServerUrl: () => h.resolvedUrl,
+}));
+
+vi.mock("~/browser/desktopTabLifetime", () => ({
+  navigateDesktopTab: (tabId: string, url: string) => {
+    h.desktopNavigateCalls.push([tabId, url]);
+    return h.desktopNavigateRejects
+      ? Promise.reject(new Error("nav boom"))
+      : Promise.resolve(undefined);
+  },
 }));
 
 vi.mock("~/state/environments", () => ({
@@ -453,6 +464,8 @@ beforeEach(() => {
   h.screenshotArtifact = { path: "/shot.png" };
   h.screenshotRejects = false;
   h.copyArtifactRejects = false;
+  h.desktopNavigateCalls.length = 0;
+  h.desktopNavigateRejects = false;
   h.openPreviewSessionCalls.length = 0;
   h.rememberPreviewUrlCalls.length = 0;
   h.updateSnapshotCalls.length = 0;
@@ -609,7 +622,7 @@ describe("PreviewView rendering", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("navigation handlers", () => {
-  it("navigates the webview imperatively and remembers the url when a tab exists", async () => {
+  it("navigates through desktop tab readiness and remembers the url when a tab exists", async () => {
     seedSession();
     h.previewBridge = makeBridge();
     renderView();
@@ -618,7 +631,8 @@ describe("navigation handlers", () => {
     (chrome.onSubmit as (next: string) => void)("example.com");
     await flush();
 
-    expect(bridgeMethodCalls("navigate")).toHaveLength(1);
+    expect(h.desktopNavigateCalls).toEqual([["tab-1", "http://resolved.local/"]]);
+    expect(bridgeMethodCalls("navigate")).toHaveLength(0);
     expect(h.rememberPreviewUrlCalls).toHaveLength(1);
     expect(h.openPreviewSessionCalls).toHaveLength(0);
   });
@@ -632,14 +646,14 @@ describe("navigation handlers", () => {
     await flush();
 
     expect(h.openPreviewSessionCalls).toHaveLength(1);
+    expect(h.desktopNavigateCalls).toHaveLength(0);
     expect(bridgeMethodCalls("navigate")).toHaveLength(0);
   });
 
   it("swallows navigation errors (the failed event drives the unreachable view)", async () => {
     seedSession();
-    const bridge = makeBridge();
-    bridge.navigate = () => Promise.reject(new Error("nav boom"));
-    h.previewBridge = bridge;
+    h.previewBridge = makeBridge();
+    h.desktopNavigateRejects = true;
     renderView();
     const chrome = captured("chromeRow");
 

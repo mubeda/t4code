@@ -1,16 +1,43 @@
 "use client";
 
-import { useLayoutEffect, useRef } from "react";
+import type { ScopedThreadRef } from "@t4code/contracts";
+import { useEffect, useLayoutEffect, useRef } from "react";
+
+import { usePreviewBridge } from "~/components/preview/usePreviewBridge";
 
 import { acquireBrowserSurface } from "./browserSurfaceStore";
+import { acquireDesktopTab } from "./desktopTabLifetime";
 
 export function BrowserSurfaceSlot(props: {
+  readonly threadRef: ScopedThreadRef;
   readonly tabId: string;
+  readonly initialUrl: string | null;
   readonly visible: boolean;
   readonly className?: string;
 }) {
-  const { tabId, visible, className } = props;
+  const { threadRef, tabId, initialUrl, visible, className } = props;
   const elementRef = useRef<HTMLDivElement | null>(null);
+  const initialNavigationRef = useRef({ tabId, url: initialUrl });
+
+  usePreviewBridge({ threadRef, tabId });
+
+  useLayoutEffect(() => {
+    if (initialNavigationRef.current.tabId === tabId) return;
+    initialNavigationRef.current = { tabId, url: initialUrl };
+  }, [initialUrl, tabId]);
+
+  useEffect(() => {
+    let disposed = false;
+    const lease = acquireDesktopTab(tabId);
+    const capturedInitialUrl = initialNavigationRef.current.url;
+    if (capturedInitialUrl !== null) {
+      void lease.navigate(capturedInitialUrl, () => !disposed).catch(() => undefined);
+    }
+    return () => {
+      disposed = true;
+      lease.release();
+    };
+  }, [tabId]);
 
   useLayoutEffect(() => {
     const element = elementRef.current;

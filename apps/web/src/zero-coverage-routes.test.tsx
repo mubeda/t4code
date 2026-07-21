@@ -144,6 +144,10 @@ vi.mock("./browser/browserSurfaceStore", () => ({
   acquireBrowserSurface: () => h.lease,
 }));
 
+vi.mock("./components/preview/usePreviewBridge", () => ({
+  usePreviewBridge: () => undefined,
+}));
+
 import { CenterTerminalPanel } from "./components/CenterTerminalPanel";
 import {
   T4CodeConnectSidebarAvatar,
@@ -485,6 +489,11 @@ describe("center terminal and preview surfaces", () => {
 });
 
 describe("browser surface and progress lifecycles", () => {
+  const threadRef = {
+    environmentId: EnvironmentId.make("environment-local"),
+    threadId: ThreadId.make("thread-browser-surface"),
+  };
+
   it("presents measured browser bounds, reacts to observers, and releases leases", async () => {
     const resizeCallbacks: { current?: () => void } = {};
     const disconnect = vi.fn();
@@ -511,14 +520,30 @@ describe("browser surface and progress lifecycles", () => {
       left: 1.4,
       toJSON: () => ({}),
     });
-    const mounted = await mount(<BrowserSurfaceSlot tabId="tab-1" visible className="slot" />);
+    const mounted = await mount(
+      <BrowserSurfaceSlot
+        threadRef={threadRef}
+        tabId="tab-1"
+        initialUrl="https://example.test/"
+        visible
+        className="slot"
+      />,
+    );
     expect(h.lease.present).toHaveBeenCalledWith({ x: 1, y: 3, width: 300, height: 200 }, true);
     resizeCallbacks.current?.();
     window.dispatchEvent(new Event("resize"));
     window.dispatchEvent(new Event("scroll"));
     expect(h.lease.present.mock.calls.length).toBeGreaterThan(3);
 
-    await rerender(mounted, <BrowserSurfaceSlot tabId="tab-2" visible={false} />);
+    await rerender(
+      mounted,
+      <BrowserSurfaceSlot
+        threadRef={threadRef}
+        tabId="tab-2"
+        initialUrl="https://example.test/next"
+        visible={false}
+      />,
+    );
     expect(h.lease.release).toHaveBeenCalledOnce();
     expect(h.lease.present).toHaveBeenLastCalledWith(expect.any(Object), false);
     await act(async () => mounted.root.unmount());
