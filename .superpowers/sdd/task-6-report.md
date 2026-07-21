@@ -1133,3 +1133,56 @@ Implementation commit: `f20ce3d3c54c35488eb0ebaf1f53cef77012c480`
 - `git diff --check`: exit 0.
 
 No native UI was launched. Existing QA screenshots and all prior report content were preserved.
+
+---
+
+# Task 6 Claude panel visible default fix
+
+Implementation commit: `91275d13aef0fe089eb48a25eac1e73ede900755`
+
+## Root cause and behavior fixed
+
+- The live composer correctly kept a raw prompt-injected Claude session default separate from the
+  normalized native dispatch options, but only prompt text activated the Ultrathink presentation.
+  `TraitsPicker` therefore rendered the normalized native default, High, and
+  `getComposerProviderState` omitted the Ultrathink frame/icon classes until a prefix was present.
+- Traits presentation now resolves the raw primary selection through the model descriptor's
+  `promptInjectedValues` metadata. A newly seeded Sonnet 5 panel with an empty prompt visibly shows
+  Ultrathink in both the trigger and selected radio item.
+- Composer presentation treats the resolved raw `ultrathink` value as active before first send.
+  The full `ChatComposer` boundary verifies the frame, surface, picker-icon class, prompt effort,
+  and native High dispatch options together.
+- Prompt-body locking remains based only on actual prompt text. Choosing High from the raw default
+  persists High without adding or stripping a prefix. Existing manual prefix insertion,
+  body-protection, first-send formatting, one-shot reset, and terminal argument behavior are
+  unchanged.
+
+## RED evidence
+
+Command:
+
+```text
+vp test apps/web/src/components/chat/TraitsPicker.test.tsx apps/web/src/components/chat/composerProviderState.test.tsx apps/web/src/components/chat/ChatComposer.test.tsx
+```
+
+Exit: `1`. The command reported 4 expected failures and 104 passing tests:
+
+- both raw-default Traits tests rendered High instead of Ultrathink;
+- composer state returned `promptEffort: "ultrathink"` and native High dispatch options but omitted
+  all three Ultrathink presentation classes;
+- the full ChatComposer boundary rendered High and omitted the Ultrathink frame, surface, and
+  provider-icon presentation.
+
+## GREEN and final verification
+
+- Initial focused GREEN: the three RED suites passed all 108 tests.
+- Broader composer/Traits/ChatView/panel/terminal/shared-model command: 8 files passed; 323 tests
+  passed; 0 failed. This includes the added-panel seed, first-send prefix and native High dispatch,
+  manual prefix/body protection, one-shot reset, center-panel state/actions, and provider terminal
+  vectors.
+- `vp check`: all 1562 files correctly formatted; no warnings or lint errors in 1182 files; exit
+  0.
+- `vp run typecheck`: exit 0. Existing finite-number suggestions remained non-failing.
+- `git diff --check`: exit 0.
+
+No native UI was launched. Existing QA artifacts and all prior report content were preserved.
