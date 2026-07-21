@@ -10,6 +10,7 @@ import type { ProviderInstanceEntry } from "~/providerInstances";
 interface ProviderTerminalDefinition {
   readonly executable: string;
   readonly args: ReadonlyArray<string>;
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 const DEFINITIONS: Partial<Record<ProviderDriverKind, ProviderTerminalDefinition>> = {
@@ -24,6 +25,11 @@ const DEFINITIONS: Partial<Record<ProviderDriverKind, ProviderTerminalDefinition
   [ProviderDriverKind.make("opencode")]: {
     executable: "opencode",
     args: [],
+    // OpenCode's TUI paints its own dark theme by default instead of using the
+    // terminal's colors. The "system" theme makes it adopt xterm's defaults so
+    // the embedded terminal follows the app theme; this config layer merges on
+    // top of (and takes precedence over) the user's opencode.json.
+    env: { OPENCODE_CONFIG_CONTENT: '{"theme":"system"}' },
   },
   [ProviderDriverKind.make("cursor")]: {
     executable: "cursor-agent",
@@ -76,6 +82,7 @@ export function resolveProviderTerminalAction(
     executable,
     args: [...definition.args],
     label,
+    ...(definition.env ? { env: { ...definition.env } } : {}),
   });
   if (command === null) {
     return {

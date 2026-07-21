@@ -392,6 +392,38 @@ export function normalizeComputedColor(value: string | null | undefined, fallbac
   return value ?? fallback;
 }
 
+// The terminal's resolved background/foreground/cursor as "r,g,b" triplets,
+// keyed by the same `.dark` signal terminalThemeFromApp resolves against. These
+// match terminalThemeFromApp's fallback colors so what the PTY reports for an
+// OSC color query is consistent with what xterm paints.
+const TERMINAL_OSC_COLORS = {
+  dark: { background: "14,18,24", foreground: "237,241,247", cursor: "180,203,255" },
+  light: { background: "255,255,255", foreground: "28,33,41", cursor: "38,56,78" },
+} as const;
+
+// Reserved launch env keys the server consumes to answer OSC 10/11/12 color
+// queries at the PTY layer, then strips before spawning the child. This lets
+// providers like OpenCode detect a light vs. dark terminal reliably, without
+// depending on xterm's slower round-trip reply. See apps/server terminal::osc.
+function terminalOscColorEnv(): Record<string, string> {
+  const isDark =
+    typeof document !== "undefined" && document.documentElement.classList.contains("dark");
+  const colors = isDark ? TERMINAL_OSC_COLORS.dark : TERMINAL_OSC_COLORS.light;
+  return {
+    T4CODE_OSC_BACKGROUND: colors.background,
+    T4CODE_OSC_FOREGROUND: colors.foreground,
+    T4CODE_OSC_CURSOR: colors.cursor,
+  };
+}
+
+function terminalThemesEqual(left: ITheme, right: ITheme): boolean {
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)] as Array<keyof ITheme>);
+  for (const key of keys) {
+    if (left[key] !== right[key]) return false;
+  }
+  return true;
+}
+
 function terminalThemeFromApp(mountElement?: HTMLElement | null): ITheme {
   const isDark = document.documentElement.classList.contains("dark");
   const fallbackBackground = isDark ? "rgb(14, 18, 24)" : "rgb(255, 255, 255)";
@@ -620,6 +652,12 @@ export function TerminalViewport({
   const webglLifecycleRef = useRef<WebglLifecycle | null>(null);
   const webglFailedRef = useRef(false);
   const webglDiagnosticRecordedRef = useRef(false);
+  // Bumped whenever the main renderer effect creates a new Terminal, so the
+  // webgl effect re-runs for the replacement instance instead of leaving it on
+  // the DOM renderer. The ref lets stale renders be skipped until the state
+  // update commits.
+  const webglTerminalEpochRef = useRef(0);
+  const [webglTerminalEpoch, setWebglTerminalEpoch] = useState(0);
   const [documentVisible, setDocumentVisible] = useState(isDocumentVisible);
   const shouldRender = visible && isDocumentVisible() && documentVisible;
   const webglEnabled = usePrimarySettings((settings) => settings.terminal.webglEnabled);
@@ -642,6 +680,14 @@ export function TerminalViewport({
     onAddTerminalContext(selection);
   });
   const readTerminalLabel = useEffectEvent(() => terminalLabel);
+  // Launch-command env supplies provider defaults; the reserved OSC color keys
+  // carry the resolved theme for the PTY-layer query responder; the thread's
+  // runtime env is user configuration and wins on conflicts. Captured at spawn,
+  // which is when providers read their terminal background.
+  const spawnEnv = useMemo(() => {
+    const merged = { ...command?.env, ...terminalOscColorEnv(), ...runtimeEnv };
+    return Object.keys(merged).length > 0 ? merged : undefined;
+  }, [command, runtimeEnv]);
   const terminalSession = useAttachedTerminalSession({
     environmentId,
     terminal: {
@@ -649,7 +695,7 @@ export function TerminalViewport({
       terminalId,
       cwd,
       ...(worktreePath !== undefined ? { worktreePath } : {}),
-      ...(runtimeEnv ? { env: runtimeEnv } : {}),
+      ...(spawnEnv ? { env: spawnEnv } : {}),
       ...(command ? { command } : {}),
     },
     attach: shouldRender,
@@ -744,6 +790,8 @@ export function TerminalViewport({
     lastRequestedSizeRef.current = null;
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
+    webglTerminalEpochRef.current += 1;
+    setWebglTerminalEpoch(webglTerminalEpochRef.current);
     const inputKey = terminalInputKey(environmentId, threadId, terminalId);
     const rendererOwner = {};
     const { binding: inputBinding, scheduler: inputScheduler } =
@@ -1027,7 +1075,13 @@ export function TerminalViewport({
     const themeObserver = new MutationObserver(() => {
       const activeTerminal = terminalRef.current;
       if (!activeTerminal) return;
-      activeTerminal.options.theme = terminalThemeFromApp(containerRef.current);
+      // <html> class/style churn (tooltips, scroll locks) fires this observer
+      // far more often than the theme changes; a repaint rebuilds the glyph
+      // atlas, so skip it unless the resolved theme actually differs.
+      const nextTheme = terminalThemeFromApp(containerRef.current);
+      const currentTheme = activeTerminal.options.theme;
+      if (currentTheme && terminalThemesEqual(currentTheme, nextTheme)) return;
+      activeTerminal.options.theme = nextTheme;
       activeTerminal.refresh(0, activeTerminal.rows - 1);
     });
     themeObserver.observe(document.documentElement, {
@@ -1145,6 +1199,12 @@ export function TerminalViewport({
     ) {
       return;
     }
+    // A stale render's epoch means a fresh terminal was just created and this
+    // effect will re-run once the epoch state commits — attaching now would
+    // create a second context for the same terminal.
+    if (webglTerminalEpoch !== webglTerminalEpochRef.current) {
+      return;
+    }
 
     const generation = webglGenerationRef.current + 1;
     webglGenerationRef.current = generation;
@@ -1205,7 +1265,13 @@ export function TerminalViewport({
         webglLifecycleRef.current = null;
       }
     };
-  }, [recordWebglDiagnosticOnce, shouldRender, transcriptRuntime, webglEnabled]);
+  }, [
+    recordWebglDiagnosticOnce,
+    shouldRender,
+    transcriptRuntime,
+    webglEnabled,
+    webglTerminalEpoch,
+  ]);
 
   useEffect(() => {
     if (!shouldRender || !hasAuthoritativeTerminalState) return;
