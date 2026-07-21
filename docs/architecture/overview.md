@@ -69,6 +69,12 @@ provider CLIs, terminals, SSH forwarding, and managed relay processes with
 bounded queues, cancellation, and process-tree cleanup. No Node runtime or
 server sidecar is staged into desktop artifacts.
 
+The Browser surface is split between React and the native host. React owns its
+chrome, tab state, and persistence, while Tauri child webviews render site
+content through `desktop_preview_*` commands. Desktop builds expose
+`window.desktopBridge.preview` as the stable host boundary; Phase 2 automation
+will control those same host-managed tabs.
+
 ## Request And Event Flow
 
 1. The frontend resolves an environment through the client runtime.

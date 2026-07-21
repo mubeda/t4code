@@ -1666,7 +1666,7 @@ git commit -m "feat(web): sync browser surface rects to native preview host"
 
 **Files:** none new — verification only.
 
-- [ ] **Step 1: Run every affected suite**
+- [x] **Step 1: Run every affected suite**
 
 Run:
 ```bash
@@ -1694,11 +1694,11 @@ Run: `pnpm dev:desktop`
 
 Record any failures as fix-up commits within this task.
 
-- [ ] **Step 3: Update dormant-feature docs**
+- [x] **Step 3: Update dormant-feature docs**
 
 Edit `docs/architecture/overview.md` preview section: note the preview host is now implemented natively on Tauri (child webviews + `desktop_preview_*` commands), and `window.desktopBridge.preview` is present on desktop builds. Keep it to a short paragraph in the existing style.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A
