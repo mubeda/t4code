@@ -225,7 +225,7 @@ async fn fetch_claude_usage() -> Result<ProviderUsageSnapshot, ProviderUsageFetc
     let credentials_path = configured_directory
         .or_else(|| dirs::home_dir().map(|home| home.join(".claude")))
         .map(|directory| directory.join(".credentials.json"));
-    let mut stores = credentials_path
+    let stores = credentials_path
         .into_iter()
         .map(ClaudeCredentialStore::File)
         .collect::<Vec<_>>();

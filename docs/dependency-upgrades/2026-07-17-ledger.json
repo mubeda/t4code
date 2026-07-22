@@ -84,7 +84,7 @@
   "inventorySummary": {
     "javascriptDirect": 79,
     "javascriptLedger": 78,
-    "rustRegistry": 75,
+    "rustRegistry": 76,
     "rustPath": 1,
     "actions": 9,
     "toolchains": 9
@@ -1631,6 +1631,16 @@
       "status": "green"
     },
     {
+      "key": "rust:workspace:security-framework",
+      "name": "security-framework",
+      "current": "3.7.0",
+      "target": "3.7.0",
+      "channel": "stable",
+      "source": "https://crates.io/crates/security-framework",
+      "cohort": "rust-current",
+      "platforms": ["macos"],
+      "status": "current"
+    },    {
       "key": "rust:workspace:serde",
       "name": "serde",
       "current": "1",
