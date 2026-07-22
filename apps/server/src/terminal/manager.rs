@@ -5,12 +5,12 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 
+use super::model::{TerminalConsoleTheme, terminal_console_theme_from_env};
 use super::{
     PortablePtyBackend, PtyBackend, PtyExit, PtyProcess, PtySpawnInput, TerminalAttachInput,
     TerminalEvent, TerminalMetadataEvent, TerminalOpenInput, TerminalRestartInput,
     TerminalSessionSnapshot, TerminalStatus, TerminalSummary, history::TerminalHistory,
 };
-use super::model::{TerminalConsoleTheme, terminal_console_theme_from_env};
 use crate::{
     diagnostics::{
         AttributionKind, AttributionScope, NativeProcessSampler, ProcessAttributionRegistry,
@@ -1050,11 +1050,7 @@ impl TerminalManager {
         log_terminal_cleanup("close", &closed.report);
     }
 
-    async fn close_sessions(
-        &self,
-        thread_id: &str,
-        terminal_id: Option<&str>,
-    ) -> ClosedSessions {
+    async fn close_sessions(&self, thread_id: &str, terminal_id: Option<&str>) -> ClosedSessions {
         let mut closed = ClosedSessions::default();
         let keys = {
             let sessions = self.inner.sessions.read().await;
@@ -2298,15 +2294,11 @@ mod tests {
         let mut events = manager.subscribe_events();
         let mut metadata_events = metadata.events;
 
-        input.env.insert(
-            "T4CODE_WINDOWS_CONSOLE_THEME".to_owned(),
-            "dark".to_owned(),
-        );
+        input
+            .env
+            .insert("T4CODE_WINDOWS_CONSOLE_THEME".to_owned(), "dark".to_owned());
         let restarted = manager.restart(input).await.unwrap();
-        assert_eq!(
-            restarted.console_theme,
-            Some(TerminalConsoleTheme::Dark)
-        );
+        assert_eq!(restarted.console_theme, Some(TerminalConsoleTheme::Dark));
         assert!(matches!(
             events.recv().await.unwrap(),
             TerminalEvent::Restarted { snapshot, .. }

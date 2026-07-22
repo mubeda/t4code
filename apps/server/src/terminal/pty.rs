@@ -22,13 +22,13 @@ use crate::process::{
     Platform, launch_executable_extensions, locate_executable, wrap_launch_program,
     wrap_windows_batch_command,
 };
-use crate::terminal::osc::{OscColorResponder, colors_from_env, is_reserved_osc_env_key};
 use crate::terminal::model::WINDOWS_CONSOLE_THEME_ENV;
 #[cfg(any(windows, test))]
 use crate::terminal::model::{
     TerminalConsoleTheme as WindowsConsoleTheme,
     terminal_console_theme_from_env as windows_console_theme_from_env,
 };
+use crate::terminal::osc::{OscColorResponder, colors_from_env, is_reserved_osc_env_key};
 
 #[cfg(windows)]
 use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
@@ -1531,8 +1531,8 @@ mod tests {
     fn windows_batch_launch_rejects_control_characters_in_the_script_path() {
         // Windows rejects this filename at the filesystem boundary, so test
         // the launch validation directly instead of trying to create it.
-        let error = wrap_launch_program(Platform::Windows, Path::new("provider\nshim.cmd"))
-            .unwrap_err();
+        let error =
+            wrap_launch_program(Platform::Windows, Path::new("provider\nshim.cmd")).unwrap_err();
 
         assert_eq!(
             error,

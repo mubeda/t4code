@@ -3,8 +3,8 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use t4code_server::terminal::{
-    PortablePtyBackend, PtyBackend, PtySpawnInput, TerminalAttachInput, TerminalManager,
-    TerminalEvent, TerminalMetadataEvent, TerminalOpenInput,
+    PortablePtyBackend, PtyBackend, PtySpawnInput, TerminalAttachInput, TerminalEvent,
+    TerminalManager, TerminalMetadataEvent, TerminalOpenInput,
 };
 
 const WINDOWS_CONSOLE_THEME_ENV: &str = "T4CODE_WINDOWS_CONSOLE_THEME";
@@ -231,10 +231,8 @@ async fn restarting_a_native_terminal_with_a_new_console_theme_completes() {
         120,
         30,
     );
-    dark.env.insert(
-        WINDOWS_CONSOLE_THEME_ENV.to_owned(),
-        "dark".to_owned(),
-    );
+    dark.env
+        .insert(WINDOWS_CONSOLE_THEME_ENV.to_owned(), "dark".to_owned());
     manager.open(dark).await.expect("dark terminal opens");
     let mut attachment = manager
         .attach(TerminalAttachInput::existing(
@@ -272,10 +270,9 @@ async fn restarting_a_native_terminal_with_a_new_console_theme_completes() {
         120,
         30,
     );
-    light.env.insert(
-        WINDOWS_CONSOLE_THEME_ENV.to_owned(),
-        "light".to_owned(),
-    );
+    light
+        .env
+        .insert(WINDOWS_CONSOLE_THEME_ENV.to_owned(), "light".to_owned());
     let restarted = tokio::time::timeout(Duration::from_secs(5), manager.restart(light))
         .await
         .expect("theme restart must not hang")
@@ -287,7 +284,10 @@ async fn restarting_a_native_terminal_with_a_new_console_theme_completes() {
     );
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            if matches!(attachment.recv().await, Some(TerminalEvent::Restarted { .. })) {
+            if matches!(
+                attachment.recv().await,
+                Some(TerminalEvent::Restarted { .. })
+            ) {
                 break;
             }
         }
