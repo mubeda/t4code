@@ -1640,7 +1640,8 @@
       "cohort": "rust-current",
       "platforms": ["macos"],
       "status": "current"
-    },    {
+    },
+    {
       "key": "rust:workspace:serde",
       "name": "serde",
       "current": "1",
