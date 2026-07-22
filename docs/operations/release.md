@@ -73,9 +73,16 @@ desktop release. The workflow intentionally does not publish the upstream
 
 ## Signing And Updates
 
-Current desktop artifacts are unsigned. Platform signing, macOS notarization,
-and Windows trusted signing must be added to the Tauri pipeline before public
-distribution that requires trusted installers.
+macOS application bundles are signed with Tauri's ad-hoc `-` identity. This
+seals the complete bundle so Gatekeeper can verify that it is intact, but it
+does not associate the app with an Apple Developer team or notarize it. Users
+must approve a browser-downloaded build through Settings > Privacy & Security.
+Release CI mounts both macOS DMGs and verifies their recursive bundle signatures
+before upload.
+
+Windows artifacts remain unsigned. Apple Developer ID signing, macOS
+notarization, and Windows trusted signing are still required before public
+distribution that should run without platform security warnings.
 
 The Tauri updater plugin is installed, but
 `apps/desktop/src-tauri/tauri.conf.json` currently has no updater public key or

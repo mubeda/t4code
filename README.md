@@ -40,10 +40,13 @@ Download the latest desktop build for your platform from
 Desktop releases are built by the Tauri 2 pipeline in `apps/desktop`.
 
 > [!NOTE]
-> Release builds are currently unsigned. On macOS, right-click the app and
-> choose "Open" on first launch (or run
-> `xattr -dr com.apple.quarantine "/Applications/T4Code (Alpha).app"`).
-> On Windows, choose "More info" → "Run anyway" if SmartScreen warns.
+> macOS releases are ad-hoc signed without an Apple Developer identity or
+> notarization. On first launch, macOS will block the app; open System Settings
+> → Privacy & Security and choose **Open Anyway** for T4Code. For local testing,
+> the quarantine flag can instead be removed with
+> `xattr -dr com.apple.quarantine "/Applications/T4Code (Alpha).app"`.
+> Windows releases remain unsigned; choose "More info" → "Run anyway" if
+> SmartScreen warns.
 
 ### Run from source
 
