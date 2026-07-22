@@ -370,6 +370,41 @@ jobs:
             --output-dir release \
             --verbose
 
+      - name: Verify macOS ad-hoc application signature
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          dmg_paths=(release/*.dmg)
+          if (( ${#dmg_paths[@]} != 1 )); then
+            printf 'Expected exactly one macOS DMG in release/, found %s.\n' "${#dmg_paths[@]}" >&2
+            exit 1
+          fi
+
+          mount_dir="$(mktemp -d)"
+          cleanup() {
+            hdiutil detach "$mount_dir" >/dev/null 2>&1 || hdiutil detach -force "$mount_dir" >/dev/null 2>&1 || true
+            rmdir "$mount_dir" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          hdiutil attach -readonly -nobrowse -noautoopen \
+            -mountpoint "$mount_dir" "${dmg_paths[0]}" >/dev/null
+
+          app_paths=("$mount_dir"/*.app)
+          if (( ${#app_paths[@]} != 1 )); then
+            printf 'Expected exactly one application in the DMG, found %s.\n' "${#app_paths[@]}" >&2
+            exit 1
+          fi
+
+          codesign --verify --deep --strict --verbose=4 "${app_paths[0]}"
+          signature_details="$(codesign --display --verbose=4 "${app_paths[0]}" 2>&1)"
+          printf '%s\n' "$signature_details"
+          grep -Fq 'Signature=adhoc' <<< "$signature_details"
+          grep -Fq 'TeamIdentifier=not set' <<< "$signature_details"
+
       - name: Collect release assets
         shell: bash
         run: |

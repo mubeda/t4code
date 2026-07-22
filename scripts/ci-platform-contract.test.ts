@@ -183,6 +183,34 @@ describe("cross-platform release contract", () => {
     expect(commands).toContain("patchelf");
   });
 
+  it("verifies complete ad-hoc signatures before publishing macOS DMGs", () => {
+    const { workflow } = readWorkflow(RELEASE_WORKFLOW_PATH);
+    const steps = requireJob(workflow, "build").steps ?? [];
+    const buildIndex = steps.findIndex((step) => step.name === "Build desktop artifact");
+    const verifyIndex = steps.findIndex(
+      (step) => step.name === "Verify macOS ad-hoc application signature",
+    );
+    const collectIndex = steps.findIndex((step) => step.name === "Collect release assets");
+    const verify = steps[verifyIndex];
+
+    expect(verifyIndex).toBeGreaterThan(buildIndex);
+    expect(collectIndex).toBeGreaterThan(verifyIndex);
+    expect(verify?.if).toBe("matrix.platform == 'mac'");
+    expect(verify?.run).toContain("set -euo pipefail");
+    expect(verify?.run).toContain("shopt -s nullglob");
+    expect(verify?.run).toContain("if (( ${#dmg_paths[@]} != 1 )); then");
+    expect(verify?.run).toContain("hdiutil attach -readonly -nobrowse -noautoopen");
+    expect(verify?.run).toContain("if (( ${#app_paths[@]} != 1 )); then");
+    expect(verify?.run).toContain("codesign --verify --deep --strict --verbose=4");
+    expect(verify?.run).toContain("Signature=adhoc");
+    expect(verify?.run).toContain("TeamIdentifier=not set");
+    expect(verify?.run).toContain("trap cleanup EXIT");
+    expect(verify?.run).toContain(
+      'hdiutil detach "$mount_dir" >/dev/null 2>&1 || hdiutil detach -force "$mount_dir"',
+    );
+    expect(verify?.run).not.toContain("attached=");
+  });
+
   it("does not reintroduce scheduled nightly releases", () => {
     const ci = readWorkflow(CI_WORKFLOW_PATH);
     const release = readWorkflow(RELEASE_WORKFLOW_PATH);
