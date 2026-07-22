@@ -620,6 +620,7 @@ pub(crate) fn now_iso() -> String {
 ///
 /// Platform navigation metadata uses native completion callbacks, so callers
 /// must not invoke this from the webview UI thread.
+#[allow(clippy::too_many_arguments)]
 fn emit_state(
     app: &AppHandle,
     webview: &tauri::Webview,
