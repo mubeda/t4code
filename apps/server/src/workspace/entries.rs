@@ -13,8 +13,21 @@ pub struct BrowseEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BrowseBreadcrumb {
+    pub name: String,
+    pub full_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BrowseResult {
     pub parent_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub directory_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ancestor_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub breadcrumbs: Option<Vec<BrowseBreadcrumb>>,
     pub entries: Vec<BrowseEntry>,
 }
 
@@ -64,6 +77,9 @@ pub async fn browse(
         {
             return Ok(BrowseResult {
                 parent_path: parent.to_string_lossy().into_owned(),
+                directory_path: None,
+                ancestor_path: None,
+                breadcrumbs: None,
                 entries: Vec::new(),
             });
         }
@@ -95,6 +111,83 @@ pub async fn browse(
     entries.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(BrowseResult {
         parent_path: parent.to_string_lossy().into_owned(),
+        directory_path: None,
+        ancestor_path: None,
+        breadcrumbs: None,
+        entries,
+    })
+}
+
+pub async fn browse_directory(
+    requested_path: &str,
+    cwd: Option<&Path>,
+) -> Result<BrowseResult, WorkspaceError> {
+    let trimmed = requested_path.trim();
+    #[cfg(not(windows))]
+    if looks_like_windows_absolute(trimmed) {
+        return Err(WorkspaceError::WindowsPathUnsupported {
+            partial_path: requested_path.to_owned(),
+        });
+    }
+    let resolved = if trimmed == "." || trimmed == ".." {
+        cwd.ok_or_else(|| WorkspaceError::CurrentProjectRequired {
+            partial_path: requested_path.to_owned(),
+        })?
+        .join(trimmed)
+    } else {
+        expand_home(trimmed)
+    };
+    let canonical = tokio::fs::canonicalize(&resolved)
+        .await
+        .map_err(|error| WorkspaceError::operation("canonicalize-directory", &resolved, error))?;
+    let canonical = crate::production::host_paths::process_compatible_path(canonical);
+    let metadata = tokio::fs::metadata(&canonical)
+        .await
+        .map_err(|error| WorkspaceError::operation("stat-directory", &canonical, error))?;
+    if !metadata.is_dir() {
+        return Err(WorkspaceError::RootNotDirectory { path: canonical });
+    }
+    let mut reader = tokio::fs::read_dir(&canonical)
+        .await
+        .map_err(|error| WorkspaceError::operation("read-directory", &canonical, error))?;
+    let mut entries = Vec::new();
+    while let Some(entry) = reader
+        .next_entry()
+        .await
+        .map_err(|error| WorkspaceError::operation("read-directory", &canonical, error))?
+    {
+        let file_type = entry
+            .file_type()
+            .await
+            .map_err(|error| WorkspaceError::operation("stat", entry.path(), error))?;
+        if file_type.is_dir() {
+            entries.push(BrowseEntry {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                full_path: entry.path().to_string_lossy().into_owned(),
+            });
+        }
+    }
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    let mut breadcrumbs = canonical
+        .ancestors()
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(|path| BrowseBreadcrumb {
+            name: path.file_name().map_or_else(
+                || path.to_string_lossy().into_owned(),
+                |name| name.to_string_lossy().into_owned(),
+            ),
+            full_path: path.to_string_lossy().into_owned(),
+        })
+        .collect::<Vec<_>>();
+    breadcrumbs.reverse();
+
+    Ok(BrowseResult {
+        parent_path: canonical.to_string_lossy().into_owned(),
+        directory_path: Some(canonical.to_string_lossy().into_owned()),
+        ancestor_path: canonical
+            .parent()
+            .map(|path| path.to_string_lossy().into_owned()),
+        breadcrumbs: Some(breadcrumbs),
         entries,
     })
 }

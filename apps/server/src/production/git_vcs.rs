@@ -64,7 +64,12 @@ pub struct GitVcsRpcServices {
 
 impl Default for GitVcsRpcServices {
     fn default() -> Self {
-        let repository = Arc::new(GitRepository::default());
+        Self::with_repository(Arc::new(GitRepository::default()))
+    }
+}
+
+impl GitVcsRpcServices {
+    pub fn with_repository(repository: Arc<GitRepository>) -> Self {
         Self {
             broadcaster: StatusBroadcaster::new(
                 Arc::clone(&repository),

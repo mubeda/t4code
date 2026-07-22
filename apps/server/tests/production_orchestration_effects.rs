@@ -13,12 +13,24 @@ use orchestration_effects::{
 };
 use serde_json::json;
 use t4code_server::{
+    git::{BoxWorktreeBaseDirectoryFuture, GitRepository, WorktreeBaseDirectoryProvider},
     orchestration::engine::{EngineOptions, OrchestrationCommand, OrchestrationEngine},
     persistence::{Database, run_migrations},
 };
 use tempfile::TempDir;
+use tokio_util::sync::CancellationToken;
 
 const NOW: &str = "2026-07-10T10:00:00.000Z";
+
+#[derive(Clone)]
+struct StaticWorktreeBaseDirectory(Option<PathBuf>);
+
+impl WorktreeBaseDirectoryProvider for StaticWorktreeBaseDirectory {
+    fn worktree_base_directory<'a>(&'a self) -> BoxWorktreeBaseDirectoryFuture<'a> {
+        let value = self.0.clone();
+        Box::pin(async move { value })
+    }
+}
 
 #[derive(Default)]
 struct CallbackState {
@@ -215,6 +227,75 @@ async fn normalizes_and_optionally_creates_project_workspace_roots() {
 }
 
 #[tokio::test]
+async fn bootstrap_uses_the_injected_worktree_workspace() {
+    let source = initialize_repository();
+    let workspace = tempfile::tempdir().expect("worktree workspace");
+    let repository = Arc::new(GitRepository::with_worktree_settings(Arc::new(
+        StaticWorktreeBaseDirectory(Some(workspace.path().to_path_buf())),
+    )));
+    let engine = engine(source.path()).await;
+    let callbacks = Arc::new(CallbackState::default());
+    let effects = OrchestrationEffects::start(
+        engine.clone(),
+        repository.clone(),
+        callbacks,
+        EffectsOptions::default(),
+    )
+    .await
+    .expect("effects");
+
+    dispatch(
+        &engine,
+        json!({
+            "type":"thread.turn.start", "commandId":"workspace-bootstrap",
+            "threadId":"workspace-thread",
+            "message":{
+                "messageId":"workspace-message", "role":"user", "text":"change it",
+                "attachments":[]
+            },
+            "bootstrap":{
+                "createThread":{
+                    "projectId":"p1", "title":"Workspace thread",
+                    "modelSelection":{"instanceId":"codex","model":"gpt-5"},
+                    "runtimeMode":"full-access", "interactionMode":"default",
+                    "branch":null, "worktreePath":null, "createdAt":NOW
+                },
+                "prepareWorktree":{
+                    "projectCwd":source.path(), "baseBranch":"HEAD",
+                    "branch":"t4code/workspace-test"
+                },
+                "runSetupScript":false
+            },
+            "createdAt":NOW
+        }),
+    )
+    .await;
+    let thread = engine
+        .repositories()
+        .get_thread("workspace-thread".to_owned())
+        .await
+        .expect("thread query")
+        .expect("thread");
+    assert!(
+        Path::new(thread.worktree_path.as_deref().expect("worktree path"))
+            .starts_with(workspace.path())
+    );
+
+    let created_path = PathBuf::from(thread.worktree_path.expect("worktree path"));
+    effects.shutdown().await;
+    repository
+        .remove_worktree(
+            source.path(),
+            &created_path,
+            true,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("remove configured worktree");
+    engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn bootstrap_creates_worktree_updates_thread_runs_setup_then_dispatches_turn() {
     let repository = initialize_repository();
     let engine = engine(repository.path()).await;
@@ -230,10 +311,14 @@ async fn bootstrap_creates_worktree_updates_thread_runs_setup_then_dispatches_tu
     )
     .await;
     let callbacks = Arc::new(CallbackState::default());
-    let effects =
-        OrchestrationEffects::start(engine.clone(), callbacks.clone(), EffectsOptions::default())
-            .await
-            .unwrap();
+    let effects = OrchestrationEffects::start(
+        engine.clone(),
+        Arc::new(GitRepository::default()),
+        callbacks.clone(),
+        EffectsOptions::default(),
+    )
+    .await
+    .unwrap();
 
     dispatch(
         &engine,
@@ -325,9 +410,14 @@ async fn bootstrap_setup_launch_failure_rolls_back_worktree_branch_and_thread() 
     .await;
     let callbacks = Arc::new(CallbackState::default());
     *callbacks.setup_error.lock().unwrap() = Some("terminal start failed".to_owned());
-    let effects = OrchestrationEffects::start(engine.clone(), callbacks, EffectsOptions::default())
-        .await
-        .unwrap();
+    let effects = OrchestrationEffects::start(
+        engine.clone(),
+        Arc::new(GitRepository::default()),
+        callbacks,
+        EffectsOptions::default(),
+    )
+    .await
+    .unwrap();
 
     let command: OrchestrationCommand = serde_json::from_value(json!({
         "type":"thread.turn.start", "commandId":"bootstrap", "threadId":"setup-failure",
@@ -399,9 +489,14 @@ async fn bootstrap_workspace_refresh_failure_removes_the_just_created_worktree()
     let engine = engine(repository.path()).await;
     let callbacks = Arc::new(CallbackState::default());
     *callbacks.refresh_error.lock().unwrap() = Some("index refresh failed".to_owned());
-    let effects = OrchestrationEffects::start(engine.clone(), callbacks, EffectsOptions::default())
-        .await
-        .unwrap();
+    let effects = OrchestrationEffects::start(
+        engine.clone(),
+        Arc::new(GitRepository::default()),
+        callbacks,
+        EffectsOptions::default(),
+    )
+    .await
+    .unwrap();
     let command: OrchestrationCommand = serde_json::from_value(json!({
         "type":"thread.turn.start", "commandId":"bootstrap", "threadId":"refresh-failure",
         "message":{"messageId":"message","role":"user","text":"change it","attachments":[]},
@@ -454,6 +549,7 @@ async fn bootstrap_git_failures_include_bounded_actionable_stderr() {
     let engine = engine(repository.path()).await;
     let effects = OrchestrationEffects::start(
         engine.clone(),
+        Arc::new(GitRepository::default()),
         Arc::new(CallbackState::default()),
         EffectsOptions::default(),
     )
@@ -500,9 +596,14 @@ async fn captures_baseline_and_replaces_missing_turn_checkpoint_with_real_diff()
     let engine = engine(repository.path()).await;
     let callbacks = Arc::new(CallbackState::default());
     *callbacks.cwd.lock().unwrap() = Some(repository.path().to_path_buf());
-    let effects = OrchestrationEffects::start(engine.clone(), callbacks, EffectsOptions::default())
-        .await
-        .unwrap();
+    let effects = OrchestrationEffects::start(
+        engine.clone(),
+        Arc::new(GitRepository::default()),
+        callbacks,
+        EffectsOptions::default(),
+    )
+    .await
+    .unwrap();
 
     dispatch(
         &engine,
@@ -576,10 +677,14 @@ async fn reverts_workspace_provider_history_and_stale_checkpoint_refs() {
     let engine = engine(repository.path()).await;
     let callbacks = Arc::new(CallbackState::default());
     *callbacks.cwd.lock().unwrap() = Some(repository.path().to_path_buf());
-    let effects =
-        OrchestrationEffects::start(engine.clone(), callbacks.clone(), EffectsOptions::default())
-            .await
-            .unwrap();
+    let effects = OrchestrationEffects::start(
+        engine.clone(),
+        Arc::new(GitRepository::default()),
+        callbacks.clone(),
+        EffectsOptions::default(),
+    )
+    .await
+    .unwrap();
 
     orchestration_effects::capture_checkpoint(repository.path(), "t1", 0)
         .await
@@ -686,6 +791,7 @@ async fn thread_deletion_attempts_provider_and_terminal_cleanup_independently() 
     assert!(default_launch_error.contains("unavailable"));
     let effects = OrchestrationEffects::start(
         engine.clone(),
+        Arc::new(GitRepository::default()),
         callbacks.clone(),
         EffectsOptions { queue_capacity: 1 },
     )

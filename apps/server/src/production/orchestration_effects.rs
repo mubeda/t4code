@@ -212,6 +212,7 @@ struct ProjectSetupScript {
 
 struct ProductionBootstrapEffects {
     repositories: crate::persistence::Repositories,
+    repository: Arc<GitRepository>,
     callbacks: Arc<dyn OrchestrationEffectCallbacks>,
     cancellation: CancellationToken,
 }
@@ -229,7 +230,8 @@ impl ThreadTurnBootstrapEffects for ProductionBootstrapEffects {
             } else {
                 input.base_branch.clone()
             };
-            let result = GitRepository::default()
+            let result = self
+                .repository
                 .create_worktree(
                     CreateWorktreeInput {
                         cwd,
@@ -250,7 +252,9 @@ impl ThreadTurnBootstrapEffects for ProductionBootstrapEffects {
                 remove_branch,
             };
             if let Err(error) = self.callbacks.refresh_workspace(&path).await {
-                let cleanup = remove_bootstrap_worktree(&worktree, &self.cancellation).await;
+                let cleanup =
+                    remove_bootstrap_worktree(&self.repository, &worktree, &self.cancellation)
+                        .await;
                 return Err(match cleanup {
                     Ok(()) => format!("worktree was created but workspace refresh failed: {error}"),
                     Err(cleanup_error) => format!(
@@ -336,16 +340,19 @@ impl ThreadTurnBootstrapEffects for ProductionBootstrapEffects {
     }
 
     fn remove_worktree<'a>(&'a self, worktree: BootstrapWorktree) -> BoxBootstrapFuture<'a, ()> {
-        Box::pin(async move { remove_bootstrap_worktree(&worktree, &self.cancellation).await })
+        Box::pin(async move {
+            remove_bootstrap_worktree(&self.repository, &worktree, &self.cancellation).await
+        })
     }
 }
 
 async fn remove_bootstrap_worktree(
+    repository: &GitRepository,
     worktree: &BootstrapWorktree,
     cancellation: &CancellationToken,
 ) -> Result<(), String> {
     let repository_root = PathBuf::from(&worktree.repository_root);
-    GitRepository::default()
+    repository
         .remove_worktree(
             &repository_root,
             Path::new(&worktree.path),
@@ -432,6 +439,7 @@ pub struct OrchestrationEffects {
 impl OrchestrationEffects {
     pub async fn start(
         engine: OrchestrationEngine,
+        repository: Arc<GitRepository>,
         callbacks: Arc<dyn OrchestrationEffectCallbacks>,
         options: EffectsOptions,
     ) -> Result<Self, OrchestrationEffectsError> {
@@ -442,6 +450,7 @@ impl OrchestrationEffects {
         install_project_command_effects(&engine);
         engine.set_bootstrap_effects(Arc::new(ProductionBootstrapEffects {
             repositories: engine.repositories(),
+            repository,
             callbacks: callbacks.clone(),
             cancellation: cancellation.clone(),
         }));
@@ -1470,6 +1479,7 @@ mod tests {
             .expect("empty project fixture");
         let bootstrap = ProductionBootstrapEffects {
             repositories,
+            repository: Arc::new(GitRepository::default()),
             callbacks: callbacks.clone(),
             cancellation: CancellationToken::new(),
         };

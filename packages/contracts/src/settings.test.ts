@@ -16,6 +16,7 @@ import {
   ServerSettings,
   ServerSettingsError,
   ServerSettingsPatch,
+  WorktreeWorkspaceError,
   makeProviderSettingsSchema,
 } from "./settings.ts";
 
@@ -23,6 +24,7 @@ const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
 const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
+const decodeWorktreeWorkspaceError = Schema.decodeUnknownSync(WorktreeWorkspaceError);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeProviderSessionDefault = Schema.decodeUnknownSync(ProviderSessionDefault);
 const decodeProviderSessionDefaultsMap = Schema.decodeUnknownSync(ProviderSessionDefaultsMap);
@@ -294,6 +296,28 @@ describe("ServerSettings worktree defaults", () => {
   });
 });
 
+describe("ServerSettings worktree workspace", () => {
+  it("defaults legacy documents to the project-adjacent workspace", () => {
+    expect(decodeServerSettings({}).worktreeBaseDirectory).toBe("");
+    expect(DEFAULT_SERVER_SETTINGS.worktreeBaseDirectory).toBe("");
+  });
+
+  it("trims configured workspace settings and patches", () => {
+    expect(
+      decodeServerSettings({ worktreeBaseDirectory: "  ~/Worktrees  " }).worktreeBaseDirectory,
+    ).toBe("~/Worktrees");
+    expect(
+      decodeServerSettingsPatch({ worktreeBaseDirectory: "  D:\\Worktrees  " })
+        .worktreeBaseDirectory,
+    ).toBe("D:\\Worktrees");
+  });
+
+  it("rejects non-string workspace settings", () => {
+    expect(() => decodeServerSettings({ worktreeBaseDirectory: 42 })).toThrow();
+    expect(() => decodeServerSettingsPatch({ worktreeBaseDirectory: false })).toThrow();
+  });
+});
+
 describe("ServerSettingsPatch.providerInstances", () => {
   it("treats providerInstances as an optional whole-map replacement", () => {
     const patch = decodeServerSettingsPatch({});
@@ -423,5 +447,18 @@ describe("ServerSettingsError", () => {
       "Server settings read-secret failed for provider codex_personal and environment variable OPENAI_API_KEY at /home/user/.config/t4code/settings.json.",
     );
     expect(providerError.message).not.toContain(cause.message);
+  });
+});
+
+describe("WorktreeWorkspaceError", () => {
+  it("decodes an actionable worktree workspace validation error", () => {
+    const error = decodeWorktreeWorkspaceError({
+      _tag: "WorktreeWorkspaceError",
+      path: "relative/worktrees",
+      failure: "relative_path",
+      message: "Workspace must be an absolute directory on this host.",
+    });
+    expect(error.failure).toBe("relative_path");
+    expect(error.message).toBe("Workspace must be an absolute directory on this host.");
   });
 });

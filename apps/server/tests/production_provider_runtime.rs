@@ -26,6 +26,7 @@ use serde_json::{Value, json};
 use t4code_server::{
     RequestId, RpcExit, RpcRegistry, ServerConfig, ServerMessage, ServerRuntime,
     diagnostics::{NativeProcessSampler, ProcessAttributionRegistry, ProcessRow, ProcessSampler},
+    git::GitRepository,
     orchestration::{
         engine::{
             EngineOptions, OrchestrationCommand, OrchestrationEngine, SessionInput,
@@ -1298,6 +1299,7 @@ async fn checkpoint_rpc_rolls_back_once_after_restore_with_the_computed_delta() 
     supervisor.launch(provider_launch).await.unwrap();
     let effects = OrchestrationEffects::start(
         engine.clone(),
+        Arc::new(GitRepository::default()),
         Arc::new(SupervisorEffectsCallbacks {
             supervisor: supervisor.clone(),
             workspace: repository.path().to_path_buf(),
@@ -1405,6 +1407,7 @@ async fn checkpoint_rpc_reports_effect_failure_without_a_direct_or_second_rollba
     supervisor.launch(provider_launch).await.unwrap();
     let effects = OrchestrationEffects::start(
         engine.clone(),
+        Arc::new(GitRepository::default()),
         Arc::new(SupervisorEffectsCallbacks {
             supervisor: supervisor.clone(),
             workspace: repository.path().to_path_buf(),

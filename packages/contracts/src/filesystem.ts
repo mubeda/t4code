@@ -6,6 +6,7 @@ const FILESYSTEM_PATH_MAX_LENGTH = 512;
 export const FilesystemBrowseInput = Schema.Struct({
   partialPath: TrimmedNonEmptyString.check(Schema.isMaxLength(FILESYSTEM_PATH_MAX_LENGTH)),
   cwd: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(FILESYSTEM_PATH_MAX_LENGTH))),
+  mode: Schema.optional(Schema.Literals(["autocomplete", "directory"])),
 });
 export type FilesystemBrowseInput = typeof FilesystemBrowseInput.Type;
 
@@ -15,8 +16,17 @@ export const FilesystemBrowseEntry = Schema.Struct({
 });
 export type FilesystemBrowseEntry = typeof FilesystemBrowseEntry.Type;
 
+export const FilesystemBrowseBreadcrumb = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  fullPath: TrimmedNonEmptyString,
+});
+export type FilesystemBrowseBreadcrumb = typeof FilesystemBrowseBreadcrumb.Type;
+
 export const FilesystemBrowseResult = Schema.Struct({
   parentPath: TrimmedNonEmptyString,
+  directoryPath: Schema.optional(TrimmedNonEmptyString),
+  ancestorPath: Schema.optional(TrimmedNonEmptyString),
+  breadcrumbs: Schema.optional(Schema.Array(FilesystemBrowseBreadcrumb)),
   entries: Schema.Array(FilesystemBrowseEntry),
 });
 export type FilesystemBrowseResult = typeof FilesystemBrowseResult.Type;

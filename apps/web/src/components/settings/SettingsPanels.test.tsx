@@ -231,6 +231,10 @@ vi.mock("./ProviderInstanceCard", () => ({
   },
 }));
 
+vi.mock("./WorktreeWorkspaceSetting", () => ({
+  WorktreeWorkspaceSetting: () => <div data-testid="worktree-workspace-setting">Workspace</div>,
+}));
+
 vi.mock("../ProjectFavicon", () => ({
   ProjectFavicon: () => <span data-testid="project-favicon" />,
 }));
@@ -519,6 +523,7 @@ function changedSettings(): UnifiedSettings {
     ),
     defaultThreadEnvMode: "worktree",
     newWorktreesStartFromOrigin: !DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
+    worktreeBaseDirectory: "~/worktrees",
     addProjectBaseDirectory: "~/code",
     confirmThreadArchive: !DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
     confirmThreadDelete: !DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
@@ -560,6 +565,19 @@ beforeEach(() => {
 });
 
 describe("GeneralSettingsPanel", () => {
+  it("places Workspace after Start from origin and before Add project starts in", () => {
+    h.settings = changedSettings();
+
+    const markup = render(<GeneralSettingsPanel />);
+    const startFromOrigin = markup.indexOf("Start from origin");
+    const workspace = markup.indexOf('data-testid="worktree-workspace-setting"');
+    const addProject = markup.indexOf("Add project starts in");
+
+    expect(startFromOrigin).toBeGreaterThanOrEqual(0);
+    expect(workspace).toBeGreaterThan(startFromOrigin);
+    expect(addProject).toBeGreaterThan(workspace);
+  });
+
   it("changes the device-local terminal font preset", () => {
     render(<GeneralSettingsPanel />);
 
@@ -980,6 +998,7 @@ describe("useSettingsRestore", () => {
       "Automatic Git fetch interval",
       "New thread mode",
       "New worktrees start from origin",
+      "Workspace",
       "Add project base directory",
       "Archive confirmation",
       "Delete confirmation",
@@ -1005,6 +1024,7 @@ describe("useSettingsRestore", () => {
         timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
         wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
         confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
+        worktreeBaseDirectory: "",
         terminalFontPreference: DEFAULT_UNIFIED_SETTINGS.terminalFontPreference,
         terminal: {
           webglEnabled: DEFAULT_UNIFIED_SETTINGS.terminal.webglEnabled,

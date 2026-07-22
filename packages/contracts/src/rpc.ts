@@ -153,7 +153,12 @@ import {
   ServerUpsertKeybindingResult,
 } from "./server.ts";
 import { ServerProviderUsageRefreshInput, ServerProviderUsageResult } from "./providerUsage.ts";
-import { ServerSettings, ServerSettingsError, ServerSettingsPatch } from "./settings.ts";
+import {
+  ServerSettings,
+  ServerSettingsError,
+  ServerSettingsPatch,
+  WorktreeWorkspaceError,
+} from "./settings.ts";
 import {
   SourceControlCloneRepositoryInput,
   SourceControlCloneRepositoryResult,
@@ -315,7 +320,7 @@ export const WsServerGetSettingsRpc = Rpc.make(WS_METHODS.serverGetSettings, {
 export const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSettings, {
   payload: Schema.Struct({ patch: ServerSettingsPatch }),
   success: ServerSettings,
-  error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),
+  error: Schema.Union([ServerSettingsError, WorktreeWorkspaceError, EnvironmentAuthorizationError]),
 });
 
 export const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourceControl, {

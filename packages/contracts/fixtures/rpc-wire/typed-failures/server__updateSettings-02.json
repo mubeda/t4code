@@ -7,10 +7,9 @@
       {
         "_tag": "Fail",
         "error": {
-          "_tag": "WorktreeWorkspaceError",
-          "path": "Vwy|-:<G>W",
-          "failure": "not_directory",
-          "message": "UBHx,&q"
+          "_tag": "EnvironmentAuthorizationError",
+          "message": "S=I|M6c",
+          "requiredScope": "orchestration:operate"
         }
       }
     ]

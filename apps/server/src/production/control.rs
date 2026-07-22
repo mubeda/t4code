@@ -114,6 +114,20 @@ pub struct NativeServerControl {
     trace_diagnostics: TraceDiagnosticsStore,
 }
 
+impl crate::git::WorktreeBaseDirectoryProvider for NativeServerControl {
+    fn worktree_base_directory<'a>(&'a self) -> crate::git::BoxWorktreeBaseDirectoryFuture<'a> {
+        Box::pin(async move {
+            self.settings
+                .read()
+                .await
+                .get("worktreeBaseDirectory")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        })
+    }
+}
+
 impl NativeServerControl {
     pub async fn new(config: ServerConfig, auth_descriptor: Value) -> Self {
         let trace_diagnostics =
@@ -205,7 +219,7 @@ impl NativeServerControl {
     }
 
     async fn update_settings(&self, payload: Value) -> Result<Value, Value> {
-        let patch = payload.get("patch").cloned().ok_or_else(|| {
+        let mut patch = payload.get("patch").cloned().ok_or_else(|| {
             settings_error(&self.settings_path, "normalize", "missing settings patch")
         })?;
         if !patch.is_object() {
@@ -214,6 +228,12 @@ impl NativeServerControl {
                 "normalize",
                 "settings patch must be an object",
             ));
+        }
+        if let Some(raw) = patch.get("worktreeBaseDirectory").and_then(Value::as_str) {
+            let normalized = super::worktree_workspace::normalize_worktree_workspace(raw)
+                .await
+                .map_err(|error| error.to_wire())?;
+            patch["worktreeBaseDirectory"] = json!(normalized);
         }
 
         #[cfg(test)]
@@ -685,6 +705,7 @@ fn validate_settings_document(settings: &Value) -> Result<(), String> {
     validate_optional_bool(object, "enableAssistantStreaming")?;
     validate_optional_bool(object, "enableProviderUpdateChecks")?;
     validate_optional_bool(object, "newWorktreesStartFromOrigin")?;
+    validate_optional_string(object, "worktreeBaseDirectory")?;
     validate_optional_string(object, "addProjectBaseDirectory")?;
     validate_optional_duration_millis(object, "automaticGitFetchInterval")?;
     if let Some(mode) = object.get("defaultThreadEnvMode") {
@@ -1024,6 +1045,7 @@ fn apply_settings_defaults(settings: &mut Value) {
             "automaticGitFetchInterval": 30_000,
             "defaultThreadEnvMode": "local",
             "newWorktreesStartFromOrigin": false,
+            "worktreeBaseDirectory": "",
             "addProjectBaseDirectory": "",
             "textGenerationModelSelection": {
                 "instanceId": "codex",
@@ -1308,6 +1330,63 @@ mod tests {
     use crate::production::server_terminal::ProductionServerControl;
 
     use super::*;
+
+    #[tokio::test]
+    async fn workspace_update_normalizes_existing_directories_and_rejects_invalid_targets() {
+        let temp = tempfile::tempdir().expect("control root");
+        let workspace = temp.path().join("workspace");
+        tokio::fs::create_dir(&workspace).await.expect("workspace");
+        let file = temp.path().join("file.txt");
+        tokio::fs::write(&file, b"file").await.expect("file");
+        let config = ServerConfig::new(temp.path());
+        let settings_path = config.state_dir().join("settings.json");
+        let control = NativeServerControl::new(config, json!({"policy":"test"})).await;
+
+        let updated = control
+            .update_settings(json!({
+                "patch": {"worktreeBaseDirectory": workspace.to_string_lossy()}
+            }))
+            .await
+            .expect("valid workspace");
+        assert_eq!(
+            PathBuf::from(updated["worktreeBaseDirectory"].as_str().expect("path")),
+            super::super::host_paths::process_compatible_path(
+                tokio::fs::canonicalize(&workspace)
+                    .await
+                    .expect("canonical workspace"),
+            )
+        );
+
+        for (path, failure) in [
+            ("relative/worktrees".to_owned(), "relative_path"),
+            (
+                temp.path().join("missing").to_string_lossy().into_owned(),
+                "missing",
+            ),
+            (file.to_string_lossy().into_owned(), "not_directory"),
+        ] {
+            let error = control
+                .update_settings(json!({"patch":{"worktreeBaseDirectory":path}}))
+                .await
+                .expect_err("invalid workspace");
+            assert_eq!(error["_tag"], "WorktreeWorkspaceError");
+            assert_eq!(error["failure"], failure);
+            assert_eq!(
+                control.settings.read().await["worktreeBaseDirectory"],
+                updated["worktreeBaseDirectory"]
+            );
+            let persisted: Value = serde_json::from_slice(
+                &tokio::fs::read(&settings_path)
+                    .await
+                    .expect("persisted settings"),
+            )
+            .expect("valid persisted JSON");
+            assert_eq!(
+                persisted["worktreeBaseDirectory"],
+                updated["worktreeBaseDirectory"]
+            );
+        }
+    }
 
     #[test]
     fn quick_and_failed_probes_retain_rich_metadata_but_update_health() {

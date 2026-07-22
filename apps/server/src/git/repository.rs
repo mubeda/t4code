@@ -1,8 +1,12 @@
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
-    fs, io,
+    fmt, fs,
+    future::Future,
+    io,
     path::{Component, Path, PathBuf},
+    pin::Pin,
+    sync::Arc,
     time::Duration,
 };
 
@@ -25,9 +29,66 @@ const COMMIT_FIELD_SEPARATOR: char = '\x1f';
 const CLONE_OPERATION: &str = "GitVcsDriver.clone";
 const MAX_AUTOMATIC_WORKTREE_SUFFIX_ATTEMPTS: usize = 100;
 
-#[derive(Clone, Copy, Debug, Default)]
+pub type BoxWorktreeBaseDirectoryFuture<'a> =
+    Pin<Box<dyn Future<Output = Option<PathBuf>> + Send + 'a>>;
+
+pub trait WorktreeBaseDirectoryProvider: Send + Sync {
+    fn worktree_base_directory<'a>(&'a self) -> BoxWorktreeBaseDirectoryFuture<'a>;
+}
+
+#[derive(Debug, Default)]
+struct DefaultWorktreeBaseDirectory;
+
+impl WorktreeBaseDirectoryProvider for DefaultWorktreeBaseDirectory {
+    fn worktree_base_directory<'a>(&'a self) -> BoxWorktreeBaseDirectoryFuture<'a> {
+        Box::pin(async { None })
+    }
+}
+
+#[derive(Clone)]
 pub struct GitRepository {
     runner: ProcessRunner,
+    worktree_settings: Arc<dyn WorktreeBaseDirectoryProvider>,
+}
+
+impl Default for GitRepository {
+    fn default() -> Self {
+        Self {
+            runner: ProcessRunner,
+            worktree_settings: Arc::new(DefaultWorktreeBaseDirectory),
+        }
+    }
+}
+
+impl fmt::Debug for GitRepository {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitRepository")
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct WorktreePathPolicy {
+    configured_base: Option<PathBuf>,
+}
+
+impl WorktreePathPolicy {
+    fn path_for(&self, cwd: &Path, target_ref: &str) -> PathBuf {
+        let repo = cwd
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("repository");
+        let base = self
+            .configured_base
+            .clone()
+            .unwrap_or_else(|| cwd.parent().unwrap_or(cwd).join(".t4code-worktrees"));
+        base.join(repo).join(target_ref.replace('/', "-"))
+    }
+
+    fn configured_base(&self) -> Option<&Path> {
+        self.configured_base.as_deref()
+    }
 }
 
 #[derive(Debug)]
@@ -35,12 +96,41 @@ struct OwnedWorktreePath {
     path: PathBuf,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorktreePathReservationStage {
+    Parent,
+    Destination,
+}
+
+#[derive(Debug)]
+struct WorktreePathReservationError {
+    stage: WorktreePathReservationStage,
+    source: io::Error,
+}
+
+impl WorktreePathReservationError {
+    fn kind(&self) -> io::ErrorKind {
+        self.source.kind()
+    }
+
+    fn is_destination_collision(&self) -> bool {
+        self.stage == WorktreePathReservationStage::Destination
+            && self.kind() == io::ErrorKind::AlreadyExists
+    }
+}
+
 impl OwnedWorktreePath {
-    fn reserve(path: PathBuf) -> io::Result<Self> {
+    fn reserve(path: PathBuf) -> Result<Self, WorktreePathReservationError> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent).map_err(|source| WorktreePathReservationError {
+                stage: WorktreePathReservationStage::Parent,
+                source,
+            })?;
         }
-        fs::create_dir(&path)?;
+        fs::create_dir(&path).map_err(|source| WorktreePathReservationError {
+            stage: WorktreePathReservationStage::Destination,
+            source,
+        })?;
         Ok(Self { path })
     }
 
@@ -50,6 +140,32 @@ impl OwnedWorktreePath {
 }
 
 impl GitRepository {
+    pub fn with_worktree_settings(
+        worktree_settings: Arc<dyn WorktreeBaseDirectoryProvider>,
+    ) -> Self {
+        Self {
+            runner: ProcessRunner,
+            worktree_settings,
+        }
+    }
+
+    async fn worktree_path_policy(
+        &self,
+        cwd: &Path,
+    ) -> Result<WorktreePathPolicy, GitCommandError> {
+        let configured_base = self.worktree_settings.worktree_base_directory().await;
+        if let Some(path) = configured_base.as_ref() {
+            let available = tokio::fs::metadata(path)
+                .await
+                .map(|metadata| metadata.is_dir())
+                .unwrap_or(false);
+            if !available {
+                return Err(workspace_unavailable_error(cwd, path));
+            }
+        }
+        Ok(WorktreePathPolicy { configured_base })
+    }
+
     async fn execute(
         &self,
         operation: &str,
@@ -682,6 +798,11 @@ impl GitRepository {
             Some(path) => Some(resolve_explicit_worktree_path(&input.cwd, path).await),
             None => None,
         };
+        let path_policy = if requested_path.is_none() {
+            Some(self.worktree_path_policy(&input.cwd).await?)
+        } else {
+            None
+        };
         let existing_ref_is_local = input.new_ref_name.is_none()
             && self
                 .local_branch_exists(&input.cwd, &input.ref_name, cancellation)
@@ -694,21 +815,39 @@ impl GitRepository {
                         &input.cwd,
                         &input.ref_name,
                         requested_path.as_ref(),
+                        path_policy.as_ref(),
                         cancellation,
                     )
                     .await;
             }
         }
 
-        let path = requested_path
-            .clone()
-            .unwrap_or_else(|| default_worktree_path(&input.cwd, target_ref));
+        let path = requested_path.clone().unwrap_or_else(|| {
+            path_policy
+                .as_ref()
+                .expect("implicit worktree path has a policy")
+                .path_for(&input.cwd, target_ref)
+        });
         let path_string = display_path(&path);
         let new_ref_existed = if let Some(new_ref) = input.new_ref_name.as_deref() {
             self.local_branch_exists(&input.cwd, new_ref, cancellation)
                 .await?
         } else {
             false
+        };
+        let owned_path = if requested_path.is_none()
+            && path_policy
+                .as_ref()
+                .and_then(WorktreePathPolicy::configured_base)
+                .is_some()
+        {
+            Some(reserve_implicit_worktree_path(
+                &input.cwd,
+                &path,
+                path_policy.as_ref().expect("implicit path has a policy"),
+            )?)
+        } else {
+            None
         };
         let mut args = strings(&["worktree", "add"]);
         if let Some(new_ref) = input.new_ref_name.as_deref() {
@@ -724,6 +863,16 @@ impl GitRepository {
             )
             .await
         {
+            if let Some(owned_path) = owned_path.as_ref()
+                && let Err(cleanup_error) =
+                    self.cleanup_owned_worktree(&input.cwd, owned_path).await
+            {
+                error.detail = format!(
+                    "{}\nOwned worktree cleanup also failed: {}",
+                    error.detail, cleanup_error.detail
+                )
+                .into();
+            }
             if let Some(new_ref) = input.new_ref_name.as_deref()
                 && !new_ref_existed
                 && let Err(rollback_error) = self.rollback_created_branch(&input.cwd, new_ref).await
@@ -746,6 +895,7 @@ impl GitRepository {
                         &input.cwd,
                         &input.ref_name,
                         requested_path.as_ref(),
+                        path_policy.as_ref(),
                         cancellation,
                     )
                     .await;
@@ -783,6 +933,7 @@ impl GitRepository {
         cwd: &Path,
         base_ref: &str,
         requested_path: Option<&PathBuf>,
+        path_policy: Option<&WorktreePathPolicy>,
         cancellation: &CancellationToken,
     ) -> Result<VcsCreateWorktreeResult, GitCommandError> {
         for suffix in 2..(2 + MAX_AUTOMATIC_WORKTREE_SUFFIX_ATTEMPTS) {
@@ -794,29 +945,30 @@ impl GitRepository {
                 continue;
             }
 
-            let path = requested_path
-                .cloned()
-                .unwrap_or_else(|| default_worktree_path(cwd, &candidate));
+            let path = requested_path.cloned().unwrap_or_else(|| {
+                path_policy
+                    .expect("implicit worktree path has a policy")
+                    .path_for(cwd, &candidate)
+            });
             let owned_path = match OwnedWorktreePath::reserve(path.clone()) {
                 Ok(owned_path) => owned_path,
                 Err(error)
-                    if error.kind() == io::ErrorKind::AlreadyExists && requested_path.is_none() =>
+                    if requested_path.is_none()
+                        && error.kind() == io::ErrorKind::AlreadyExists
+                        && (path_policy
+                            .and_then(WorktreePathPolicy::configured_base)
+                            .is_none()
+                            || error.is_destination_collision()) =>
                 {
                     continue;
                 }
                 Err(error) => {
-                    let detail = if error.kind() == io::ErrorKind::AlreadyExists {
-                        format!(
-                            "The requested worktree path '{}' already exists. Choose an absent path so T4Code can safely own its cleanup.",
-                            display_path(&path)
-                        )
-                    } else {
-                        format!(
-                            "The worktree path '{}' could not be reserved: {error}",
-                            display_path(&path)
-                        )
-                    };
-                    return Err(simple_error("GitVcsDriver.createWorktree", cwd, &detail));
+                    return Err(worktree_reservation_error(
+                        cwd,
+                        &path,
+                        error,
+                        path_policy.and_then(WorktreePathPolicy::configured_base),
+                    ));
                 }
             };
             self.prepare_detached_owned_worktree(cwd, base_ref, &owned_path, cancellation)
@@ -1568,18 +1720,6 @@ fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_owned()).collect()
 }
 
-fn default_worktree_path(cwd: &Path, target_ref: &str) -> PathBuf {
-    let repo = cwd
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("repository");
-    cwd.parent()
-        .unwrap_or(cwd)
-        .join(".t4code-worktrees")
-        .join(repo)
-        .join(target_ref.replace('/', "-"))
-}
-
 async fn resolve_explicit_worktree_path(cwd: &Path, requested_path: &Path) -> PathBuf {
     let repository_cwd = match tokio::fs::canonicalize(cwd).await {
         Ok(path) => path,
@@ -1820,6 +1960,54 @@ fn simple_error(operation: &str, cwd: &Path, detail: &str) -> GitCommandError {
         diagnostics: None,
         detail: detail.into(),
     }
+}
+
+fn reserve_implicit_worktree_path(
+    cwd: &Path,
+    path: &Path,
+    path_policy: &WorktreePathPolicy,
+) -> Result<OwnedWorktreePath, GitCommandError> {
+    OwnedWorktreePath::reserve(path.to_path_buf()).map_err(|error| {
+        worktree_reservation_error(cwd, path, error, path_policy.configured_base())
+    })
+}
+
+fn worktree_reservation_error(
+    cwd: &Path,
+    path: &Path,
+    error: WorktreePathReservationError,
+    configured_base: Option<&Path>,
+) -> GitCommandError {
+    if !error.is_destination_collision()
+        && let Some(configured_base) = configured_base
+    {
+        return workspace_unavailable_error(cwd, configured_base);
+    }
+
+    let detail = if error.kind() == io::ErrorKind::AlreadyExists {
+        format!(
+            "The requested worktree path '{}' already exists. Choose an absent path so T4Code can safely own its cleanup.",
+            display_path(path)
+        )
+    } else {
+        format!(
+            "The worktree path '{}' could not be reserved: {}",
+            display_path(path),
+            error.source
+        )
+    };
+    simple_error("GitVcsDriver.createWorktree", cwd, &detail)
+}
+
+fn workspace_unavailable_error(cwd: &Path, workspace: &Path) -> GitCommandError {
+    simple_error(
+        "GitVcsDriver.createWorktree",
+        cwd,
+        &format!(
+            "Workspace {} is unavailable. Choose another folder in Settings → General.",
+            display_path(workspace)
+        ),
+    )
 }
 
 fn command_output_error(

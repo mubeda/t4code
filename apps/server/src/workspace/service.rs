@@ -272,9 +272,14 @@ impl WorkspaceService {
         &self,
         partial_path: &str,
         cwd: Option<&Path>,
+        directory_mode: bool,
     ) -> Result<BrowseResult, WorkspaceError> {
         let _permit = self.permit().await?;
-        entries::browse(partial_path, cwd).await
+        if directory_mode {
+            entries::browse_directory(partial_path, cwd).await
+        } else {
+            entries::browse(partial_path, cwd).await
+        }
     }
 }
 
@@ -378,7 +383,10 @@ mod tests {
             service.read_file(root.path(), "binary.dat").await,
             Err(WorkspaceError::BinaryFile { .. })
         ));
-        let browsed = service.browse("./r", Some(root.path())).await.unwrap();
+        let browsed = service
+            .browse("./r", Some(root.path()), false)
+            .await
+            .unwrap();
         assert!(!browsed.entries.is_empty());
 
         assert_eq!(
@@ -502,7 +510,7 @@ mod tests {
         let closed = WorkspaceService::default();
         closed.permits.close();
         assert!(matches!(
-            closed.browse(".", Some(root.path())).await,
+            closed.browse(".", Some(root.path()), false).await,
             Err(WorkspaceError::Cancelled)
         ));
     }

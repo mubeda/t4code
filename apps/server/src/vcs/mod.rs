@@ -31,7 +31,7 @@ pub enum IgnoreClassifier {
     GitCompatibleFallback,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct VcsService {
     git: GitRepository,
 }

@@ -196,7 +196,11 @@ impl WorkspaceRpc {
             "filesystem.browse" => {
                 let input: BrowseInput = decode(payload)?;
                 self.service
-                    .browse(&input.partial_path, input.cwd.as_deref().map(Path::new))
+                    .browse(
+                        &input.partial_path,
+                        input.cwd.as_deref().map(Path::new),
+                        input.mode.as_deref() == Some("directory"),
+                    )
                     .await
                     .and_then(encode)
                     .map_err(|error| filesystem_wire_error(&input, &error))
@@ -479,6 +483,7 @@ struct SearchInput {
 struct BrowseInput {
     partial_path: String,
     cwd: Option<String>,
+    mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -577,6 +582,7 @@ mod tests {
         let browse = BrowseInput {
             partial_path: "relative".to_owned(),
             cwd: None,
+            mode: None,
         };
         assert_eq!(
             filesystem_wire_error(

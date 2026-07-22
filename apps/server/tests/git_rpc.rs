@@ -11,12 +11,26 @@ use std::{
 };
 
 use git::{
-    CreateWorktreeInput, GitRepository, OutputPolicy, ProcessError, ProcessRequest, ProcessRunner,
-    StatusBroadcaster, VcsStagingArea, VcsStatusStreamEvent, VcsWorkingTreeFileStatus,
-    parse_porcelain_v2_line,
+    BoxWorktreeBaseDirectoryFuture, CreateWorktreeInput, GitRepository, OutputPolicy, ProcessError,
+    ProcessRequest, ProcessRunner, StatusBroadcaster, VcsStagingArea, VcsStatusStreamEvent,
+    VcsWorkingTreeFileStatus, WorktreeBaseDirectoryProvider, parse_porcelain_v2_line,
 };
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
+
+#[derive(Clone)]
+struct StaticWorktreeBaseDirectory(Option<PathBuf>);
+
+impl WorktreeBaseDirectoryProvider for StaticWorktreeBaseDirectory {
+    fn worktree_base_directory<'a>(&'a self) -> BoxWorktreeBaseDirectoryFuture<'a> {
+        let value = self.0.clone();
+        Box::pin(async move { value })
+    }
+}
+
+fn repository_with_workspace(path: Option<PathBuf>) -> GitRepository {
+    GitRepository::with_worktree_settings(Arc::new(StaticWorktreeBaseDirectory(path)))
+}
 
 fn git(cwd: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -48,13 +62,15 @@ fn has_registered_worktree(cwd: &Path, expected: &Path) -> bool {
 
 fn init_repo() -> TempDir {
     let temp = tempfile::tempdir().expect("temporary repository");
-    git(temp.path(), &["init", "-b", "main"]);
-    git(temp.path(), &["config", "user.name", "T4Code Test"]);
-    git(
-        temp.path(),
-        &["config", "user.email", "t4code@example.invalid"],
-    );
+    initialize_repo_at(temp.path());
     temp
+}
+
+fn initialize_repo_at(path: &Path) {
+    fs::create_dir_all(path).expect("repository directory");
+    git(path, &["init", "-b", "main"]);
+    git(path, &["config", "user.name", "T4Code Test"]);
+    git(path, &["config", "user.email", "t4code@example.invalid"]);
 }
 
 fn commit_file(repo: &Path, path: &str, contents: &str, message: &str) {
@@ -441,6 +457,138 @@ async fn current_local_branch_creates_the_first_available_suffixed_branch() {
         git(&worktree_path, &["rev-parse", "HEAD"]),
         git(repo.path(), &["rev-parse", "main"])
     );
+}
+
+#[tokio::test]
+async fn configured_workspace_owns_default_and_occupied_branch_destinations() {
+    let repo = init_repo();
+    commit_file(repo.path(), "README.md", "hello\n", "initial");
+    let workspace = tempfile::tempdir().expect("workspace");
+    let repository = repository_with_workspace(Some(workspace.path().to_path_buf()));
+    let cancellation = cancellation();
+
+    let first = repository
+        .create_worktree(
+            CreateWorktreeInput {
+                cwd: repo.path().to_path_buf(),
+                ref_name: "main".to_owned(),
+                new_ref_name: None,
+                base_ref_name: None,
+                path: None,
+            },
+            &cancellation,
+        )
+        .await
+        .expect("configured worktree");
+
+    assert_eq!(first.worktree.ref_name, "main-2");
+    assert!(Path::new(&first.worktree.path).starts_with(workspace.path()));
+    assert_eq!(
+        Path::new(&first.worktree.path)
+            .parent()
+            .and_then(Path::parent),
+        Some(workspace.path())
+    );
+
+    repository
+        .remove_worktree(
+            repo.path(),
+            Path::new(&first.worktree.path),
+            true,
+            &cancellation,
+        )
+        .await
+        .expect("cleanup");
+}
+
+#[tokio::test]
+async fn unavailable_configured_workspace_fails_without_project_adjacent_fallback() {
+    let repository_parent = tempfile::tempdir().expect("temporary repository parent");
+    let repo = repository_parent.path().join("repository");
+    initialize_repo_at(&repo);
+    let missing = repo.join("missing-workspace");
+    let repository = repository_with_workspace(Some(missing));
+
+    let error = repository
+        .create_worktree(
+            CreateWorktreeInput {
+                cwd: repo.clone(),
+                ref_name: "main".to_owned(),
+                new_ref_name: None,
+                base_ref_name: None,
+                path: None,
+            },
+            &cancellation(),
+        )
+        .await
+        .expect_err("missing workspace");
+
+    assert!(error.detail.contains("Workspace"));
+    assert!(error.detail.contains("Settings → General"));
+    assert!(
+        !repo
+            .parent()
+            .expect("temporary repository parent")
+            .join(".t4code-worktrees")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn configured_workspace_child_creation_failures_use_the_workspace_error() {
+    let repository_parent = tempfile::tempdir().expect("temporary repository parent");
+    let repo = repository_parent.path().join("repository");
+    initialize_repo_at(&repo);
+    commit_file(&repo, "README.md", "hello\n", "initial");
+    let workspace = tempfile::tempdir().expect("workspace");
+    fs::write(
+        workspace.path().join("repository"),
+        "blocks child creation\n",
+    )
+    .expect("blocking repository-directory fixture");
+    let repository = repository_with_workspace(Some(workspace.path().to_path_buf()));
+
+    let error = repository
+        .create_worktree(
+            CreateWorktreeInput {
+                cwd: repo.clone(),
+                ref_name: "main".to_owned(),
+                new_ref_name: Some("feature/blocked".to_owned()),
+                base_ref_name: Some("main".to_owned()),
+                path: None,
+            },
+            &cancellation(),
+        )
+        .await
+        .expect_err("configured workspace cannot create its repository directory");
+
+    let expected_detail = format!(
+        "Workspace {} is unavailable. Choose another folder in Settings → General.",
+        workspace.path().to_string_lossy().replace('\\', "/")
+    );
+    assert_eq!(error.detail.as_ref(), expected_detail);
+    let occupied_error = repository
+        .create_worktree(
+            CreateWorktreeInput {
+                cwd: repo.clone(),
+                ref_name: "main".to_owned(),
+                new_ref_name: None,
+                base_ref_name: None,
+                path: None,
+            },
+            &cancellation(),
+        )
+        .await
+        .expect_err("configured workspace cannot reserve an occupied-branch destination");
+    assert_eq!(occupied_error.detail.as_ref(), expected_detail);
+    assert!(
+        !repo
+            .parent()
+            .expect("temporary repository parent")
+            .join(".t4code-worktrees")
+            .exists()
+    );
+    assert!(git(&repo, &["branch", "--list", "feature/blocked"]).is_empty());
 }
 
 #[tokio::test]

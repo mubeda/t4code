@@ -1,4 +1,6 @@
-use t4code_server::{assets, project, review, workspace};
+use t4code_server::{
+    assets, production::host_paths::process_compatible_path, project, review, workspace,
+};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -251,7 +253,7 @@ async fn browse_shows_hidden_directories_for_directory_and_hidden_prefix_modes()
     );
 
     let directory_result = service
-        .browse(&cwd_with_separator, None)
+        .browse(&cwd_with_separator, None, false)
         .await
         .expect("directory browse");
     assert_eq!(
@@ -264,7 +266,7 @@ async fn browse_shows_hidden_directories_for_directory_and_hidden_prefix_modes()
     );
 
     let hidden_prefix_result = service
-        .browse(&format!("{cwd_with_separator}.c"), None)
+        .browse(&format!("{cwd_with_separator}.c"), None, false)
         .await
         .expect("hidden browse");
     assert_eq!(
@@ -717,7 +719,7 @@ async fn browse_filters_files_sorts_directories_and_requires_cwd_for_relative_pa
         root.path().to_string_lossy(),
         std::path::MAIN_SEPARATOR
     );
-    let result = service.browse(&partial, None).await.expect("browse");
+    let result = service.browse(&partial, None, false).await.expect("browse");
     assert_eq!(
         result
             .entries
@@ -727,9 +729,68 @@ async fn browse_filters_files_sorts_directories_and_requires_cwd_for_relative_pa
         vec!["alpha", "alpine"]
     );
     assert!(matches!(
-        service.browse("./src", None).await,
+        service.browse("./src", None, false).await,
         Err(WorkspaceError::CurrentProjectRequired { .. })
     ));
+}
+
+#[tokio::test]
+async fn directory_browse_returns_canonical_navigation_and_only_directories() {
+    let root = TempDir::new().expect("root");
+    write(root.path(), "parent/selected/child/file.txt", b"file").await;
+    write(
+        root.path(),
+        "parent/selected/another-child/nested.txt",
+        b"nested",
+    )
+    .await;
+    write(root.path(), "parent/selected/ignored.txt", b"file").await;
+    let selected = root.path().join("parent/selected");
+    let canonical_selected =
+        process_compatible_path(std::fs::canonicalize(&selected).expect("canonical selected"));
+    let canonical_parent = process_compatible_path(
+        std::fs::canonicalize(root.path().join("parent")).expect("canonical parent"),
+    );
+    let rpc = WorkspaceRpc::new(WorkspaceService::default());
+
+    let result = rpc
+        .handle(
+            "filesystem.browse",
+            json!({
+                "partialPath": selected.to_string_lossy(),
+                "mode": "directory",
+            }),
+        )
+        .await
+        .expect("directory browse");
+
+    assert_eq!(result["directoryPath"], path_string(&canonical_selected));
+    assert_eq!(result["ancestorPath"], path_string(&canonical_parent));
+    assert_eq!(
+        result["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .map(|entry| entry["name"].as_str().expect("entry name"))
+            .collect::<Vec<_>>(),
+        vec!["another-child", "child"]
+    );
+    assert!(
+        !result["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .any(|entry| entry["name"] == "ignored.txt")
+    );
+    let breadcrumbs = result["breadcrumbs"].as_array().expect("breadcrumbs");
+    assert_eq!(
+        breadcrumbs.last().expect("selected breadcrumb")["fullPath"],
+        path_string(&canonical_selected)
+    );
+    assert_eq!(
+        breadcrumbs[breadcrumbs.len() - 2]["fullPath"],
+        path_string(&canonical_parent)
+    );
 }
 
 #[tokio::test]

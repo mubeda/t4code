@@ -42,6 +42,7 @@
           "automaticGitFetchInterval": 30000,
           "defaultThreadEnvMode": "local",
           "newWorktreesStartFromOrigin": false,
+          "worktreeBaseDirectory": "",
           "addProjectBaseDirectory": "",
           "textGenerationModelSelection": {
             "instanceId": "codex",

@@ -1,9 +1,36 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { FilesystemBrowseError } from "./filesystem.ts";
+import {
+  FilesystemBrowseError,
+  FilesystemBrowseInput,
+  FilesystemBrowseResult,
+} from "./filesystem.ts";
 
 const decodeFilesystemBrowseError = Schema.decodeUnknownSync(FilesystemBrowseError);
+const decodeBrowseInput = Schema.decodeUnknownSync(FilesystemBrowseInput);
+const decodeBrowseResult = Schema.decodeUnknownSync(FilesystemBrowseResult);
+
+describe("FilesystemBrowse", () => {
+  it("decodes directory navigation without changing legacy autocomplete", () => {
+    expect(decodeBrowseInput({ partialPath: "~/src" }).mode).toBeUndefined();
+    expect(decodeBrowseInput({ partialPath: "~/src", mode: "directory" }).mode).toBe("directory");
+    expect(
+      decodeBrowseResult({
+        parentPath: "/home/me/src",
+        directoryPath: "/home/me/src",
+        ancestorPath: "/home/me",
+        breadcrumbs: [
+          { name: "/", fullPath: "/" },
+          { name: "home", fullPath: "/home" },
+          { name: "me", fullPath: "/home/me" },
+          { name: "src", fullPath: "/home/me/src" },
+        ],
+        entries: [{ name: "project", fullPath: "/home/me/src/project" }],
+      }).directoryPath,
+    ).toBe("/home/me/src");
+  });
+});
 
 describe("FilesystemBrowseError", () => {
   it("derives a stable message from browse context while retaining the cause", () => {

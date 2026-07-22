@@ -165,6 +165,7 @@ impl ProductionRuntime {
             )
             .await,
         );
+        let git_repository = Arc::new(GitRepository::with_worktree_settings(control.clone()));
         let terminal_services = ServerTerminalServices::new(
             terminal_manager,
             process_sampler,
@@ -176,6 +177,7 @@ impl ProductionRuntime {
         );
         let orchestration_effects = OrchestrationEffects::start(
             orchestration.clone(),
+            git_repository.clone(),
             Arc::new(RuntimeEffectCallbacks {
                 repositories: orchestration.repositories(),
                 provider: provider_runtime.clone(),
@@ -196,7 +198,10 @@ impl ProductionRuntime {
             config.state_dir(),
         );
         register_workspace_preview_rpc(&mut registry, workspace_preview);
-        register_git_vcs_rpc(&mut registry, GitVcsRpcServices::default());
+        register_git_vcs_rpc(
+            &mut registry,
+            GitVcsRpcServices::with_repository(git_repository),
+        );
         register_server_terminal_rpc(&mut registry, terminal_services.clone());
         registry.validate_complete()?;
 

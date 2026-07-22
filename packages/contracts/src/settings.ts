@@ -423,6 +423,7 @@ export const ServerSettings = Schema.Struct({
   newWorktreesStartFromOrigin: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
+  worktreeBaseDirectory: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   addProjectBaseDirectory: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   textGenerationModelSelection: ModelSelection.pipe(
     Schema.withDecodingDefault(
@@ -498,6 +499,23 @@ export class ServerSettingsError extends Schema.TaggedErrorClass<ServerSettingsE
   }
 }
 
+export const WorktreeWorkspaceFailure = Schema.Literals([
+  "relative_path",
+  "missing",
+  "not_directory",
+  "unavailable",
+]);
+export type WorktreeWorkspaceFailure = typeof WorktreeWorkspaceFailure.Type;
+
+export class WorktreeWorkspaceError extends Schema.TaggedErrorClass<WorktreeWorkspaceError>()(
+  "WorktreeWorkspaceError",
+  {
+    path: Schema.String,
+    failure: WorktreeWorkspaceFailure,
+    message: TrimmedNonEmptyString,
+  },
+) {}
+
 // ── Unified type ─────────────────────────────────────────────────────
 
 export type UnifiedSettings = ServerSettings & ClientSettings;
@@ -558,6 +576,7 @@ export const ServerSettingsPatch = Schema.Struct({
   automaticGitFetchInterval: Schema.optionalKey(Schema.DurationFromMillis),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   newWorktreesStartFromOrigin: Schema.optionalKey(Schema.Boolean),
+  worktreeBaseDirectory: Schema.optionalKey(TrimmedString),
   addProjectBaseDirectory: Schema.optionalKey(TrimmedString),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
   observability: Schema.optionalKey(

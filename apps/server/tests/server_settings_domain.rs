@@ -9,6 +9,39 @@ use server_settings::{
 use tempfile::TempDir;
 
 #[tokio::test]
+async fn worktree_workspace_roundtrips_and_empty_is_the_default() {
+    let temp = tempfile::tempdir().expect("settings root");
+    let store = ProviderSettingsStore::new(temp.path());
+
+    assert_eq!(
+        store
+            .get()
+            .await
+            .expect("default settings")
+            .worktree_base_directory,
+        ""
+    );
+    let updated = store
+        .update(ServerSettingsPatch {
+            worktree_base_directory: Some("  /tmp/t4code-worktrees  ".to_owned()),
+            ..ServerSettingsPatch::default()
+        })
+        .await
+        .expect("workspace update");
+    assert_eq!(updated.worktree_base_directory, "/tmp/t4code-worktrees");
+
+    let reopened = ProviderSettingsStore::new(temp.path());
+    assert_eq!(
+        reopened
+            .get()
+            .await
+            .expect("reloaded settings")
+            .worktree_base_directory,
+        "/tmp/t4code-worktrees"
+    );
+}
+
+#[tokio::test]
 async fn provider_session_defaults_replace_the_whole_map_and_roundtrip() {
     let temp = TempDir::new().expect("temp");
     let store = ProviderSettingsStore::new(temp.path());

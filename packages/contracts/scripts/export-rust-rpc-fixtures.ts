@@ -540,8 +540,8 @@ if (streamShapeFixtures.length !== topLevelStreamShapeCount) {
     `Exported ${streamShapeFixtures.length} stream shape fixtures, expected ${topLevelStreamShapeCount}.`,
   );
 }
-if (typedFailureFixtures.length !== 122) {
-  throw new Error(`Expected 122 typed failure fixtures, found ${typedFailureFixtures.length}.`);
+if (typedFailureFixtures.length !== 123) {
+  throw new Error(`Expected 123 typed failure fixtures, found ${typedFailureFixtures.length}.`);
 }
 if (orchestrationEventShapeCount !== 22) {
   throw new Error(`Expected 22 orchestration event shapes, found ${orchestrationEventShapeCount}.`);

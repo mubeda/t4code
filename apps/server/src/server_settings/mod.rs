@@ -140,6 +140,8 @@ pub struct ProviderSettingsState {
     #[serde(default)]
     pub add_project_base_directory: String,
     #[serde(default)]
+    pub worktree_base_directory: String,
+    #[serde(default)]
     pub observability: ObservabilitySettingsState,
     #[serde(default)]
     pub providers: ProvidersState,
@@ -154,6 +156,7 @@ impl Default for ProviderSettingsState {
         Self {
             automatic_git_fetch_interval: default_git_fetch_interval(),
             add_project_base_directory: String::new(),
+            worktree_base_directory: String::new(),
             observability: ObservabilitySettingsState::default(),
             providers: ProvidersState::default(),
             provider_instances: BTreeMap::new(),
@@ -210,6 +213,7 @@ pub struct ProviderInstanceInput {
 pub struct ServerSettingsPatch {
     pub automatic_git_fetch_interval_ms: Option<u64>,
     pub add_project_base_directory: Option<String>,
+    pub worktree_base_directory: Option<String>,
     pub observability: Option<ObservabilitySettingsPatch>,
     pub providers: Option<ProvidersPatch>,
     pub provider_instances: Option<BTreeMap<String, ProviderInstanceInput>>,
@@ -425,6 +429,9 @@ fn apply_patch(
     }
     if let Some(value) = patch.add_project_base_directory {
         current.add_project_base_directory = value.trim().to_owned();
+    }
+    if let Some(value) = patch.worktree_base_directory {
+        current.worktree_base_directory = value.trim().to_owned();
     }
     if let Some(value) = patch.observability {
         if let Some(url) = value.otlp_traces_url {
