@@ -23,9 +23,10 @@ use crate::process::{
     wrap_windows_batch_command,
 };
 use crate::terminal::osc::{OscColorResponder, colors_from_env, is_reserved_osc_env_key};
+use crate::terminal::model::WINDOWS_CONSOLE_THEME_ENV;
+#[cfg(any(windows, test))]
 use crate::terminal::model::{
     TerminalConsoleTheme as WindowsConsoleTheme,
-    WINDOWS_CONSOLE_THEME_ENV,
     terminal_console_theme_from_env as windows_console_theme_from_env,
 };
 
