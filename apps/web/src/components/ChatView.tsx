@@ -259,6 +259,7 @@ import { useAssetUrls } from "../assets/assetUrls";
 import type { FileCommentAnnotationGroup } from "./files/fileCommentAnnotations";
 import type { FileEditingSession } from "./files/fileEditingSession";
 import { FileEditingSessionRegistry } from "./files/fileEditingSessionRegistry";
+import { ProjectFilesPreloader } from "./files/ProjectFilesPreloader";
 
 const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
@@ -5275,6 +5276,12 @@ function ChatViewContent(props: ChatViewProps) {
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
+      {activeThreadRef && activeProject && activeWorkspaceRoot ? (
+        <ProjectFilesPreloader
+          environmentId={activeProject.environmentId}
+          cwd={activeWorkspaceRoot}
+        />
+      ) : null}
       {!isPanel && activeThreadRef ? (
         <DesktopPreviewTabHosts
           threadRef={activeThreadRef}

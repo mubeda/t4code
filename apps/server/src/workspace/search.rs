@@ -1,15 +1,20 @@
 use std::collections::{BTreeMap, HashSet};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+use crate::git::{OutputPolicy, ProcessError, ProcessRequest, ProcessRunner};
+
 use super::WorkspaceError;
 use super::paths::to_posix;
 
 const ENTRY_OVERHEAD_BYTES: usize = 24;
+const GIT_SCAN_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -77,11 +82,15 @@ impl WorkspaceSearchIndex {
         let root = self.root.clone();
         let limits = self.limits;
         let scan_cancel = cancellation.clone();
-        let scanned = tokio::task::spawn_blocking(move || scan(&root, limits, &scan_cancel))
-            .await
-            .map_err(|error| {
-                WorkspaceError::operation("scan", &self.root, std::io::Error::other(error))
-            })??;
+        let scanned = if let Some(snapshot) = scan_git(&root, limits, &scan_cancel).await? {
+            snapshot
+        } else {
+            tokio::task::spawn_blocking(move || scan(&root, limits, &scan_cancel))
+                .await
+                .map_err(|error| {
+                    WorkspaceError::operation("scan", &self.root, std::io::Error::other(error))
+                })??
+        };
         if cancellation.is_cancelled() {
             return Err(WorkspaceError::Cancelled);
         }
@@ -128,6 +137,134 @@ impl WorkspaceSearchIndex {
     pub async fn memory_bytes(&self) -> usize {
         self.snapshot.read().await.memory_bytes
     }
+}
+
+async fn scan_git(
+    root: &Path,
+    limits: SearchLimits,
+    cancellation: &CancellationToken,
+) -> Result<Option<SearchSnapshot>, WorkspaceError> {
+    let Some(listed) = run_git_ls_files(
+        root,
+        ["--cached", "--others", "--exclude-standard"],
+        limits.max_memory_bytes,
+        cancellation,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let Some(deleted) =
+        run_git_ls_files(root, ["--deleted"], limits.max_memory_bytes, cancellation).await?
+    else {
+        return Ok(None);
+    };
+    let deleted = deleted
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .collect::<HashSet<_>>();
+    let mut candidates = BTreeMap::new();
+    for path in listed
+        .split('\0')
+        .filter(|path| !path.is_empty() && !deleted.contains(path))
+    {
+        for (separator, _) in path.match_indices('/') {
+            candidates
+                .entry(path[..separator].to_owned())
+                .or_insert(EntryKind::Directory);
+        }
+        candidates.insert(path.to_owned(), EntryKind::File);
+    }
+    let mut entries = BTreeMap::new();
+    let mut memory_bytes = 0;
+    let mut truncated = false;
+    for (path, kind) in candidates {
+        insert_bounded_entry(
+            &mut entries,
+            &mut memory_bytes,
+            &mut truncated,
+            path,
+            kind,
+            limits,
+        );
+    }
+    Ok(Some(SearchSnapshot {
+        entries: entries.into_values().collect(),
+        memory_bytes,
+        truncated,
+    }))
+}
+
+async fn run_git_ls_files<const N: usize>(
+    root: &Path,
+    modes: [&str; N],
+    max_output_bytes: usize,
+    cancellation: &CancellationToken,
+) -> Result<Option<String>, WorkspaceError> {
+    let mut args = vec![OsString::from("-c"), OsString::from("core.quotePath=false")];
+    args.extend([OsString::from("ls-files"), OsString::from("-z")]);
+    args.extend(modes.into_iter().map(OsString::from));
+    args.push(OsString::from("--"));
+    match ProcessRunner
+        .run(
+            ProcessRequest {
+                operation: "WorkspaceSearchIndex.gitSnapshot".to_owned(),
+                command: PathBuf::from("git"),
+                args,
+                cwd: root.to_path_buf(),
+                env: vec![(OsString::from("GIT_OPTIONAL_LOCKS"), OsString::from("0"))],
+                stdin: None,
+                timeout: GIT_SCAN_TIMEOUT,
+                max_output_bytes,
+                output_policy: OutputPolicy::Error,
+                append_truncation_marker: false,
+                allow_non_zero_exit: true,
+            },
+            cancellation,
+        )
+        .await
+    {
+        Ok(output) if output.exit_code == 0 => Ok(Some(output.stdout)),
+        Ok(_) => Ok(None),
+        Err(ProcessError::Cancelled { .. }) => Err(WorkspaceError::Cancelled),
+        Err(_) => Ok(None),
+    }
+}
+
+fn insert_bounded_entry(
+    entries: &mut BTreeMap<String, WorkspaceEntry>,
+    memory_bytes: &mut usize,
+    truncated: &mut bool,
+    path: String,
+    kind: EntryKind,
+    limits: SearchLimits,
+) -> bool {
+    let entry_bytes = path.len().saturating_add(ENTRY_OVERHEAD_BYTES);
+    if path.len() > limits.max_path_bytes
+        || memory_bytes.saturating_add(entry_bytes) > limits.max_memory_bytes
+    {
+        *truncated = true;
+        return false;
+    }
+    if entries.len() >= limits.max_entries {
+        *truncated = true;
+        if kind != EntryKind::File {
+            return false;
+        }
+        let Some(directory_path) = entries
+            .iter()
+            .find_map(|(path, entry)| (entry.kind == EntryKind::Directory).then_some(path.clone()))
+        else {
+            return false;
+        };
+        if let Some(removed) = entries.remove(&directory_path) {
+            *memory_bytes = memory_bytes
+                .saturating_sub(removed.path.len().saturating_add(ENTRY_OVERHEAD_BYTES));
+        }
+    }
+    *memory_bytes += entry_bytes;
+    entries.insert(path.clone(), WorkspaceEntry { path, kind });
+    true
 }
 
 fn entry_kind_rank(kind: EntryKind) -> u8 {
@@ -184,37 +321,15 @@ fn scan(
             } else {
                 continue;
             };
-            let entry_bytes = relative.len().saturating_add(ENTRY_OVERHEAD_BYTES);
-            if relative.len() > limits.max_path_bytes
-                || memory_bytes.saturating_add(entry_bytes) > limits.max_memory_bytes
-            {
-                truncated = true;
-                continue;
-            }
-            if entries.len() >= limits.max_entries {
-                truncated = true;
-                if kind != EntryKind::File {
-                    continue;
-                }
-                let Some(directory_path) = entries.iter().find_map(|(path, entry)| {
-                    (entry.kind == EntryKind::Directory).then_some(path.clone())
-                }) else {
-                    continue;
-                };
-                if let Some(removed) = entries.remove(&directory_path) {
-                    memory_bytes = memory_bytes
-                        .saturating_sub(removed.path.len().saturating_add(ENTRY_OVERHEAD_BYTES));
-                }
-            }
-            memory_bytes += entry_bytes;
-            entries.insert(
-                relative.clone(),
-                WorkspaceEntry {
-                    path: relative,
-                    kind,
-                },
+            let inserted = insert_bounded_entry(
+                &mut entries,
+                &mut memory_bytes,
+                &mut truncated,
+                relative,
+                kind,
+                limits,
             );
-            if file_type.is_dir() {
+            if inserted && file_type.is_dir() {
                 stack.push(path);
             }
         }
@@ -286,6 +401,42 @@ fn subsequence_offset(candidate: &str, query: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn repository_snapshot_respects_git_ignore_globs() {
+        let root = tempfile::tempdir().unwrap();
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(root.path())
+            .status()
+            .unwrap();
+        assert!(init.success());
+        std::fs::write(root.path().join(".gitignore"), "ignored-*/\n").unwrap();
+        std::fs::write(root.path().join("tracked.txt"), "tracked").unwrap();
+        std::fs::write(root.path().join("untracked.txt"), "untracked").unwrap();
+        std::fs::create_dir(root.path().join("ignored-cache")).unwrap();
+        std::fs::write(root.path().join("ignored-cache/generated.txt"), "generated").unwrap();
+        let add = std::process::Command::new("git")
+            .args(["add", ".gitignore", "tracked.txt"])
+            .current_dir(root.path())
+            .status()
+            .unwrap();
+        assert!(add.success());
+
+        let index = WorkspaceSearchIndex::new(root.path().to_path_buf(), SearchLimits::default());
+        index.refresh(CancellationToken::new()).await.unwrap();
+        let paths = index
+            .list()
+            .await
+            .entries
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect::<Vec<_>>();
+
+        assert!(paths.contains(&"tracked.txt".to_owned()));
+        assert!(paths.contains(&"untracked.txt".to_owned()));
+        assert!(!paths.iter().any(|path| path.starts_with("ignored-cache")));
+    }
 
     #[tokio::test]
     async fn search_index_covers_ignores_scoring_limits_and_cancellation() {
