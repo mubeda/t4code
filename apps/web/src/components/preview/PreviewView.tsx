@@ -12,12 +12,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { previewAnnotationScreenshotFile } from "~/lib/previewAnnotation";
 import { ensureLocalApi } from "~/localApi";
+import { supportsPreviewRuntimeCapability } from "~/previewRuntimeCapabilities";
 import {
   rememberPreviewUrl,
   updatePreviewServerSnapshot,
   useThreadPreviewState,
 } from "~/previewStateStore";
 import { resolveDiscoveredServerUrl } from "~/browser/browserTargetResolver";
+import { navigateDesktopTab } from "~/browser/desktopTabLifetime";
 import { useEnvironment, useEnvironmentHttpBaseUrl } from "~/state/environments";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -75,6 +77,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   const environment = useEnvironment(threadRef.environmentId);
   const environmentHttpBaseUrl = useEnvironmentHttpBaseUrl(threadRef.environmentId);
   const open = useAtomCommand(previewEnvironment.open);
+  const navigate = useAtomCommand(previewEnvironment.navigate, "preview navigation");
   const resize = useAtomCommand(previewEnvironment.resize, "preview viewport resize");
 
   usePreviewSession(threadRef);
@@ -90,7 +93,8 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   const snapshot = tabId ? (previewState.sessions[tabId] ?? null) : null;
   const desktopOverlay = tabId ? (previewState.desktopByTabId[tabId] ?? null) : null;
   const navStatus = snapshot?.navStatus ?? { _tag: "Idle" as const };
-  const url = navStatus._tag === "Idle" ? "" : navStatus.url;
+  const snapshotUrl = navStatus._tag === "Idle" ? "" : navStatus.url;
+  const url = desktopOverlay?.url ?? snapshotUrl;
   const loading = desktopOverlay?.loading ?? navStatus._tag === "Loading";
   const canGoBack = desktopOverlay?.canGoBack ?? snapshot?.canGoBack ?? false;
   const canGoForward = desktopOverlay?.canGoForward ?? snapshot?.canGoForward ?? false;
@@ -111,15 +115,30 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   const panelRect = useBrowserSurfaceStore((state) =>
     tabId ? (state.byTabId[tabId]?.rect ?? null) : null,
   );
+  const pickerSupported = supportsPreviewRuntimeCapability(previewBridge, "picker");
+  const recordingSupported = supportsPreviewRuntimeCapability(previewBridge, "recording");
+  const imageClipboardSupported = supportsPreviewRuntimeCapability(previewBridge, "imageClipboard");
 
   const handleSubmitUrl = useCallback(
     async (next: string) => {
       try {
         const resolvedUrl = resolveDiscoveredServerUrl(threadRef.environmentId, next);
         if (tabId && previewBridge) {
-          // Drive the webview imperatively; `usePreviewBridge` mirrors the
-          // resolved URL back to the server so other clients stay in sync.
-          await previewBridge.navigate(tabId, resolvedUrl);
+          // Commit the canonical snapshot before driving the native webview.
+          // Native Loading/Success events can then enrich that snapshot
+          // without a fast load leaving a new tab stuck on Idle or allowing
+          // the initial server response to overwrite the final page title.
+          const result = await navigate({
+            environmentId: threadRef.environmentId,
+            input: {
+              threadId: threadRef.threadId,
+              tabId,
+              url: resolvedUrl,
+            },
+          });
+          if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+          updatePreviewServerSnapshot(threadRef, result.value);
+          await navigateDesktopTab(tabId, resolvedUrl);
           rememberPreviewUrl(threadRef, resolvedUrl);
         } else {
           await openPreviewSession({
@@ -132,7 +151,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         // Server-side `failed` event renders the unreachable view.
       }
     },
-    [open, tabId, threadRef],
+    [navigate, open, tabId, threadRef],
   );
 
   const handleRefresh = useCallback(() => {
@@ -345,11 +364,15 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
                 type,
                 title,
                 description,
-                actionProps: {
-                  children: imageCopied ? "Copied!" : "Copy image",
-                  disabled: imageCopied,
-                  onClick: copyImage,
-                },
+                ...(imageClipboardSupported
+                  ? {
+                      actionProps: {
+                        children: imageCopied ? "Copied!" : "Copy image",
+                        disabled: imageCopied,
+                        onClick: copyImage,
+                      },
+                    }
+                  : {}),
                 data: {
                   additionalActions: [
                     {
@@ -423,10 +446,14 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
             stackedThreadToast({
               type: "success",
               title: "Screenshot saved",
-              actionProps: {
-                children: "Copy image",
-                onClick: copyImage,
-              },
+              ...(imageClipboardSupported
+                ? {
+                    actionProps: {
+                      children: "Copy image",
+                      onClick: copyImage,
+                    },
+                  }
+                : {}),
               data: {
                 additionalActions: [
                   {
@@ -454,7 +481,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         },
       );
     },
-    [activeRecordingTabId, tabId],
+    [activeRecordingTabId, imageClipboardSupported, tabId],
   );
 
   const handlePickElement = useCallback(() => {
@@ -577,7 +604,8 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         onCapture={previewBridge && tabId ? handleCapture : undefined}
         captureDisabled={!desktopOverlay || isUnreachable}
         recording={tabId !== null && activeRecordingTabId === tabId}
-        onPickElement={previewBridge && tabId ? handlePickElement : undefined}
+        recordingSupported={recordingSupported}
+        onPickElement={previewBridge && tabId && pickerSupported ? handlePickElement : undefined}
         pickActive={pickActive}
         // Disable when there's no tab (nothing to pick on) OR the page
         // failed to load (a React overlay covers the webview, so the

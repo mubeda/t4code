@@ -860,7 +860,7 @@ pub fn desktop_bridge_get_bridge_metadata() -> Value {
             "sshRemoteHttp": true,
             "connectionCatalog": true,
             "sshProvisioning": true,
-            "preview": false,
+            "preview": crate::preview::host::is_supported(),
             "updater": false,
             "menuEvents": true,
         },
@@ -2093,7 +2093,10 @@ mod tests {
         assert_eq!(metadata["bridgeVersion"], 1);
         assert_eq!(metadata["features"]["localBackend"], true);
         assert_eq!(metadata["features"]["connectionCatalog"], true);
-        assert_eq!(metadata["features"]["preview"], false);
+        assert_eq!(
+            metadata["features"]["preview"],
+            crate::preview::host::is_supported()
+        );
         assert_eq!(metadata["features"]["sshProvisioning"], true);
         assert_eq!(metadata["features"]["menuEvents"], true);
     }

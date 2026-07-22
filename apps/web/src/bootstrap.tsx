@@ -7,8 +7,6 @@ import { isDesktopHost } from "./env";
 import { tauriDesktopBridgeReady } from "./tauriDesktopBridge";
 import { ManagedRelayAuthProvider } from "./cloud/managedAuth";
 import { hasCloudPublicConfig } from "./cloud/publicConfig";
-import { getRouter } from "./router";
-import { AppRoot } from "./AppRoot";
 import { installFrontendLogCapture } from "./diagnostics/frontendLogCapture";
 
 const clerkPublishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
@@ -16,6 +14,7 @@ const clerkPublishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string
 export async function renderApplication(): Promise<void> {
   installFrontendLogCapture();
   await tauriDesktopBridgeReady.catch(() => undefined);
+  const [{ getRouter }, { AppRoot }] = await Promise.all([import("./router"), import("./AppRoot")]);
 
   // Desktop shells load bundled assets from custom/file origins, so hash history avoids path resolution issues.
   const history = isDesktopHost ? createHashHistory() : createBrowserHistory();

@@ -48,6 +48,9 @@ const h = vi.hoisted(() => {
     screenshotRejects: false,
     copyArtifactRejects: false,
     // module collaborators
+    desktopNavigateCalls: [] as Array<[string, string]>,
+    desktopNavigateRejects: false,
+    navigationOrder: [] as string[],
     openPreviewSessionCalls: [] as unknown[],
     rememberPreviewUrlCalls: [] as unknown[],
     updateSnapshotCalls: [] as unknown[],
@@ -134,6 +137,16 @@ vi.mock("~/browser/browserTargetResolver", () => ({
   resolveDiscoveredServerUrl: () => h.resolvedUrl,
 }));
 
+vi.mock("~/browser/desktopTabLifetime", () => ({
+  navigateDesktopTab: (tabId: string, url: string) => {
+    h.navigationOrder.push("desktop");
+    h.desktopNavigateCalls.push([tabId, url]);
+    return h.desktopNavigateRejects
+      ? Promise.reject(new Error("nav boom"))
+      : Promise.resolve(undefined);
+  },
+}));
+
 vi.mock("~/state/environments", () => ({
   useEnvironment: () => h.environment,
   useEnvironmentHttpBaseUrl: () => h.httpBaseUrl,
@@ -142,6 +155,7 @@ vi.mock("~/state/environments", () => ({
 vi.mock("~/state/preview", () => ({
   previewEnvironment: {
     open: { label: "open" },
+    navigate: { label: "navigate" },
     resize: { label: "resize" },
   },
 }));
@@ -152,6 +166,24 @@ vi.mock("~/state/use-atom-command", () => ({
     return (input: unknown) => {
       h.commandCalls.push({ label, input });
       if (label === "resize") return Promise.resolve(h.resizeResult);
+      if (label === "navigate") {
+        h.navigationOrder.push("server");
+        return Promise.resolve({
+          _tag: "Success",
+          value: {
+            threadId: "thread-1",
+            tabId: "tab-1",
+            navStatus: {
+              _tag: "Success",
+              url: h.resolvedUrl,
+              title: "",
+            },
+            canGoBack: false,
+            canGoForward: false,
+            updatedAt: "2026-07-21T19:00:00.000Z",
+          },
+        });
+      }
       return Promise.resolve({ _tag: "Success", value: undefined });
     };
   },
@@ -298,6 +330,7 @@ vi.mock("~/components/ui/toast", () => ({
 }));
 
 import { PreviewView } from "./PreviewView";
+import { registerPreviewRuntimeCapabilities } from "~/previewRuntimeCapabilities";
 
 const environmentId = EnvironmentId.make("environment-1");
 const threadId = ThreadId.make("thread-1");
@@ -373,6 +406,7 @@ function seedSession(
     options.overlay === null
       ? null
       : (options.overlay ?? {
+          url: "http://app.local/",
           loading: false,
           canGoBack: true,
           canGoForward: true,
@@ -453,6 +487,9 @@ beforeEach(() => {
   h.screenshotArtifact = { path: "/shot.png" };
   h.screenshotRejects = false;
   h.copyArtifactRejects = false;
+  h.desktopNavigateCalls.length = 0;
+  h.desktopNavigateRejects = false;
+  h.navigationOrder.length = 0;
   h.openPreviewSessionCalls.length = 0;
   h.rememberPreviewUrlCalls.length = 0;
   h.updateSnapshotCalls.length = 0;
@@ -540,6 +577,7 @@ describe("PreviewView rendering", () => {
     expect(chrome.canGoForward).toBe(true);
     expect(chrome.refreshDisabled).toBe(false);
     expect(typeof chrome.onCapture).toBe("function");
+    expect(chrome.recordingSupported).toBe(true);
     expect(typeof chrome.onPickElement).toBe("function");
     expect(chrome.pickDisabled).toBe(false);
 
@@ -549,6 +587,43 @@ describe("PreviewView rendering", () => {
     // Zoom indicator + agent cursor render when a desktop overlay exists.
     expect(hasCapture("zoomIndicator")).toBe(true);
     expect(hasCapture("agentCursor")).toBe(true);
+  });
+
+  it("shows the native URL after browser history navigation", () => {
+    seedSession({
+      overlay: {
+        loading: false,
+        canGoBack: false,
+        canGoForward: true,
+        controller: "human",
+        zoomFactor: 1,
+        url: "http://previous.local/",
+      },
+    });
+    h.previewBridge = makeBridge();
+
+    renderView();
+
+    expect(captured("chromeRow").url).toBe("http://previous.local/");
+  });
+
+  it("hides picker actions and disables recording gestures when deferred capabilities are unsupported", () => {
+    seedSession();
+    const bridge = makeBridge();
+    registerPreviewRuntimeCapabilities(bridge as never, {
+      picker: false,
+      recording: false,
+      automation: false,
+      imageClipboard: false,
+    });
+    h.previewBridge = bridge;
+
+    renderView();
+
+    const chrome = captured("chromeRow");
+    expect(chrome.onPickElement).toBeUndefined();
+    expect(chrome.recordingSupported).toBe(false);
+    expect(typeof chrome.onCapture).toBe("function");
   });
 
   it("renders the unreachable overlay and controller banner for a failed load", () => {
@@ -609,7 +684,7 @@ describe("PreviewView rendering", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("navigation handlers", () => {
-  it("navigates the webview imperatively and remembers the url when a tab exists", async () => {
+  it("navigates through desktop tab readiness and remembers the url when a tab exists", async () => {
     seedSession();
     h.previewBridge = makeBridge();
     renderView();
@@ -618,7 +693,21 @@ describe("navigation handlers", () => {
     (chrome.onSubmit as (next: string) => void)("example.com");
     await flush();
 
-    expect(bridgeMethodCalls("navigate")).toHaveLength(1);
+    expect(h.desktopNavigateCalls).toEqual([["tab-1", "http://resolved.local/"]]);
+    expect(h.navigationOrder).toEqual(["server", "desktop"]);
+    expect(h.commandCalls).toContainEqual({
+      label: "navigate",
+      input: {
+        environmentId: "environment-1",
+        input: {
+          threadId: "thread-1",
+          tabId: "tab-1",
+          url: "http://resolved.local/",
+        },
+      },
+    });
+    expect(h.updateSnapshotCalls).toHaveLength(1);
+    expect(bridgeMethodCalls("navigate")).toHaveLength(0);
     expect(h.rememberPreviewUrlCalls).toHaveLength(1);
     expect(h.openPreviewSessionCalls).toHaveLength(0);
   });
@@ -632,14 +721,14 @@ describe("navigation handlers", () => {
     await flush();
 
     expect(h.openPreviewSessionCalls).toHaveLength(1);
+    expect(h.desktopNavigateCalls).toHaveLength(0);
     expect(bridgeMethodCalls("navigate")).toHaveLength(0);
   });
 
   it("swallows navigation errors (the failed event drives the unreachable view)", async () => {
     seedSession();
-    const bridge = makeBridge();
-    bridge.navigate = () => Promise.reject(new Error("nav boom"));
-    h.previewBridge = bridge;
+    h.previewBridge = makeBridge();
+    h.desktopNavigateRejects = true;
     renderView();
     const chrome = captured("chromeRow");
 
@@ -773,6 +862,7 @@ describe("handleCapture: screenshots", () => {
     const saved = h.toasts.find((t) => t.toast.title === "Screenshot saved");
     expect(saved).toBeDefined();
     const toast = saved!.toast;
+    expect(toast.actionProps).toMatchObject({ children: "Copy image" });
 
     // Copy image → bridge clipboard copy, then reset after the timeout.
     (toast.actionProps as { onClick: () => void }).onClick();
@@ -792,6 +882,44 @@ describe("handleCapture: screenshots", () => {
       toast.data as { secondaryActionProps: { onClick: () => void } }
     ).secondaryActionProps.onClick();
     expect(bridgeMethodCalls("revealArtifact")).toHaveLength(1);
+  });
+
+  it("omits unsupported image copy while preserving path and reveal actions across updates", async () => {
+    seedSession();
+    const bridge = makeBridge();
+    registerPreviewRuntimeCapabilities(bridge as never, {
+      picker: false,
+      recording: false,
+      automation: false,
+      imageClipboard: false,
+    });
+    h.previewBridge = bridge;
+    renderView();
+
+    const onCapture = captured("chromeRow").onCapture as (record: boolean) => void;
+    onCapture(false);
+    await flush();
+
+    const toast = h.toasts.find((entry) => entry.toast.title === "Screenshot saved")!.toast;
+    expect(toast).not.toHaveProperty("actionProps");
+
+    const additional = (
+      toast.data as { additionalActions: Array<{ props: { onClick: () => void } }> }
+    ).additionalActions;
+    additional[0]!.props.onClick();
+    await flush();
+
+    expect(h.clipboardWriteCalls).toContain("/shot.png");
+    expect(h.toastUpdates.length).toBeGreaterThan(0);
+    for (const update of h.toastUpdates) {
+      expect(update.toast).not.toHaveProperty("actionProps");
+    }
+
+    (
+      toast.data as { secondaryActionProps: { onClick: () => void } }
+    ).secondaryActionProps.onClick();
+    expect(bridgeMethodCalls("revealArtifact")).toHaveLength(1);
+    expect(bridgeMethodCalls("copyArtifactToClipboard")).toHaveLength(0);
   });
 
   it("reports a clipboard-copy-image failure through a toast update", async () => {

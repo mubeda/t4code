@@ -202,6 +202,7 @@ describe("usePreviewBridge", () => {
         threadRef,
         tabId: "tab-1",
         state: {
+          url: null,
           canGoBack: true,
           canGoForward: false,
           loading: false,

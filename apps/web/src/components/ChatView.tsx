@@ -164,6 +164,7 @@ import { getProviderModelCapabilities, resolveSelectableProvider } from "../prov
 import { useEnvironmentSettings } from "../hooks/useSettings";
 import { resolveAppModelSelectionForInstance } from "../modelSelection";
 import { getTerminalFocusOwner } from "../lib/terminalFocus";
+import { DesktopPreviewTabHosts } from "../browser/DesktopPreviewTabHosts";
 import {
   deriveLogicalProjectKeyFromSettings,
   selectProjectGroupingSettings,
@@ -2297,6 +2298,7 @@ function ChatViewContent(props: ChatViewProps) {
     terminalUiLaunchContext?.threadId === activeThreadId ? terminalUiLaunchContext : null;
   // Default true while loading to avoid toolbar flicker.
   const isGitRepo = gitStatusQuery.data?.isRepo ?? true;
+  const gitRightPanelAvailable = activeProject !== null && isGitRepo;
   const terminalShortcutLabelOptions = useMemo(
     () => ({
       context: {
@@ -2919,14 +2921,14 @@ function ChatViewContent(props: ChatViewProps) {
     void addBrowserSurface({ threadRef: activeThreadRef, openPreview });
   }, [activeThreadRef, openPreview]);
   const addDiffSurface = useCallback(() => {
-    if (!activeThreadRef || !isServerThread || !isGitRepo) return;
+    if (!activeThreadRef || !gitRightPanelAvailable) return;
     useRightPanelStore.getState().open(activeThreadRef, "diff");
     onDiffPanelOpen?.();
-  }, [activeThreadRef, isGitRepo, isServerThread, onDiffPanelOpen]);
+  }, [activeThreadRef, gitRightPanelAvailable, onDiffPanelOpen]);
   const addSourceControlSurface = useCallback(() => {
-    if (!activeThreadRef || !isServerThread || !isGitRepo) return;
+    if (!activeThreadRef || !gitRightPanelAvailable) return;
     useRightPanelStore.getState().open(activeThreadRef, "sourceControl");
-  }, [activeThreadRef, isGitRepo, isServerThread]);
+  }, [activeThreadRef, gitRightPanelAvailable]);
   const addFilesSurface = useCallback(() => {
     if (!activeThreadRef || !activeProject) return;
     useRightPanelStore.getState().open(activeThreadRef, "files");
@@ -5210,7 +5212,11 @@ function ChatViewContent(props: ChatViewProps) {
       />
     ) : activeRightPanelSurface?.kind === "diff" ? (
       <Suspense fallback={null}>
-        <DiffPanel mode="embedded" composerDraftTarget={composerDraftTarget} />
+        <DiffPanel
+          mode="embedded"
+          composerDraftTarget={composerDraftTarget}
+          thread={activeThread}
+        />
       </Suspense>
     ) : activeRightPanelSurface?.kind === "sourceControl" ? (
       <Suspense fallback={null}>
@@ -5261,6 +5267,13 @@ function ChatViewContent(props: ChatViewProps) {
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
+      {!isPanel && activeThreadRef ? (
+        <DesktopPreviewTabHosts
+          threadRef={activeThreadRef}
+          surfaces={rightPanelState.surfaces}
+          sessions={activePreviewState.sessions}
+        />
+      ) : null}
       {!isPanel && rightPanelOpen && !shouldUsePlanSidebarSheet ? panelLayoutControls : null}
       <div
         className={cn(
@@ -5590,8 +5603,8 @@ function ChatViewContent(props: ChatViewProps) {
           onAddSourceControl={addSourceControlSurface}
           onAddFiles={addFilesSurface}
           browserAvailable={isPreviewSupportedInRuntime()}
-          diffAvailable={isServerThread && isGitRepo}
-          sourceControlAvailable={isServerThread && isGitRepo}
+          diffAvailable={gitRightPanelAvailable}
+          sourceControlAvailable={gitRightPanelAvailable}
           filesAvailable={activeProject !== null}
         >
           {rightPanelContent}
@@ -5619,8 +5632,8 @@ function ChatViewContent(props: ChatViewProps) {
             onAddSourceControl={addSourceControlSurface}
             onAddFiles={addFilesSurface}
             browserAvailable={isPreviewSupportedInRuntime()}
-            diffAvailable={isServerThread && isGitRepo}
-            sourceControlAvailable={isServerThread && isGitRepo}
+            diffAvailable={gitRightPanelAvailable}
+            sourceControlAvailable={gitRightPanelAvailable}
             filesAvailable={activeProject !== null}
           >
             {rightPanelContent}

@@ -37,7 +37,11 @@ import { DEFAULT_SERVER_SETTINGS } from "@t4code/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t4code/contracts/settings";
 import { AsyncResult } from "effect/unstable/reactivity";
 import * as Cause from "effect/Cause";
-import { scopeProjectRef, scopeThreadRef } from "@t4code/client-runtime/environment";
+import {
+  scopedThreadKey,
+  scopeProjectRef,
+  scopeThreadRef,
+} from "@t4code/client-runtime/environment";
 
 const h = vi.hoisted(() => {
   return {
@@ -367,6 +371,13 @@ vi.mock("./RightPanelTabs", () => ({
   RightPanelTabs: (props: Record<string, unknown> & { children?: ReactNode }) => {
     h.captured["rightPanelTabs"] = props;
     return <div data-mock="right-panel-tabs">{props.children}</div>;
+  },
+}));
+
+vi.mock("../browser/DesktopPreviewTabHosts", () => ({
+  DesktopPreviewTabHosts: (props: Record<string, unknown>) => {
+    h.captured["desktopPreviewTabHosts"] = props;
+    return <div data-mock="desktop-preview-tab-hosts" />;
   },
 }));
 
@@ -884,6 +895,66 @@ describe("ChatView", () => {
       expect(header["draftId"]).toBe(draftId);
       expect(header["canCreatePanel"]).toBe(false);
     });
+
+    it.each([
+      { label: "main branch", envMode: "local" as const, worktreePath: null },
+      {
+        label: "new worktree",
+        envMode: "worktree" as const,
+        worktreePath: "X:/demo-worktree",
+      },
+    ])("exposes every right-panel module before the $label draft starts", (draftContext) => {
+      seedEnvironment(makeEnvironmentPresentation());
+      seedProject(makeProject());
+      seedGitStatus(true);
+      h.previewSupported = true;
+
+      const draftId = newDraftId();
+      useComposerDraftStore
+        .getState()
+        .setLogicalProjectDraftThreadId(
+          "logical-project-1",
+          scopeProjectRef(environmentId, projectId),
+          draftId,
+          {
+            threadId,
+            createdAt: now,
+            envMode: draftContext.envMode,
+            worktreePath: draftContext.worktreePath,
+          },
+        );
+      useRightPanelStore.getState().open(threadRef, "plan");
+      publishSeededStoreState(useComposerDraftStore);
+      publishSeededStoreState(useRightPanelStore);
+
+      const markup = renderToStaticMarkup(
+        <ChatView
+          environmentId={environmentId}
+          threadId={threadId}
+          routeKind="draft"
+          draftId={draftId}
+        />,
+      );
+
+      expect(markup).toContain('data-mock="right-panel-tabs"');
+      const rightPanel = capturedProps<Record<string, unknown>>("rightPanelTabs");
+      expect(rightPanel["browserAvailable"]).toBe(true);
+      expect(rightPanel["diffAvailable"]).toBe(true);
+      expect(rightPanel["sourceControlAvailable"]).toBe(true);
+      expect(rightPanel["filesAvailable"]).toBe(true);
+
+      (rightPanel["onAddTerminal"] as () => void)();
+      (rightPanel["onAddDiff"] as () => void)();
+      (rightPanel["onAddSourceControl"] as () => void)();
+      (rightPanel["onAddFiles"] as () => void)();
+
+      expect(h.commandCalls.filter((call) => call.key === "terminal.open")).toHaveLength(1);
+      expect(
+        (useRightPanelStore.getState().byThreadKey[scopedThreadKey(threadRef)]?.surfaces ?? []).map(
+          (surface) => surface.kind,
+        ),
+      ).toEqual(expect.arrayContaining(["terminal", "diff", "sourceControl", "files"]));
+    });
   });
 
   describe("when: rendering the panel variant", () => {
@@ -923,6 +994,60 @@ describe("ChatView", () => {
       const planSidebar = capturedProps<Record<string, unknown>>("planSidebar");
       expect(planSidebar["label"]).toBe("Tasks");
       expect(planSidebar["environmentId"]).toBe(environmentId);
+    });
+  });
+
+  describe("when: native preview tabs are owned by the host chat view", () => {
+    it("passes every right-panel surface to persistent hosts while the panel is hidden", () => {
+      seedEnvironment(makeEnvironmentPresentation());
+      seedProject(makeProject());
+      seedServerThread(makeThread());
+      seedGitStatus(true);
+      h.previewState = {
+        ...h.previewState,
+        sessions: {
+          "tab-a": {
+            threadId,
+            tabId: "tab-a",
+            navStatus: { _tag: "Success", url: "https://a.test/", title: "A" },
+            canGoBack: false,
+            canGoForward: false,
+            updatedAt: now,
+          },
+          "tab-b": {
+            threadId,
+            tabId: "tab-b",
+            navStatus: { _tag: "Success", url: "https://b.test/", title: "B" },
+            canGoBack: false,
+            canGoForward: false,
+            updatedAt: now,
+          },
+        },
+      };
+      useRightPanelStore.getState().openBrowser(threadRef, "tab-a");
+      useRightPanelStore.getState().openBrowser(threadRef, "tab-b");
+      useRightPanelStore.getState().openTerminal(threadRef, "term-active");
+      useRightPanelStore.getState().close(threadRef);
+      publishSeededStoreState(useRightPanelStore);
+
+      const markup = renderServerRoute();
+
+      expect(markup).toContain('data-mock="desktop-preview-tab-hosts"');
+      expect(markup).not.toContain('data-mock="right-panel-tabs"');
+      const hosts = capturedProps<Record<string, unknown>>("desktopPreviewTabHosts");
+      expect(hosts["threadRef"]).toEqual(threadRef);
+      expect(hosts["surfaces"]).toEqual([
+        { id: "browser:tab-a", kind: "preview", resourceId: "tab-a" },
+        { id: "browser:tab-b", kind: "preview", resourceId: "tab-b" },
+        {
+          id: "terminal:term-active",
+          kind: "terminal",
+          resourceId: "term-active",
+          terminalIds: ["term-active"],
+          activeTerminalId: "term-active",
+        },
+      ]);
+      expect(hosts["sessions"]).toBe(h.previewState.sessions);
     });
   });
 

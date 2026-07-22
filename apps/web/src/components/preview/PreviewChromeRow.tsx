@@ -40,6 +40,7 @@ interface Props {
   onCapture?: ((record: boolean) => void) | undefined;
   captureDisabled?: boolean | undefined;
   recording?: boolean | undefined;
+  recordingSupported?: boolean | undefined;
   /**
    * When provided, renders an annotation-mode toggle button to the right of
    * the URL input. Pressed while annotation mode is active (button shows in `pressed`
@@ -77,6 +78,7 @@ export function PreviewChromeRow({
   onCapture,
   captureDisabled,
   recording,
+  recordingSupported = true,
   onPickElement,
   pickActive,
   pickDisabled,
@@ -256,7 +258,7 @@ export function PreviewChromeRow({
                 <Button
                   variant={recording ? "secondary" : "ghost"}
                   size="icon-xs"
-                  onClick={(event) => onCapture(event.shiftKey)}
+                  onClick={(event) => onCapture(recordingSupported && event.shiftKey)}
                   aria-label={recording ? "Stop recording" : "Capture screenshot"}
                   type="button"
                   className="relative"
@@ -270,7 +272,11 @@ export function PreviewChromeRow({
               ) : null}
             </TooltipTrigger>
             <TooltipPopup>
-              {recording ? "Stop recording" : "Screenshot · Shift-click to record"}
+              {recording
+                ? "Stop recording"
+                : recordingSupported
+                  ? "Screenshot · Shift-click to record"
+                  : "Capture screenshot"}
             </TooltipPopup>
           </Tooltip>
         ) : null}

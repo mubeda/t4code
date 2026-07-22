@@ -69,6 +69,7 @@ import { serverEnvironment } from "../state/server";
 import { reviewEnvironment } from "../state/review";
 import { vcsEnvironment } from "../state/vcs";
 import { buildBaseRefChoices, filterBaseRefChoices } from "../lib/baseRefChoices";
+import type { Thread } from "../types";
 
 type DiffRenderMode = "stacked" | "split";
 type DiffThemeType = "light" | "dark";
@@ -182,11 +183,16 @@ const DIFF_PANEL_UNSAFE_CSS = `
 interface DiffPanelProps {
   mode?: DiffPanelMode;
   composerDraftTarget: ScopedThreadRef | DraftId;
+  thread?: Thread | null;
 }
 
 export { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 
-export default function DiffPanel({ mode = "inline", composerDraftTarget }: DiffPanelProps) {
+export default function DiffPanel({
+  mode = "inline",
+  composerDraftTarget,
+  thread: threadOverride,
+}: DiffPanelProps) {
   const { resolvedTheme } = useTheme();
   const settings = useClientSettings();
   const [diffRenderMode, setDiffRenderMode] = useState<DiffRenderMode>("stacked");
@@ -203,14 +209,22 @@ export default function DiffPanel({ mode = "inline", composerDraftTarget }: Diff
     strict: false,
     select: (params) => resolveThreadRouteRef(params),
   });
+  const routeThread = useThread(routeThreadRef);
+  const activeThread = threadOverride ?? routeThread;
+  const activeThreadRef = useMemo(
+    () =>
+      threadOverride
+        ? { environmentId: threadOverride.environmentId, threadId: threadOverride.id }
+        : routeThreadRef,
+    [routeThreadRef, threadOverride],
+  );
   const diffSelection = useDiffPanelStore((state) =>
-    selectThreadDiffPanelSelection(state.byThreadKey, routeThreadRef),
+    selectThreadDiffPanelSelection(state.byThreadKey, activeThreadRef),
   );
   const gitRefreshRequestId = useDiffPanelStore((state) =>
-    selectThreadDiffPanelRefreshRequest(state.gitRefreshRequestByThreadKey, routeThreadRef),
+    selectThreadDiffPanelRefreshRequest(state.gitRefreshRequestByThreadKey, activeThreadRef),
   );
-  const activeThreadId = routeThreadRef?.threadId ?? null;
-  const activeThread = useThread(routeThreadRef);
+  const activeThreadId = activeThreadRef?.threadId ?? null;
   const activeProjectId = activeThread?.projectId ?? null;
   const activeProject = useProject(
     activeThread && activeProjectId
@@ -255,12 +269,12 @@ export default function DiffPanel({ mode = "inline", composerDraftTarget }: Diff
   );
 
   useEffect(() => {
-    if (!routeThreadRef || diffSelection.kind !== "turn") return;
+    if (!activeThreadRef || diffSelection.kind !== "turn") return;
     useDiffPanelStore.getState().reconcileTurnSelection(
-      routeThreadRef,
+      activeThreadRef,
       orderedTurnDiffSummaries.map((summary) => summary.turnId),
     );
-  }, [diffSelection, orderedTurnDiffSummaries, routeThreadRef]);
+  }, [activeThreadRef, diffSelection, orderedTurnDiffSummaries]);
 
   const selectedTurnId = diffSelection.kind === "turn" ? diffSelection.turnId : null;
   const selectedGitScope = diffSelection.kind === "unstaged" ? "unstaged" : "branch";
@@ -286,8 +300,8 @@ export default function DiffPanel({ mode = "inline", composerDraftTarget }: Diff
         ? "Latest turn"
         : `Turn ${selectedCheckpointTurnCount ?? "?"}`;
   const reviewSectionId = selectedTurn ? `turn:${selectedTurn.turnId}` : selectedGitScope;
-  const collapseScopeKey = routeThreadRef
-    ? `${routeThreadRef.environmentId}:${routeThreadRef.threadId}:${reviewSectionId}`
+  const collapseScopeKey = activeThreadRef
+    ? `${activeThreadRef.environmentId}:${activeThreadRef.threadId}:${reviewSectionId}`
     : null;
   const collapsedDiffFileKeys =
     collapsedDiffFiles.scopeKey === collapseScopeKey
@@ -442,7 +456,7 @@ export default function DiffPanel({ mode = "inline", composerDraftTarget }: Diff
   const openDiffFile = useCallback(
     (filePath: string) => {
       openDiffFilePrimaryAction({
-        threadRef: routeThreadRef,
+        threadRef: activeThreadRef,
         filePath,
         activeCwd,
         openInEditor: (targetPath) => {
@@ -451,10 +465,10 @@ export default function DiffPanel({ mode = "inline", composerDraftTarget }: Diff
             if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
               console.warn("Failed to open diff file in editor.", {
                 operation: "open-diff-file",
-                ...(routeThreadRef
+                ...(activeThreadRef
                   ? {
-                      environmentId: routeThreadRef.environmentId,
-                      threadId: routeThreadRef.threadId,
+                      environmentId: activeThreadRef.environmentId,
+                      threadId: activeThreadRef.threadId,
                     }
                   : {}),
                 ...safeErrorLogAttributes(squashAtomCommandFailure(result)),
@@ -464,7 +478,7 @@ export default function DiffPanel({ mode = "inline", composerDraftTarget }: Diff
         },
       });
     },
-    [activeCwd, openInPreferredEditor, routeThreadRef],
+    [activeCwd, activeThreadRef, openInPreferredEditor],
   );
   const toggleDiffFileCollapsed = useCallback(
     (fileKey: string) => {
@@ -482,16 +496,16 @@ export default function DiffPanel({ mode = "inline", composerDraftTarget }: Diff
   );
 
   const selectTurn = (turnId: TurnId) => {
-    if (!routeThreadRef) return;
-    useDiffPanelStore.getState().selectTurn(routeThreadRef, turnId);
+    if (!activeThreadRef) return;
+    useDiffPanelStore.getState().selectTurn(activeThreadRef, turnId);
   };
   const selectGitScope = (scope: "branch" | "unstaged") => {
-    if (!routeThreadRef) return;
-    useDiffPanelStore.getState().selectGitScope(routeThreadRef, scope);
+    if (!activeThreadRef) return;
+    useDiffPanelStore.getState().selectGitScope(activeThreadRef, scope);
   };
   const selectBranchBaseRef = (baseRef: string | null) => {
-    if (!routeThreadRef) return;
-    useDiffPanelStore.getState().selectBranchBaseRef(routeThreadRef, baseRef);
+    if (!activeThreadRef) return;
+    useDiffPanelStore.getState().selectBranchBaseRef(activeThreadRef, baseRef);
   };
 
   const headerRow = (

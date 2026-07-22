@@ -293,6 +293,7 @@ describe("previewStateStore (single-tab)", () => {
       snapshot,
     });
     applyPreviewDesktopState(ref, snapshot.tabId, {
+      url: "http://app.local/",
       canGoBack: true,
       canGoForward: false,
       loading: false,
@@ -310,6 +311,7 @@ describe("previewStateStore (single-tab)", () => {
     applyPreviewServerSnapshot(ref, first);
     applyPreviewServerSnapshot(ref, second);
     applyPreviewDesktopState(ref, first.tabId, {
+      url: "http://app.local/",
       canGoBack: true,
       canGoForward: false,
       loading: false,
@@ -355,6 +357,7 @@ describe("previewStateStore (single-tab)", () => {
     applyPreviewServerSnapshot(ref, stale);
     applyPreviewServerSnapshot(ref, active);
     applyPreviewDesktopState(ref, stale.tabId, {
+      url: "http://stale.local/",
       canGoBack: false,
       canGoForward: false,
       loading: false,
@@ -523,6 +526,7 @@ describe("previewStateStore (single-tab)", () => {
     const latest = makeSnapshot({ updatedAt: "2026-01-01T00:00:02.000Z" });
     applyPreviewServerSnapshot(ref, latest);
     applyPreviewDesktopState(ref, latest.tabId, {
+      url: "http://app.local/",
       canGoBack: false,
       canGoForward: false,
       loading: false,

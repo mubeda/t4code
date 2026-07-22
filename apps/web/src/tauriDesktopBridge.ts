@@ -23,9 +23,11 @@ import {
 import { invoke as importedTauriInvoke, isTauri as isImportedTauri } from "@tauri-apps/api/core";
 import { listen as importedTauriListen } from "@tauri-apps/api/event";
 
+import { startBrowserSurfaceSync } from "./browser/browserSurfaceSync";
 import { readBrowserClientSettings, writeBrowserClientSettings } from "./clientPersistenceStorage";
 import { showContextMenuFallback } from "./contextMenuFallback";
 import { invokeTauriCommand, type TauriCommandMock } from "./tauriInvokeRouting";
+import { createTauriPreviewBridge } from "./tauriPreviewBridge";
 
 const CONNECTION_CATALOG_STORAGE_KEY = "t4code.connectionCatalog";
 const BACKEND_READY_EVENT = "desktop:backend-ready";
@@ -393,7 +395,14 @@ async function showTauriContextMenu<T extends string>(
   }
 }
 
-function createTauriDesktopBridge(): DesktopBridge {
+function createTauriDesktopBridge(previewSupported: boolean): DesktopBridge {
+  const preview = previewSupported
+    ? createTauriPreviewBridge({
+        invoke: tauriInvoke,
+        listen: tauriListen,
+      })
+    : undefined;
+
   return {
     getHostMetadata: () =>
       tauriInvoke<DesktopBridgeHostMetadata>("desktop_bridge_get_bridge_metadata", undefined),
@@ -495,17 +504,36 @@ function createTauriDesktopBridge(): DesktopBridge {
       tauriInvokeDesktop("desktop_bridge_install_update", undefined),
     onUpdateState: (listener: (state: DesktopUpdateState) => void) =>
       tauriListen(UPDATE_STATE_EVENT, listener),
+    ...(preview ? { preview } : {}),
   };
 }
 
 const isTauriDesktopRuntime =
   typeof window !== "undefined" && (window.__TAURI__ !== undefined || isImportedTauri());
 
-if (isTauriDesktopRuntime && window.desktopBridge === undefined) {
-  window.desktopBridge = createTauriDesktopBridge();
+async function installTauriDesktopBridge(): Promise<void> {
+  if (window.desktopBridge !== undefined) {
+    return;
+  }
+
+  const metadata = await tauriInvoke<DesktopBridgeHostMetadata>(
+    "desktop_bridge_get_bridge_metadata",
+    undefined,
+  ).catch(() => null);
+
+  if (window.desktopBridge !== undefined) {
+    return;
+  }
+
+  const bridge = createTauriDesktopBridge(metadata?.features.preview === true);
+  window.desktopBridge = bridge;
+  const preview = bridge.preview;
+  if (preview) startBrowserSurfaceSync(preview);
   tauriListen<TauriDesktopBackendReadyPayload>(BACKEND_READY_EVENT, applyBackendReady);
 }
 
 export const tauriDesktopBridgeReady: Promise<void> = isTauriDesktopRuntime
-  ? getPrimaryLocalEnvironmentBootstrap().then(() => undefined)
+  ? installTauriDesktopBridge()
+      .then(() => getPrimaryLocalEnvironmentBootstrap())
+      .then(() => undefined)
   : Promise.resolve();

@@ -52,7 +52,12 @@ export const loadPreviewWebviewConfig = (
   }
 
   return Effect.tryPromise({
-    try: () => bridge.getPreviewConfig(environmentId),
+    try: () => {
+      if (!bridge.getPreviewConfig) {
+        return Promise.reject(new Error("preview config not supported on this host"));
+      }
+      return bridge.getPreviewConfig(environmentId);
+    },
     catch: (cause) => new PreviewWebviewConfigLoadError({ environmentId, cause }),
   });
 };

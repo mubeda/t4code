@@ -9,16 +9,28 @@ rust-version = "1.97.1"
 [workspace.dependencies]
 axum = { version = "0.8.9", features = ["form", "http1", "json", "tokio", "ws"] }
 base64 = "0.22.1"
+block2 = "0.6"
+cairo-rs = { version = "0.18", features = ["png"] }
 clap = { version = "4.6.2", features = ["derive", "env"] }
 dirs = "6.0.0"
 ed25519-dalek = { version = "3.0.0", features = ["pem", "pkcs8"] }
 futures-util = { version = "0.3.33", features = ["sink"] }
 getrandom = "0.4.3"
+gtk = "0.18"
 hmac = "0.13.0"
 httpdate = "1.0.3"
 junction = "2.0.0"
 libc = "0.2"
 mime_guess = "2.0.5"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSImage", "NSBitmapImageRep", "NSGraphics"] }
+objc2-foundation = "0.3"
+objc2-web-kit = { version = "0.3", features = [
+  "WKWebView",
+  "WKWebViewConfiguration",
+  "WKWebsiteDataStore",
+  "WKBackForwardList",
+] }
 open = "5.4.0"
 percent-encoding = "2.3.2"
 p256 = { version = "0.14.0", features = ["ecdsa"] }
@@ -33,7 +45,7 @@ sha2 = "0.11.0"
 sysinfo = "0.39.6"
 subtle = "2.6.1"
 t4code-server = { path = "apps/server" }
-tauri = { version = "2.11.5", features = [] }
+tauri = { version = "2.11.5", features = ["unstable", "devtools", "image-png"] }
 tauri-build = { version = "2.6.3", features = [] }
 tauri-plugin-dialog = "2.7.2"
 tauri-plugin-opener = "2.5.4"
@@ -64,8 +76,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
 uuid = { version = "1.24.0", features = ["v4"] }
+webkit2gtk = { version = "2.0", features = ["v2_40"] }
+webview2-com = "0.38"
 windows-sys = "0.61.2"
-windows = "0.62.2"
+windows = "0.61"
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [workspace.dependencies.tempfile]

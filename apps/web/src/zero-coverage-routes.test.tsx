@@ -144,6 +144,10 @@ vi.mock("./browser/browserSurfaceStore", () => ({
   acquireBrowserSurface: () => h.lease,
 }));
 
+vi.mock("./components/preview/usePreviewBridge", () => ({
+  usePreviewBridge: () => undefined,
+}));
+
 import { CenterTerminalPanel } from "./components/CenterTerminalPanel";
 import {
   T4CodeConnectSidebarAvatar,

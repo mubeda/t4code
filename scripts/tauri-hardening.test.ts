@@ -187,7 +187,11 @@ it.layer(NodeServices.layer)("Tauri production hardening", (it) => {
       assert.match(tauri.app.security.csp ?? "", /object-src 'none'/);
       assert.match(tauri.app.security.csp ?? "", /frame-ancestors 'none'/);
       assert.notEqual(tauri.app.security.devCsp, null);
-      assert.deepEqual(capability.permissions, ["allow-desktop-bridge", "core:default"]);
+      assert.deepEqual(capability.permissions, [
+        "allow-desktop-bridge",
+        "allow-desktop-preview",
+        "core:default",
+      ]);
       assert.match(viteConfig, /tanstackRouter\(\{[\s\S]*?autoCodeSplitting: true,/);
       assert.match(viteConfig, /chunkSizeWarningLimit: 1536,/);
       assert.match(
