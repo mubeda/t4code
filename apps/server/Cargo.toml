@@ -1,6 +1,6 @@
 [package]
 name = "t4code-server"
-version = "0.2.6"
+version = "0.2.7"
 description = "T4Code Rust server runtime"
 edition.workspace = true
 rust-version.workspace = true
@@ -54,6 +54,9 @@ tower.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 junction.workspace = true
