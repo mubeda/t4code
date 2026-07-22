@@ -329,6 +329,7 @@ function editingSession(relativePath: string) {
     relativePath,
     flush: vi.fn(async () => "saved" as const),
     settle: vi.fn(async () => "saved" as const),
+    setAutosaveEnabled: vi.fn(),
     pauseSaving: vi.fn(),
     resumeSaving: vi.fn(),
     discardPendingSave: vi.fn(),

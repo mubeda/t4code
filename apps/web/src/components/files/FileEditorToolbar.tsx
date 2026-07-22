@@ -1,12 +1,18 @@
-import { LoaderCircle, Redo2, Save, Undo2 } from "lucide-react";
+import { Code2, Eye, LoaderCircle, Redo2, Save, Undo2 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { Button } from "../ui/button";
+import { Toggle } from "../ui/toggle";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 import type { FileSavePhase } from "./fileSaveCoordinator";
 
 const SAVED_INDICATOR_DURATION_MS = 1_500;
+
+export interface FileEditorMarkdownView {
+  readonly rendered: boolean;
+  readonly onRenderedChange: (rendered: boolean) => void;
+}
 
 export interface FileEditorToolbarProps {
   readonly savePhase: FileSavePhase;
@@ -15,6 +21,7 @@ export interface FileEditorToolbarProps {
   readonly canUndo: boolean;
   readonly canRedo: boolean;
   readonly cleanStatus: string | null;
+  readonly markdownView?: FileEditorMarkdownView | undefined;
   readonly onSave: () => void;
   readonly onUndo: () => void;
   readonly onRedo: () => void;
@@ -69,6 +76,7 @@ export function FileEditorToolbar({
   canUndo,
   canRedo,
   cleanStatus,
+  markdownView,
   onSave,
   onUndo,
   onRedo,
@@ -168,6 +176,39 @@ export function FileEditorToolbar({
       >
         <Redo2 className="text-current" />
       </ToolbarAction>
+      {markdownView ? (
+        <>
+          <span
+            aria-orientation="vertical"
+            className="mx-1 h-4 w-px bg-border/60"
+            role="separator"
+          />
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Toggle
+                  aria-label={
+                    markdownView.rendered ? "Show markdown source" : "Show rendered markdown"
+                  }
+                  pressed={markdownView.rendered}
+                  size="xs"
+                  variant="ghost"
+                  onPressedChange={(rendered) => markdownView.onRenderedChange(rendered)}
+                >
+                  {markdownView.rendered ? (
+                    <Code2 className="size-3.5" />
+                  ) : (
+                    <Eye className="size-3.5" />
+                  )}
+                </Toggle>
+              }
+            />
+            <TooltipPopup>
+              {markdownView.rendered ? "Show markdown source" : "Show rendered markdown"}
+            </TooltipPopup>
+          </Tooltip>
+        </>
+      ) : null}
       <span className={statusClassName} aria-live="polite">
         {status}
       </span>

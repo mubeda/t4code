@@ -62,6 +62,55 @@ describe("FileEditorToolbar", () => {
     expect(container.textContent).toContain("Unsaved changes");
   });
 
+  it("renders the Markdown view toggle after editing actions", () => {
+    const onRenderedChange = vi.fn();
+    const render = (rendered: boolean) => {
+      act(() => {
+        root.render(
+          <TooltipProvider delay={0}>
+            <FileEditorToolbar
+              savePhase="clean"
+              confirmedRevision={0}
+              canSave={false}
+              canUndo={false}
+              canRedo={false}
+              cleanStatus={null}
+              markdownView={{ rendered, onRenderedChange }}
+              onSave={vi.fn()}
+              onUndo={vi.fn()}
+              onRedo={vi.fn()}
+            />
+          </TooltipProvider>,
+        );
+      });
+    };
+
+    render(true);
+
+    let buttons = [...container.querySelectorAll("button")];
+    expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Save file",
+      "Undo",
+      "Redo",
+      "Show markdown source",
+    ]);
+    expect(container.querySelector('[role="separator"]')).not.toBeNull();
+    expect(buttons[3]!.getAttribute("aria-pressed")).toBe("true");
+    expect(buttons[3]!.querySelector(".lucide-code-xml")).not.toBeNull();
+
+    buttons[3]!.click();
+    expect(onRenderedChange).toHaveBeenCalledWith(false);
+
+    onRenderedChange.mockClear();
+    render(false);
+    buttons = [...container.querySelectorAll("button")];
+    expect(buttons[3]!.getAttribute("aria-label")).toBe("Show rendered markdown");
+    expect(buttons[3]!.getAttribute("aria-pressed")).toBe("false");
+    expect(buttons[3]!.querySelector(".lucide-eye")).not.toBeNull();
+    buttons[3]!.click();
+    expect(onRenderedChange).toHaveBeenCalledWith(true);
+  });
+
   it("shows saving, retry, read-only, and transient saved statuses", () => {
     vi.useFakeTimers();
     const render = (

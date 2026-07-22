@@ -1547,10 +1547,18 @@ function ChatViewContent(props: ChatViewProps) {
       ),
     [rightPanelState.surfaces],
   );
+  const activeFileRelativePath =
+    rightPanelOpen && activeRightPanelSurface?.kind === "file"
+      ? activeRightPanelSurface.relativePath
+      : null;
 
   useEffect(() => {
     void fileEditingSessions.reconcile(openFileRelativePaths);
   }, [fileEditingSessions, openFileRelativePaths]);
+
+  useEffect(() => {
+    fileEditingSessions.setActivePath(activeFileRelativePath);
+  }, [activeFileRelativePath, fileEditingSessions]);
 
   useEffect(() => fileEditingSessions.acquireOwnership(), [fileEditingSessions]);
   const [pendingFileSurfaceIdsByProject, setPendingFileSurfaceIdsByProject] = useState<

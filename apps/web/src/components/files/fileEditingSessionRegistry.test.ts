@@ -1,5 +1,7 @@
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { AsyncResult } from "effect/unstable/reactivity";
 
+import { FileEditingSession } from "./fileEditingSession";
 import { FileEditingSessionRegistry } from "./fileEditingSessionRegistry";
 
 function fakeSession(relativePath: string) {
@@ -7,6 +9,7 @@ function fakeSession(relativePath: string) {
     relativePath,
     flush: vi.fn(async () => "saved" as const),
     settle: vi.fn<() => Promise<"saved" | "failed">>(async () => "saved"),
+    setAutosaveEnabled: vi.fn(),
     pauseSaving: vi.fn(),
     resumeSaving: vi.fn(),
     discardPendingSave: vi.fn(),
@@ -26,6 +29,10 @@ function deferredResult<T>() {
 }
 
 describe("FileEditingSessionRegistry", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("reuses one session per exact open file", () => {
     const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
     const create = vi.fn(() => fakeSession("src/app.ts"));
@@ -34,6 +41,263 @@ describe("FileEditingSessionRegistry", () => {
       registry.getOrCreate("src/app.ts", create),
     );
     expect(create).toHaveBeenCalledOnce();
+  });
+
+  it("disables autosave for the active session and flushes it when another file activates", () => {
+    const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
+    const first = registry.getOrCreate("src/a.ts", () => fakeSession("src/a.ts"));
+    const second = registry.getOrCreate("src/b.ts", () => fakeSession("src/b.ts"));
+
+    registry.setActivePath("src/a.ts");
+    expect(first.setAutosaveEnabled).toHaveBeenLastCalledWith(false);
+    expect(first.flush).not.toHaveBeenCalled();
+
+    registry.setActivePath("src/b.ts");
+    expect(first.setAutosaveEnabled).toHaveBeenLastCalledWith(true);
+    expect(first.flush).toHaveBeenCalledOnce();
+    expect(second.setAutosaveEnabled).toHaveBeenLastCalledWith(false);
+  });
+
+  it("flushes the active file when a non-file surface activates", () => {
+    const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
+    const session = registry.getOrCreate("src/app.ts", () => fakeSession("src/app.ts"));
+
+    registry.setActivePath("src/app.ts");
+    registry.setActivePath(null);
+
+    expect(session.setAutosaveEnabled.mock.calls).toEqual([[false], [true]]);
+    expect(session.flush).toHaveBeenCalledOnce();
+  });
+
+  it("persists a paused active edit immediately when a deactivation is released", async () => {
+    vi.useFakeTimers();
+    const persist = vi.fn(async () => AsyncResult.success(undefined));
+    const registry = new FileEditingSessionRegistry<FileEditingSession<never, void, never>>();
+    const session = registry.getOrCreate(
+      "src/app.ts",
+      () =>
+        new FileEditingSession({
+          cwd: "/repo",
+          relativePath: "src/app.ts",
+          debounceMs: 500,
+          persist,
+          onPendingChange: vi.fn(),
+          onConfirmed: vi.fn(),
+        }),
+    );
+    registry.setActivePath("src/app.ts");
+    const lease = await registry.beginPathMutation({
+      kind: "rename",
+      fromRelativePath: "src/app.ts",
+      toRelativePath: "src/renamed.ts",
+    });
+
+    session.changeOutsideEditor("paused draft");
+    registry.setActivePath(null);
+    expect(persist).not.toHaveBeenCalled();
+
+    lease!.release();
+    await Promise.resolve();
+
+    expect(persist).toHaveBeenCalledOnce();
+    expect(persist).toHaveBeenCalledWith("src/app.ts", "paused draft");
+  });
+
+  it("keeps a paused edit explicit when its session reactivates before release", async () => {
+    vi.useFakeTimers();
+    const persist = vi.fn(async () => AsyncResult.success(undefined));
+    const registry = new FileEditingSessionRegistry<FileEditingSession<never, void, never>>();
+    const session = registry.getOrCreate(
+      "src/app.ts",
+      () =>
+        new FileEditingSession({
+          cwd: "/repo",
+          relativePath: "src/app.ts",
+          debounceMs: 500,
+          persist,
+          onPendingChange: vi.fn(),
+          onConfirmed: vi.fn(),
+        }),
+    );
+    registry.setActivePath("src/app.ts");
+    const lease = await registry.beginPathMutation({
+      kind: "rename",
+      fromRelativePath: "src/app.ts",
+      toRelativePath: "src/renamed.ts",
+    });
+
+    session.changeOutsideEditor("paused draft");
+    const flush = vi.spyOn(session, "flush");
+    registry.setActivePath(null);
+    const pausedFlush = flush.mock.results[0]!.value;
+    registry.setActivePath("src/app.ts");
+    await expect(pausedFlush).resolves.toBe("saving");
+    lease!.release();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(persist).not.toHaveBeenCalled();
+    expect(session.getSnapshot().save).toMatchObject({ phase: "pending", canSave: true });
+  });
+
+  it("reports a rejected paused lifecycle write without an unhandled rejection or retry", async () => {
+    vi.useFakeTimers();
+    const saveError = new Error("write crashed");
+    const persist = vi.fn().mockRejectedValue(saveError);
+    const reportError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    try {
+      const registry = new FileEditingSessionRegistry<FileEditingSession<never, void, never>>();
+      const session = registry.getOrCreate(
+        "src/app.ts",
+        () =>
+          new FileEditingSession({
+            cwd: "/repo",
+            relativePath: "src/app.ts",
+            debounceMs: 500,
+            persist,
+            onPendingChange: vi.fn(),
+            onConfirmed: vi.fn(),
+          }),
+      );
+      registry.setActivePath("src/app.ts");
+      const lease = await registry.beginPathMutation({
+        kind: "rename",
+        fromRelativePath: "src/app.ts",
+        toRelativePath: "src/renamed.ts",
+      });
+
+      session.changeOutsideEditor("paused draft");
+      registry.setActivePath(null);
+      lease!.release();
+      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
+
+      expect(reportError).toHaveBeenCalledWith(
+        "[file-editing-session-registry] session cleanup failed",
+        saveError,
+      );
+      expect(session.getSnapshot().save).toMatchObject({ phase: "failed", canSave: true });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(persist).toHaveBeenCalledOnce();
+      expect(unhandledRejections).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+      reportError.mockRestore();
+    }
+  });
+
+  it("applies the active policy to a session created after activation", () => {
+    const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
+
+    registry.setActivePath("src/later.ts");
+    const session = registry.getOrCreate("src/later.ts", () => fakeSession("src/later.ts"));
+
+    expect(session.setAutosaveEnabled).toHaveBeenCalledOnce();
+    expect(session.setAutosaveEnabled).toHaveBeenCalledWith(false);
+  });
+
+  it("does not flush when the same active path is published twice", () => {
+    const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
+    const session = registry.getOrCreate("src/app.ts", () => fakeSession("src/app.ts"));
+
+    registry.setActivePath("src/app.ts");
+    registry.setActivePath("src/app.ts");
+
+    expect(session.setAutosaveEnabled).toHaveBeenCalledOnce();
+    expect(session.flush).not.toHaveBeenCalled();
+  });
+
+  it("keeps a source session active when it replaces the active rename destination", async () => {
+    const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
+    const source = registry.getOrCreate("src/a.ts", () => fakeSession("src/a.ts"));
+    registry.getOrCreate("lib/a.ts", () => fakeSession("lib/a.ts"));
+    registry.setActivePath("lib/a.ts");
+    source.setAutosaveEnabled.mockClear();
+
+    const lease = await registry.beginPathMutation({
+      kind: "rename",
+      fromRelativePath: "src/a.ts",
+      toRelativePath: "lib/a.ts",
+    });
+    lease!.commitRename("lib/a.ts");
+    lease!.release();
+
+    expect(registry.get("lib/a.ts")).toBe(source);
+    expect(source.setAutosaveEnabled).toHaveBeenCalledExactlyOnceWith(false);
+    expect(source.flush).not.toHaveBeenCalled();
+    registry.setActivePath("lib/a.ts");
+    expect(source.setAutosaveEnabled).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
+  it("remaps the active path so leaving a renamed file still flushes its session", async () => {
+    const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
+    const session = registry.getOrCreate("src/old.ts", () => fakeSession("src/old.ts"));
+    registry.setActivePath("src/old.ts");
+    const lease = await registry.beginPathMutation({
+      kind: "rename",
+      fromRelativePath: "src/old.ts",
+      toRelativePath: "src/new.ts",
+    });
+
+    lease!.commitRename("src/new.ts");
+    lease!.release();
+    session.flush.mockClear();
+    registry.setActivePath(null);
+
+    expect(session.flush).toHaveBeenCalledOnce();
+  });
+
+  it("clears an active path when its session is deleted", async () => {
+    const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
+    const session = registry.getOrCreate("src/app.ts", () => fakeSession("src/app.ts"));
+    registry.setActivePath("src/app.ts");
+    const lease = await registry.beginPathMutation({ kind: "delete", relativePath: "src/app.ts" });
+
+    lease!.commitDelete();
+    lease!.release();
+    session.flush.mockClear();
+    registry.setActivePath(null);
+
+    expect(session.flush).not.toHaveBeenCalled();
+  });
+
+  it("does not apply the active policy to a replacement created after deletion", async () => {
+    const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
+    registry.getOrCreate("src/app.ts", () => fakeSession("src/app.ts"));
+    registry.setActivePath("src/app.ts");
+    const lease = await registry.beginPathMutation({ kind: "delete", relativePath: "src/app.ts" });
+
+    lease!.commitDelete();
+    lease!.release();
+    const replacement = registry.getOrCreate("src/app.ts", () => fakeSession("src/app.ts"));
+
+    expect(replacement.setAutosaveEnabled).not.toHaveBeenCalled();
+  });
+
+  it("reports a rejected background flush without throwing from an active transition", async () => {
+    const reportError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const registry = new FileEditingSessionRegistry<ReturnType<typeof fakeSession>>();
+      const session = registry.getOrCreate("src/app.ts", () => fakeSession("src/app.ts"));
+      session.flush.mockRejectedValue(new Error("save crashed"));
+      registry.setActivePath("src/app.ts");
+
+      expect(() => registry.setActivePath(null)).not.toThrow();
+      await Promise.resolve();
+
+      expect(reportError).toHaveBeenCalledWith(
+        "[file-editing-session-registry] session cleanup failed",
+        expect.objectContaining({ message: "save crashed" }),
+      );
+    } finally {
+      reportError.mockRestore();
+    }
   });
 
   it("settles exact and descendant paths but not prefix lookalikes", async () => {

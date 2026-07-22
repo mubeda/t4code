@@ -792,6 +792,7 @@ describe("panel layout states", () => {
     expect(options.theme).toBe(resolveDiffThemeName("dark"));
     expect(options.themeType).toBe("dark");
     expect(file.contentEditable).toBe(true);
+    expect(ui.find("FileEditorToolbar").markdownView).toBeUndefined();
   });
 
   it("respects the word wrap setting", () => {
@@ -880,11 +881,15 @@ describe("markdown preview", () => {
   it("renders markdown formatted by default and offers the source toggle", () => {
     setFileData("# Title\n");
     const markup = renderPanel(baseProps({ relativePath: "README.md" }));
-    expect(markup).toContain('aria-label="Show markdown source"');
+    expect(markup).not.toContain('aria-label="Show markdown source"');
     expect(ui.filter("ChatMarkdown")).toHaveLength(1);
 
-    const toggle = ui.byLabel("Toggle", "Show markdown source");
-    (toggle.onPressedChange as (pressed: boolean) => void)(false);
+    const markdownView = ui.find("FileEditorToolbar").markdownView as {
+      rendered: boolean;
+      onRenderedChange: (rendered: boolean) => void;
+    };
+    expect(markdownView.rendered).toBe(true);
+    markdownView.onRenderedChange(false);
     expect(
       harness.setStateCalls.some(
         (call) =>
@@ -894,7 +899,7 @@ describe("markdown preview", () => {
       ),
     ).toBe(true);
 
-    (toggle.onPressedChange as (pressed: boolean) => void)(true);
+    markdownView.onRenderedChange(true);
     expect(
       harness.setStateCalls.some(
         (call) =>
@@ -914,11 +919,11 @@ describe("markdown preview", () => {
     setFileData("- [ ] first\n- [x] second\n");
     const markup = renderPanel(baseProps({ relativePath: "README.md" }));
     expect(markup).toContain("data-chat-markdown");
-    expect(markup).toContain('aria-label="Show markdown source"');
     expect(ui.find("FileEditorToolbar")).toMatchObject({
       canSave: true,
       canUndo: false,
       canRedo: false,
+      markdownView: { rendered: true },
     });
 
     const chatMarkdown = ui.find("ChatMarkdown");

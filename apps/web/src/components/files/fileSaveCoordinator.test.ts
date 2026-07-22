@@ -45,6 +45,136 @@ describe("FileSaveCoordinator", () => {
     expect(onPendingChange.mock.calls).toEqual([[true], [true], [false]]);
   });
 
+  it("keeps autosave-disabled edits pending and explicitly saveable", async () => {
+    vi.useFakeTimers();
+    const persist = vi
+      .fn<(contents: string) => Promise<AtomCommandResult<void, never>>>()
+      .mockResolvedValue(AsyncResult.success(undefined));
+    const coordinator = new FileSaveCoordinator({
+      debounceMs: 500,
+      persist,
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+    });
+
+    coordinator.setAutosaveEnabled(false);
+    coordinator.change("active draft");
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(persist).not.toHaveBeenCalled();
+    expect(coordinator.getSnapshot()).toMatchObject({ phase: "pending", canSave: true });
+    await expect(coordinator.flush()).resolves.toBe("saved");
+    expect(persist).toHaveBeenCalledOnce();
+    expect(persist).toHaveBeenCalledWith("active draft");
+  });
+
+  it("cancels an existing debounce when autosave is disabled", async () => {
+    vi.useFakeTimers();
+    const persist = vi.fn().mockResolvedValue(AsyncResult.success(undefined));
+    const coordinator = new FileSaveCoordinator({
+      debounceMs: 500,
+      persist,
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+    });
+
+    coordinator.change("draft");
+    coordinator.setAutosaveEnabled(false);
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(persist).not.toHaveBeenCalled();
+    expect(coordinator.getSnapshot()).toMatchObject({ phase: "pending", canSave: true });
+  });
+
+  it("shares and settles repeated paused flushes when autosave is disabled", async () => {
+    const persist = vi.fn().mockResolvedValue(AsyncResult.success(undefined));
+    const coordinator = new FileSaveCoordinator({
+      debounceMs: 500,
+      persist,
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+    });
+
+    coordinator.change("draft");
+    coordinator.pauseSaving();
+    const firstFlush = coordinator.flush();
+    const secondFlush = coordinator.flush();
+
+    expect(secondFlush).toBe(firstFlush);
+    coordinator.setAutosaveEnabled(false);
+    await expect(firstFlush).resolves.toBe("saving");
+    await expect(secondFlush).resolves.toBe("saving");
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it("settles a paused flush when its pending edit is discarded", async () => {
+    const persist = vi.fn().mockResolvedValue(AsyncResult.success(undefined));
+    const coordinator = new FileSaveCoordinator({
+      debounceMs: 500,
+      persist,
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+    });
+
+    coordinator.change("draft");
+    coordinator.pauseSaving();
+    const pausedFlush = coordinator.flush();
+    coordinator.discardPendingSave();
+
+    await expect(pausedFlush).resolves.toBe("unchanged");
+    expect(persist).not.toHaveBeenCalled();
+    expect(coordinator.getSnapshot()).toMatchObject({ phase: "clean", canSave: false });
+  });
+
+  it("settles a paused flush when the coordinator is disposed", async () => {
+    const persist = vi.fn().mockResolvedValue(AsyncResult.success(undefined));
+    const coordinator = new FileSaveCoordinator({
+      debounceMs: 500,
+      persist,
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+    });
+
+    coordinator.change("draft");
+    coordinator.pauseSaving();
+    const pausedFlush = coordinator.flush();
+    coordinator.dispose();
+
+    await expect(pausedFlush).resolves.toBe("unchanged");
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it("does not autosave a newer edit after the file becomes active during a write", async () => {
+    vi.useFakeTimers();
+    const firstWrite = deferred();
+    const persist = vi
+      .fn<(contents: string) => Promise<AtomCommandResult<void, never>>>()
+      .mockReturnValueOnce(firstWrite.promise)
+      .mockResolvedValueOnce(AsyncResult.success(undefined));
+    const coordinator = new FileSaveCoordinator({
+      debounceMs: 500,
+      persist,
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+    });
+
+    coordinator.setAutosaveEnabled(false);
+    coordinator.change("leaving revision");
+    coordinator.setAutosaveEnabled(true);
+    const leavingSave = coordinator.flush();
+    coordinator.setAutosaveEnabled(false);
+    coordinator.change("new active revision");
+    await Promise.resolve();
+
+    expect(persist).toHaveBeenCalledWith("leaving revision");
+    firstWrite.resolve(AsyncResult.success(undefined));
+    await expect(leavingSave).resolves.toBe("saved");
+    await vi.runAllTimersAsync();
+
+    expect(persist).toHaveBeenCalledOnce();
+    expect(coordinator.getSnapshot()).toMatchObject({ phase: "pending", canSave: true });
+  });
+
   it("publishes stable clean, pending, saving, and clean snapshots", async () => {
     vi.useFakeTimers();
     const write = deferred();
@@ -263,6 +393,43 @@ describe("FileSaveCoordinator", () => {
       phase: "pending",
       canSave: true,
     });
+  });
+
+  it("does not carry a satisfied paused flush request into a later mutation", async () => {
+    vi.useFakeTimers();
+    const firstWrite = deferred();
+    const persist = vi
+      .fn<(contents: string) => Promise<AtomCommandResult<void, never>>>()
+      .mockReturnValueOnce(firstWrite.promise)
+      .mockResolvedValueOnce(AsyncResult.success(undefined));
+    const coordinator = new FileSaveCoordinator({
+      debounceMs: 500,
+      persist,
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+    });
+
+    coordinator.change("first");
+    const firstSave = coordinator.flush();
+    await Promise.resolve();
+    coordinator.pauseSaving();
+    const pausedFlush = coordinator.flush();
+    firstWrite.resolve(AsyncResult.success(undefined));
+    await expect(firstSave).resolves.toBe("saved");
+    await expect(pausedFlush).resolves.toBe("saved");
+    coordinator.resumeSaving();
+
+    coordinator.pauseSaving();
+    coordinator.change("second");
+    coordinator.resumeSaving();
+    await Promise.resolve();
+
+    expect(persist).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(499);
+    expect(persist).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(persist).toHaveBeenCalledTimes(2);
+    expect(persist).toHaveBeenLastCalledWith("second");
   });
 
   it("leaves the file pending when the latest write fails", async () => {

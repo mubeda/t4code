@@ -24,6 +24,12 @@ const CLEAN_FILE_SAVE_SNAPSHOT: FileSaveSnapshot = {
   confirmedRevision: 0,
 };
 
+interface QueuedImmediateFlush {
+  readonly promise: Promise<FileSaveFlushResult>;
+  readonly resolve: (result: FileSaveFlushResult) => void;
+  readonly reject: (error: unknown) => void;
+}
+
 export class FileSaveCoordinator<A = unknown, E = unknown> {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private latestContents = "";
@@ -32,6 +38,8 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
   private lastChangeAt = 0;
   private inFlight: Promise<boolean> | null = null;
   private savingPaused = false;
+  private autosaveEnabled = true;
+  private queuedImmediateFlush: QueuedImmediateFlush | null = null;
   private disposed = false;
   private snapshot: FileSaveSnapshot = CLEAN_FILE_SAVE_SNAPSHOT;
   private readonly listeners = new Set<() => void>();
@@ -54,13 +62,16 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
     this.lastChangeAt = Date.now();
     this.options.onPendingChange(true);
     this.publish(this.inFlight === null ? "pending" : "saving");
-    if (!this.savingPaused) this.schedule(this.options.debounceMs);
+    if (this.autosaveEnabled && !this.savingPaused) {
+      this.schedule(this.options.debounceMs);
+    }
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.clearTimer();
+    this.settleQueuedImmediateFlush("unchanged");
     // Only unsaved edits get a farewell write. An unconditional write here
     // resurrects the old path when the surface unmounts because the file was
     // just renamed or deleted out from under it.
@@ -74,6 +85,23 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
     return this.latestRevision !== this.persistedRevision || this.inFlight !== null;
   }
 
+  setAutosaveEnabled(enabled: boolean): void {
+    if (this.autosaveEnabled === enabled) return;
+    this.autosaveEnabled = enabled;
+    if (!enabled) {
+      this.clearTimer();
+      this.settleQueuedImmediateFlush("saving");
+      return;
+    }
+    if (
+      !this.savingPaused &&
+      this.inFlight === null &&
+      this.latestRevision !== this.persistedRevision
+    ) {
+      this.schedule(this.options.debounceMs);
+    }
+  }
+
   pauseSaving(): void {
     if (this.savingPaused) return;
     this.savingPaused = true;
@@ -84,14 +112,29 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
   resumeSaving(): void {
     if (!this.savingPaused) return;
     this.savingPaused = false;
+    const queuedFlush = this.queuedImmediateFlush;
+    this.queuedImmediateFlush = null;
     this.publish(this.inFlight === null ? this.snapshot.phase : "saving");
-    if (this.latestRevision !== this.persistedRevision) {
+    if (
+      queuedFlush !== null &&
+      this.autosaveEnabled &&
+      this.latestRevision !== this.persistedRevision
+    ) {
+      void this.persistLatest().then(
+        (succeeded) => queuedFlush.resolve(succeeded ? "saved" : "failed"),
+        (error: unknown) => queuedFlush.reject(error),
+      );
+    } else if (this.autosaveEnabled && this.latestRevision !== this.persistedRevision) {
+      queuedFlush?.resolve("saving");
       this.schedule(this.options.debounceMs);
+    } else {
+      queuedFlush?.resolve("unchanged");
     }
   }
 
   discardPendingSave(): void {
     this.clearTimer();
+    this.settleQueuedImmediateFlush("unchanged");
     this.latestRevision = this.persistedRevision;
     this.options.onPendingChange(false);
     this.publish("clean");
@@ -103,12 +146,17 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
    * is unsaved; returns "saving" when a write is already in flight — that write
    * (and its reschedule) settles the remaining edits on its own.
    */
-  async flush(): Promise<FileSaveFlushResult> {
-    if (this.savingPaused) return "saving";
-    if (this.inFlight !== null) return "saving";
-    if (this.latestRevision === this.persistedRevision) return "unchanged";
+  flush(): Promise<FileSaveFlushResult> {
+    if (this.savingPaused) {
+      if (this.autosaveEnabled && this.latestRevision !== this.persistedRevision) {
+        return this.queueImmediateFlush();
+      }
+      return Promise.resolve("saving");
+    }
+    if (this.inFlight !== null) return Promise.resolve("saving");
+    if (this.latestRevision === this.persistedRevision) return Promise.resolve("unchanged");
     this.clearTimer();
-    return (await this.persistLatest()) ? "saved" : "failed";
+    return this.persistLatest().then((succeeded) => (succeeded ? "saved" : "failed"));
   }
 
   async settle(): Promise<FileSaveSettleResult> {
@@ -147,6 +195,25 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
     this.timer = null;
   }
 
+  private queueImmediateFlush(): Promise<FileSaveFlushResult> {
+    if (this.queuedImmediateFlush !== null) return this.queuedImmediateFlush.promise;
+    let resolve!: (result: FileSaveFlushResult) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<FileSaveFlushResult>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    this.queuedImmediateFlush = { promise, resolve, reject };
+    return promise;
+  }
+
+  private settleQueuedImmediateFlush(result: FileSaveFlushResult): void {
+    const queuedFlush = this.queuedImmediateFlush;
+    if (queuedFlush === null) return;
+    this.queuedImmediateFlush = null;
+    queuedFlush.resolve(result);
+  }
+
   private persistLatest(): Promise<boolean> {
     if (
       this.savingPaused ||
@@ -156,7 +223,9 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
       return Promise.resolve(false);
     }
 
-    const inFlight = Promise.resolve().then(() => this.persistLatestOnce());
+    const contents = this.latestContents;
+    const revision = this.latestRevision;
+    const inFlight = Promise.resolve().then(() => this.persistRevision(contents, revision));
     this.inFlight = inFlight;
     return inFlight.finally(() => {
       if (this.inFlight === inFlight) {
@@ -166,11 +235,15 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
     });
   }
 
-  private async persistLatestOnce(): Promise<boolean> {
+  private async persistRevision(contents: string, revision: number): Promise<boolean> {
     this.publish("saving");
-    const contents = this.latestContents;
-    const revision = this.latestRevision;
-    const result = await this.options.persist(contents);
+    let result: AtomCommandResult<A, E>;
+    try {
+      result = await this.options.persist(contents);
+    } catch (error) {
+      this.publish(revision === this.latestRevision ? "failed" : "pending");
+      throw error;
+    }
     const succeeded = result._tag === "Success";
     if (succeeded) {
       this.persistedRevision = revision;
@@ -179,6 +252,7 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
 
     if (revision === this.latestRevision) {
       if (succeeded) {
+        this.settleQueuedImmediateFlush("saved");
         this.options.onPendingChange(false);
         this.publish("clean");
       } else {
@@ -194,9 +268,11 @@ export class FileSaveCoordinator<A = unknown, E = unknown> {
       this.options.debounceMs - (Date.now() - this.lastChangeAt),
     );
     if (this.disposed) {
-      return this.persistLatestOnce();
+      return this.persistRevision(this.latestContents, this.latestRevision);
     }
-    this.schedule(remainingDebounce);
+    if (this.autosaveEnabled && !this.savingPaused) {
+      this.schedule(remainingDebounce);
+    }
     return succeeded;
   }
 

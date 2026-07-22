@@ -5,6 +5,7 @@ export interface ManagedFileEditingSession {
   relativePath: string;
   flush(): Promise<FileSaveFlushResult>;
   settle(): Promise<FileSaveSettleResult>;
+  setAutosaveEnabled(enabled: boolean): void;
   pauseSaving(): void;
   resumeSaving(): void;
   discardPendingSave(): void;
@@ -59,6 +60,7 @@ export class FileEditingSessionRegistry<
   private readonly activePathMutations = new Set<ActivePathMutation<Session>>();
   private latestOpenRelativePaths: ReadonlySet<string> | null = null;
   private ownerCount = 0;
+  private activeRelativePath: string | null = null;
   private ownershipGeneration = 0;
   private disposed = false;
   private disposePromise: Promise<void> | null = null;
@@ -71,10 +73,12 @@ export class FileEditingSessionRegistry<
     const existing = this.sessions.get(relativePath);
     if (existing) {
       this.markSessionOpen(existing);
+      if (relativePath === this.activeRelativePath) existing.setAutosaveEnabled(false);
       return existing;
     }
     const session = create();
     this.sessions.set(relativePath, session);
+    if (relativePath === this.activeRelativePath) session.setAutosaveEnabled(false);
     for (const mutation of this.activePathMutations) {
       if (!mutation.scopePaths.some((path) => isPathAtOrUnder(relativePath, path))) continue;
       session.pauseSaving();
@@ -82,6 +86,22 @@ export class FileEditingSessionRegistry<
       mutation.pausedSessions.add(session);
     }
     return session;
+  }
+
+  setActivePath(relativePath: string | null): void {
+    if (this.disposed || relativePath === this.activeRelativePath) return;
+    const previousPath = this.activeRelativePath;
+    const previousSession = previousPath ? this.sessions.get(previousPath) : undefined;
+    const nextSession = relativePath ? this.sessions.get(relativePath) : undefined;
+    this.activeRelativePath = relativePath;
+
+    if (previousSession && previousSession !== nextSession) {
+      previousSession.setAutosaveEnabled(true);
+      void previousSession.flush().catch((error: unknown) => {
+        this.reportSessionCleanupError(error);
+      });
+    }
+    nextSession?.setAutosaveEnabled(false);
   }
 
   async beginPathMutation(request: FilePathMutationRequest): Promise<FilePathMutationLease | null> {
@@ -203,6 +223,7 @@ export class FileEditingSessionRegistry<
 
   private async disposeInternal(): Promise<void> {
     this.disposed = true;
+    this.activeRelativePath = null;
     const activeMutations = [...this.activePathMutations];
     const leasedSessions = new Set(
       activeMutations.flatMap((mutation) => [...mutation.sessions.values()]),
@@ -324,7 +345,9 @@ export class FileEditingSessionRegistry<
 
   private removeSessionReferences(session: Session): void {
     for (const [path, candidate] of this.sessions) {
-      if (candidate === session) this.sessions.delete(path);
+      if (candidate !== session) continue;
+      this.sessions.delete(path);
+      if (this.activeRelativePath === path) this.activeRelativePath = null;
     }
   }
 
@@ -333,6 +356,16 @@ export class FileEditingSessionRegistry<
       mutation.request.kind === "rename"
         ? mutation.request.fromRelativePath
         : mutation.request.relativePath;
+    if (
+      this.activeRelativePath !== null &&
+      isPathAtOrUnder(this.activeRelativePath, fromRelativePath)
+    ) {
+      this.activeRelativePath = remapPath(
+        this.activeRelativePath,
+        fromRelativePath,
+        toRelativePath,
+      );
+    }
     const destinationRelativePath =
       mutation.request.kind === "rename" ? mutation.request.toRelativePath : toRelativePath;
     if (this.latestOpenRelativePaths) {
@@ -372,6 +405,9 @@ export class FileEditingSessionRegistry<
     this.sessions = nextSessions;
     mutation.sessions.clear();
     for (const [path, session] of remapped) mutation.sessions.set(path, session);
+    if (this.activeRelativePath !== null) {
+      this.sessions.get(this.activeRelativePath)?.setAutosaveEnabled(false);
+    }
   }
 
   private deleteMutation(mutation: ActivePathMutation<Session>): void {
@@ -379,6 +415,12 @@ export class FileEditingSessionRegistry<
       mutation.request.kind === "rename"
         ? mutation.request.fromRelativePath
         : mutation.request.relativePath;
+    if (
+      this.activeRelativePath !== null &&
+      isPathAtOrUnder(this.activeRelativePath, relativePath)
+    ) {
+      this.activeRelativePath = null;
+    }
     const deletedEntries = [...mutation.sessions.entries()].filter(([candidate]) =>
       isPathAtOrUnder(candidate, relativePath),
     );

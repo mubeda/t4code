@@ -81,12 +81,13 @@ The Files surface is a full file manager for the active workspace:
   rename, delete, duplicate, copy paths, add a folder as a project, open in an
   external editor, or open previewable files in the preview browser.
 - Open file tabs follow renames and close when their file is deleted.
-- Autosave remains enabled. Every selected file shows a dedicated Save, Undo,
-  and Redo toolbar below its breadcrumbs. Save becomes available for pending
-  changes and flushes them immediately; Undo and Redo use independent native
-  history for each open source file. Read-only views keep the toolbar visible
-  with unavailable actions disabled. Ctrl/Cmd+S continues to flush pending
-  changes.
+- Every selected file shows a Save, Undo, and Redo toolbar below its
+  breadcrumbs. Markdown files also show their rendered/source toggle in this
+  toolbar. While a file is active, edits remain pending until Save or
+  Ctrl/Cmd+S is used. Switching to any other right-panel surface or hiding the
+  panel saves pending edits in the background. Undo and Redo use independent
+  native history for each open source file. Read-only views keep unavailable
+  actions visible but disabled.
 
 ## Known Limitations
 

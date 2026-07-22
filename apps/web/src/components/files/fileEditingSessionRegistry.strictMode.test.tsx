@@ -12,6 +12,7 @@ function fakeSession(relativePath: string) {
     relativePath,
     flush: vi.fn(async () => "saved" as const),
     settle: vi.fn(async () => "saved" as const),
+    setAutosaveEnabled: vi.fn(),
     pauseSaving: vi.fn(),
     resumeSaving: vi.fn(),
     discardPendingSave: vi.fn(),
@@ -59,6 +60,7 @@ function RegistryOwner({
     if (activeRelativePath !== null) {
       onSession(registry.getOrCreate(activeRelativePath, () => fakeSession(activeRelativePath)));
     }
+    registry.setActivePath(activeRelativePath);
   }, [activeRelativePath, onRegistry, onSession, registry]);
 
   return null;
@@ -114,11 +116,13 @@ describe("FileEditingSessionRegistry StrictMode ownership", () => {
     await renderOwner("project-a:thread-a", ["src/a.ts"], "src/a.ts");
     expect(registries).toHaveLength(1);
     expect(sessions).toHaveLength(1);
+    expect(sessions[0]!.flush).not.toHaveBeenCalled();
     expect(sessions[0]!.dispose).not.toHaveBeenCalled();
 
     await renderOwner("project-a:thread-a", ["src/a.ts"], null);
     expect(registries).toHaveLength(1);
     expect(sessions).toHaveLength(1);
+    expect(sessions[0]!.flush).toHaveBeenCalledOnce();
     expect(sessions[0]!.dispose).not.toHaveBeenCalled();
 
     const lease = await registries[0]!.beginPathMutation({
@@ -138,6 +142,7 @@ describe("FileEditingSessionRegistry StrictMode ownership", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
+    expect(sessions[0]!.settle).toHaveBeenCalledTimes(2);
     expect(sessions[0]!.dispose).toHaveBeenCalledOnce();
     expect(sessions[1]!.dispose).not.toHaveBeenCalled();
 
@@ -146,6 +151,7 @@ describe("FileEditingSessionRegistry StrictMode ownership", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
+    expect(sessions[1]!.settle).toHaveBeenCalledOnce();
     expect(sessions[1]!.dispose).toHaveBeenCalledOnce();
   });
 });

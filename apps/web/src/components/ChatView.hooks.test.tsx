@@ -1703,6 +1703,44 @@ describe("ChatView right panel handlers", () => {
     return capturedProps("rightPanelTabs");
   }
 
+  it("publishes the visible active file to the editing registry", () => {
+    const setActivePath = vi.spyOn(FileEditingSessionRegistry.prototype, "setActivePath");
+    seedConnectedServerThread();
+    useRightPanelStore.getState().openFile(threadRef, "src/app.ts");
+    publishSeededStoreState(useRightPanelStore);
+
+    renderServerRoute();
+    runEffects();
+
+    expect(setActivePath).toHaveBeenCalledWith("src/app.ts");
+  });
+
+  it("publishes null for an active non-file surface", () => {
+    const setActivePath = vi.spyOn(FileEditingSessionRegistry.prototype, "setActivePath");
+    seedConnectedServerThread();
+    useRightPanelStore.getState().openFile(threadRef, "src/app.ts");
+    useRightPanelStore.getState().open(threadRef, "plan");
+    publishSeededStoreState(useRightPanelStore);
+
+    renderServerRoute();
+    runEffects();
+
+    expect(setActivePath).toHaveBeenCalledWith(null);
+  });
+
+  it("publishes null when the active file remains selected behind a hidden panel", () => {
+    const setActivePath = vi.spyOn(FileEditingSessionRegistry.prototype, "setActivePath");
+    seedConnectedServerThread();
+    useRightPanelStore.getState().openFile(threadRef, "src/app.ts");
+    useRightPanelStore.getState().close(threadRef);
+    publishSeededStoreState(useRightPanelStore);
+
+    renderServerRoute();
+    runEffects();
+
+    expect(setActivePath).toHaveBeenCalledWith(null);
+  });
+
   it("passes one project-scoped editing registry into file surfaces", async () => {
     seedConnectedServerThread();
     useRightPanelStore.getState().openFile(threadRef, "src/a.ts");

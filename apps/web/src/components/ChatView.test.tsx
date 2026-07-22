@@ -608,6 +608,7 @@ function fakeEditingSession(relativePath: string) {
     editor: { history: [] as string[] },
     flush: vi.fn(async () => "saved" as const),
     settle: vi.fn<() => Promise<"saved" | "failed">>(async () => "saved"),
+    setAutosaveEnabled: vi.fn(),
     pauseSaving: vi.fn(),
     resumeSaving: vi.fn(),
     discardPendingSave: vi.fn(),

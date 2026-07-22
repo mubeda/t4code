@@ -138,6 +138,10 @@ export class FileEditingSession<LAnnotation, A = unknown, E = unknown> {
     return this.coordinator.settle();
   }
 
+  setAutosaveEnabled(enabled: boolean): void {
+    this.coordinator.setAutosaveEnabled(enabled);
+  }
+
   pauseSaving(): void {
     this.coordinator.pauseSaving();
   }

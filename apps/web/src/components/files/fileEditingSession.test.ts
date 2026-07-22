@@ -195,6 +195,30 @@ describe("FileEditingSession", () => {
     ]);
   });
 
+  it("keeps active edits pending while preserving explicit Save", async () => {
+    vi.useFakeTimers();
+    const persist = vi.fn(async () => AsyncResult.success(undefined));
+    const session = new FileEditingSession({
+      cwd: "/repo",
+      relativePath: "src/app.ts",
+      debounceMs: 500,
+      persist,
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+    });
+    const editor = session.editor as unknown as InstanceType<typeof pierre.Editor>;
+    const onChange = editor.options["onChange"] as (file: { contents: string }) => void;
+
+    session.setAutosaveEnabled(false);
+    onChange({ contents: "active draft" });
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(persist).not.toHaveBeenCalled();
+    expect(session.getSnapshot().save).toMatchObject({ phase: "pending", canSave: true });
+    await expect(session.flush()).resolves.toBe("saved");
+    expect(persist).toHaveBeenCalledWith("src/app.ts", "active draft");
+  });
+
   it("delegates redo, flush, and settle and stops notifications after unsubscribe/dispose", async () => {
     const persist = vi.fn(async () => AsyncResult.success(undefined));
     const session = new FileEditingSession({

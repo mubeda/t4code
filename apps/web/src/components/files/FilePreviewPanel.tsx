@@ -10,7 +10,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t4code/client-runtime/state/runtime";
-import { ChevronRight, Code2, Eye, FolderTree, Globe2, LoaderCircle } from "lucide-react";
+import { ChevronRight, FolderTree, Globe2, LoaderCircle } from "lucide-react";
 import * as Schema from "effect/Schema";
 import {
   type RefObject,
@@ -778,32 +778,6 @@ export default function FilePreviewPanel({
               enableShortcut={false}
             />
           ) : null}
-          {isMarkdown ? (
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Toggle
-                    className="shrink-0"
-                    pressed={renderMarkdown}
-                    onPressedChange={(pressed) => {
-                      setMarkdownSourceView({
-                        path: pressed ? null : relativePath,
-                        revealRequestId: pressed ? null : revealRequestId,
-                      });
-                    }}
-                    aria-label={renderMarkdown ? "Show markdown source" : "Show rendered markdown"}
-                    variant="ghost"
-                    size="sm"
-                  >
-                    {renderMarkdown ? <Code2 className="size-3.5" /> : <Eye className="size-3.5" />}
-                  </Toggle>
-                }
-              />
-              <TooltipPopup>
-                {renderMarkdown ? "Show markdown source" : "Show rendered markdown"}
-              </TooltipPopup>
-            </Tooltip>
-          ) : null}
           {canOpenInBrowser ? (
             <Tooltip>
               <TooltipTrigger
@@ -855,6 +829,19 @@ export default function FilePreviewPanel({
             file.data?.truncated || (file.error && file.data === null)
               ? "Editing unavailable"
               : null
+          }
+          markdownView={
+            isMarkdown
+              ? {
+                  rendered: renderMarkdown,
+                  onRenderedChange: (rendered) => {
+                    setMarkdownSourceView({
+                      path: rendered ? null : relativePath,
+                      revealRequestId: rendered ? null : revealRequestId,
+                    });
+                  },
+                }
+              : undefined
           }
           onSave={() => {
             if (session) void session.flush();
