@@ -230,7 +230,10 @@ async fn normalizes_and_optionally_creates_project_workspace_roots() {
 async fn bootstrap_uses_the_injected_worktree_workspace() {
     let source = initialize_repository();
     let workspace = tempfile::tempdir().expect("worktree workspace");
-    let canonical_workspace = workspace.path().canonicalize().expect("canonical workspace");
+    let canonical_workspace = workspace
+        .path()
+        .canonicalize()
+        .expect("canonical workspace");
     let repository = Arc::new(GitRepository::with_worktree_settings(Arc::new(
         StaticWorktreeBaseDirectory(Some(workspace.path().to_path_buf())),
     )));
