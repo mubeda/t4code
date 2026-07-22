@@ -230,6 +230,8 @@ async fn fetch_claude_usage() -> Result<ProviderUsageSnapshot, ProviderUsageFetc
         .map(ClaudeCredentialStore::File)
         .collect::<Vec<_>>();
     #[cfg(target_os = "macos")]
+    let mut stores = stores;
+    #[cfg(target_os = "macos")]
     if uses_default_config {
         if let Some(account) = claude_keychain_account() {
             stores.push(ClaudeCredentialStore::Keychain { account });
