@@ -3,9 +3,11 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use t4code_server::terminal::{
-    PortablePtyBackend, PtyBackend, PtySpawnInput, TerminalAttachInput, TerminalManager,
-    TerminalMetadataEvent, TerminalOpenInput,
+    PortablePtyBackend, PtyBackend, PtySpawnInput, TerminalAttachInput, TerminalEvent,
+    TerminalManager, TerminalMetadataEvent, TerminalOpenInput,
 };
+
+const WINDOWS_CONSOLE_THEME_ENV: &str = "T4CODE_WINDOWS_CONSOLE_THEME";
 
 #[test]
 fn portable_backend_rejects_an_undiscoverable_executable_synchronously() {
@@ -215,5 +217,82 @@ async fn closing_a_terminal_does_not_resurrect_its_metadata() {
     .await
     .unwrap_or(false);
     assert!(!resurrected, "closed terminal metadata must stay removed");
+    manager.shutdown().await;
+}
+
+#[tokio::test]
+async fn restarting_a_native_terminal_with_a_new_console_theme_completes() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let manager = TerminalManager::default();
+    let mut dark = TerminalOpenInput::new(
+        "thread-theme-restart",
+        "terminal-theme-restart",
+        workspace.path().to_path_buf(),
+        120,
+        30,
+    );
+    dark.env
+        .insert(WINDOWS_CONSOLE_THEME_ENV.to_owned(), "dark".to_owned());
+    manager.open(dark).await.expect("dark terminal opens");
+    let mut attachment = manager
+        .attach(TerminalAttachInput::existing(
+            "thread-theme-restart",
+            "terminal-theme-restart",
+        ))
+        .await
+        .expect("dark terminal attaches");
+    manager
+        .write(
+            "thread-theme-restart",
+            "terminal-theme-restart",
+            "\u{1b}[1;1RWrite-Output T4CODE_BEFORE_THEME_RESTART\r\n",
+        )
+        .await
+        .expect("dark terminal accepts input");
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if matches!(
+                attachment.recv().await,
+                Some(TerminalEvent::Output { ref data, .. })
+                    if data.contains("T4CODE_BEFORE_THEME_RESTART")
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("attachment observes a pre-restart sequence");
+
+    let mut light = TerminalOpenInput::new(
+        "thread-theme-restart",
+        "terminal-theme-restart",
+        workspace.path().to_path_buf(),
+        120,
+        30,
+    );
+    light
+        .env
+        .insert(WINDOWS_CONSOLE_THEME_ENV.to_owned(), "light".to_owned());
+    let restarted = tokio::time::timeout(Duration::from_secs(5), manager.restart(light))
+        .await
+        .expect("theme restart must not hang")
+        .expect("light terminal restarts");
+
+    assert_eq!(
+        restarted.console_theme,
+        Some(t4code_server::terminal::TerminalConsoleTheme::Light)
+    );
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if matches!(
+                attachment.recv().await,
+                Some(TerminalEvent::Restarted { .. })
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("existing attachment observes the restarted generation");
     manager.shutdown().await;
 }

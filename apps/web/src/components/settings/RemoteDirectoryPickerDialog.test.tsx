@@ -1,4 +1,5 @@
 import { EnvironmentId } from "@t4code/contracts";
+import { AsyncResult } from "effect/unstable/reactivity";
 import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -62,6 +63,7 @@ const harness = vi.hoisted(() => ({
   input: null as Record<string, unknown> | null,
   browse: vi.fn((input: unknown) => input),
   refresh: vi.fn(),
+  createEntry: vi.fn(),
   setPath: vi.fn(),
   query: {
     data: null as null | Record<string, unknown>,
@@ -75,6 +77,9 @@ const harness = vi.hoisted(() => ({
     this.input = null;
     this.browse.mockClear();
     this.refresh.mockReset();
+    this.createEntry
+      .mockReset()
+      .mockResolvedValue(AsyncResult.success({ relativePath: "new-folder" }));
     this.setPath.mockReset();
     this.query = { data: null, error: null, isPending: false, refresh: this.refresh };
   },
@@ -99,6 +104,14 @@ vi.mock("~/state/filesystem", () => ({
 }));
 
 vi.mock("~/state/query", () => ({ useEnvironmentQuery: () => harness.query }));
+
+vi.mock("~/state/projects", () => ({
+  projectEnvironment: { createEntry: "project-create-entry" },
+}));
+
+vi.mock("~/state/use-atom-command", () => ({
+  useAtomCommand: () => harness.createEntry,
+}));
 
 vi.mock("../ui/button", () => ({
   Button: (props: Record<string, unknown>) => {
@@ -128,6 +141,19 @@ vi.mock("../ui/draft-input", () => ({
       <input aria-label={props["aria-label"] as string} value={props.value as string} readOnly />
     );
   },
+}));
+
+vi.mock("../ui/input", () => ({
+  Input: (props: Record<string, unknown>) => (
+    <input
+      aria-label={props["aria-label"] as string}
+      value={props.value as string}
+      disabled={Boolean(props.disabled)}
+      onChange={props.onChange as never}
+      onKeyDown={props.onKeyDown as never}
+      readOnly={typeof props.onChange !== "function"}
+    />
+  ),
 }));
 
 const { RemoteDirectoryPickerDialog } = await import("./RemoteDirectoryPickerDialog");
@@ -251,6 +277,24 @@ describe("RemoteDirectoryPickerDialog", () => {
 
     expect(button("Select folder").disabled).toBe(true);
     expect(markup).toContain("Permission denied");
+  });
+
+  it("enables New folder only when the query has a canonical current directory", () => {
+    expect(renderPicker(pickerProps())).toContain("New folder");
+    expect(button("New folder").disabled).toBe(true);
+
+    harness.query = {
+      data: { parentPath: "/repo", directoryPath: "/repo", entries: [] },
+      error: null,
+      isPending: false,
+      refresh: harness.refresh,
+    };
+    expect(renderPicker(pickerProps({ initialPath: "/repo" }))).toContain("New folder");
+    expect(button("New folder").disabled).toBe(false);
+
+    harness.query.isPending = true;
+    renderPicker(pickerProps({ initialPath: "/repo" }));
+    expect(button("New folder").disabled).toBe(true);
   });
 
   it("collapses dot-directories by default and reveals them on request", () => {

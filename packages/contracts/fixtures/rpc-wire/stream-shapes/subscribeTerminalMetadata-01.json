@@ -13,9 +13,10 @@
         "pid": 1796050164,
         "exitCode": null,
         "exitSignal": 2147483634,
-        "hasRunningSubprocess": true,
-        "label": "gumentto",
-        "updatedAt": "^Ix&"
+        "consoleTheme": "dark",
+        "hasRunningSubprocess": false,
+        "label": "# >",
+        "updatedAt": "_)\""
       }
     }
   ]

@@ -10,6 +10,7 @@ import {
 const snapshotData = (
   history: string,
   status: TerminalSessionSnapshot["status"] = "running",
+  consoleTheme?: "light" | "dark",
 ): TerminalSessionSnapshot => ({
   threadId: "thread-1",
   terminalId: "terminal-1",
@@ -20,6 +21,7 @@ const snapshotData = (
   history,
   exitCode: null,
   exitSignal: null,
+  ...(consoleTheme === undefined ? {} : { consoleTheme }),
   label: "Terminal 1",
   updatedAt: "2026-07-17T00:00:00.000Z",
   sequence: 1,
@@ -59,11 +61,28 @@ describe("createTerminalTranscriptRuntime", () => {
     expect(runtime.metadata()).toEqual({
       status: "closed",
       error: null,
+      consoleTheme: null,
       generation: 0,
       revision: 0,
     });
     expect(runtime.metadata()).toBe(runtime.metadata());
     expect(runtime.snapshot()).toBe("");
+  });
+
+  it("retains the authoritative console theme across attach and restart snapshots", () => {
+    const runtime = createTerminalTranscriptRuntime();
+
+    runtime.ingest({ type: "snapshot", snapshot: snapshotData("light", "running", "light") });
+    expect(runtime.metadata().consoleTheme).toBe("light");
+
+    runtime.ingest({
+      type: "restarted",
+      threadId: "thread-1",
+      terminalId: "terminal-1",
+      sequence: 2,
+      snapshot: { ...snapshotData("dark", "running", "dark"), sequence: 2 },
+    });
+    expect(runtime.metadata().consoleTheme).toBe("dark");
   });
 
   it("attach plus live output reconstructs exactly with no gap or duplicate (C1)", () => {
@@ -234,6 +253,7 @@ describe("createTerminalTranscriptRuntime", () => {
     expect(runtime.metadata()).toEqual({
       status: "running",
       error: null,
+      consoleTheme: null,
       generation: 2,
       revision: 2,
     });

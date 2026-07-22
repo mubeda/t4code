@@ -482,29 +482,16 @@ async fn terminal_rpc_clear_resize_restart_exit_and_restart_if_not_running_round
         assert_eq!(restarted["status"], "running");
         assert_ne!(restarted["pid"].as_u64(), Some(first_pid));
 
-        let (closed_for_restart, attach_saw_exit) =
-            next_restart_close_sequence(attach, "1", "thread-restart", "term-restart").await;
-        assert_eq!(closed_for_restart["threadId"], "thread-restart");
-        let (closed_event, events_saw_exit) =
-            next_restart_close_sequence(events, "1", "thread-restart", "term-restart").await;
-        assert_eq!(closed_event["threadId"], "thread-restart");
+        let (attach_restarted, attach_saw_exit) =
+            next_restart_event_and_ack(attach, "1", "thread-restart", "term-restart").await;
+        assert_eq!(attach_restarted["snapshot"]["status"], "running");
+        let (restarted_event, events_saw_exit) =
+            next_restart_event_and_ack(events, "1", "thread-restart", "term-restart").await;
         assert_eq!(events_saw_exit, attach_saw_exit);
-        let restarted_event = next_terminal_event_and_ack(events, "1", "restarted", |value| {
-            value["type"] == "restarted" && value["terminalId"] == "term-restart"
-        })
-        .await;
         assert_eq!(restarted_event["snapshot"]["status"], "running");
-        let (removed, metadata_saw_exit) =
-            next_restart_metadata_remove(metadata, "1", "thread-restart", "term-restart").await;
-        assert_eq!(removed["threadId"], "thread-restart");
+        let (restarted_metadata, metadata_saw_exit) =
+            next_restart_metadata_upsert(metadata, "1", "thread-restart", "term-restart").await;
         assert_eq!(metadata_saw_exit, events_saw_exit);
-        let restarted_metadata =
-            next_expected_chunk_value_and_ack(metadata, "1", "running metadata upsert", |value| {
-                value["type"] == "upsert"
-                    && value["terminal"]["terminalId"] == "term-restart"
-                    && value["terminal"]["status"] == "running"
-            })
-            .await;
         assert_eq!(restarted_metadata["terminal"]["status"], "running");
 
         post_restart_attach = Some(open_socket(handle.local_addr()).await);
@@ -631,22 +618,13 @@ async fn terminal_rpc_clear_resize_restart_exit_and_restart_if_not_running_round
         .await;
         let attach_restart_snapshot = next_chunk_and_ack(restarting_attach_socket, "1").await;
         assert_eq!(attach_restart_snapshot[0]["snapshot"]["status"], "running");
-        let (closed_exited_session, _) =
-            next_restart_close_sequence(events, "1", "thread-restart", "term-restart").await;
-        assert_eq!(closed_exited_session["threadId"], "thread-restart");
-        let attach_restart = next_terminal_event_and_ack(events, "1", "restarted", |value| {
-            value["type"] == "restarted"
-                && value["terminalId"] == "term-restart"
-                && value["snapshot"]["pid"] == attach_restart_snapshot[0]["snapshot"]["pid"]
-        })
-        .await;
+        let (attach_restart, _) =
+            next_restart_event_and_ack(events, "1", "thread-restart", "term-restart").await;
         assert_eq!(attach_restart["snapshot"]["status"], "running");
-        let removed_exited_metadata =
-            next_expected_chunk_value_and_ack(metadata, "1", "metadata remove", |value| {
-                value["type"] == "remove" && value["terminalId"] == "term-restart"
-            })
-            .await;
-        assert_eq!(removed_exited_metadata["threadId"], "thread-restart");
+        assert_eq!(
+            attach_restart["snapshot"]["pid"],
+            attach_restart_snapshot[0]["snapshot"]["pid"]
+        );
         let attach_restart_metadata =
             next_expected_chunk_value_and_ack(metadata, "1", "running metadata upsert", |value| {
                 value["type"] == "upsert"
@@ -1148,64 +1126,68 @@ where
     }
 }
 
-async fn next_restart_close_sequence(
+async fn next_restart_event_and_ack(
     socket: &mut TestSocket,
     request_id: &str,
     thread_id: &str,
     terminal_id: &str,
 ) -> (Value, bool) {
-    let first = next_terminal_event_and_ack(socket, request_id, "exited or closed", |value| {
-        matches!(value["type"].as_str(), Some("exited" | "closed"))
-            && value["threadId"] == thread_id
-            && value["terminalId"] == terminal_id
-    })
-    .await;
-    if first["type"] == "closed" {
-        return (first, false);
-    }
+    let mut saw_exit = false;
 
-    let closed = next_terminal_event_and_ack(socket, request_id, "closed", |value| {
-        value["type"] == "closed"
-            && value["threadId"] == thread_id
-            && value["terminalId"] == terminal_id
-    })
-    .await;
-    (closed, true)
+    loop {
+        let values = next_chunk(socket, request_id).await;
+        let [value] = values.as_slice() else {
+            panic!("expected one terminal event while waiting for restarted, got {values:?}");
+        };
+        let matching_terminal =
+            value["threadId"] == thread_id && value["terminalId"] == terminal_id;
+
+        match value["type"].as_str() {
+            Some("output" | "activity") => {}
+            Some("exited") if matching_terminal => saw_exit = true,
+            Some("restarted") if matching_terminal => {
+                let restarted = value.clone();
+                send_ack(socket, request_id).await;
+                return (restarted, saw_exit);
+            }
+            _ => {
+                panic!("expected exited or restarted for {thread_id}/{terminal_id}, got {value:?}")
+            }
+        }
+        send_ack(socket, request_id).await;
+    }
 }
 
-async fn next_restart_metadata_remove(
+async fn next_restart_metadata_upsert(
     socket: &mut TestSocket,
     request_id: &str,
     thread_id: &str,
     terminal_id: &str,
 ) -> (Value, bool) {
-    let first = next_expected_chunk_value_and_ack(
-        socket,
-        request_id,
-        "exited metadata upsert or metadata remove",
-        |value| {
-            (value["type"] == "remove"
-                && value["threadId"] == thread_id
-                && value["terminalId"] == terminal_id)
-                || (value["type"] == "upsert"
-                    && value["terminal"]["threadId"] == thread_id
-                    && value["terminal"]["terminalId"] == terminal_id
-                    && value["terminal"]["status"] == "exited")
-        },
-    )
-    .await;
-    if first["type"] == "remove" {
-        return (first, false);
-    }
+    let mut saw_exit = false;
 
-    let removed =
-        next_expected_chunk_value_and_ack(socket, request_id, "metadata remove", |value| {
-            value["type"] == "remove"
-                && value["threadId"] == thread_id
-                && value["terminalId"] == terminal_id
-        })
-        .await;
-    (removed, true)
+    loop {
+        let values = next_chunk(socket, request_id).await;
+        let [value] = values.as_slice() else {
+            panic!("expected one metadata event while waiting for running upsert, got {values:?}");
+        };
+        let matching_terminal = value["type"] == "upsert"
+            && value["terminal"]["threadId"] == thread_id
+            && value["terminal"]["terminalId"] == terminal_id;
+
+        match value["terminal"]["status"].as_str() {
+            Some("exited") if matching_terminal => saw_exit = true,
+            Some("running") if matching_terminal => {
+                let upsert = value.clone();
+                send_ack(socket, request_id).await;
+                return (upsert, saw_exit);
+            }
+            _ => panic!(
+                "expected exited or running metadata upsert for {thread_id}/{terminal_id}, got {value:?}"
+            ),
+        }
+        send_ack(socket, request_id).await;
+    }
 }
 
 async fn next_chunk(socket: &mut TestSocket, request_id: &str) -> Vec<Value> {

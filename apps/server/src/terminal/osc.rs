@@ -88,8 +88,7 @@ pub const OSC_BACKGROUND_ENV: &str = "T4CODE_OSC_BACKGROUND";
 pub const OSC_FOREGROUND_ENV: &str = "T4CODE_OSC_FOREGROUND";
 pub const OSC_CURSOR_ENV: &str = "T4CODE_OSC_CURSOR";
 
-/// Whether `key` is one of the reserved OSC color env keys (case-sensitive, as
-/// these are internal keys the client always emits verbatim).
+/// Whether `key` is one of the exact reserved OSC color env keys.
 pub fn is_reserved_osc_env_key(key: &str) -> bool {
     matches!(
         key,
@@ -355,6 +354,37 @@ mod tests {
     }
 
     #[test]
+    fn answers_codex_batched_startup_probe_with_both_colors() {
+        let mut responder = OscColorResponder::new(OscColors {
+            foreground: Some([28, 33, 41]),
+            background: Some([255, 255, 255]),
+            cursor: Some([38, 56, 78]),
+        });
+        let query = b"\x1b[6n\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[?u\x1b[c";
+
+        assert_eq!(
+            responder.process(query),
+            b"\x1b]10;rgb:1c1c/2121/2929\x1b\\\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
+        );
+    }
+
+    #[test]
+    fn answers_codex_batched_probe_across_every_chunk_boundary() {
+        let query = b"\x1b[6n\x1b]10;?\x1b\\\x1b]11;?\x1b\\";
+        let expected = b"\x1b]10;rgb:1c1c/2121/2929\x1b\\\x1b]11;rgb:ffff/ffff/ffff\x1b\\";
+        for split in 1..query.len() {
+            let mut responder = OscColorResponder::new(OscColors {
+                foreground: Some([28, 33, 41]),
+                background: Some([255, 255, 255]),
+                cursor: None,
+            });
+            let mut reply = responder.process(&query[..split]);
+            reply.extend(responder.process(&query[split..]));
+            assert_eq!(reply, expected, "split at byte {split}");
+        }
+    }
+
+    #[test]
     fn ignores_queries_for_unset_colors() {
         let mut responder = OscColorResponder::new(bg([255, 255, 255]));
         // Only background is set; a foreground query is left for the client.
@@ -431,5 +461,14 @@ mod tests {
         assert_eq!(parse_rgb_triplet("1,2"), None);
         assert_eq!(parse_rgb_triplet("1,2,3,4"), None);
         assert_eq!(parse_rgb_triplet("x,y,z"), None);
+    }
+
+    #[test]
+    fn recognizes_only_exact_reserved_osc_environment_keys() {
+        for key in [OSC_BACKGROUND_ENV, OSC_FOREGROUND_ENV, OSC_CURSOR_ENV] {
+            assert!(is_reserved_osc_env_key(key));
+            assert!(!is_reserved_osc_env_key(&key.to_ascii_lowercase()));
+        }
+        assert!(!is_reserved_osc_env_key("T4CODE_WINDOWS_CONSOLE_THEME"));
     }
 }

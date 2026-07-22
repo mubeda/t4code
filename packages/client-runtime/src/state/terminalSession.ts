@@ -1,6 +1,7 @@
 import type {
   EnvironmentId,
   TerminalMetadataStreamEvent,
+  TerminalConsoleTheme,
   TerminalSessionSnapshot,
   TerminalSummary,
   ThreadId,
@@ -14,6 +15,7 @@ export interface TerminalSessionState {
   readonly summary: TerminalSummary | null;
   readonly status: TerminalSessionSnapshot["status"] | "closed";
   readonly error: string | null;
+  readonly consoleTheme: TerminalConsoleTheme | null;
   readonly hasRunningSubprocess: boolean;
   readonly updatedAt: string | null;
   readonly generation: number;
@@ -42,6 +44,7 @@ export const EMPTY_TERMINAL_SESSION_STATE = Object.freeze<TerminalSessionState>(
   summary: null,
   status: "closed",
   error: null,
+  consoleTheme: null,
   hasRunningSubprocess: false,
   updatedAt: null,
   generation: 0,
@@ -56,6 +59,7 @@ export function combineTerminalSessionState(
     summary,
     status: attachHasEmitted ? metadata.status : (summary?.status ?? metadata.status),
     error: metadata.error,
+    consoleTheme: metadata.consoleTheme ?? summary?.consoleTheme ?? null,
     hasRunningSubprocess: summary?.hasRunningSubprocess ?? false,
     updatedAt: summary?.updatedAt ?? null,
     generation: metadata.generation,

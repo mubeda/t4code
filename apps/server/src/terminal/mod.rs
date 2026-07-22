@@ -9,8 +9,8 @@ pub use manager::{
     TerminalManagerOptions, TerminalMetadataAttachment, TerminalSubprocessInspector,
 };
 pub use model::{
-    TerminalAttachInput, TerminalEvent, TerminalLaunchCommand, TerminalMetadataEvent,
-    TerminalOpenInput, TerminalRestartInput, TerminalSessionSnapshot, TerminalStatus,
-    TerminalSummary,
+    TerminalAttachInput, TerminalConsoleTheme, TerminalEvent, TerminalLaunchCommand,
+    TerminalMetadataEvent, TerminalOpenInput, TerminalRestartInput, TerminalSessionSnapshot,
+    TerminalStatus, TerminalSummary,
 };
 pub use pty::{PortablePtyBackend, PtyBackend, PtyExit, PtyProcess, PtySpawnInput};

@@ -40,6 +40,7 @@ import {
   useState,
 } from "react";
 import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
+import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
 import { type TerminalContextSelection } from "~/lib/terminalContext";
 import { useOpenInPreferredEditor } from "../editorPreferences";
@@ -78,7 +79,14 @@ import { createTerminalOutputSink } from "./terminalOutputSink";
 import { loadTerminalWebglAddon } from "./terminalWebgl";
 import { useAtomCommand } from "../state/use-atom-command";
 import { usePrimarySettings } from "../hooks/useSettings";
+import { useTheme } from "../hooks/useTheme";
 import { ensureBundledTerminalFontLoaded, resolveTerminalFontFamily } from "../lib/terminalFont";
+import {
+  mergeTerminalSpawnEnv,
+  retainTerminalLaunchTheme,
+  type TerminalLaunchThemeState,
+  type TerminalThemeMode,
+} from "./terminalTheme";
 
 const MIN_DRAWER_HEIGHT = 180;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
@@ -393,30 +401,6 @@ export function normalizeComputedColor(value: string | null | undefined, fallbac
   return value ?? fallback;
 }
 
-// The terminal's resolved background/foreground/cursor as "r,g,b" triplets,
-// keyed by the same `.dark` signal terminalThemeFromApp resolves against. These
-// match terminalThemeFromApp's fallback colors so what the PTY reports for an
-// OSC color query is consistent with what xterm paints.
-const TERMINAL_OSC_COLORS = {
-  dark: { background: "14,18,24", foreground: "237,241,247", cursor: "180,203,255" },
-  light: { background: "255,255,255", foreground: "28,33,41", cursor: "38,56,78" },
-} as const;
-
-// Reserved launch env keys the server consumes to answer OSC 10/11/12 color
-// queries at the PTY layer, then strips before spawning the child. This lets
-// providers like OpenCode detect a light vs. dark terminal reliably, without
-// depending on xterm's slower round-trip reply. See apps/server terminal::osc.
-function terminalOscColorEnv(): Record<string, string> {
-  const isDark =
-    typeof document !== "undefined" && document.documentElement.classList.contains("dark");
-  const colors = isDark ? TERMINAL_OSC_COLORS.dark : TERMINAL_OSC_COLORS.light;
-  return {
-    T4CODE_OSC_BACKGROUND: colors.background,
-    T4CODE_OSC_FOREGROUND: colors.foreground,
-    T4CODE_OSC_CURSOR: colors.cursor,
-  };
-}
-
 function terminalThemesEqual(left: ITheme, right: ITheme): boolean {
   const keys = new Set([...Object.keys(left), ...Object.keys(right)] as Array<keyof ITheme>);
   for (const key of keys) {
@@ -425,8 +409,23 @@ function terminalThemesEqual(left: ITheme, right: ITheme): boolean {
   return true;
 }
 
-function terminalThemeFromApp(mountElement?: HTMLElement | null): ITheme {
-  const isDark = document.documentElement.classList.contains("dark");
+function repaintTerminalTheme(
+  terminal: Terminal,
+  resolvedTheme: TerminalThemeMode,
+  mountElement?: HTMLElement | null,
+): void {
+  const nextTheme = terminalThemeFromApp(resolvedTheme, mountElement);
+  const currentTheme = terminal.options.theme;
+  if (currentTheme && terminalThemesEqual(currentTheme, nextTheme)) return;
+  terminal.options.theme = nextTheme;
+  terminal.refresh(0, terminal.rows - 1);
+}
+
+function terminalThemeFromApp(
+  resolvedTheme: TerminalThemeMode,
+  mountElement?: HTMLElement | null,
+): ITheme {
+  const isDark = resolvedTheme === "dark";
   const fallbackBackground = isDark ? "rgb(14, 18, 24)" : "rgb(255, 255, 255)";
   const fallbackForeground = isDark ? "rgb(237, 241, 247)" : "rgb(28, 33, 41)";
   const drawerSurface =
@@ -435,14 +434,20 @@ function terminalThemeFromApp(mountElement?: HTMLElement | null): ITheme {
     document.body;
   const drawerStyles = getComputedStyle(drawerSurface);
   const bodyStyles = getComputedStyle(document.body);
-  const background = normalizeComputedColor(
-    drawerStyles.backgroundColor,
-    normalizeComputedColor(bodyStyles.backgroundColor, fallbackBackground),
-  );
-  const foreground = normalizeComputedColor(
-    drawerStyles.color,
-    normalizeComputedColor(bodyStyles.color, fallbackForeground),
-  );
+  const requestedThemeMatchesDocument =
+    document.documentElement.classList.contains("dark") === isDark;
+  const background = requestedThemeMatchesDocument
+    ? normalizeComputedColor(
+        drawerStyles.backgroundColor,
+        normalizeComputedColor(bodyStyles.backgroundColor, fallbackBackground),
+      )
+    : fallbackBackground;
+  const foreground = requestedThemeMatchesDocument
+    ? normalizeComputedColor(
+        drawerStyles.color,
+        normalizeComputedColor(bodyStyles.color, fallbackForeground),
+      )
+    : fallbackForeground;
 
   if (isDark) {
     return {
@@ -595,6 +600,19 @@ interface TerminalLaunchLocation {
   readonly runtimeEnv?: Record<string, string>;
 }
 
+interface CodexThemeRestartRequest {
+  readonly id: number;
+  readonly sourceGeneration: number;
+  readonly targetTheme: TerminalThemeMode;
+  readonly phase: "submitting" | "awaiting-generation";
+}
+
+interface CodexThemeRestartError {
+  readonly generation: number;
+  readonly targetTheme: TerminalThemeMode;
+  readonly message: string;
+}
+
 export function TerminalViewport({
   threadRef,
   threadId,
@@ -613,6 +631,7 @@ export function TerminalViewport({
   drawerHeight,
   keybindings,
 }: TerminalViewportProps) {
+  const { resolvedTheme } = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -630,6 +649,9 @@ export function TerminalViewport({
     reportFailure: false,
   });
   const runTerminalResize = useAtomCommand(terminalEnvironment.resize, {
+    reportFailure: false,
+  });
+  const runTerminalRestart = useAtomCommand(terminalEnvironment.restart, {
     reportFailure: false,
   });
   const hasHandledExitRef = useRef(false);
@@ -681,14 +703,43 @@ export function TerminalViewport({
     onAddTerminalContext(selection);
   });
   const readTerminalLabel = useEffectEvent(() => terminalLabel);
-  // Launch-command env supplies provider defaults; the reserved OSC color keys
-  // carry the resolved theme for the PTY-layer query responder; the thread's
-  // runtime env is user configuration and wins on conflicts. Captured at spawn,
-  // which is when providers read their terminal background.
+  const hasAuthoritativeHostConfig = serverConfig !== null;
+  const isWindowsProviderTerminal =
+    command !== undefined && serverConfig?.environment.platform.os === "windows";
+  const attachmentThemeTargetKey = `${environmentId}\u0000${threadId}\u0000${terminalId}`;
+  const attachmentLaunchThemeRef = useRef<{
+    readonly targetKey: string;
+    readonly theme: TerminalThemeMode;
+    readonly pinned: boolean;
+  } | null>(null);
+  const canAttachTerminal = command === undefined || hasAuthoritativeHostConfig;
+  const shouldPinAttachmentTheme = shouldRender && canAttachTerminal;
+  if (attachmentLaunchThemeRef.current?.targetKey !== attachmentThemeTargetKey) {
+    attachmentLaunchThemeRef.current = {
+      targetKey: attachmentThemeTargetKey,
+      theme: resolvedTheme,
+      pinned: shouldPinAttachmentTheme,
+    };
+  } else if (!attachmentLaunchThemeRef.current.pinned) {
+    attachmentLaunchThemeRef.current = {
+      targetKey: attachmentThemeTargetKey,
+      theme: resolvedTheme,
+      pinned: shouldPinAttachmentTheme,
+    };
+  }
+  const attachmentLaunchTheme = attachmentLaunchThemeRef.current.theme;
+  // Launch-command env supplies provider defaults and the thread's runtime env
+  // wins ordinary conflicts. Theme colors and the Codex-only Windows console
+  // theme are authoritative because the PTY consumes them during spawn.
   const spawnEnv = useMemo(() => {
-    const merged = { ...command?.env, ...terminalOscColorEnv(), ...runtimeEnv };
+    const merged = mergeTerminalSpawnEnv({
+      commandEnv: command?.env,
+      runtimeEnv,
+      resolvedTheme: attachmentLaunchTheme,
+      windowsConsoleTheme: isWindowsProviderTerminal,
+    });
     return Object.keys(merged).length > 0 ? merged : undefined;
-  }, [command, runtimeEnv]);
+  }, [attachmentLaunchTheme, command, isWindowsProviderTerminal, runtimeEnv]);
   const terminalSession = useAttachedTerminalSession({
     environmentId,
     terminal: {
@@ -699,7 +750,7 @@ export function TerminalViewport({
       ...(spawnEnv ? { env: spawnEnv } : {}),
       ...(command ? { command } : {}),
     },
-    attach: shouldRender,
+    attach: shouldRender && canAttachTerminal,
   });
   const resizeTerminal = useEffectEvent((cols: number, rows: number) =>
     runTerminalResize({
@@ -740,6 +791,59 @@ export function TerminalViewport({
   const terminalStatus = terminalSession.status;
   const terminalGeneration = terminalSession.generation;
   const transcriptRuntime = terminalSession.transcriptRuntime;
+  const themeRestartRequestIdRef = useRef(0);
+  const themeRestartRequestRef = useRef<CodexThemeRestartRequest | null>(null);
+  const [themeRestartRequest, setThemeRestartRequest] = useState<CodexThemeRestartRequest | null>(
+    null,
+  );
+  const [themeRestartError, setThemeRestartError] = useState<CodexThemeRestartError | null>(null);
+  const launchThemeRef = useRef<TerminalLaunchThemeState | null>(null);
+  const activeThemeRestartRequest = themeRestartRequestRef.current;
+  launchThemeRef.current = retainTerminalLaunchTheme(launchThemeRef.current, {
+    persistentConsoleTheme: isWindowsProviderTerminal,
+    generation: terminalGeneration,
+    resolvedTheme: isWindowsProviderTerminal ? attachmentLaunchTheme : resolvedTheme,
+    authoritativeTheme: terminalSession.consoleTheme,
+    restartRequest: activeThemeRestartRequest,
+  });
+  if (
+    isWindowsProviderTerminal &&
+    activeThemeRestartRequest !== null &&
+    terminalGeneration > activeThemeRestartRequest.sourceGeneration &&
+    attachmentLaunchThemeRef.current.targetKey === attachmentThemeTargetKey &&
+    attachmentLaunchThemeRef.current.theme !== activeThemeRestartRequest.targetTheme
+  ) {
+    attachmentLaunchThemeRef.current = {
+      ...attachmentLaunchThemeRef.current,
+      theme: activeThemeRestartRequest.targetTheme,
+      pinned: true,
+    };
+  }
+  const effectiveTerminalTheme = isWindowsProviderTerminal
+    ? launchThemeRef.current.theme
+    : resolvedTheme;
+  const effectiveTerminalThemeRef = useRef(effectiveTerminalTheme);
+  effectiveTerminalThemeRef.current = effectiveTerminalTheme;
+  const nativeThemeMismatch =
+    isWindowsProviderTerminal &&
+    terminalStatus === "running" &&
+    effectiveTerminalTheme !== resolvedTheme;
+  const [dismissedThemeNotice, setDismissedThemeNotice] = useState<{
+    readonly generation: number;
+    readonly targetTheme: TerminalThemeMode;
+  } | null>(null);
+  const showCodexThemeNotice =
+    nativeThemeMismatch &&
+    (dismissedThemeNotice === null ||
+      dismissedThemeNotice.generation !== terminalGeneration ||
+      dismissedThemeNotice.targetTheme !== resolvedTheme);
+  const themeRestartPending = themeRestartRequest !== null;
+  const visibleThemeRestartError =
+    themeRestartError !== null &&
+    themeRestartError.generation === terminalGeneration &&
+    themeRestartError.targetTheme === resolvedTheme
+      ? themeRestartError.message
+      : null;
   const hasAuthoritativeTerminalState = transcriptRuntime !== null;
   const previousMetadataRef = useRef({
     error: null as string | null,
@@ -749,6 +853,101 @@ export function TerminalViewport({
     runtime: transcriptRuntime,
     generation: terminalGeneration,
   });
+
+  const restartForTheme = useCallback(() => {
+    const terminal = terminalRef.current;
+    if (!terminal || !isWindowsProviderTerminal || themeRestartRequestRef.current !== null) return;
+
+    const targetSpawnEnv = mergeTerminalSpawnEnv({
+      commandEnv: command?.env,
+      runtimeEnv,
+      resolvedTheme,
+      windowsConsoleTheme: true,
+    });
+
+    const request: CodexThemeRestartRequest = {
+      id: themeRestartRequestIdRef.current + 1,
+      sourceGeneration: terminalGeneration,
+      targetTheme: resolvedTheme,
+      phase: "submitting",
+    };
+    themeRestartRequestIdRef.current = request.id;
+    themeRestartRequestRef.current = request;
+    setThemeRestartRequest(request);
+    setThemeRestartError(null);
+    void (async () => {
+      try {
+        const result = await runTerminalRestart({
+          environmentId,
+          input: {
+            threadId,
+            terminalId,
+            cwd,
+            ...(worktreePath !== undefined ? { worktreePath } : {}),
+            cols: terminal.cols,
+            rows: terminal.rows,
+            ...(Object.keys(targetSpawnEnv).length > 0 ? { env: targetSpawnEnv } : {}),
+            ...(command ? { command } : {}),
+          },
+        });
+        if (themeRestartRequestRef.current?.id !== request.id) return;
+        if (result._tag === "Success") {
+          const awaitingGeneration: CodexThemeRestartRequest = {
+            ...request,
+            phase: "awaiting-generation",
+          };
+          themeRestartRequestRef.current = awaitingGeneration;
+          setThemeRestartRequest((current) =>
+            current?.id === request.id ? awaitingGeneration : current,
+          );
+          return;
+        }
+
+        themeRestartRequestRef.current = null;
+        setThemeRestartRequest((current) => (current?.id === request.id ? null : current));
+        if (!isAtomCommandInterrupted(result)) {
+          const error = squashAtomCommandFailure(result);
+          setThemeRestartError({
+            generation: request.sourceGeneration,
+            targetTheme: request.targetTheme,
+            message: error instanceof Error ? error.message : "Unable to restart terminal",
+          });
+        }
+      } catch (cause: unknown) {
+        if (themeRestartRequestRef.current?.id !== request.id) return;
+        themeRestartRequestRef.current = null;
+        setThemeRestartRequest((current) => (current?.id === request.id ? null : current));
+        setThemeRestartError({
+          generation: request.sourceGeneration,
+          targetTheme: request.targetTheme,
+          message: cause instanceof Error ? cause.message : "Unable to restart terminal",
+        });
+      }
+    })();
+  }, [
+    command,
+    cwd,
+    environmentId,
+    isWindowsProviderTerminal,
+    runTerminalRestart,
+    resolvedTheme,
+    runtimeEnv,
+    terminalGeneration,
+    terminalId,
+    threadId,
+    worktreePath,
+  ]);
+
+  useEffect(() => {
+    const request = themeRestartRequestRef.current;
+    if (request !== null && terminalGeneration > request.sourceGeneration) {
+      themeRestartRequestRef.current = null;
+      setThemeRestartRequest((current) => (current?.id === request.id ? null : current));
+    }
+    setThemeRestartError((current) =>
+      current !== null && current.generation !== terminalGeneration ? null : current,
+    );
+  }, [terminalGeneration]);
 
   useEffect(() => {
     if (!visible) return;
@@ -780,7 +979,7 @@ export function TerminalViewport({
       fontSize: 12,
       scrollback: 5_000,
       fontFamily: readTerminalFontFamily(),
-      theme: terminalThemeFromApp(mount),
+      theme: terminalThemeFromApp(effectiveTerminalTheme, mount),
     });
     terminal.loadAddon(fitAddon);
     terminal.open(mount);
@@ -1126,11 +1325,7 @@ export function TerminalViewport({
       // <html> class/style churn (tooltips, scroll locks) fires this observer
       // far more often than the theme changes; a repaint rebuilds the glyph
       // atlas, so skip it unless the resolved theme actually differs.
-      const nextTheme = terminalThemeFromApp(containerRef.current);
-      const currentTheme = activeTerminal.options.theme;
-      if (currentTheme && terminalThemesEqual(currentTheme, nextTheme)) return;
-      activeTerminal.options.theme = nextTheme;
-      activeTerminal.refresh(0, activeTerminal.rows - 1);
+      repaintTerminalTheme(activeTerminal, effectiveTerminalThemeRef.current, containerRef.current);
     });
     themeObserver.observe(document.documentElement, {
       attributes: true,
@@ -1201,6 +1396,12 @@ export function TerminalViewport({
     transcriptRuntime,
     worktreePath,
   ]);
+
+  useEffect(() => {
+    const activeTerminal = terminalRef.current;
+    if (!activeTerminal) return;
+    repaintTerminalTheme(activeTerminal, effectiveTerminalTheme, containerRef.current);
+  }, [effectiveTerminalTheme]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -1325,9 +1526,11 @@ export function TerminalViewport({
     if (!shouldRender || !hasAuthoritativeTerminalState) return;
 
     const previous = previousMetadataRef.current;
+    const suppressThemeRestartExit =
+      themeRestartPending && (terminalStatus === "closed" || terminalStatus === "exited");
     previousMetadataRef.current = {
       error: terminalError,
-      status: terminalStatus,
+      status: suppressThemeRestartExit ? previous.status : terminalStatus,
     };
     const terminal = terminalRef.current;
 
@@ -1335,6 +1538,9 @@ export function TerminalViewport({
       writeSystemMessage(terminal, terminalError);
     }
 
+    if (suppressThemeRestartExit) {
+      return;
+    }
     if (terminalStatus === "running") {
       hasHandledExitRef.current = false;
     } else if (
@@ -1351,7 +1557,13 @@ export function TerminalViewport({
       }
       handleSessionExited();
     }
-  }, [hasAuthoritativeTerminalState, shouldRender, terminalError, terminalStatus]);
+  }, [
+    hasAuthoritativeTerminalState,
+    shouldRender,
+    terminalError,
+    terminalStatus,
+    themeRestartPending,
+  ]);
 
   useEffect(() => {
     const previous = previousRuntimeGenerationRef.current;
@@ -1424,6 +1636,40 @@ export function TerminalViewport({
           className="absolute inset-0 flex items-center justify-center px-4 text-center text-xs text-destructive"
         >
           {terminalError}
+        </div>
+      ) : null}
+      {showCodexThemeNotice ? (
+        <div className="absolute top-2 right-2 z-10 flex max-w-sm items-center gap-2 rounded-md border bg-popover px-2.5 py-2 text-xs text-popover-foreground shadow-md">
+          <span>This terminal cached the previous theme.</span>
+          <Button
+            type="button"
+            size="xs"
+            disabled={themeRestartPending}
+            aria-label={`Restart ${terminalLabel} to apply ${resolvedTheme === "light" ? "Light" : "Dark"} theme`}
+            onClick={restartForTheme}
+          >
+            {themeRestartPending ? "Restarting…" : "Restart to apply"}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Dismiss terminal theme notice"
+            disabled={themeRestartPending}
+            onClick={() =>
+              setDismissedThemeNotice({
+                generation: terminalGeneration,
+                targetTheme: resolvedTheme,
+              })
+            }
+          >
+            <XIcon className="size-3.5" />
+          </Button>
+          {visibleThemeRestartError ? (
+            <span role="alert" className="text-destructive">
+              {visibleThemeRestartError}
+            </span>
+          ) : null}
         </div>
       ) : null}
     </div>

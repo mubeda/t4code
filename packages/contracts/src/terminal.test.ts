@@ -432,6 +432,25 @@ describe("TerminalSessionSnapshot", () => {
       }),
     ).toBe(true);
   });
+
+  it("accepts the optional Windows console launch theme", () => {
+    expect(
+      decodes(TerminalSessionSnapshot, {
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        cwd: "/tmp/project",
+        worktreePath: null,
+        status: "running",
+        pid: 1234,
+        history: "hello\n",
+        exitCode: null,
+        exitSignal: null,
+        consoleTheme: "light",
+        label: "Primary",
+        updatedAt: isoTimestamp,
+      }),
+    ).toBe(true);
+  });
 });
 
 describe("TerminalEvent", () => {

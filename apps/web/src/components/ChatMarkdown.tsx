@@ -827,6 +827,10 @@ export function resolveExternalLinkHost(href: string | undefined): string | null
   }
 }
 
+export function isHttpUrl(href: string | undefined): href is string {
+  return typeof href === "string" && /^https?:\/\//i.test(href);
+}
+
 const MarkdownLinkFavicon = memo(function MarkdownLinkFavicon({ host }: { host: string }) {
   const [failedHost, setFailedHost] = useState<string | null>(null);
   return (
@@ -904,6 +908,10 @@ function normalizeSanitizedFragmentId(id: string): string {
   return normalizedId;
 }
 
+function isModifiedOrNonPrimaryMarkdownClick(event: ReactMouseEvent<HTMLAnchorElement>): boolean {
+  return event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
+}
+
 function findMarkdownFragmentTarget(anchor: HTMLAnchorElement, href: string): HTMLElement | null {
   const decodedId = decodeMarkdownFragmentId(href);
   const normalizedId = normalizeSanitizedFragmentId(decodedId);
@@ -924,14 +932,7 @@ function findMarkdownFragmentTarget(anchor: HTMLAnchorElement, href: string): HT
 }
 
 function handleMarkdownFragmentClick(event: ReactMouseEvent<HTMLAnchorElement>, href: string) {
-  if (
-    event.defaultPrevented ||
-    event.button !== 0 ||
-    event.metaKey ||
-    event.ctrlKey ||
-    event.shiftKey ||
-    event.altKey
-  ) {
+  if (event.defaultPrevented || isModifiedOrNonPrimaryMarkdownClick(event)) {
     return;
   }
 
@@ -1380,6 +1381,8 @@ function ChatMarkdown({
         if (!fileLinkMeta) {
           const faviconHost = resolveExternalLinkHost(href);
           const isSameDocumentLink = href?.startsWith("#") ?? false;
+          const opensInPreview =
+            isHttpUrl(href) && Boolean(threadRef) && isPreviewSupportedInRuntime();
           const onClick = props.onClick;
           const canOpenInPreview = Boolean(threadRef) && isPreviewSupportedInRuntime();
           const link = (
@@ -1390,9 +1393,28 @@ function ChatMarkdown({
               rel={isSameDocumentLink ? undefined : "noopener noreferrer"}
               onClick={(event) => {
                 onClick?.(event);
+                if (event.defaultPrevented) return;
                 if (isSameDocumentLink && href) {
                   handleMarkdownFragmentClick(event, href);
+                  return;
                 }
+                if (!opensInPreview || !href || isModifiedOrNonPrimaryMarkdownClick(event)) return;
+                event.preventDefault();
+                void openExternalLinkInPreview(href)
+                  .then((result) => {
+                    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+                      reportMarkdownActionFailure(
+                        { operation: "open-link-in-preview", target: href },
+                        result.cause,
+                      );
+                    }
+                  })
+                  .catch((cause: unknown) => {
+                    reportMarkdownActionFailure(
+                      { operation: "open-link-in-preview", target: href },
+                      cause,
+                    );
+                  });
               }}
               onContextMenu={(event) => {
                 if (!canOpenInPreview || !href) return;

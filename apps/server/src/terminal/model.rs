@@ -2,6 +2,30 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+pub(crate) const WINDOWS_CONSOLE_THEME_ENV: &str = "T4CODE_WINDOWS_CONSOLE_THEME";
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalConsoleTheme {
+    Light,
+    Dark,
+}
+
+pub(crate) fn terminal_console_theme_from_env(
+    env: &BTreeMap<String, String>,
+) -> Option<TerminalConsoleTheme> {
+    let value = env.get(WINDOWS_CONSOLE_THEME_ENV).or_else(|| {
+        env.iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(WINDOWS_CONSOLE_THEME_ENV))
+            .map(|(_, value)| value)
+    });
+    match value.map(String::as_str) {
+        Some("light") => Some(TerminalConsoleTheme::Light),
+        Some("dark") => Some(TerminalConsoleTheme::Dark),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TerminalStatus {
@@ -106,6 +130,8 @@ pub struct TerminalSessionSnapshot {
     pub history: String,
     pub exit_code: Option<i32>,
     pub exit_signal: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub console_theme: Option<TerminalConsoleTheme>,
     pub label: String,
     pub updated_at: String,
     pub sequence: u64,
@@ -122,6 +148,8 @@ pub struct TerminalSummary {
     pub pid: Option<u32>,
     pub exit_code: Option<i32>,
     pub exit_signal: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub console_theme: Option<TerminalConsoleTheme>,
     pub has_running_subprocess: bool,
     pub label: String,
     pub updated_at: String,

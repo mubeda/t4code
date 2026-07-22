@@ -225,10 +225,12 @@ async fn fetch_claude_usage() -> Result<ProviderUsageSnapshot, ProviderUsageFetc
     let credentials_path = configured_directory
         .or_else(|| dirs::home_dir().map(|home| home.join(".claude")))
         .map(|directory| directory.join(".credentials.json"));
-    let mut stores = credentials_path
+    let stores = credentials_path
         .into_iter()
         .map(ClaudeCredentialStore::File)
         .collect::<Vec<_>>();
+    #[cfg(target_os = "macos")]
+    let mut stores = stores;
     #[cfg(target_os = "macos")]
     if uses_default_config {
         if let Some(account) = claude_keychain_account() {

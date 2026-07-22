@@ -5,6 +5,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 
+use super::model::{TerminalConsoleTheme, terminal_console_theme_from_env};
 use super::{
     PortablePtyBackend, PtyBackend, PtyExit, PtyProcess, PtySpawnInput, TerminalAttachInput,
     TerminalEvent, TerminalMetadataEvent, TerminalOpenInput, TerminalRestartInput,
@@ -135,6 +136,7 @@ struct Session {
     history: TerminalHistory,
     exit_code: Option<i32>,
     exit_signal: Option<i32>,
+    console_theme: Option<TerminalConsoleTheme>,
     label: String,
     has_running_subprocess: bool,
     child_command_label: Option<String>,
@@ -148,6 +150,19 @@ struct Session {
 
 type SessionKey = (String, String);
 type SharedSession = Arc<Mutex<Session>>;
+
+#[derive(Debug)]
+struct ClosedSessionNotification {
+    thread_id: String,
+    terminal_id: String,
+    sequence: u64,
+}
+
+#[derive(Debug, Default)]
+struct ClosedSessions {
+    report: ProcessCleanupReport,
+    notifications: Vec<ClosedSessionNotification>,
+}
 
 /// Owns a newly spawned PTY until a registered, supervised session takes responsibility for it.
 struct UncommittedPtyProcess {
@@ -315,6 +330,7 @@ impl Session {
             history: self.history.snapshot(),
             exit_code: self.exit_code,
             exit_signal: self.exit_signal,
+            console_theme: self.console_theme,
             label: self.display_label(),
             updated_at: self.updated_at.clone(),
             sequence: self.sequence,
@@ -331,6 +347,7 @@ impl Session {
             pid: self.pid,
             exit_code: self.exit_code,
             exit_signal: self.exit_signal,
+            console_theme: self.console_theme,
             has_running_subprocess: self.has_running_subprocess,
             label: self.display_label(),
             updated_at: self.updated_at.clone(),
@@ -439,11 +456,17 @@ impl TerminalManager {
         if self.inner.cancellation.is_cancelled() {
             return Err(TerminalError::Shutdown);
         }
-        let cleanup = self
+        let closed = self
             .close_sessions(&input.thread_id, Some(&input.terminal_id))
             .await;
-        log_terminal_cleanup("restart", &cleanup);
-        self.start(input, true, generation).await
+        log_terminal_cleanup("restart", &closed.report);
+        match self.start(input, true, generation).await {
+            Ok(snapshot) => Ok(snapshot),
+            Err(error) => {
+                self.publish_closed_sessions(&closed.notifications);
+                Err(error)
+            }
+        }
     }
 
     async fn start(
@@ -461,6 +484,7 @@ impl TerminalManager {
             return Err(invalidated_creation_error(&input));
         }
         let key = (input.thread_id.clone(), input.terminal_id.clone());
+        let console_theme = terminal_console_theme_from_env(&input.env);
         if let Some(existing) = self.inner.sessions.read().await.get(&key).cloned() {
             let (process, snapshot, needs_resize) = {
                 let session = existing.lock().await;
@@ -583,6 +607,7 @@ impl TerminalManager {
             history,
             exit_code: None,
             exit_signal: None,
+            console_theme,
             label,
             has_running_subprocess: false,
             child_command_label: None,
@@ -1020,16 +1045,13 @@ impl TerminalManager {
             .generations
             .invalidate_matching(thread_id, terminal_id);
         let _lifecycle = self.inner.lifecycle.lock().await;
-        let cleanup = self.close_sessions(thread_id, terminal_id).await;
-        log_terminal_cleanup("close", &cleanup);
+        let closed = self.close_sessions(thread_id, terminal_id).await;
+        self.publish_closed_sessions(&closed.notifications);
+        log_terminal_cleanup("close", &closed.report);
     }
 
-    async fn close_sessions(
-        &self,
-        thread_id: &str,
-        terminal_id: Option<&str>,
-    ) -> ProcessCleanupReport {
-        let mut report = ProcessCleanupReport::default();
+    async fn close_sessions(&self, thread_id: &str, terminal_id: Option<&str>) -> ClosedSessions {
+        let mut closed = ClosedSessions::default();
         let keys = {
             let sessions = self.inner.sessions.read().await;
             sessions
@@ -1074,8 +1096,8 @@ impl TerminalManager {
             };
             if let Some(process) = process {
                 match process.kill() {
-                    Ok(()) => report.record_success(),
-                    Err(error) => report.record_failure(format!(
+                    Ok(()) => closed.report.record_success(),
+                    Err(error) => closed.report.record_failure(format!(
                         "terminal {}/{} process {}: {error}",
                         key.0,
                         key.1,
@@ -1083,17 +1105,27 @@ impl TerminalManager {
                     )),
                 }
             }
-            let _ = self.inner.events.send(TerminalEvent::Closed {
-                thread_id: key.0.clone(),
-                terminal_id: key.1.clone(),
-                sequence,
-            });
-            let _ = self.inner.metadata.send(TerminalMetadataEvent::Remove {
+            closed.notifications.push(ClosedSessionNotification {
                 thread_id: key.0,
                 terminal_id: key.1,
+                sequence,
             });
         }
-        report
+        closed
+    }
+
+    fn publish_closed_sessions(&self, notifications: &[ClosedSessionNotification]) {
+        for notification in notifications {
+            let _ = self.inner.events.send(TerminalEvent::Closed {
+                thread_id: notification.thread_id.clone(),
+                terminal_id: notification.terminal_id.clone(),
+                sequence: notification.sequence,
+            });
+            let _ = self.inner.metadata.send(TerminalMetadataEvent::Remove {
+                thread_id: notification.thread_id.clone(),
+                terminal_id: notification.terminal_id.clone(),
+            });
+        }
     }
 
     pub async fn subscribe_metadata(&self) -> TerminalMetadataAttachment {
@@ -1136,7 +1168,9 @@ impl TerminalManager {
             .collect::<Vec<_>>();
         let mut report = ProcessCleanupReport::default();
         for (thread_id, terminal_id) in keys {
-            report.merge(self.close_sessions(&thread_id, Some(&terminal_id)).await);
+            let closed = self.close_sessions(&thread_id, Some(&terminal_id)).await;
+            self.publish_closed_sessions(&closed.notifications);
+            report.merge(closed.report);
         }
         report
     }
@@ -1184,12 +1218,19 @@ impl TerminalAttachment {
     pub async fn recv(&mut self) -> Option<TerminalEvent> {
         loop {
             match self.events.recv().await {
-                Ok(event)
-                    if event.belongs_to(&self.thread_id, &self.terminal_id)
-                        && event.sequence() > self.next_sequence =>
-                {
-                    self.next_sequence = event.sequence();
-                    return Some(event);
+                Ok(event) if event.belongs_to(&self.thread_id, &self.terminal_id) => {
+                    let sequence = event.sequence();
+                    // A restarted session owns a fresh sequence space. Its
+                    // authoritative reset must reach existing attachments even
+                    // when the prior process had already advanced past it.
+                    if matches!(event, TerminalEvent::Restarted { .. }) {
+                        self.next_sequence = sequence;
+                        return Some(event);
+                    }
+                    if sequence > self.next_sequence {
+                        self.next_sequence = sequence;
+                        return Some(event);
+                    }
                 }
                 Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => return None,
@@ -2207,6 +2248,67 @@ mod tests {
         assert!(!Arc::ptr_eq(&original_session, &restarted_session));
         assert_eq!(restarted_session.lock().await.history.line_limit(), 2);
         assert_eq!(backend.processes.lock().expect("processes lock").len(), 2);
+
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn console_theme_survives_attach_and_updates_on_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend::default());
+        let manager = TerminalManager::new(
+            backend,
+            TerminalManagerOptions {
+                subprocess_poll_interval: Duration::ZERO,
+                ..TerminalManagerOptions::default()
+            },
+        );
+        let mut input = TerminalOpenInput::new(
+            "thread-theme",
+            "term-theme",
+            root.path().to_path_buf(),
+            80,
+            24,
+        );
+        input.env.insert(
+            "T4CODE_WINDOWS_CONSOLE_THEME".to_owned(),
+            "light".to_owned(),
+        );
+
+        let opened = manager.open(input.clone()).await.unwrap();
+        assert_eq!(opened.console_theme, Some(TerminalConsoleTheme::Light));
+        let attached = manager
+            .attach(TerminalAttachInput::existing("thread-theme", "term-theme"))
+            .await
+            .unwrap();
+        assert_eq!(
+            attached.initial.console_theme,
+            Some(TerminalConsoleTheme::Light)
+        );
+        let metadata = manager.subscribe_metadata().await;
+        assert_eq!(metadata.initial.len(), 1);
+        assert_eq!(
+            metadata.initial[0].console_theme,
+            Some(TerminalConsoleTheme::Light)
+        );
+        let mut events = manager.subscribe_events();
+        let mut metadata_events = metadata.events;
+
+        input
+            .env
+            .insert("T4CODE_WINDOWS_CONSOLE_THEME".to_owned(), "dark".to_owned());
+        let restarted = manager.restart(input).await.unwrap();
+        assert_eq!(restarted.console_theme, Some(TerminalConsoleTheme::Dark));
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            TerminalEvent::Restarted { snapshot, .. }
+                if snapshot.console_theme == Some(TerminalConsoleTheme::Dark)
+        ));
+        assert!(matches!(
+            metadata_events.recv().await.unwrap(),
+            TerminalMetadataEvent::Upsert { terminal }
+                if terminal.console_theme == Some(TerminalConsoleTheme::Dark)
+        ));
 
         manager.shutdown().await;
     }

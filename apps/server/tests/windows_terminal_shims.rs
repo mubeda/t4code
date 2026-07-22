@@ -1,16 +1,32 @@
 #![cfg(windows)]
 
-use std::{collections::BTreeMap, io::Read, path::Path, time::Duration};
+use std::{
+    collections::BTreeMap,
+    io::Read,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use base64::Engine as _;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use t4code_server::terminal::{PortablePtyBackend, PtyBackend, PtySpawnInput};
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, HANDLE, WAIT_OBJECT_0},
+    Foundation::{
+        CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
+        WAIT_OBJECT_0,
+    },
+    System::Console::{
+        CONSOLE_SCREEN_BUFFER_INFOEX, GetConsoleScreenBufferInfoEx, GetStdHandle, STD_OUTPUT_HANDLE,
+    },
     System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
 };
 
 const OUTPUT_MARKER: &str = "T4CODE_NATIVE_PTY_OUTPUT";
+const CONSOLE_PALETTE_MARKER: &str = "T4CODE_CONSOLE_PALETTE";
+const CONSOLE_PALETTE_CHILD_ENV: &str = "T4CODE_TEST_CONSOLE_PALETTE_CHILD";
+const WINDOWS_CONSOLE_THEME_ENV: &str = "T4CODE_WINDOWS_CONSOLE_THEME";
+const TRUSTED_CMD_FIXTURE_ENV: &str = "T4CODE_TEST_TRUSTED_CMD_FIXTURE";
+const NATIVE_ARGV_MARKER: &str = "T4CODE_NATIVE_ARGV";
 
 struct OwnedHandle(HANDLE);
 
@@ -213,6 +229,357 @@ async fn portable_backend_captures_native_windows_terminal_output() {
         "captured output: {text:?}; exit={:?}",
         exit.borrow().clone()
     );
+}
+
+fn decode_color_ref(color_ref: u32) -> (u8, u8, u8) {
+    (
+        (color_ref & 0xff) as u8,
+        ((color_ref >> 8) & 0xff) as u8,
+        ((color_ref >> 16) & 0xff) as u8,
+    )
+}
+
+fn is_light((red, green, blue): (u8, u8, u8)) -> bool {
+    299 * u32::from(red) + 587 * u32::from(green) + 114 * u32::from(blue) >= 128_000
+}
+
+#[test]
+fn console_palette_fallback_child_fixture() {
+    let Ok(expected) = std::env::var(CONSOLE_PALETTE_CHILD_ENV) else {
+        return;
+    };
+
+    // Match Codex v0.144's OSC timeout before it falls back to the console buffer.
+    std::thread::sleep(Duration::from_millis(100));
+    let output = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+    if output.is_null() || output == INVALID_HANDLE_VALUE {
+        std::process::exit(91);
+    }
+    let mut info = unsafe { std::mem::zeroed::<CONSOLE_SCREEN_BUFFER_INFOEX>() };
+    info.cbSize = std::mem::size_of::<CONSOLE_SCREEN_BUFFER_INFOEX>() as u32;
+    if unsafe { GetConsoleScreenBufferInfoEx(output, &mut info) } == 0 {
+        std::process::exit(91);
+    }
+
+    let foreground_index = usize::from(info.wAttributes & 0x0f);
+    let background_index = usize::from((info.wAttributes >> 4) & 0x0f);
+    let foreground = decode_color_ref(info.ColorTable[foreground_index]);
+    let background = decode_color_ref(info.ColorTable[background_index]);
+    let palette_matches = match expected.as_str() {
+        "light" => !is_light(foreground) && is_light(background),
+        "dark" => is_light(foreground) && !is_light(background),
+        "report" => true,
+        _ => false,
+    };
+    let cwd_matches = std::env::var("T4CODE_TEST_EXPECTED_CWD").map_or(true, |cwd| {
+        Path::new(&cwd) == std::env::current_dir().unwrap()
+    });
+    let env_matches =
+        std::env::var("T4CODE_TEST_SENTINEL_ENV").map_or(true, |value| value == "env value");
+    let marker_stripped = std::env::var_os(WINDOWS_CONSOLE_THEME_ENV).is_none();
+    if !(palette_matches && cwd_matches && env_matches && marker_stripped) {
+        std::process::exit(92);
+    }
+
+    println!(
+        "{CONSOLE_PALETTE_MARKER}:{expected}:fg-index={foreground_index}:bg-index={background_index}:fg={foreground:?}:bg={background:?}"
+    );
+}
+
+#[test]
+fn trusted_cmd_path_child_fixture() {
+    let Ok(expected) = std::env::var(TRUSTED_CMD_FIXTURE_ENV) else {
+        return;
+    };
+    let executable = std::env::current_exe().unwrap();
+    let process = PortablePtyBackend
+        .spawn(&PtySpawnInput {
+            executable: executable.to_string_lossy().into_owned(),
+            args: vec![
+                "console_palette_fallback_child_fixture".to_owned(),
+                "--exact".to_owned(),
+                "--nocapture".to_owned(),
+            ],
+            cwd: executable.parent().unwrap().to_path_buf(),
+            cols: 80,
+            rows: 24,
+            env: BTreeMap::from([
+                (CONSOLE_PALETTE_CHILD_ENV.to_owned(), expected.clone()),
+                (WINDOWS_CONSOLE_THEME_ENV.to_owned(), expected.clone()),
+            ]),
+        })
+        .unwrap();
+    let mut output = process.subscribe_output();
+    let mut exit = process.subscribe_exit();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let text = runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let mut text = String::new();
+            while !text.contains(CONSOLE_PALETTE_MARKER) && exit.borrow().is_none() {
+                tokio::select! {
+                    received = output.recv() => text.push_str(&received.unwrap()),
+                    changed = exit.changed() => { changed.unwrap(); }
+                }
+            }
+            text
+        })
+        .await
+        .unwrap()
+    });
+    assert!(
+        text.contains(&format!("{CONSOLE_PALETTE_MARKER}:{expected}:")),
+        "output={text:?}, exit={:?}",
+        exit.borrow().clone()
+    );
+}
+
+#[test]
+fn windows_theme_initializer_ignores_poisoned_path_and_working_directory() {
+    let directory = tempfile::tempdir().unwrap();
+    let fake_cmd = directory.path().join("cmd.exe");
+    let hostile_executable = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+        .join("System32")
+        .join("where.exe");
+    std::fs::copy(hostile_executable, &fake_cmd).unwrap();
+    let fake_output = std::process::Command::new(&fake_cmd)
+        .args(["/d", "/c", "color", "F0"])
+        .output()
+        .unwrap();
+    assert!(
+        !fake_output.status.success(),
+        "the poisoned cmd fixture must fail if it is ever selected"
+    );
+
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["trusted_cmd_path_child_fixture", "--exact", "--nocapture"])
+        .current_dir(directory.path())
+        .env("PATH", directory.path())
+        .env("PATHEXT", ".EXE")
+        .env(TRUSTED_CMD_FIXTURE_ENV, "light")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "fixture selected the fake cmd.exe; status={:?}, stdout={:?}, stderr={:?}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn palette_observation(output: &str) -> &str {
+    let start = output
+        .find(CONSOLE_PALETTE_MARKER)
+        .unwrap_or_else(|| panic!("palette marker missing from {output:?}"));
+    let observation = &output[start..];
+    let end = observation
+        .find(|character| matches!(character, '\r' | '\n'))
+        .unwrap_or(observation.len());
+    &observation[..end]
+}
+
+fn raw_conpty_palette_observation() -> String {
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let output = std::thread::spawn(move || {
+        let mut output = String::new();
+        reader.read_to_string(&mut output).unwrap();
+        output
+    });
+    let mut probe = CommandBuilder::new(std::env::current_exe().unwrap());
+    probe.args([
+        "console_palette_fallback_child_fixture",
+        "--exact",
+        "--nocapture",
+    ]);
+    probe.env(CONSOLE_PALETTE_CHILD_ENV, "report");
+    let mut child = pair.slave.spawn_command(probe).unwrap();
+    drop(pair.slave);
+    assert!(child.wait().unwrap().success());
+    drop(pair.master);
+    let output = output.join().unwrap();
+    palette_observation(&output).to_owned()
+}
+
+#[tokio::test]
+async fn portable_backend_without_theme_marker_keeps_the_fresh_conpty_palette() {
+    let baseline = raw_conpty_palette_observation();
+    let executable = std::env::current_exe().unwrap();
+    let process = PortablePtyBackend
+        .spawn(&PtySpawnInput {
+            executable: executable.to_string_lossy().into_owned(),
+            args: vec![
+                "console_palette_fallback_child_fixture".to_owned(),
+                "--exact".to_owned(),
+                "--nocapture".to_owned(),
+            ],
+            cwd: executable.parent().unwrap().to_path_buf(),
+            cols: 80,
+            rows: 24,
+            env: BTreeMap::from([(CONSOLE_PALETTE_CHILD_ENV.to_owned(), "report".to_owned())]),
+        })
+        .unwrap();
+    let mut output = process.subscribe_output();
+    let mut exit = process.subscribe_exit();
+    let text = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut text = String::new();
+        while !text.contains(CONSOLE_PALETTE_MARKER) && exit.borrow().is_none() {
+            tokio::select! {
+                received = output.recv() => text.push_str(&received.unwrap()),
+                changed = exit.changed() => { changed.unwrap(); }
+            }
+        }
+        text
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(palette_observation(&text), baseline);
+}
+
+#[tokio::test]
+async fn marked_backend_preserves_native_root_argv_metacharacters() {
+    let directory = tempfile::tempdir().unwrap();
+    let script = directory.path().join("inspect argv with spaces !.ps1");
+    std::fs::write(
+        &script,
+        format!(
+            "Write-Output (\"{NATIVE_ARGV_MARKER}:\" + (($args | ForEach-Object {{ \"[$_]\" }}) -join \"|\"))\n"
+        ),
+    )
+    .unwrap();
+    let expected = format!("{NATIVE_ARGV_MARKER}:[value with spaces]|[%PATH%]|[!literal!]");
+    let powershell = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+        .join("System32")
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe");
+    assert!(powershell.is_file(), "powershell={powershell:?}");
+
+    assert_shim_output(
+        &powershell,
+        &[
+            "-NoLogo".to_owned(),
+            "-NoProfile".to_owned(),
+            "-NonInteractive".to_owned(),
+            "-ExecutionPolicy".to_owned(),
+            "Bypass".to_owned(),
+            "-File".to_owned(),
+            script.to_string_lossy().into_owned(),
+            "value with spaces".to_owned(),
+            "%PATH%".to_owned(),
+            "!literal!".to_owned(),
+        ],
+        BTreeMap::from([(WINDOWS_CONSOLE_THEME_ENV.to_owned(), "dark".to_owned())]),
+        &expected,
+    )
+    .await;
+}
+
+#[test]
+fn same_conpty_slave_retains_console_theme_for_codex_fallback() {
+    for (expected, color_code) in [("light", "F0"), ("dark", "0F")] {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let output = std::thread::spawn(move || {
+            let mut output = String::new();
+            reader.read_to_string(&mut output).unwrap();
+            output
+        });
+
+        let mut initializer = CommandBuilder::new("cmd.exe");
+        initializer.raw_windows_args(format!("/d /c color {color_code}"));
+        let mut initializer = pair.slave.spawn_command(initializer).unwrap();
+        assert!(initializer.wait().unwrap().success());
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut probe = CommandBuilder::new(std::env::current_exe().unwrap());
+        probe.args([
+            "console_palette_fallback_child_fixture",
+            "--exact",
+            "--nocapture",
+        ]);
+        probe.cwd(directory.path());
+        probe.env(CONSOLE_PALETTE_CHILD_ENV, expected);
+        let mut child = pair.slave.spawn_command(probe).unwrap();
+        drop(pair.slave);
+        let status = child.wait().unwrap();
+        drop(pair.master);
+        let output = output.join().unwrap();
+        assert!(
+            status.success() && output.contains(&format!("{CONSOLE_PALETTE_MARKER}:{expected}:")),
+            "expected={expected}, status={status:?}, output={output:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn portable_backend_initializes_codex_console_palette_before_root_spawn() {
+    for expected in ["light", "dark"] {
+        let directory = tempfile::tempdir().unwrap();
+        let cwd = directory.path().join("codex cwd with spaces ! literal");
+        std::fs::create_dir(&cwd).unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let process = PortablePtyBackend
+            .spawn(&PtySpawnInput {
+                executable: executable.to_string_lossy().into_owned(),
+                args: vec![
+                    "console_palette_fallback_child_fixture".to_owned(),
+                    "--exact".to_owned(),
+                    "--nocapture".to_owned(),
+                ],
+                cwd: cwd.clone(),
+                cols: 80,
+                rows: 24,
+                env: BTreeMap::from([
+                    (CONSOLE_PALETTE_CHILD_ENV.to_owned(), expected.to_owned()),
+                    (WINDOWS_CONSOLE_THEME_ENV.to_owned(), expected.to_owned()),
+                    (
+                        "T4CODE_TEST_EXPECTED_CWD".to_owned(),
+                        cwd.to_string_lossy().into_owned(),
+                    ),
+                    (
+                        "T4CODE_TEST_SENTINEL_ENV".to_owned(),
+                        "env value".to_owned(),
+                    ),
+                ]),
+            })
+            .unwrap();
+        let mut output = process.subscribe_output();
+        let mut exit = process.subscribe_exit();
+        let text = tokio::time::timeout(Duration::from_secs(10), async {
+            let mut text = String::new();
+            while !text.contains(CONSOLE_PALETTE_MARKER) && exit.borrow().is_none() {
+                tokio::select! {
+                    received = output.recv() => text.push_str(&received.unwrap()),
+                    changed = exit.changed() => { changed.unwrap(); }
+                }
+            }
+            text
+        })
+        .await
+        .unwrap();
+        assert!(
+            text.contains(&format!("{CONSOLE_PALETTE_MARKER}:{expected}:")),
+            "expected={expected}, output={text:?}, exit={:?}",
+            exit.borrow().clone()
+        );
+    }
 }
 
 #[tokio::test]
