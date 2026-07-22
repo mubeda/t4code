@@ -23,6 +23,8 @@ pub const MIN_MANUAL_REFRESH_MS: i64 = 30_000;
 pub const STALE_THRESHOLD_MS: i64 = 30 * 60_000;
 const USAGE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
+const CLAUDE_OAUTH_TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
+const CLAUDE_OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 #[cfg(target_os = "macos")]
 const CLAUDE_KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 
@@ -79,6 +81,15 @@ impl ProviderUsageFetchError {
             message: message.into(),
         }
     }
+}
+
+#[derive(Clone, Debug)]
+enum ClaudeCredentialStore {
+    File(PathBuf),
+    #[cfg(target_os = "macos")]
+    Keychain {
+        account: String,
+    },
 }
 
 type FetchFuture =
@@ -209,36 +220,92 @@ fn codex_fetcher() -> ProviderUsageFetcher {
 
 async fn fetch_claude_usage() -> Result<ProviderUsageSnapshot, ProviderUsageFetchError> {
     let now = OffsetDateTime::now_utc();
-    let uses_default_config = std::env::var_os("CLAUDE_CONFIG_DIR").is_none();
-    let credentials_path = std::env::var_os("CLAUDE_CONFIG_DIR")
-        .map(PathBuf::from)
+    let configured_directory = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from);
+    let uses_default_config = configured_directory.is_none();
+    let credentials_path = configured_directory
         .or_else(|| dirs::home_dir().map(|home| home.join(".claude")))
         .map(|directory| directory.join(".credentials.json"));
-    let credentials_file = match credentials_path {
-        Some(path) => tokio::fs::read_to_string(path).await.ok(),
-        None => None,
-    };
+    let mut stores = credentials_path
+        .into_iter()
+        .map(ClaudeCredentialStore::File)
+        .collect::<Vec<_>>();
     #[cfg(target_os = "macos")]
-    let keychain_credentials = if uses_default_config {
-        read_claude_keychain_credentials().await
-    } else {
-        None
-    };
+    if uses_default_config {
+        if let Some(account) = claude_keychain_account() {
+            stores.push(ClaudeCredentialStore::Keychain { account });
+        }
+    }
     #[cfg(not(target_os = "macos"))]
-    let keychain_credentials: Option<String> = {
-        let _ = uses_default_config;
-        None
-    };
-    let token =
-        select_claude_oauth_token(credentials_file.as_deref(), keychain_credentials.as_deref());
-    let Some(token) = token else {
-        return Ok(unavailable_snapshot(
-            ProviderUsageProvider::Claude,
+    let _ = uses_default_config;
+
+    for store in stores {
+        let credentials = match store.load().await {
+            Ok(Some(credentials)) => credentials,
+            Ok(None) | Err(_) => continue,
+        };
+        if !has_usable_claude_oauth_credentials(&credentials, now) {
+            continue;
+        }
+        return fetch_claude_usage_from_credentials(
+            store,
+            credentials,
+            CLAUDE_USAGE_URL,
+            CLAUDE_OAUTH_TOKEN_URL,
             now,
-            "Claude OAuth credentials were not found.",
-        ));
-    };
-    request_claude_usage(CLAUDE_USAGE_URL, &token, now, USAGE_TIMEOUT).await
+            USAGE_TIMEOUT,
+        )
+        .await;
+    }
+
+    Ok(unavailable_snapshot(
+        ProviderUsageProvider::Claude,
+        now,
+        "Claude OAuth credentials were not found.",
+    ))
+}
+
+#[cfg(test)]
+async fn fetch_claude_usage_from_store(
+    store: ClaudeCredentialStore,
+    usage_url: &str,
+    oauth_token_url: &str,
+    now: OffsetDateTime,
+    timeout: Duration,
+) -> Result<ProviderUsageSnapshot, ProviderUsageFetchError> {
+    let credentials = store
+        .load()
+        .await?
+        .ok_or_else(|| ProviderUsageFetchError::new("Claude OAuth credentials were not found."))?;
+    fetch_claude_usage_from_credentials(
+        store,
+        credentials,
+        usage_url,
+        oauth_token_url,
+        now,
+        timeout,
+    )
+    .await
+}
+
+async fn fetch_claude_usage_from_credentials(
+    store: ClaudeCredentialStore,
+    mut credentials: Value,
+    usage_url: &str,
+    oauth_token_url: &str,
+    now: OffsetDateTime,
+    timeout: Duration,
+) -> Result<ProviderUsageSnapshot, ProviderUsageFetchError> {
+    let mut token = claude_oauth_access_token(&credentials, now);
+    if token.is_none() {
+        credentials =
+            refresh_claude_oauth_credentials(oauth_token_url, credentials, now, timeout).await?;
+        store.persist(&credentials).await?;
+        token = claude_oauth_access_token(&credentials, now);
+    }
+    let token = token.ok_or_else(|| {
+        ProviderUsageFetchError::new("Claude OAuth refresh returned unusable credentials.")
+    })?;
+    request_claude_usage(usage_url, &token, now, timeout).await
 }
 
 async fn request_claude_usage(
@@ -272,23 +339,208 @@ async fn request_claude_usage(
     Ok(map_claude_usage(&payload, now))
 }
 
+#[cfg(test)]
 fn select_claude_oauth_token(
     credentials_file: Option<&str>,
     keychain_credentials: Option<&str>,
 ) -> Option<String> {
+    let now = OffsetDateTime::now_utc();
     [credentials_file, keychain_credentials]
         .into_iter()
         .flatten()
-        .find_map(|raw| {
-            serde_json::from_str::<Value>(raw).ok().and_then(|value| {
-                value
-                    .pointer("/claudeAiOauth/accessToken")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(ToOwned::to_owned)
-            })
+        .filter_map(|raw| serde_json::from_str::<Value>(raw).ok())
+        .find_map(|credentials| claude_oauth_access_token(&credentials, now))
+}
+
+fn claude_oauth_access_token(credentials: &Value, now: OffsetDateTime) -> Option<String> {
+    let refresh_before_ms = now.unix_timestamp_nanos() / 1_000_000 + 30_000;
+    if credentials
+        .pointer("/claudeAiOauth/expiresAt")
+        .and_then(Value::as_i64)
+        .is_some_and(|expires_at| i128::from(expires_at) <= refresh_before_ms)
+    {
+        return None;
+    }
+    credentials
+        .pointer("/claudeAiOauth/accessToken")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn has_usable_claude_oauth_credentials(credentials: &Value, now: OffsetDateTime) -> bool {
+    claude_oauth_access_token(credentials, now).is_some()
+        || credentials
+            .pointer("/claudeAiOauth/refreshToken")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+}
+
+impl ClaudeCredentialStore {
+    async fn load(&self) -> Result<Option<Value>, ProviderUsageFetchError> {
+        let raw = match self {
+            Self::File(path) => match tokio::fs::read_to_string(path).await {
+                Ok(raw) => Some(raw),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(ProviderUsageFetchError::new(error.to_string())),
+            },
+            #[cfg(target_os = "macos")]
+            Self::Keychain { .. } => read_claude_keychain_credentials().await,
+        };
+        raw.map(|raw| {
+            serde_json::from_str(&raw)
+                .map_err(|error| ProviderUsageFetchError::new(error.to_string()))
         })
+        .transpose()
+    }
+
+    async fn persist(&self, credentials: &Value) -> Result<(), ProviderUsageFetchError> {
+        let encoded = serde_json::to_vec(credentials)
+            .map_err(|error| ProviderUsageFetchError::new(error.to_string()))?;
+        match self {
+            Self::File(path) => tokio::fs::write(path, encoded)
+                .await
+                .map_err(|error| ProviderUsageFetchError::new(error.to_string())),
+            #[cfg(target_os = "macos")]
+            Self::Keychain { account } => {
+                let account = account.clone();
+                tokio::task::spawn_blocking(move || {
+                    security_framework::passwords::set_generic_password(
+                        CLAUDE_KEYCHAIN_SERVICE,
+                        &account,
+                        &encoded,
+                    )
+                    .map_err(|error| ProviderUsageFetchError::new(error.to_string()))
+                })
+                .await
+                .map_err(|error| ProviderUsageFetchError::new(error.to_string()))?
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn claude_keychain_account() -> Option<String> {
+    std::env::var("USER")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            dirs::home_dir()?
+                .file_name()?
+                .to_str()
+                .map(ToOwned::to_owned)
+        })
+}
+
+async fn refresh_claude_oauth_credentials(
+    url: &str,
+    mut credentials: Value,
+    now: OffsetDateTime,
+    timeout: Duration,
+) -> Result<Value, ProviderUsageFetchError> {
+    let oauth = credentials
+        .pointer("/claudeAiOauth")
+        .and_then(Value::as_object)
+        .ok_or_else(|| ProviderUsageFetchError::new("Claude OAuth credentials are malformed."))?;
+    let refresh_token = oauth
+        .get("refreshToken")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ProviderUsageFetchError::new("Claude OAuth refresh token was not found."))?
+        .to_owned();
+    let scopes = oauth
+        .get("scopes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|error| ProviderUsageFetchError::new(error.to_string()))?;
+    let response = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .json(&json!({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": CLAUDE_OAUTH_CLIENT_ID,
+            "scope": scopes,
+        }))
+        .send()
+        .await
+        .map_err(|error| ProviderUsageFetchError::new(error.to_string()))?;
+    if !response.status().is_success() {
+        return Err(ProviderUsageFetchError::new(format!(
+            "Claude OAuth refresh failed with HTTP {}.",
+            response.status().as_u16()
+        )));
+    }
+    let payload = response
+        .json::<Value>()
+        .await
+        .map_err(|error| ProviderUsageFetchError::new(error.to_string()))?;
+    let access_token = payload
+        .get("access_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            ProviderUsageFetchError::new("Claude OAuth refresh returned no access token.")
+        })?;
+    let expires_in = payload
+        .get("expires_in")
+        .and_then(Value::as_i64)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| {
+            ProviderUsageFetchError::new("Claude OAuth refresh returned no valid expiry.")
+        })?;
+    let now_ms = i64::try_from(now.unix_timestamp_nanos() / 1_000_000)
+        .map_err(|error| ProviderUsageFetchError::new(error.to_string()))?;
+    let expires_at = now_ms
+        .checked_add(expires_in.saturating_mul(1_000))
+        .ok_or_else(|| ProviderUsageFetchError::new("Claude OAuth expiry overflowed."))?;
+    let oauth = credentials
+        .pointer_mut("/claudeAiOauth")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| ProviderUsageFetchError::new("Claude OAuth credentials are malformed."))?;
+    oauth.insert("accessToken".to_owned(), json!(access_token));
+    oauth.insert("expiresAt".to_owned(), json!(expires_at));
+    if let Some(rotated_refresh_token) = payload
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        oauth.insert("refreshToken".to_owned(), json!(rotated_refresh_token));
+    }
+    if let Some(refresh_expires_in) = payload
+        .get("refresh_token_expires_in")
+        .and_then(Value::as_i64)
+        .filter(|value| *value > 0)
+    {
+        let refresh_expires_at = now_ms
+            .checked_add(refresh_expires_in.saturating_mul(1_000))
+            .ok_or_else(|| {
+                ProviderUsageFetchError::new("Claude OAuth refresh expiry overflowed.")
+            })?;
+        oauth.insert(
+            "refreshTokenExpiresAt".to_owned(),
+            json!(refresh_expires_at),
+        );
+    }
+    if let Some(scope) = payload.get("scope").and_then(Value::as_str) {
+        oauth.insert(
+            "scopes".to_owned(),
+            Value::Array(scope.split_whitespace().map(|value| json!(value)).collect()),
+        );
+    }
+    Ok(credentials)
 }
 
 #[cfg(target_os = "macos")]
@@ -681,6 +933,172 @@ mod tests {
         );
 
         assert_eq!(token.as_deref(), Some("keychain-oauth-token"));
+    }
+
+    #[test]
+    fn claude_oauth_token_rejects_expired_access_token() {
+        let token = select_claude_oauth_token(
+            None,
+            Some(
+                r#"{"claudeAiOauth":{"accessToken":"expired-token","refreshToken":"refresh-token","expiresAt":1}}"#,
+            ),
+        );
+
+        assert_eq!(token, None);
+    }
+
+    #[tokio::test]
+    async fn claude_oauth_refresh_rotates_credentials_without_losing_keychain_data() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            let body = request.split("\r\n\r\n").nth(1).unwrap();
+            let body: Value = serde_json::from_str(body).unwrap();
+            assert_eq!(body["grant_type"], "refresh_token");
+            assert_eq!(body["refresh_token"], "old-refresh-token");
+            assert_eq!(body["client_id"], CLAUDE_OAUTH_CLIENT_ID);
+            assert_eq!(
+                body["scope"],
+                "user:profile user:inference user:sessions:claude_code"
+            );
+            let response_body = json!({
+                "access_token": "new-access-token",
+                "refresh_token": "new-refresh-token",
+                "expires_in": 3600,
+                "refresh_token_expires_in": 7200,
+                "scope": "user:profile user:inference user:sessions:claude_code"
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{response_body}",
+                response_body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        let credentials = json!({
+            "claudeAiOauth": {
+                "accessToken": "old-access-token",
+                "refreshToken": "old-refresh-token",
+                "expiresAt": 1,
+                "scopes": ["user:profile", "user:inference", "user:sessions:claude_code"],
+                "subscriptionType": "team"
+            },
+            "mcpOAuth": {"preserved": true}
+        });
+
+        let refreshed = refresh_claude_oauth_credentials(
+            &format!("http://{address}/v1/oauth/token"),
+            credentials,
+            now,
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        server.await.unwrap();
+
+        assert_eq!(
+            refreshed.pointer("/claudeAiOauth/accessToken"),
+            Some(&json!("new-access-token"))
+        );
+        assert_eq!(
+            refreshed.pointer("/claudeAiOauth/refreshToken"),
+            Some(&json!("new-refresh-token"))
+        );
+        assert_eq!(
+            refreshed.pointer("/claudeAiOauth/expiresAt"),
+            Some(&json!(1_800_003_600_000_i64))
+        );
+        assert_eq!(
+            refreshed.pointer("/claudeAiOauth/refreshTokenExpiresAt"),
+            Some(&json!(1_800_007_200_000_i64))
+        );
+        assert_eq!(refreshed.pointer("/mcpOAuth/preserved"), Some(&json!(true)));
+    }
+
+    #[tokio::test]
+    async fn expired_claude_credentials_are_refreshed_persisted_and_used_for_usage() {
+        let temporary = tempfile::tempdir().unwrap();
+        let credentials_path = temporary.path().join(".credentials.json");
+        std::fs::write(
+            &credentials_path,
+            json!({
+                "claudeAiOauth": {
+                    "accessToken": "expired-access-token",
+                    "refreshToken": "old-refresh-token",
+                    "expiresAt": 1,
+                    "scopes": ["user:profile", "user:inference"]
+                },
+                "mcpOAuth": {"preserved": true}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let oauth_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let oauth_address = oauth_listener.local_addr().unwrap();
+        let oauth_server = tokio::spawn(async move {
+            let (mut stream, _) = oauth_listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 4096];
+            let _ = stream.read(&mut request).await.unwrap();
+            let body = json!({
+                "access_token": "fresh-access-token",
+                "refresh_token": "fresh-refresh-token",
+                "expires_in": 3600
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let usage_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let usage_address = usage_listener.local_addr().unwrap();
+        let usage_server = tokio::spawn(async move {
+            let (mut stream, _) = usage_listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+            assert!(request.contains("authorization: bearer fresh-access-token"));
+            let body = r#"{"five_hour":{"utilization":45},"seven_day":{"utilization":92}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+
+        let snapshot = fetch_claude_usage_from_store(
+            ClaudeCredentialStore::File(credentials_path.clone()),
+            &format!("http://{usage_address}/api/oauth/usage"),
+            &format!("http://{oauth_address}/v1/oauth/token"),
+            now,
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        oauth_server.await.unwrap();
+        usage_server.await.unwrap();
+
+        assert_eq!(snapshot.status, ProviderUsageStatus::Ok);
+        assert_eq!(snapshot.session.unwrap().used_percent, 45);
+        assert_eq!(snapshot.weekly.unwrap().used_percent, 92);
+        let persisted: Value =
+            serde_json::from_str(&std::fs::read_to_string(credentials_path).unwrap()).unwrap();
+        assert_eq!(
+            persisted.pointer("/claudeAiOauth/accessToken"),
+            Some(&json!("fresh-access-token"))
+        );
+        assert_eq!(
+            persisted.pointer("/claudeAiOauth/refreshToken"),
+            Some(&json!("fresh-refresh-token"))
+        );
+        assert_eq!(persisted.pointer("/mcpOAuth/preserved"), Some(&json!(true)));
     }
 
     #[tokio::test]
