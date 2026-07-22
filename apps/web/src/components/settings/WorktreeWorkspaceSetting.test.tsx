@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import type { ReactNode } from "react";
+import { type ReactNode, useSyncExternalStore } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -14,6 +14,7 @@ const harness = vi.hoisted(() => ({
   environments: [] as EnvironmentPresentation[],
   primaryEnvironment: null as EnvironmentPresentation | null,
   settingsByEnvironment: new Map<string, UnifiedSettings>(),
+  settingsListeners: new Set<() => void>(),
   updateByEnvironment: new Map<string, ReturnType<typeof vi.fn>>(),
   rows: [] as Props[],
   selects: [] as Props[],
@@ -24,6 +25,7 @@ const harness = vi.hoisted(() => ({
     this.environments = [];
     this.primaryEnvironment = null;
     this.settingsByEnvironment.clear();
+    this.settingsListeners.clear();
     this.updateByEnvironment.clear();
     this.rows.length = 0;
     this.selects.length = 0;
@@ -40,7 +42,14 @@ vi.mock("../../state/environments", () => ({
 
 vi.mock("../../hooks/useSettings", () => ({
   useEnvironmentSettings: (environmentId: string) =>
-    harness.settingsByEnvironment.get(environmentId) ?? DEFAULT_UNIFIED_SETTINGS,
+    useSyncExternalStore(
+      (listener) => {
+        harness.settingsListeners.add(listener);
+        return () => harness.settingsListeners.delete(listener);
+      },
+      () => harness.settingsByEnvironment.get(environmentId) ?? DEFAULT_UNIFIED_SETTINGS,
+      () => harness.settingsByEnvironment.get(environmentId) ?? DEFAULT_UNIFIED_SETTINGS,
+    ),
   useUpdateEnvironmentSettings: (environmentId: string) => {
     let update = harness.updateByEnvironment.get(environmentId);
     if (!update) {
@@ -151,7 +160,10 @@ async function renderSetting(): Promise<MountedSetting> {
 }
 
 async function rerender(setting: MountedSetting): Promise<void> {
-  await act(async () => setting.root.render(<WorktreeWorkspaceSetting />));
+  await act(async () => {
+    for (const listener of harness.settingsListeners) listener();
+    setting.root.render(<WorktreeWorkspaceSetting />);
+  });
 }
 
 function latest<T>(items: T[]): T {

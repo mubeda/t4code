@@ -230,6 +230,7 @@ async fn normalizes_and_optionally_creates_project_workspace_roots() {
 async fn bootstrap_uses_the_injected_worktree_workspace() {
     let source = initialize_repository();
     let workspace = tempfile::tempdir().expect("worktree workspace");
+    let canonical_workspace = workspace.path().canonicalize().expect("canonical workspace");
     let repository = Arc::new(GitRepository::with_worktree_settings(Arc::new(
         StaticWorktreeBaseDirectory(Some(workspace.path().to_path_buf())),
     )));
@@ -278,7 +279,7 @@ async fn bootstrap_uses_the_injected_worktree_workspace() {
         .expect("thread");
     assert!(
         Path::new(thread.worktree_path.as_deref().expect("worktree path"))
-            .starts_with(workspace.path())
+            .starts_with(&canonical_workspace)
     );
 
     let created_path = PathBuf::from(thread.worktree_path.expect("worktree path"));

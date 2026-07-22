@@ -464,6 +464,7 @@ async fn configured_workspace_owns_default_and_occupied_branch_destinations() {
     let repo = init_repo();
     commit_file(repo.path(), "README.md", "hello\n", "initial");
     let workspace = tempfile::tempdir().expect("workspace");
+    let canonical_workspace = fs::canonicalize(workspace.path()).expect("canonical workspace");
     let repository = repository_with_workspace(Some(workspace.path().to_path_buf()));
     let cancellation = cancellation();
 
@@ -482,12 +483,12 @@ async fn configured_workspace_owns_default_and_occupied_branch_destinations() {
         .expect("configured worktree");
 
     assert_eq!(first.worktree.ref_name, "main-2");
-    assert!(Path::new(&first.worktree.path).starts_with(workspace.path()));
+    assert!(Path::new(&first.worktree.path).starts_with(&canonical_workspace));
     assert_eq!(
         Path::new(&first.worktree.path)
             .parent()
             .and_then(Path::parent),
-        Some(workspace.path())
+        Some(canonical_workspace.as_path())
     );
 
     repository
@@ -776,6 +777,7 @@ async fn missing_registered_worktree_still_owns_its_local_branch() {
             "feature/stale",
         ],
     );
+    let canonical_stale_path = fs::canonicalize(&stale_path).expect("canonical stale worktree");
     fs::remove_dir_all(&stale_path).expect("simulate a missing registered worktree");
 
     let repository = GitRepository::default();
@@ -793,7 +795,7 @@ async fn missing_registered_worktree_still_owns_its_local_branch() {
             .worktree_path
             .as_deref()
             .map(|path| path.replace('\\', "/")),
-        Some(stale_path.to_string_lossy().replace('\\', "/"))
+        Some(canonical_stale_path.to_string_lossy().replace('\\', "/"))
     );
 
     let replacement_parent = tempfile::tempdir().expect("replacement worktree parent");
