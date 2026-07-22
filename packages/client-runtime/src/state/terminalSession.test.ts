@@ -77,17 +77,20 @@ describe("terminal session metadata", () => {
   );
 
   it("prefers attach metadata over a stale summary after attach has emitted", () => {
+    const staleSummary = { ...summary(), consoleTheme: "dark" as const };
     const attached: TerminalMetadataSnapshot = {
       status: "error",
       error: "Terminal disconnected.",
+      consoleTheme: "light",
       generation: 1,
       revision: 2,
     };
 
-    expect(combineTerminalSessionState(summary(), attached)).toEqual({
-      summary: summary(),
+    expect(combineTerminalSessionState(staleSummary, attached)).toEqual({
+      summary: staleSummary,
       status: "error",
       error: "Terminal disconnected.",
+      consoleTheme: "light",
       hasRunningSubprocess: false,
       updatedAt: BASE_SNAPSHOT.updatedAt,
       generation: 1,
@@ -106,6 +109,7 @@ describe("terminal session metadata", () => {
     const state = combineTerminalSessionState(null, {
       status: "running",
       error: null,
+      consoleTheme: null,
       generation: 3,
       revision: 9,
     });
@@ -114,6 +118,7 @@ describe("terminal session metadata", () => {
       summary: null,
       status: "running",
       error: null,
+      consoleTheme: null,
       hasRunningSubprocess: false,
       updatedAt: null,
       generation: 3,

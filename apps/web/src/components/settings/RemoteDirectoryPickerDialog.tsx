@@ -1,12 +1,18 @@
 import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t4code/client-runtime/state/runtime";
+import type { EnvironmentId } from "@t4code/contracts";
+import { joinHostPath } from "@t4code/shared/path";
+import {
   ArrowUpIcon,
   ChevronRightIcon,
   FolderIcon,
+  FolderPlusIcon,
   HardDriveIcon,
   LoaderCircleIcon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
-import type { EnvironmentId } from "@t4code/contracts";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "../ui/button";
 import {
@@ -18,8 +24,11 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { DraftInput } from "../ui/draft-input";
+import { Input } from "../ui/input";
 import { filesystemEnvironment } from "~/state/filesystem";
+import { projectEnvironment } from "~/state/projects";
 import { useEnvironmentQuery } from "~/state/query";
+import { useAtomCommand } from "~/state/use-atom-command";
 
 export interface RemoteDirectoryPickerDialogProps {
   readonly open: boolean;
@@ -29,6 +38,39 @@ export interface RemoteDirectoryPickerDialogProps {
   readonly onSelect: (path: string) => void;
 }
 
+function validateNewFolderName(name: string): string | null {
+  if (name.length === 0) return "Enter a folder name.";
+  if (name === "." || name === "..") return "Choose a folder name other than . or ..";
+  if (name.includes("/") || name.includes("\\")) {
+    return "Use a single folder name without slashes.";
+  }
+  return null;
+}
+
+function createFolderErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) return error.message;
+  if (typeof error === "string" && error.trim().length > 0) return error;
+  return "Unable to create folder.";
+}
+
+interface PickerContextIdentity {
+  readonly environmentId: EnvironmentId;
+  readonly open: boolean;
+  readonly initialPath: string;
+  readonly path: string;
+  readonly createEntry: unknown;
+  readonly refreshRequestId: symbol | null;
+  readonly key: symbol;
+}
+
+interface RefreshAfterNavigation {
+  readonly environmentId: EnvironmentId;
+  readonly createEntry: unknown;
+  readonly path: string;
+  readonly requestId: symbol;
+  readonly contextKey: symbol;
+}
+
 export function RemoteDirectoryPickerDialog({
   open,
   environmentId,
@@ -36,17 +78,50 @@ export function RemoteDirectoryPickerDialog({
   onOpenChange,
   onSelect,
 }: RemoteDirectoryPickerDialogProps) {
+  const createEntry = useAtomCommand(projectEnvironment.createEntry, { reportFailure: false });
   const [path, setPath] = useState(initialPath || "~");
   const [fallbackWarning, setFallbackWarning] = useState<string | null>(null);
   const [showHiddenFolders, setShowHiddenFolders] = useState(false);
+  const [newFolderName, setNewFolderName] = useState<string | null>(null);
+  const [createPending, setCreatePending] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const currentContextRef = useRef<PickerContextIdentity | null>(null);
+  const activeCreateRef = useRef<symbol | null>(null);
+  const mountedRef = useRef(false);
+  const refreshAfterNavigationRef = useRef<RefreshAfterNavigation | null>(null);
+
+  const previousContext = currentContextRef.current;
+  if (
+    previousContext === null ||
+    previousContext.environmentId !== environmentId ||
+    previousContext.open !== open ||
+    previousContext.initialPath !== initialPath ||
+    previousContext.path !== path ||
+    previousContext.createEntry !== createEntry
+  ) {
+    currentContextRef.current = {
+      environmentId,
+      open,
+      initialPath,
+      path,
+      createEntry,
+      refreshRequestId: null,
+      key: Symbol("picker-context"),
+    };
+  }
 
   useEffect(() => {
+    activeCreateRef.current = null;
+    refreshAfterNavigationRef.current = null;
+    setNewFolderName(null);
+    setCreatePending(false);
+    setCreateError(null);
     if (open) {
       setPath(initialPath || "~");
       setFallbackWarning(null);
       setShowHiddenFolders(false);
     }
-  }, [environmentId, initialPath, open]);
+  }, [createEntry, environmentId, initialPath, open]);
 
   const query = useEnvironmentQuery(
     open
@@ -64,16 +139,168 @@ export function RemoteDirectoryPickerDialog({
     ? entries
     : entries.filter((entry) => !entry.name.startsWith("."));
   const displayPath = directoryPath ?? path;
+  const trimmedFolderName = newFolderName?.trim() ?? "";
+  const folderNameError = validateNewFolderName(trimmedFolderName);
+  const visibleCreateError =
+    trimmedFolderName.length > 0 ? (folderNameError ?? createError) : createError;
+  const canCreateInCurrentDirectory =
+    directoryPath !== null && !query.isPending && query.error === null;
 
   useEffect(() => {
-    if (open && query.error && path !== "~" && fallbackWarning === null) {
-      setFallbackWarning("The previous folder is unavailable. Showing the server home directory.");
-      setPath("~");
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      activeCreateRef.current = null;
+      refreshAfterNavigationRef.current = null;
+    };
+  }, []);
+
+  const invalidateCreateContext = useCallback(
+    (overrides: Partial<Pick<PickerContextIdentity, "open" | "path">> = {}) => {
+      const context = currentContextRef.current;
+      if (context !== null) {
+        currentContextRef.current = {
+          ...context,
+          ...overrides,
+          refreshRequestId: null,
+          key: Symbol("picker-context"),
+        };
+      }
+      activeCreateRef.current = null;
+      refreshAfterNavigationRef.current = null;
+      setNewFolderName(null);
+      setCreatePending(false);
+      setCreateError(null);
+    },
+    [],
+  );
+
+  const navigateTo = useCallback(
+    (nextPath: string) => {
+      invalidateCreateContext({ path: nextPath });
+      setPath(nextPath);
+    },
+    [invalidateCreateContext],
+  );
+
+  useEffect(() => {
+    const marker = refreshAfterNavigationRef.current;
+    if (marker === null) return;
+    const context = currentContextRef.current;
+    if (
+      open &&
+      context?.key === marker.contextKey &&
+      environmentId === marker.environmentId &&
+      createEntry === marker.createEntry &&
+      path === marker.path &&
+      context.refreshRequestId === marker.requestId
+    ) {
+      refreshAfterNavigationRef.current = null;
+      query.refresh();
+      return;
     }
-  }, [fallbackWarning, open, path, query.error]);
+    refreshAfterNavigationRef.current = null;
+  }, [createEntry, environmentId, open, path, query.refresh]);
+
+  useEffect(() => {
+    if (open && newFolderName === null && query.error && path !== "~" && fallbackWarning === null) {
+      setFallbackWarning("The previous folder is unavailable. Showing the server home directory.");
+      navigateTo("~");
+    }
+  }, [fallbackWarning, navigateTo, newFolderName, open, path, query.error]);
+
+  const closeNewFolder = () => {
+    if (createPending) return;
+    activeCreateRef.current = null;
+    setNewFolderName(null);
+    setCreateError(null);
+  };
+
+  const submitNewFolder = () => {
+    if (
+      activeCreateRef.current !== null ||
+      !canCreateInCurrentDirectory ||
+      directoryPath === null
+    ) {
+      return;
+    }
+    if (folderNameError !== null) {
+      setCreateError(folderNameError);
+      return;
+    }
+
+    const requestContext = currentContextRef.current;
+    if (requestContext === null) return;
+    const parentPath = directoryPath;
+    const request = Symbol("create-folder");
+    activeCreateRef.current = request;
+    setCreatePending(true);
+    setCreateError(null);
+
+    const isCurrentRequest = () =>
+      mountedRef.current &&
+      activeCreateRef.current === request &&
+      currentContextRef.current === requestContext;
+
+    void createEntry({
+      environmentId,
+      input: { cwd: parentPath, relativePath: trimmedFolderName, kind: "directory" },
+    }).then(
+      (result) => {
+        if (!isCurrentRequest()) return;
+        activeCreateRef.current = null;
+        setCreatePending(false);
+
+        if (result._tag === "Failure") {
+          if (!isAtomCommandInterrupted(result)) {
+            setCreateError(createFolderErrorMessage(squashAtomCommandFailure(result)));
+          }
+          return;
+        }
+
+        const normalizedParentPath = joinHostPath(parentPath, "");
+        const createdPath = joinHostPath(parentPath, result.value.relativePath);
+        if (result.value.relativePath.trim().length === 0 || createdPath === normalizedParentPath) {
+          setCreateError("The server did not return a valid created folder path.");
+          return;
+        }
+
+        const targetContext: PickerContextIdentity = {
+          ...requestContext,
+          path: createdPath,
+          refreshRequestId: request,
+          key: Symbol("picker-context"),
+        };
+        currentContextRef.current = targetContext;
+        setNewFolderName(null);
+        setCreateError(null);
+        refreshAfterNavigationRef.current = {
+          environmentId,
+          createEntry,
+          path: createdPath,
+          requestId: request,
+          contextKey: targetContext.key,
+        };
+        setPath(createdPath);
+      },
+      (error: unknown) => {
+        if (!isCurrentRequest()) return;
+        activeCreateRef.current = null;
+        setCreatePending(false);
+        setCreateError(createFolderErrorMessage(error));
+      },
+    );
+  };
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) {
+      invalidateCreateContext({ open: false });
+    }
+    onOpenChange(nextOpen);
+  };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogPopup className="max-w-xl">
         <DialogHeader className="pb-4">
           <DialogTitle>Select Workspace folder</DialogTitle>
@@ -88,14 +315,14 @@ export function RemoteDirectoryPickerDialog({
               aria-label="Up one directory"
               disabled={!query.data?.ancestorPath || query.isPending}
               onClick={() => {
-                if (query.data?.ancestorPath) setPath(query.data.ancestorPath);
+                if (query.data?.ancestorPath) navigateTo(query.data.ancestorPath);
               }}
             >
               <ArrowUpIcon className="size-4" />
             </Button>
             <DraftInput
               value={displayPath}
-              onCommit={setPath}
+              onCommit={navigateTo}
               aria-label="Server directory path"
               spellCheck={false}
               className="min-w-0 flex-1 font-mono text-xs"
@@ -103,7 +330,73 @@ export function RemoteDirectoryPickerDialog({
             <Button type="button" variant="outline" size="sm" onClick={query.refresh}>
               Refresh
             </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              aria-label="New folder"
+              disabled={!canCreateInCurrentDirectory || createPending}
+              onClick={() => {
+                setNewFolderName("");
+                setCreateError(null);
+              }}
+            >
+              <FolderPlusIcon className="size-4" />
+              New folder
+            </Button>
           </div>
+          {newFolderName !== null ? (
+            <form
+              className="flex items-start gap-2 rounded-lg border bg-muted/24 p-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                submitNewFolder();
+              }}
+            >
+              <div className="min-w-0 flex-1 space-y-1">
+                <Input
+                  autoFocus
+                  aria-label="New folder name"
+                  value={newFolderName}
+                  disabled={createPending}
+                  onChange={(event) => {
+                    setNewFolderName(event.currentTarget.value);
+                    setCreateError(null);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      closeNewFolder();
+                    } else if (event.key === "Enter") {
+                      event.preventDefault();
+                      submitNewFolder();
+                    }
+                  }}
+                />
+                {visibleCreateError ? (
+                  <p role="alert" className="text-xs text-destructive">
+                    {visibleCreateError}
+                  </p>
+                ) : null}
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={createPending}
+                onClick={closeNewFolder}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                size="sm"
+                disabled={folderNameError !== null || createPending || !canCreateInCurrentDirectory}
+              >
+                {createPending ? "Creating…" : "Create"}
+              </Button>
+            </form>
+          ) : null}
           <nav
             aria-label="Directory breadcrumbs"
             className="flex min-h-8 items-center overflow-x-auto rounded-lg border bg-muted/24 px-1.5"
@@ -131,7 +424,7 @@ export function RemoteDirectoryPickerDialog({
                         : "max-w-44 gap-1.5 px-1.5 font-normal text-muted-foreground"
                     }
                     title={breadcrumb.fullPath}
-                    onClick={() => setPath(breadcrumb.fullPath)}
+                    onClick={() => navigateTo(breadcrumb.fullPath)}
                   >
                     {index === 0 ? (
                       <HardDriveIcon className="size-3.5" />
@@ -167,7 +460,7 @@ export function RemoteDirectoryPickerDialog({
                   key={entry.fullPath}
                   aria-label={`Open ${entry.name}`}
                   className="h-8 w-full justify-start rounded-none border-0 px-3 py-1.5 font-normal text-left shadow-none hover:bg-muted/72"
-                  onClick={() => setPath(entry.fullPath)}
+                  onClick={() => navigateTo(entry.fullPath)}
                 >
                   <FolderIcon
                     aria-hidden="true"
@@ -207,7 +500,7 @@ export function RemoteDirectoryPickerDialog({
           ) : null}
         </div>
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+          <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>
             Cancel
           </Button>
           <Button

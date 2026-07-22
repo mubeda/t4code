@@ -154,6 +154,22 @@ async function mountExternalLink(withThread = true): Promise<HTMLAnchorElement> 
   return container.querySelector<HTMLAnchorElement>('a[href="https://example.test/docs"]')!;
 }
 
+async function mountMailtoLink(): Promise<HTMLAnchorElement> {
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () =>
+    root?.render(
+      <ChatMarkdown
+        text="[Email](mailto:hi@example.test)"
+        cwd="/workspace"
+        threadRef={threadRef}
+      />,
+    ),
+  );
+  return container.querySelector<HTMLAnchorElement>('a[href="mailto:hi@example.test"]')!;
+}
+
 async function openContextMenu(link: HTMLAnchorElement): Promise<void> {
   await act(async () =>
     link.dispatchEvent(
@@ -345,6 +361,71 @@ describe("ChatMarkdown file-link behavior", () => {
 });
 
 describe("ChatMarkdown external-link behavior", () => {
+  it("opens normal HTTP(S) link activation in the integrated browser", async () => {
+    const link = await mountExternalLink();
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+
+    expect(link.target).toBe("_blank");
+    expect(link.rel).toBe("noopener noreferrer");
+
+    await act(async () => link.dispatchEvent(click));
+    await flush();
+
+    expect(click.defaultPrevented).toBe(true);
+    expect(mocks.openUrlInPreview).toHaveBeenCalledOnce();
+    expect(mocks.openUrlInPreview).toHaveBeenCalledWith(
+      expect.objectContaining({ threadRef, url: "https://example.test/docs" }),
+    );
+    expect(mocks.openExternal).not.toHaveBeenCalled();
+  });
+
+  it("preserves native browser behavior for modified HTTP(S) link clicks", async () => {
+    const link = await mountExternalLink();
+
+    for (const init of [
+      { ctrlKey: true },
+      { metaKey: true },
+      { shiftKey: true },
+      { altKey: true },
+    ]) {
+      const click = new MouseEvent("click", {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        ...init,
+      });
+      await act(async () => link.dispatchEvent(click));
+      await flush();
+      expect(click.defaultPrevented).toBe(false);
+    }
+
+    expect(mocks.openUrlInPreview).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed normal HTTP(S) preview open without falling back externally", async () => {
+    const link = await mountExternalLink();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const cause = Cause.fail(new Error("preview rejected"));
+    mocks.openUrlInPreview.mockResolvedValueOnce(AsyncResult.failure(cause));
+
+    await act(async () => link.click());
+    await flush();
+
+    expect(consoleError).toHaveBeenCalledWith(
+      "[chat-markdown] action failed",
+      { operation: "open-link-in-preview", target: "https://example.test/docs" },
+      cause,
+    );
+    expect(mocks.openExternal).not.toHaveBeenCalled();
+  });
+
+  it("does not route non-HTTP schemes into the integrated browser", async () => {
+    const link = await mountMailtoLink();
+    await act(async () => link.click());
+    await flush();
+    expect(mocks.openUrlInPreview).not.toHaveBeenCalled();
+  });
+
   it("opens external links in the integrated or system browser from the native menu", async () => {
     const link = await mountExternalLink();
 

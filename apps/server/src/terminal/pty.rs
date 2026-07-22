@@ -10,7 +10,11 @@ use std::{
     thread,
 };
 
+#[cfg(windows)]
+use portable_pty::SlavePty;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+#[cfg(windows)]
+use std::{ffi::OsString, os::windows::ffi::OsStringExt};
 use tokio::sync::{broadcast, watch};
 
 use crate::diagnostics::{NativeProcessSampler, ProcessIdentity};
@@ -19,6 +23,14 @@ use crate::process::{
     wrap_windows_batch_command,
 };
 use crate::terminal::osc::{OscColorResponder, colors_from_env, is_reserved_osc_env_key};
+use crate::terminal::model::{
+    TerminalConsoleTheme as WindowsConsoleTheme,
+    WINDOWS_CONSOLE_THEME_ENV,
+    terminal_console_theme_from_env as windows_console_theme_from_env,
+};
+
+#[cfg(windows)]
+use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 
 type SharedPtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
@@ -26,6 +38,92 @@ type SharedPtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 use crate::process::WindowsJob;
 
 const DEFAULT_TERMINAL_TYPE: &str = "xterm-256color";
+
+#[cfg(windows)]
+fn windows_system_cmd_path() -> Result<PathBuf, String> {
+    const MAX_WINDOWS_PATH_UNITS: usize = 32_768;
+    let mut buffer = vec![0_u16; MAX_WINDOWS_PATH_UNITS];
+    // SAFETY: `buffer` is writable for the exact capacity passed to the API.
+    let length = unsafe {
+        GetSystemDirectoryW(
+            buffer.as_mut_ptr(),
+            u32::try_from(buffer.len()).expect("Windows path buffer fits u32"),
+        )
+    };
+    if length == 0 {
+        return Err(format!(
+            "failed to resolve the trusted Windows system directory: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let length = usize::try_from(length)
+        .map_err(|_| "Windows system directory length exceeded usize".to_owned())?;
+    if length >= buffer.len() {
+        return Err(format!(
+            "Windows system directory exceeded the supported path length: {length}"
+        ));
+    }
+    if length == 0 || buffer[..length].contains(&0) {
+        return Err("Windows system directory returned an invalid path".to_owned());
+    }
+    let directory = PathBuf::from(OsString::from_wide(&buffer[..length]));
+    if !directory.is_absolute() || !directory.is_dir() {
+        return Err(format!(
+            "Windows system directory is not an absolute directory: {}",
+            directory.display()
+        ));
+    }
+    let command = directory.join("cmd.exe");
+    if !command.is_file() {
+        return Err(format!(
+            "trusted Windows command interpreter was not found: {}",
+            command.display()
+        ));
+    }
+    Ok(command)
+}
+
+#[cfg(windows)]
+fn build_windows_console_theme_initializer_command(
+    theme: WindowsConsoleTheme,
+) -> Result<CommandBuilder, String> {
+    let color_code = match theme {
+        WindowsConsoleTheme::Light => "F0",
+        WindowsConsoleTheme::Dark => "0F",
+    };
+    let mut command = CommandBuilder::new(windows_system_cmd_path()?);
+    command.raw_windows_args(format!("/d /c color {color_code}"));
+    Ok(command)
+}
+
+#[cfg(windows)]
+fn initialize_windows_console_theme(
+    slave: &dyn SlavePty,
+    theme: WindowsConsoleTheme,
+) -> Result<(), String> {
+    let command = build_windows_console_theme_initializer_command(theme)?;
+    let child = slave
+        .spawn_command(command)
+        .map_err(|error| format!("failed to start Windows console theme initializer: {error}"))?;
+    wait_for_windows_console_theme_initializer(child)
+}
+
+#[cfg(any(windows, test))]
+fn wait_for_windows_console_theme_initializer(
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+) -> Result<(), String> {
+    let mut child = SpawnedChildGuard::new(child);
+    let status = child.child_mut().wait().map_err(|error| {
+        format!("failed to wait for Windows console theme initializer: {error}")
+    })?;
+    if !status.success() {
+        return Err(format!(
+            "Windows console theme initializer exited unsuccessfully: {status:?}"
+        ));
+    }
+    child.disarm_child();
+    Ok(())
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PtyExit {
@@ -126,6 +224,11 @@ impl SpawnedChildGuard {
         let child = self.child.take().expect("spawned child guard");
         self.root_killer = Some(root_killer);
         child
+    }
+
+    #[cfg(any(windows, test))]
+    fn disarm_child(mut self) {
+        self.child.take();
     }
 
     #[cfg(unix)]
@@ -242,6 +345,11 @@ impl PortablePtyBackend {
             Err(error) => return Err(error.to_string()),
         };
 
+        #[cfg(windows)]
+        if let Some(theme) = windows_console_theme_from_env(&input.env) {
+            initialize_windows_console_theme(pair.slave.as_ref(), theme)?;
+        }
+
         let child = match pair.slave.spawn_command(command) {
             Ok(child) => child,
             Err(error) => return Err(error.to_string()),
@@ -355,8 +463,11 @@ impl PtyBackend for PortablePtyBackend {
 fn build_pty_command(input: &PtySpawnInput) -> Result<PreparedPtyCommand, String> {
     let platform = Platform::current();
     let executable = resolve_pty_executable_for_launch(platform, input)?;
-    let command =
-        build_pty_command_from_launch(input, prepare_pty_launch(platform, input, &executable)?);
+    let command = build_pty_command_from_launch(
+        platform,
+        input,
+        prepare_pty_launch(platform, input, &executable)?,
+    );
     #[cfg(windows)]
     {
         let mut command = command;
@@ -377,6 +488,7 @@ fn build_pty_command_on(
 ) -> Result<CommandBuilder, String> {
     let executable = resolve_pty_executable_for_launch(platform, input)?;
     Ok(build_pty_command_from_launch(
+        platform,
         input,
         prepare_pty_launch(platform, input, &executable)?,
     ))
@@ -405,6 +517,7 @@ fn prepare_pty_launch(
 }
 
 fn build_pty_command_from_launch(
+    platform: Platform,
     input: &PtySpawnInput,
     launch: crate::process::PreparedLaunch,
 ) -> CommandBuilder {
@@ -419,14 +532,28 @@ fn build_pty_command_from_launch(
         command.env("TERM", DEFAULT_TERMINAL_TYPE);
     }
     for (key, value) in &input.env {
-        // Reserved OSC color keys configure the PTY-layer query responder; they
-        // must not reach the child process's environment.
-        if is_reserved_osc_env_key(key) {
+        // Internal terminal theme values configure PTY setup and query
+        // responses. Windows environment keys are case-insensitive.
+        if is_reserved_pty_env_key_on(platform, key) {
             continue;
         }
         command.env(key, value);
     }
     command
+}
+
+fn is_reserved_pty_env_key_on(platform: Platform, key: &str) -> bool {
+    if platform == Platform::Windows {
+        return key.eq_ignore_ascii_case(WINDOWS_CONSOLE_THEME_ENV)
+            || [
+                crate::terminal::osc::OSC_BACKGROUND_ENV,
+                crate::terminal::osc::OSC_FOREGROUND_ENV,
+                crate::terminal::osc::OSC_CURSOR_ENV,
+            ]
+            .into_iter()
+            .any(|reserved| key.eq_ignore_ascii_case(reserved));
+    }
+    key == WINDOWS_CONSOLE_THEME_ENV || is_reserved_osc_env_key(key)
 }
 
 fn resolve_pty_executable_on(
@@ -936,6 +1063,42 @@ mod tests {
     }
 
     #[derive(Clone, Debug)]
+    struct WaitErrorSetupTestChild {
+        killed: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl portable_pty::ChildKiller for WaitErrorSetupTestChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            self.killed
+                .store(true, std::sync::atomic::Ordering::Release);
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+            Box::new(self.clone())
+        }
+    }
+
+    impl portable_pty::Child for WaitErrorSetupTestChild {
+        fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+            Ok(None)
+        }
+
+        fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+            Err(std::io::Error::other("injected initializer wait failure"))
+        }
+
+        fn process_id(&self) -> Option<u32> {
+            Some(43)
+        }
+
+        #[cfg(windows)]
+        fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+            None
+        }
+    }
+
+    #[derive(Clone, Debug)]
     struct OrderedSetupTestChild {
         cleanup_order: Arc<Mutex<Vec<&'static str>>>,
     }
@@ -993,6 +1156,18 @@ mod tests {
             assert!(process_group.is_none());
             assert!(!committed_killed.load(std::sync::atomic::Ordering::Acquire));
         }
+    }
+
+    #[test]
+    fn initializer_wait_failure_kills_the_initializer_child() {
+        let killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let error = wait_for_windows_console_theme_initializer(Box::new(WaitErrorSetupTestChild {
+            killed: killed.clone(),
+        }))
+        .unwrap_err();
+
+        assert!(error.contains("injected initializer wait failure"));
+        assert!(killed.load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]
@@ -1353,19 +1528,10 @@ mod tests {
 
     #[test]
     fn windows_batch_launch_rejects_control_characters_in_the_script_path() {
-        let directory = tempfile::tempdir().unwrap();
-        let executable = directory.path().join("provider\nshim.cmd");
-        std::fs::write(&executable, b"fixture").unwrap();
-        let input = PtySpawnInput {
-            executable: executable.to_string_lossy().into_owned(),
-            args: Vec::new(),
-            cwd: directory.path().to_path_buf(),
-            cols: 80,
-            rows: 24,
-            env: BTreeMap::new(),
-        };
-
-        let error = build_pty_command_on(Platform::Windows, &input).unwrap_err();
+        // Windows rejects this filename at the filesystem boundary, so test
+        // the launch validation directly instead of trying to create it.
+        let error = wrap_launch_program(Platform::Windows, Path::new("provider\nshim.cmd"))
+            .unwrap_err();
 
         assert_eq!(
             error,
@@ -1460,13 +1626,11 @@ mod tests {
         };
 
         let command = build_pty_command_on(Platform::Unix, &input).unwrap();
-        assert_eq!(
-            command.get_argv(),
-            &[
-                executable.into_os_string(),
-                std::ffi::OsString::from("--direct"),
-            ]
-        );
+        let argv = command.get_argv();
+        let resolved = Path::new(&argv[0]).components().collect::<PathBuf>();
+        let expected = executable.components().collect::<PathBuf>();
+        assert_eq!(resolved, expected);
+        assert_eq!(argv[1], std::ffi::OsString::from("--direct"));
     }
 
     #[test]
@@ -1510,6 +1674,141 @@ mod tests {
 
         let command = build_pty_command_on(Platform::Unix, &input).unwrap();
         assert_eq!(command.get_env("TERM"), Some(OsStr::new("dumb")));
+    }
+
+    #[test]
+    fn reserved_pty_env_keys_follow_platform_case_rules() {
+        for key in [
+            crate::terminal::osc::OSC_FOREGROUND_ENV,
+            crate::terminal::osc::OSC_BACKGROUND_ENV,
+            crate::terminal::osc::OSC_CURSOR_ENV,
+            WINDOWS_CONSOLE_THEME_ENV,
+        ] {
+            assert!(is_reserved_pty_env_key_on(Platform::Unix, key));
+            assert!(is_reserved_pty_env_key_on(Platform::Windows, key));
+            assert!(!is_reserved_pty_env_key_on(
+                Platform::Unix,
+                &key.to_ascii_lowercase()
+            ));
+            assert!(is_reserved_pty_env_key_on(
+                Platform::Windows,
+                &key.to_ascii_lowercase()
+            ));
+        }
+        assert!(!is_reserved_pty_env_key_on(Platform::Windows, "ORDINARY"));
+    }
+
+    #[test]
+    fn prepared_command_strips_reserved_palette_and_theme_environment() {
+        let executable = std::env::current_exe().expect("current test executable");
+        let input = PtySpawnInput {
+            executable: executable.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            cwd: executable
+                .parent()
+                .expect("test executable directory")
+                .to_path_buf(),
+            cols: 80,
+            rows: 24,
+            env: BTreeMap::from([
+                (WINDOWS_CONSOLE_THEME_ENV.to_owned(), "light".to_owned()),
+                (
+                    crate::terminal::osc::OSC_FOREGROUND_ENV.to_owned(),
+                    "28,33,41".to_owned(),
+                ),
+                (
+                    crate::terminal::osc::OSC_BACKGROUND_ENV.to_owned(),
+                    "255,255,255".to_owned(),
+                ),
+                (
+                    crate::terminal::osc::OSC_CURSOR_ENV.to_owned(),
+                    "38,56,78".to_owned(),
+                ),
+                ("ORDINARY".to_owned(), "value".to_owned()),
+            ]),
+        };
+
+        let command = build_pty_command_on(Platform::Unix, &input).unwrap();
+        assert_eq!(command.get_env(WINDOWS_CONSOLE_THEME_ENV), None);
+        assert_eq!(
+            command.get_env(crate::terminal::osc::OSC_FOREGROUND_ENV),
+            None
+        );
+        assert_eq!(
+            command.get_env(crate::terminal::osc::OSC_BACKGROUND_ENV),
+            None
+        );
+        assert_eq!(command.get_env(crate::terminal::osc::OSC_CURSOR_ENV), None);
+        assert_eq!(command.get_env("ORDINARY"), Some(OsStr::new("value")));
+    }
+
+    #[test]
+    fn windows_prepared_command_strips_mixed_case_reserved_environment() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("provider.exe");
+        std::fs::write(&executable, b"fixture").unwrap();
+        let input = PtySpawnInput {
+            executable: executable.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            cwd: directory.path().to_path_buf(),
+            cols: 80,
+            rows: 24,
+            env: BTreeMap::from([
+                ("t4code_osc_foreground".to_owned(), "reserved".to_owned()),
+                ("T4Code_Osc_Background".to_owned(), "reserved".to_owned()),
+                ("t4code_osc_cursor".to_owned(), "reserved".to_owned()),
+                (
+                    "T4Code_Windows_Console_Theme".to_owned(),
+                    "light".to_owned(),
+                ),
+                ("ORDINARY".to_owned(), "value".to_owned()),
+            ]),
+        };
+
+        let command = build_pty_command_on(Platform::Windows, &input).unwrap();
+        assert_eq!(command.get_env("T4CODE_OSC_FOREGROUND"), None);
+        assert_eq!(command.get_env("T4CODE_OSC_BACKGROUND"), None);
+        assert_eq!(command.get_env("T4CODE_OSC_CURSOR"), None);
+        assert_eq!(command.get_env(WINDOWS_CONSOLE_THEME_ENV), None);
+        assert_eq!(command.get_env("ORDINARY"), Some(OsStr::new("value")));
+    }
+
+    #[test]
+    fn windows_console_theme_marker_requires_an_exact_supported_value() {
+        for (value, expected) in [
+            ("light", Some(WindowsConsoleTheme::Light)),
+            ("dark", Some(WindowsConsoleTheme::Dark)),
+            ("", None),
+            ("LIGHT", None),
+            ("true", None),
+            ("1", None),
+        ] {
+            let env = BTreeMap::from([(WINDOWS_CONSOLE_THEME_ENV.to_owned(), value.to_owned())]);
+            assert_eq!(
+                windows_console_theme_from_env(&env),
+                expected,
+                "value={value:?}"
+            );
+        }
+        assert_eq!(
+            windows_console_theme_from_env(&BTreeMap::from([(
+                "t4code_windows_console_theme".to_owned(),
+                "light".to_owned(),
+            )])),
+            Some(WindowsConsoleTheme::Light)
+        );
+        assert_eq!(windows_console_theme_from_env(&BTreeMap::new()), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_theme_initializer_uses_the_absolute_system_cmd() {
+        let command =
+            build_windows_console_theme_initializer_command(WindowsConsoleTheme::Light).unwrap();
+        let program = Path::new(&command.get_argv()[0]);
+        assert!(program.is_absolute(), "program={program:?}");
+        assert_eq!(program.file_name().and_then(OsStr::to_str), Some("cmd.exe"));
+        assert!(program.is_file(), "program={program:?}");
     }
 
     #[test]

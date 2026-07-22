@@ -116,6 +116,9 @@ export type TerminalCloseInput = typeof TerminalCloseInput.Type;
 export const TerminalSessionStatus = Schema.Literals(["starting", "running", "exited", "error"]);
 export type TerminalSessionStatus = typeof TerminalSessionStatus.Type;
 
+export const TerminalConsoleTheme = Schema.Literals(["light", "dark"]);
+export type TerminalConsoleTheme = typeof TerminalConsoleTheme.Type;
+
 export const TerminalSessionSnapshot = Schema.Struct({
   threadId: Schema.String.check(Schema.isNonEmpty()),
   terminalId: Schema.String.check(Schema.isNonEmpty()),
@@ -126,6 +129,8 @@ export const TerminalSessionSnapshot = Schema.Struct({
   history: Schema.String,
   exitCode: Schema.NullOr(Schema.Int),
   exitSignal: Schema.NullOr(Schema.Int),
+  /** Palette applied to a persistent native console when the PTY was spawned. */
+  consoleTheme: Schema.optional(TerminalConsoleTheme),
   /** Server-computed display title (idle shell vs subprocess command). */
   label: Schema.String.check(Schema.isMaxLength(128)),
   updatedAt: Schema.String,
@@ -142,6 +147,8 @@ export const TerminalSummary = Schema.Struct({
   pid: Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0))),
   exitCode: Schema.NullOr(Schema.Int),
   exitSignal: Schema.NullOr(Schema.Int),
+  /** Palette applied to a persistent native console when the PTY was spawned. */
+  consoleTheme: Schema.optional(TerminalConsoleTheme),
   hasRunningSubprocess: Schema.Boolean,
   /** Server-computed display title (idle shell vs subprocess command). */
   label: Schema.String.check(Schema.isMaxLength(128)),

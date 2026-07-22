@@ -1,4 +1,8 @@
-import type { TerminalAttachStreamEvent, TerminalSessionSnapshot } from "@t4code/contracts";
+import type {
+  TerminalAttachStreamEvent,
+  TerminalConsoleTheme,
+  TerminalSessionSnapshot,
+} from "@t4code/contracts";
 
 import {
   createTerminalTranscript,
@@ -12,6 +16,7 @@ export type TerminalRenderSignal =
 export interface TerminalMetadataSnapshot {
   readonly status: TerminalSessionSnapshot["status"] | "closed";
   readonly error: string | null;
+  readonly consoleTheme: TerminalConsoleTheme | null;
   /** Bumps whenever a server snapshot replaces the transcript. */
   readonly generation: number;
   /** Bumps for lifecycle metadata changes, never for output or activity. */
@@ -21,6 +26,7 @@ export interface TerminalMetadataSnapshot {
 export const EMPTY_TERMINAL_METADATA_SNAPSHOT = Object.freeze<TerminalMetadataSnapshot>({
   status: "closed",
   error: null,
+  consoleTheme: null,
   generation: 0,
   revision: 0,
 });
@@ -69,21 +75,27 @@ export function createTerminalTranscriptRuntime(
   };
 
   const updateMetadata = (
-    next: Pick<TerminalMetadataSnapshot, "status" | "error">,
+    next: Pick<TerminalMetadataSnapshot, "status" | "error"> & {
+      readonly consoleTheme?: TerminalConsoleTheme | null;
+    },
     newGeneration: boolean,
   ) => {
     metadata = Object.freeze({
       status: next.status,
       error: next.error,
+      consoleTheme: next.consoleTheme === undefined ? metadata.consoleTheme : next.consoleTheme,
       generation: metadata.generation + (newGeneration ? 1 : 0),
       revision: metadata.revision + 1,
     });
   };
 
-  const resetTranscript = (history: string, status: TerminalMetadataSnapshot["status"]) => {
+  const resetTranscript = (snapshot: TerminalSessionSnapshot) => {
     transcript.clear();
-    transcript.append(history);
-    updateMetadata({ status, error: null }, true);
+    transcript.append(snapshot.history);
+    updateMetadata(
+      { status: snapshot.status, error: null, consoleTheme: snapshot.consoleTheme ?? null },
+      true,
+    );
     fanRender({ type: "reset", snapshot: transcript.snapshot() });
     notifyMetadata();
   };
@@ -92,7 +104,7 @@ export function createTerminalTranscriptRuntime(
     switch (event.type) {
       case "snapshot":
       case "restarted":
-        resetTranscript(event.snapshot.history, event.snapshot.status);
+        resetTranscript(event.snapshot);
         return;
       case "output":
         transcript.append(event.data);

@@ -18,6 +18,7 @@ import { AsyncResult } from "effect/unstable/reactivity";
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import type { TerminalThemeMode } from "./terminalTheme";
 
 interface FakeTerminalInstance {
   readonly options: Record<string, unknown>;
@@ -354,39 +355,54 @@ vi.mock("@xterm/xterm", () => ({
 }));
 
 const testState = vi.hoisted(() => ({
+  serverConfig: {
+    availableEditors: ["vscode"],
+    environment: { platform: { os: "windows" } },
+  } as {
+    availableEditors: string[];
+    environment: { platform: { os: string } };
+  } | null,
   session: {
     buffer: "",
     error: null as string | null,
     status: "running",
     version: 0,
     generation: 0,
+    consoleTheme: null as TerminalThemeMode | null,
     transcriptRuntime: null as TerminalTranscriptRuntime | null,
   },
   attachedSessionInputs: [] as unknown[],
   writeCommand: vi.fn(),
   resizeCommand: vi.fn(),
+  restartCommand: vi.fn(),
   previewCommand: vi.fn(),
   openPath: vi.fn(),
   contextMenuShow: vi.fn(),
   shellOpenExternal: vi.fn(),
   localApiAvailable: false,
   webglEnabled: false,
+  resolvedTheme: "light" as TerminalThemeMode,
   terminalFontPreference: { mode: "bundled" } as TerminalFontPreference,
   fontLoad: vi.fn(() => Promise.resolve()),
 }));
 
-vi.mock("@effect/atom-react", () => ({ useAtomValue: () => ({ availableEditors: ["vscode"] }) }));
+vi.mock("@effect/atom-react", () => ({ useAtomValue: () => testState.serverConfig }));
 vi.mock("../state/server", () => ({
   serverEnvironment: { configValueAtom: () => "server-config" },
 }));
 vi.mock("../state/preview", () => ({ previewEnvironment: { open: "preview-open" } }));
 vi.mock("../state/terminal", () => ({
-  terminalEnvironment: { write: "terminal-write", resize: "terminal-resize" },
+  terminalEnvironment: {
+    write: "terminal-write",
+    resize: "terminal-resize",
+    restart: "terminal-restart",
+  },
 }));
 vi.mock("../state/use-atom-command", () => ({
   useAtomCommand: (command: string) => {
     if (command === "terminal-write") return testState.writeCommand;
     if (command === "terminal-resize") return testState.resizeCommand;
+    if (command === "terminal-restart") return testState.restartCommand;
     return testState.previewCommand;
   },
 }));
@@ -407,6 +423,9 @@ vi.mock("../hooks/useSettings", () => ({
       terminal: { webglEnabled: testState.webglEnabled },
       terminalFontPreference: testState.terminalFontPreference,
     }),
+}));
+vi.mock("../hooks/useTheme", () => ({
+  useTheme: () => ({ resolvedTheme: testState.resolvedTheme }),
 }));
 vi.mock("../lib/terminalFont", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/terminalFont")>();
@@ -711,6 +730,7 @@ async function mountViewport(
     status: "running",
     version: 1,
     generation: tracked.runtime.metadata().generation,
+    consoleTheme: null,
     transcriptRuntime: options.publishRuntime === false ? null : tracked.runtime,
   };
   const mounted = await mount(<TerminalViewport {...props} />);
@@ -906,11 +926,13 @@ beforeEach(() => {
     status: "running",
     version: 0,
     generation: defaultRuntime.metadata().generation,
+    consoleTheme: null,
     transcriptRuntime: defaultRuntime,
   };
   testState.attachedSessionInputs.length = 0;
   testState.writeCommand.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   testState.resizeCommand.mockReset().mockResolvedValue(AsyncResult.success(undefined));
+  testState.restartCommand.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   testState.previewCommand.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   testState.openPath.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   testState.contextMenuShow.mockReset().mockResolvedValue(undefined);
@@ -918,6 +940,11 @@ beforeEach(() => {
   vi.mocked(openTerminalLinkInPreview).mockReset();
   testState.localApiAvailable = false;
   testState.webglEnabled = false;
+  testState.resolvedTheme = "light";
+  testState.serverConfig = {
+    availableEditors: ["vscode"],
+    environment: { platform: { os: "windows" } },
+  };
   testState.terminalFontPreference = { mode: "bundled" };
   testState.fontLoad.mockReset().mockResolvedValue(undefined);
   observerInstances.length = 0;
@@ -1487,6 +1514,7 @@ describe("TerminalViewport mounted lifecycle", () => {
     expect(lightTheme.cursor).toEqual(expect.stringMatching(/\S/));
     await unmount(lightView.mounted);
 
+    testState.resolvedTheme = "dark";
     document.documentElement.classList.add("dark");
     try {
       const darkView = await mountViewport({ visible: true });
@@ -1550,7 +1578,8 @@ describe("TerminalViewport mounted lifecycle", () => {
 
   it("supplies resolved theme colors as reserved OSC env for the PTY responder", async () => {
     testState.attachedSessionInputs.length = 0;
-    document.documentElement.classList.remove("dark");
+    testState.resolvedTheme = "light";
+    document.documentElement.classList.add("dark");
     await mount(<TerminalViewport {...viewportProps()} />);
     const lightSpec = testState.attachedSessionInputs.at(-1) as {
       terminal: { env?: Record<string, string> };
@@ -1561,7 +1590,7 @@ describe("TerminalViewport mounted lifecycle", () => {
     });
 
     testState.attachedSessionInputs.length = 0;
-    document.documentElement.classList.add("dark");
+    testState.resolvedTheme = "dark";
     try {
       await mount(<TerminalViewport {...viewportProps({ terminalId: "term-osc-dark" })} />);
     } finally {
@@ -1571,6 +1600,133 @@ describe("TerminalViewport mounted lifecycle", () => {
       terminal: { env?: Record<string, string> };
     };
     expect(darkSpec.terminal.env).toMatchObject({ T4CODE_OSC_BACKGROUND: "14,18,24" });
+  });
+
+  it("marks structured Windows provider launches with the authoritative console theme", async () => {
+    testState.attachedSessionInputs.length = 0;
+    testState.resolvedTheme = "light";
+    await mount(
+      <TerminalViewport
+        {...viewportProps({
+          terminalId: "term-codex-windows-console-theme",
+          command: decodeTerminalLaunchCommand({
+            executable: "codex.exe",
+            args: [],
+            env: {
+              T4CODE_OSC_BACKGROUND: "0,0,0",
+              T4CODE_WINDOWS_CONSOLE_THEME: "command",
+            },
+          })!,
+          runtimeEnv: {
+            T4CODE_OSC_FOREGROUND: "0,0,0",
+            T4CODE_WINDOWS_CONSOLE_THEME: "runtime",
+          },
+        })}
+      />,
+    );
+    const codexSpec = testState.attachedSessionInputs.at(-1) as {
+      terminal: { env?: Record<string, string> };
+    };
+    expect(codexSpec.terminal.env).toMatchObject({
+      T4CODE_OSC_BACKGROUND: "255,255,255",
+      T4CODE_OSC_FOREGROUND: "28,33,41",
+      T4CODE_OSC_CURSOR: "38,56,78",
+      T4CODE_WINDOWS_CONSOLE_THEME: "light",
+    });
+
+    testState.attachedSessionInputs.length = 0;
+    await mount(
+      <TerminalViewport
+        {...viewportProps({
+          terminalId: "term-opencode-windows-console-theme",
+          command: decodeTerminalLaunchCommand({
+            executable: "opencode",
+            args: [],
+            env: { T4CODE_WINDOWS_CONSOLE_THEME: "command" },
+          })!,
+          runtimeEnv: { T4CODE_WINDOWS_CONSOLE_THEME: "runtime" },
+        })}
+      />,
+    );
+    const openCodeSpec = testState.attachedSessionInputs.at(-1) as {
+      terminal: { env?: Record<string, string> };
+    };
+    expect(openCodeSpec.terminal.env).toMatchObject({
+      T4CODE_WINDOWS_CONSOLE_THEME: "light",
+    });
+  });
+
+  it("does not add the Windows console theme marker to Codex on a non-Windows host", async () => {
+    testState.serverConfig = {
+      availableEditors: ["vscode"],
+      environment: { platform: { os: "darwin" } },
+    };
+    testState.attachedSessionInputs.length = 0;
+    await mount(
+      <TerminalViewport
+        {...viewportProps({
+          terminalId: "term-codex-darwin-console-theme",
+          command: decodeTerminalLaunchCommand({ executable: "codex", args: [] })!,
+        })}
+      />,
+    );
+
+    const spec = testState.attachedSessionInputs.at(-1) as {
+      terminal: { env?: Record<string, string> };
+    };
+    expect(spec.terminal.env).not.toHaveProperty("T4CODE_WINDOWS_CONSOLE_THEME");
+  });
+
+  it("waits for authoritative host config before attaching Codex", async () => {
+    testState.serverConfig = null;
+    testState.resolvedTheme = "dark";
+    const props = viewportProps({
+      terminalId: "term-codex-config-loading",
+      command: decodeTerminalLaunchCommand({ executable: "codex.exe", args: [] })!,
+    });
+    const mounted = await mount(<TerminalViewport {...props} />);
+
+    expect(testState.attachedSessionInputs.at(-1)).toMatchObject({ attach: false });
+
+    testState.serverConfig = {
+      availableEditors: ["vscode"],
+      environment: { platform: { os: "windows" } },
+    };
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+
+    expect(testState.attachedSessionInputs.at(-1)).toMatchObject({
+      attach: true,
+      terminal: {
+        env: expect.objectContaining({ T4CODE_WINDOWS_CONSOLE_THEME: "dark" }),
+      },
+    });
+  });
+
+  it("uses the current theme when a hidden Windows Codex terminal first attaches", async () => {
+    testState.resolvedTheme = "dark";
+    const command = decodeTerminalLaunchCommand({ executable: "codex.exe", args: [] })!;
+    const hiddenProps = viewportProps({
+      terminalId: "term-hidden-codex-theme",
+      command,
+      visible: false,
+    });
+    const mounted = await mount(<TerminalViewport {...hiddenProps} />);
+    expect(testState.attachedSessionInputs.at(-1)).toMatchObject({ attach: false });
+
+    testState.resolvedTheme = "light";
+    await act(async () =>
+      mounted.root.render(<TerminalViewport {...hiddenProps} visible={true} />),
+    );
+
+    expect(testState.attachedSessionInputs.at(-1)).toMatchObject({
+      attach: true,
+      terminal: {
+        env: expect.objectContaining({
+          T4CODE_OSC_BACKGROUND: "255,255,255",
+          T4CODE_WINDOWS_CONSOLE_THEME: "light",
+        }),
+      },
+    });
   });
 
   it("attaches the replacement generation after a deferred import is disabled and enabled", async () => {
@@ -2822,6 +2978,7 @@ describe("TerminalViewport mounted lifecycle", () => {
     const mounted = await mount(<TerminalViewport {...props} />);
     const terminal = xtermState.terminals[0]!;
     const observer = observerInstances[0]!;
+    testState.resolvedTheme = "dark";
     document.documentElement.classList.add("dark");
     try {
       observer.callback([], observer as never);
@@ -2842,6 +2999,500 @@ describe("TerminalViewport mounted lifecycle", () => {
     });
   });
 
+  it("repaints an existing terminal from the current resolved theme", async () => {
+    const props = viewportProps();
+    const mounted = await mount(<TerminalViewport {...props} />);
+    const terminal = xtermState.terminals[0]!;
+    const observer = observerInstances[0]!;
+
+    testState.resolvedTheme = "dark";
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+
+    expect(xtermState.terminals).toHaveLength(1);
+    expect(terminal.options.theme).toEqual(
+      expect.objectContaining({
+        cursor: "rgb(180, 203, 255)",
+        brightWhite: "rgb(244, 247, 252)",
+      }),
+    );
+
+    document.documentElement.classList.add("dark");
+    try {
+      observer.callback([], observer as never);
+    } finally {
+      document.documentElement.classList.remove("dark");
+    }
+
+    expect(terminal.options.theme).toEqual(
+      expect.objectContaining({
+        cursor: "rgb(180, 203, 255)",
+        brightWhite: "rgb(244, 247, 252)",
+      }),
+    );
+  });
+
+  it("uses the authoritative console theme when reattaching a Windows Codex terminal", async () => {
+    testState.resolvedTheme = "dark";
+    testState.session.consoleTheme = "light";
+    document.documentElement.classList.add("dark");
+    document.body.style.backgroundColor = "rgb(14, 18, 24)";
+    document.body.style.color = "rgb(237, 241, 247)";
+    const command = decodeTerminalLaunchCommand({ executable: "codex.exe", args: [] })!;
+    const props = viewportProps({ terminalLabel: "Codex Terminal", command });
+
+    try {
+      await mount(<TerminalViewport {...props} />);
+
+      expect(xtermState.terminals[0]?.options.theme).toEqual(
+        expect.objectContaining({ background: "rgb(255, 255, 255)" }),
+      );
+      expect(buttonByLabel("Restart Codex Terminal to apply Dark theme").disabled).toBe(false);
+    } finally {
+      document.documentElement.classList.remove("dark");
+      document.body.style.removeProperty("background-color");
+      document.body.style.removeProperty("color");
+    }
+  });
+
+  it("uses the authoritative console theme when reattaching a Windows Cursor terminal", async () => {
+    testState.resolvedTheme = "dark";
+    testState.session.consoleTheme = "light";
+    document.documentElement.classList.add("dark");
+    document.body.style.backgroundColor = "rgb(14, 18, 24)";
+    document.body.style.color = "rgb(237, 241, 247)";
+    const command = decodeTerminalLaunchCommand({ executable: "cursor-agent.exe", args: [] })!;
+    const props = viewportProps({ terminalLabel: "Cursor Terminal", command });
+
+    try {
+      await mount(<TerminalViewport {...props} />);
+
+      expect(xtermState.terminals[0]?.options.theme).toEqual(
+        expect.objectContaining({ background: "rgb(255, 255, 255)" }),
+      );
+      expect(buttonByLabel("Restart Cursor Terminal to apply Dark theme").disabled).toBe(false);
+      const attachment = testState.attachedSessionInputs.at(-1) as {
+        terminal: { env?: Record<string, string> };
+      };
+      expect(attachment.terminal.env).toMatchObject({
+        T4CODE_WINDOWS_CONSOLE_THEME: "dark",
+      });
+    } finally {
+      document.documentElement.classList.remove("dark");
+      document.body.style.removeProperty("background-color");
+      document.body.style.removeProperty("color");
+    }
+  });
+
+  it("keeps a running Codex launch palette until an explicit theme restart", async () => {
+    testState.resolvedTheme = "dark";
+    const command = decodeTerminalLaunchCommand({
+      executable: "codex.exe",
+      args: ["--dangerously-bypass-approvals-and-sandbox"],
+      env: { COMMAND_ONLY: "yes" },
+    })!;
+    const props = viewportProps({
+      terminalLabel: "Codex Terminal",
+      command,
+      worktreePath: null,
+      runtimeEnv: { RUNTIME_ONLY: "yes" },
+    });
+    const mounted = await mount(<TerminalViewport {...props} />);
+    const terminal = xtermState.terminals[0]!;
+    const initialAttachment = testState.attachedSessionInputs.at(-1) as {
+      terminal: { env?: Record<string, string> };
+    };
+
+    testState.resolvedTheme = "light";
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+
+    const attachmentAfterThemeChange = testState.attachedSessionInputs.at(-1) as {
+      terminal: { env?: Record<string, string> };
+    };
+    expect(attachmentAfterThemeChange.terminal).toEqual(initialAttachment.terminal);
+    expect(attachmentAfterThemeChange.terminal.env).toMatchObject({
+      T4CODE_OSC_BACKGROUND: "14,18,24",
+      T4CODE_WINDOWS_CONSOLE_THEME: "dark",
+    });
+    expect(xtermState.terminals).toHaveLength(1);
+    expect(terminal.options.theme).toEqual(
+      expect.objectContaining({ background: "rgb(14, 18, 24)" }),
+    );
+    const observer = observerInstances[0]!;
+    observer.callback([], observer as never);
+    expect(terminal.options.theme).toEqual(
+      expect.objectContaining({ background: "rgb(14, 18, 24)" }),
+    );
+
+    await click(buttonByLabel("Restart Codex Terminal to apply Light theme"));
+
+    expect(testState.restartCommand).toHaveBeenCalledWith({
+      environmentId: ENVIRONMENT_ID,
+      input: {
+        threadId: THREAD_ID,
+        terminalId: "term-1",
+        cwd: "/repo",
+        worktreePath: null,
+        cols: 80,
+        rows: 24,
+        env: {
+          COMMAND_ONLY: "yes",
+          RUNTIME_ONLY: "yes",
+          T4CODE_OSC_BACKGROUND: "255,255,255",
+          T4CODE_OSC_FOREGROUND: "28,33,41",
+          T4CODE_OSC_CURSOR: "38,56,78",
+          T4CODE_WINDOWS_CONSOLE_THEME: "light",
+        },
+        command,
+      },
+    });
+
+    expect(terminal.options.theme).toEqual(
+      expect.objectContaining({ background: "rgb(14, 18, 24)" }),
+    );
+    expect(buttonByLabel("Restart Codex Terminal to apply Light theme").disabled).toBe(true);
+  });
+
+  it("keeps the Windows Codex launch palette when a generation arrives after a theme change", async () => {
+    testState.resolvedTheme = "dark";
+    const command = decodeTerminalLaunchCommand({ executable: "codex.exe", args: [] })!;
+    const props = viewportProps({ terminalLabel: "Codex Terminal", command });
+    const mounted = await mount(<TerminalViewport {...props} />);
+    const terminal = xtermState.terminals[0]!;
+
+    testState.resolvedTheme = "light";
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+
+    const runtime = testState.session.transcriptRuntime!;
+    runtime.ingest(restartedEvent("first authoritative generation"));
+    testState.session = { ...testState.session, generation: runtime.metadata().generation };
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+
+    expect(terminal.options.theme).toEqual(
+      expect.objectContaining({ background: "rgb(14, 18, 24)" }),
+    );
+    expect(buttonByLabel("Restart Codex Terminal to apply Light theme").disabled).toBe(false);
+    const attachmentThemes = testState.attachedSessionInputs.map((value) => {
+      const input = value as { terminal: { env?: Record<string, string> } };
+      return input.terminal.env?.T4CODE_WINDOWS_CONSOLE_THEME;
+    });
+    expect(attachmentThemes.filter((theme) => theme !== undefined)).toEqual(
+      expect.arrayContaining(["dark"]),
+    );
+    expect(attachmentThemes).not.toContain("light");
+  });
+
+  it("advances the Windows Codex attachment theme once after a confirmed restart generation", async () => {
+    testState.resolvedTheme = "dark";
+    const command = decodeTerminalLaunchCommand({ executable: "codex.exe", args: [] })!;
+    const props = viewportProps({ terminalLabel: "Codex Terminal", command });
+    const mounted = await mount(<TerminalViewport {...props} />);
+
+    testState.resolvedTheme = "light";
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+    await click(buttonByLabel("Restart Codex Terminal to apply Light theme"));
+
+    const runtime = testState.session.transcriptRuntime!;
+    runtime.ingest(restartedEvent("confirmed light restart"));
+    testState.session = { ...testState.session, generation: runtime.metadata().generation };
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+
+    const confirmedAttachment = testState.attachedSessionInputs.at(-1) as {
+      terminal: { env?: Record<string, string> };
+    };
+    expect(confirmedAttachment.terminal.env).toMatchObject({
+      T4CODE_OSC_BACKGROUND: "255,255,255",
+      T4CODE_WINDOWS_CONSOLE_THEME: "light",
+    });
+
+    runtime.ingest(restartedEvent("follow-up producer snapshot"));
+    testState.session = { ...testState.session, generation: runtime.metadata().generation };
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+
+    const stableAttachment = testState.attachedSessionInputs.at(-1) as {
+      terminal: { env?: Record<string, string> };
+    };
+    expect(stableAttachment.terminal.env).toMatchObject({
+      T4CODE_OSC_BACKGROUND: "255,255,255",
+      T4CODE_WINDOWS_CONSOLE_THEME: "light",
+    });
+    const attachmentThemeTransitions = testState.attachedSessionInputs
+      .map((value) => {
+        const input = value as { terminal: { env?: Record<string, string> } };
+        return input.terminal.env?.T4CODE_WINDOWS_CONSOLE_THEME;
+      })
+      .filter((theme): theme is string => theme !== undefined)
+      .filter((theme, index, themes) => index === 0 || theme !== themes[index - 1]);
+    expect(attachmentThemeTransitions).toEqual(["dark", "light"]);
+    expect(xtermState.terminals).toHaveLength(1);
+    expect(document.querySelector('button[aria-label^="Restart Codex Terminal"]')).toBeNull();
+  });
+
+  it("adopts the new Codex palette only after the restarted generation arrives", async () => {
+    testState.resolvedTheme = "dark";
+    const command = decodeTerminalLaunchCommand({ executable: "codex", args: [] })!;
+    const props = viewportProps({ terminalLabel: "Codex Terminal", command });
+    const mounted = await mount(<TerminalViewport {...props} />);
+    const terminal = xtermState.terminals[0]!;
+
+    testState.resolvedTheme = "light";
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+    await click(buttonByLabel("Restart Codex Terminal to apply Light theme"));
+
+    expect(document.querySelector('button[aria-label^="Restart Codex Terminal"]')).not.toBeNull();
+    expect(terminal.options.theme).toEqual(
+      expect.objectContaining({ background: "rgb(14, 18, 24)" }),
+    );
+
+    const runtime = testState.session.transcriptRuntime!;
+    runtime.ingest(restartedEvent("restarted with light theme"));
+    testState.session = {
+      ...testState.session,
+      generation: runtime.metadata().generation,
+    };
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+
+    expect(xtermState.terminals).toHaveLength(1);
+    expect(terminal.options.theme).toEqual(
+      expect.objectContaining({ background: "rgb(255, 255, 255)" }),
+    );
+    expect(document.querySelector('button[aria-label^="Restart Codex Terminal"]')).toBeNull();
+  });
+
+  it("adopts the requested Codex process theme when the app theme changes before generation", async () => {
+    testState.resolvedTheme = "dark";
+    const command = decodeTerminalLaunchCommand({ executable: "codex", args: [] })!;
+    const props = viewportProps({ terminalLabel: "Codex Terminal", command });
+    const mounted = await mount(<TerminalViewport {...props} />);
+    const terminal = xtermState.terminals[0]!;
+
+    testState.resolvedTheme = "light";
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+    await click(buttonByLabel("Restart Codex Terminal to apply Light theme"));
+
+    testState.resolvedTheme = "dark";
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+    expect(document.querySelector('button[aria-label^="Restart Codex Terminal"]')).toBeNull();
+
+    const runtime = testState.session.transcriptRuntime!;
+    runtime.ingest(restartedEvent("process launched with requested light theme"));
+    testState.session = { ...testState.session, generation: runtime.metadata().generation };
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+
+    expect(terminal.options.theme).toEqual(
+      expect.objectContaining({ background: "rgb(255, 255, 255)" }),
+    );
+    expect(buttonByLabel("Restart Codex Terminal to apply Dark theme").disabled).toBe(false);
+  });
+
+  it("keeps a successful restart pending and deduplicated until generation advances", async () => {
+    testState.resolvedTheme = "dark";
+    const command = decodeTerminalLaunchCommand({ executable: "codex", args: [] })!;
+    const props = viewportProps({ terminalLabel: "Codex Terminal", command });
+    const mounted = await mount(<TerminalViewport {...props} />);
+    testState.resolvedTheme = "light";
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+
+    const restartButton = buttonByLabel("Restart Codex Terminal to apply Light theme");
+    await act(async () => {
+      restartButton.click();
+      restartButton.click();
+      await Promise.resolve();
+    });
+
+    expect(testState.restartCommand).toHaveBeenCalledOnce();
+    expect(buttonByLabel("Restart Codex Terminal to apply Light theme").disabled).toBe(true);
+
+    await click(buttonByLabel("Restart Codex Terminal to apply Light theme"));
+    expect(testState.restartCommand).toHaveBeenCalledOnce();
+  });
+
+  it("does not close the terminal for a transient closed event during a theme restart", async () => {
+    testState.resolvedTheme = "dark";
+    const onSessionExited = vi.fn();
+    const command = decodeTerminalLaunchCommand({ executable: "codex", args: [] })!;
+    const props = viewportProps({ terminalLabel: "Codex Terminal", command, onSessionExited });
+    const mounted = await mount(<TerminalViewport {...props} />);
+
+    testState.resolvedTheme = "light";
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+    await click(buttonByLabel("Restart Codex Terminal to apply Light theme"));
+
+    const runtime = testState.session.transcriptRuntime!;
+    runtime.ingest({
+      type: "closed",
+      threadId: THREAD_ID,
+      terminalId: "term-1",
+      sequence: 2,
+    });
+    testState.session = {
+      ...testState.session,
+      status: runtime.metadata().status,
+    };
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+
+    expect(onSessionExited).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["success", AsyncResult.success(undefined)],
+    ["failure", AsyncResult.failure(Cause.fail(new Error("late restart failure")))],
+  ])(
+    "ignores a late %s result after the requested generation was consumed",
+    async (_label, lateResult) => {
+      let resolveRestart!: (result: typeof lateResult) => void;
+      testState.restartCommand.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveRestart = resolve;
+          }),
+      );
+      testState.resolvedTheme = "dark";
+      const command = decodeTerminalLaunchCommand({ executable: "codex", args: [] })!;
+      const props = viewportProps({ terminalLabel: "Codex Terminal", command });
+      const mounted = await mount(<TerminalViewport {...props} />);
+      testState.resolvedTheme = "light";
+      await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+      await click(buttonByLabel("Restart Codex Terminal to apply Light theme"));
+
+      testState.resolvedTheme = "dark";
+      const runtime = testState.session.transcriptRuntime!;
+      runtime.ingest(restartedEvent("new requested generation"));
+      testState.session = { ...testState.session, generation: runtime.metadata().generation };
+      await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+      expect(buttonByLabel("Restart Codex Terminal to apply Dark theme").disabled).toBe(false);
+
+      await act(async () => resolveRestart(lateResult));
+
+      expect(buttonByLabel("Restart Codex Terminal to apply Dark theme").disabled).toBe(false);
+      expect(mounted.container.querySelector('[role="alert"]')).toBeNull();
+    },
+  );
+
+  it("repaints a non-Windows provider terminal live without offering a restart", async () => {
+    testState.serverConfig = {
+      availableEditors: ["vscode"],
+      environment: { platform: { os: "darwin" } },
+    };
+    testState.resolvedTheme = "dark";
+    const props = viewportProps({
+      terminalLabel: "Claude Terminal",
+      command: decodeTerminalLaunchCommand({ executable: "claude", args: [] })!,
+    });
+    const mounted = await mount(<TerminalViewport {...props} />);
+    const terminal = xtermState.terminals[0]!;
+
+    testState.resolvedTheme = "light";
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+
+    expect(terminal.options.theme).toEqual(
+      expect.objectContaining({ background: "rgb(255, 255, 255)" }),
+    );
+    expect(document.querySelector('button[aria-label^="Restart Codex Terminal"]')).toBeNull();
+    expect(testState.restartCommand).not.toHaveBeenCalled();
+  });
+
+  it("repaints Codex live on Darwin without re-keying the attachment or offering a restart", async () => {
+    testState.serverConfig = {
+      availableEditors: ["vscode"],
+      environment: { platform: { os: "darwin" } },
+    };
+    testState.resolvedTheme = "dark";
+    const command = decodeTerminalLaunchCommand({ executable: "codex", args: [] })!;
+    const props = viewportProps({ terminalLabel: "Codex Terminal", command });
+    const mounted = await mount(<TerminalViewport {...props} />);
+    const terminal = xtermState.terminals[0]!;
+    const initialAttachment = testState.attachedSessionInputs.at(-1) as {
+      terminal: { env?: Record<string, string> };
+    };
+
+    testState.resolvedTheme = "light";
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+
+    const attachmentAfterThemeChange = testState.attachedSessionInputs.at(-1) as {
+      terminal: { env?: Record<string, string> };
+    };
+    expect(attachmentAfterThemeChange.terminal).toEqual(initialAttachment.terminal);
+    expect(attachmentAfterThemeChange.terminal.env).not.toHaveProperty(
+      "T4CODE_WINDOWS_CONSOLE_THEME",
+    );
+    expect(terminal.options.theme).toEqual(
+      expect.objectContaining({ background: "rgb(255, 255, 255)" }),
+    );
+    expect(document.querySelector('button[aria-label^="Restart Codex Terminal"]')).toBeNull();
+    expect(testState.restartCommand).not.toHaveBeenCalled();
+  });
+
+  it("dismisses the Codex theme notice without restarting the process", async () => {
+    testState.resolvedTheme = "dark";
+    const props = viewportProps({
+      terminalLabel: "Codex Terminal",
+      command: decodeTerminalLaunchCommand({ executable: "codex", args: [] })!,
+    });
+    const mounted = await mount(<TerminalViewport {...props} />);
+
+    testState.resolvedTheme = "light";
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+    await click(buttonByLabel("Dismiss terminal theme notice"));
+
+    expect(testState.restartCommand).not.toHaveBeenCalled();
+    expect(document.querySelector('button[aria-label^="Restart Codex Terminal"]')).toBeNull();
+  });
+
+  it("disables the Codex theme notice controls while restart is pending", async () => {
+    let resolveRestart!: (result: ReturnType<typeof AsyncResult.success>) => void;
+    testState.restartCommand.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRestart = resolve;
+        }),
+    );
+    testState.resolvedTheme = "dark";
+    const props = viewportProps({
+      terminalLabel: "Codex Terminal",
+      command: decodeTerminalLaunchCommand({ executable: "codex", args: [] })!,
+    });
+    const mounted = await mount(<TerminalViewport {...props} />);
+    testState.resolvedTheme = "light";
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+
+    await click(buttonByLabel("Restart Codex Terminal to apply Light theme"));
+
+    expect(buttonByLabel("Restart Codex Terminal to apply Light theme").disabled).toBe(true);
+    expect(buttonByLabel("Dismiss terminal theme notice").disabled).toBe(true);
+    expect(mounted.container.textContent).toContain("Restarting");
+
+    await act(async () => resolveRestart(AsyncResult.success(undefined)));
+    expect(buttonByLabel("Restart Codex Terminal to apply Light theme").disabled).toBe(true);
+  });
+
+  it("keeps a failed Codex theme restart visible and retryable", async () => {
+    testState.restartCommand
+      .mockResolvedValueOnce(AsyncResult.failure(Cause.fail(new Error("restart unavailable"))))
+      .mockResolvedValueOnce(AsyncResult.success(undefined));
+    testState.resolvedTheme = "dark";
+    const props = viewportProps({
+      terminalLabel: "Codex Terminal",
+      command: decodeTerminalLaunchCommand({ executable: "codex", args: [] })!,
+    });
+    const mounted = await mount(<TerminalViewport {...props} />);
+    const terminal = xtermState.terminals[0]!;
+    testState.resolvedTheme = "light";
+    await act(async () => mounted.root.render(<TerminalViewport {...props} />));
+
+    await click(buttonByLabel("Restart Codex Terminal to apply Light theme"));
+
+    expect(mounted.container.querySelector('[role="alert"]')?.textContent).toContain(
+      "restart unavailable",
+    );
+    expect(buttonByLabel("Restart Codex Terminal to apply Light theme").disabled).toBe(false);
+    expect(terminal.options.theme).toEqual(
+      expect.objectContaining({ background: "rgb(14, 18, 24)" }),
+    );
+
+    await click(buttonByLabel("Restart Codex Terminal to apply Light theme"));
+    expect(testState.restartCommand).toHaveBeenCalledTimes(2);
+  });
+
   it("skips the theme refresh when a document mutation leaves the resolved theme unchanged", async () => {
     await mount(<TerminalViewport {...viewportProps()} />);
     const terminal = xtermState.terminals[0]!;
@@ -2857,6 +3508,7 @@ describe("TerminalViewport mounted lifecycle", () => {
 
   it("tolerates an unmeasurable terminal and applies the dark application theme", async () => {
     xtermState.fitShouldThrow = true;
+    testState.resolvedTheme = "dark";
     document.documentElement.classList.add("dark");
     const mounted = await mount(
       <TerminalViewport
