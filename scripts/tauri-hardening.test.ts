@@ -18,7 +18,10 @@ const TauriConfiguration = Schema.fromJsonString(
     }),
     bundle: Schema.Struct({
       icon: Schema.Array(Schema.String),
-      macOS: Schema.Struct({ minimumSystemVersion: Schema.String }),
+      macOS: Schema.Struct({
+        minimumSystemVersion: Schema.String,
+        signingIdentity: Schema.optionalKey(Schema.String),
+      }),
       resources: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
     }),
   }),
@@ -58,6 +61,19 @@ it.layer(NodeServices.layer)("Tauri production hardening", (it) => {
         assert.equal(yield* fs.exists(path.join(repoRoot, iconPath)), true, iconPath);
       }
       assert.equal(yield* fs.exists(path.join(repoRoot, "apps/desktop/resources")), false);
+    }),
+  );
+
+  it.effect("ad-hoc signs macOS application bundles without an Apple identity", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const repoRoot = yield* path.fromFileUrl(new URL("..", import.meta.url));
+      const tauri = yield* decodeTauriConfiguration(
+        yield* fs.readFileString(path.join(repoRoot, "apps/desktop/src-tauri/tauri.conf.json")),
+      );
+
+      assert.equal(tauri.bundle.macOS.signingIdentity, "-");
     }),
   );
 

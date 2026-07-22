@@ -38,7 +38,8 @@
     "active": true,
     "targets": "all",
     "macOS": {
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-"
     },
     "icon": [
       "../../../assets/prod/black-universal-1024.png",
