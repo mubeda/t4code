@@ -70,6 +70,7 @@ describe("splitPromptIntoComposerSegments", () => {
       "Ask @reviewer about @src/reviewer",
       [],
       new Set(["reviewer"]),
+      { reconstructTrailingReferences: true },
     );
 
     expect(segments).toMatchObject([
@@ -77,6 +78,21 @@ describe("splitPromptIntoComposerSegments", () => {
       { type: "agent", name: "reviewer", source: "@reviewer" },
       { type: "text", text: " about " },
       { type: "mention", path: "src/reviewer", source: "@src/reviewer" },
+    ]);
+  });
+
+  it("reconstructs trailing native file references without an agent inventory", () => {
+    expect(
+      splitPromptIntoComposerSegments("Inspect @src/main.ts", [], new Set(), {
+        reconstructTrailingReferences: true,
+      }),
+    ).toEqual([
+      { type: "text", text: "Inspect " },
+      {
+        type: "mention",
+        path: "src/main.ts",
+        source: "@src/main.ts",
+      },
     ]);
   });
 

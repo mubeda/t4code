@@ -964,6 +964,7 @@ function $setComposerEditorPrompt(
     prompt,
     terminalContexts,
     new Set(agentMetadata.keys()),
+    { reconstructTrailingReferences: true },
   );
   for (const segment of segments) {
     if (segment.type === "mention") {

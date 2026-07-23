@@ -31,6 +31,10 @@ export type ComposerPromptSegment =
       context: TerminalContextDraft | null;
     };
 
+export interface SplitPromptIntoComposerSegmentsOptions {
+  readonly reconstructTrailingReferences?: boolean;
+}
+
 function rangeIncludesIndex(start: number, end: number, index: number): boolean {
   return start <= index && index < end;
 }
@@ -153,6 +157,7 @@ function trailingNativeMentionToken(text: string): ComposerInlineToken | null {
 function splitPromptTextIntoComposerSegments(
   text: string,
   mentionableAgentNames: ReadonlySet<string>,
+  options: SplitPromptIntoComposerSegmentsOptions,
 ): ComposerPromptSegment[] {
   const segments: ComposerPromptSegment[] = [];
   if (!text) {
@@ -160,7 +165,7 @@ function splitPromptTextIntoComposerSegments(
   }
 
   const tokenMatches = [...collectComposerInlineTokens(text)];
-  if (mentionableAgentNames.size > 0) {
+  if (options.reconstructTrailingReferences) {
     const trailingMention = trailingNativeMentionToken(text);
     if (
       trailingMention &&
@@ -251,6 +256,7 @@ export function splitPromptIntoComposerSegments(
   prompt: string,
   terminalContexts: ReadonlyArray<TerminalContextDraft> = [],
   mentionableAgentNames: ReadonlySet<string> = new Set(),
+  options: SplitPromptIntoComposerSegmentsOptions = {},
 ): ComposerPromptSegment[] {
   if (!prompt) {
     return [];
@@ -260,7 +266,9 @@ export function splitPromptIntoComposerSegments(
   let terminalContextIndex = 0;
   forEachPromptSegmentSlice(prompt, (slice) => {
     if (slice.type === "text") {
-      segments.push(...splitPromptTextIntoComposerSegments(slice.text, mentionableAgentNames));
+      segments.push(
+        ...splitPromptTextIntoComposerSegments(slice.text, mentionableAgentNames, options),
+      );
       return false;
     }
 

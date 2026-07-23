@@ -416,6 +416,11 @@ describe("isCollapsedCursorAdjacentToInlineToken", () => {
     const text = "hello @pac";
     expect(isCollapsedCursorAdjacentToInlineToken(text, text.length, "left")).toBe(false);
     expect(isCollapsedCursorAdjacentToInlineToken(text, text.length, "right")).toBe(false);
+    expect(clampCollapsedComposerCursor(text, text.length)).toBe(text.length);
+    expect(detectComposerTrigger(text, text.length)).toMatchObject({
+      kind: "provider-reference",
+      query: "pac",
+    });
   });
 
   it("detects left adjacency only when cursor is directly after a mention", () => {

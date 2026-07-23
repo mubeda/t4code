@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 import { type ServerProviderAgent, type ServerProviderSkill, ThreadId } from "@t4code/contracts";
 import { serializeComposerReference } from "@t4code/shared/composerReferences";
 import { serializeComposerFileLink } from "@t4code/shared/composerTrigger";
@@ -20,7 +22,8 @@ import {
   type LexicalEditor,
   type LexicalNode,
 } from "lexical";
-import { createRef } from "react";
+import { act, createRef } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -42,14 +45,27 @@ const harness = vi.hoisted(() => ({
   effects: [] as Array<() => unknown>,
   executed: [] as Array<() => unknown>,
   editors: [] as unknown[],
+  useRealEffects: false,
 }));
 
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
-  const queueEffect: typeof actual.useEffect = (effect) => {
+  const queueEffect: typeof actual.useEffect = (effect, dependencies) => {
+    if (harness.useRealEffects) {
+      return actual.useEffect(effect, dependencies);
+    }
     harness.effects.push(effect);
   };
-  const queueImperativeHandle: typeof actual.useImperativeHandle = (ref, create) => {
+  const queueLayoutEffect: typeof actual.useLayoutEffect = (effect, dependencies) => {
+    if (harness.useRealEffects) {
+      return actual.useLayoutEffect(effect, dependencies);
+    }
+    harness.effects.push(effect);
+  };
+  const queueImperativeHandle: typeof actual.useImperativeHandle = (ref, create, dependencies) => {
+    if (harness.useRealEffects) {
+      return actual.useImperativeHandle(ref, create, dependencies);
+    }
     harness.effects.push(() => {
       if (typeof ref === "function") {
         ref(create());
@@ -67,7 +83,7 @@ vi.mock("react", async (importOriginal) => {
   return {
     ...actual,
     useEffect: queueEffect,
-    useLayoutEffect: queueEffect,
+    useLayoutEffect: queueLayoutEffect,
     useImperativeHandle: queueImperativeHandle,
     useEffectEvent: passthroughEffectEvent,
   };
@@ -100,6 +116,9 @@ vi.mock("@lexical/react/LexicalOnChangePlugin", async () => {
       ) => void;
     }) {
       const [editor] = useLexicalComposerContext();
+      if (harness.useRealEffects) {
+        return null;
+      }
       harness.effects.push(() =>
         editor.registerUpdateListener(({ editorState, prevEditorState, tags }) => {
           if (tags.has(HISTORY_MERGE_TAG) || prevEditorState.isEmpty()) {
@@ -414,12 +433,14 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 beforeEach(() => {
+  harness.useRealEffects = false;
   harness.effects.length = 0;
   harness.executed.length = 0;
   harness.editors.length = 0;
 });
 
 afterEach(() => {
+  harness.useRealEffects = false;
   vi.unstubAllGlobals();
 });
 
@@ -472,6 +493,20 @@ describe("ComposerPromptEditor rendering", () => {
     expect(types).toContain("composer-skill");
     expect(types).toContain("composer-terminal-context");
     expect(types).toContain("linebreak");
+  });
+
+  it("reconstructs an EOF native file reference without mentionable agents", () => {
+    const value = "Inspect @src/main.ts";
+    const { editor } = renderEditor({ value });
+
+    expect(readRootText(editor)).toBe(value);
+    expect(
+      editor.getEditorState().read(() =>
+        $paragraph()
+          .getChildren()
+          .map((child) => child.getType()),
+      ),
+    ).toContain("composer-mention");
   });
 
   it("falls back to the formatted skill name when metadata is missing", () => {
@@ -692,22 +727,65 @@ describe("ComposerPromptEditor inline token nodes", () => {
     expect(terminalMarkup).toContain("Terminal 1");
   });
 
-  it("changes exact agent references between file and agent chips without changing source", () => {
+  it("updates the same editor when provider agent metadata changes", async () => {
+    harness.useRealEffects = true;
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const editorRef = createRef<ComposerPromptEditorHandle>();
+    const onChange = vi.fn();
     const source = "ask @reviewer next";
-    const withoutInventory = renderEditor({ value: source });
-    const withInventory = renderEditor({ value: source, agents });
-    const typeForReference = (editor: LexicalEditor) =>
-      editor.getEditorState().read(() =>
-        $paragraph()
-          .getChildren()
-          .find((child) => child.getTextContent() === "@reviewer")
-          ?.getType(),
-      );
+    const cursor = "ask ".length + 1;
+    const renderWithAgents = (nextAgents: ReadonlyArray<ServerProviderAgent>) => (
+      <ComposerPromptEditor
+        value={source}
+        cursor={cursor}
+        terminalContexts={[]}
+        skills={[]}
+        agents={nextAgents}
+        disabled={false}
+        placeholder="Ask anything"
+        onRemoveTerminalContext={vi.fn()}
+        onChange={onChange}
+        onPaste={vi.fn()}
+        editorRef={editorRef}
+      />
+    );
 
-    expect(readRootText(withoutInventory.editor)).toBe(source);
-    expect(typeForReference(withoutInventory.editor)).toBe("composer-mention");
-    expect(readRootText(withInventory.editor)).toBe(source);
-    expect(typeForReference(withInventory.editor)).toBe("composer-agent");
+    try {
+      await act(async () => root.render(renderWithAgents([])));
+      const initialEditor = lastEditor();
+      expect(container.querySelector('[data-composer-mention-chip="true"]')).not.toBeNull();
+      expect(editorRef.current?.readSnapshot()).toMatchObject({
+        value: source,
+        cursor,
+      });
+
+      await act(async () => root.render(renderWithAgents(agents)));
+      expect(lastEditor()).toBe(initialEditor);
+      expect(container.querySelector('[data-composer-agent-chip="true"]')).not.toBeNull();
+      expect(container.querySelector('[data-composer-mention-chip="true"]')).toBeNull();
+      expect(editorRef.current?.readSnapshot()).toMatchObject({
+        value: source,
+        cursor,
+      });
+
+      await act(async () => root.render(renderWithAgents([])));
+      expect(lastEditor()).toBe(initialEditor);
+      expect(container.querySelector('[data-composer-mention-chip="true"]')).not.toBeNull();
+      expect(container.querySelector('[data-composer-agent-chip="true"]')).toBeNull();
+      expect(editorRef.current?.readSnapshot()).toMatchObject({
+        value: source,
+        cursor,
+      });
+      expect(onChange).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      harness.useRealEffects = false;
+      (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
+    }
   });
 });
 
