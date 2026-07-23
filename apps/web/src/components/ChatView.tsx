@@ -65,10 +65,7 @@ import { AsyncResult } from "effect/unstable/reactivity";
 import { isDesktopHost } from "../env";
 import { readLocalApi } from "../localApi";
 import { useDiffPanelStore } from "../diffPanelStore";
-import {
-  collapseExpandedComposerCursor,
-  parseStandaloneComposerT4CodeAction,
-} from "../composer-logic";
+import { parseStandaloneComposerT4CodeAction } from "../composer-logic";
 import {
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -4499,7 +4496,7 @@ function ChatViewContent(props: ChatViewProps) {
         setComposerDraftPreviewAnnotations(composerDraftTarget, composerPreviewAnnotationsSnapshot);
         setComposerDraftReviewComments(composerDraftTarget, composerReviewCommentsSnapshot);
         composerRef.current?.resetCursorState({
-          cursor: collapseExpandedComposerCursor(promptForSend, promptForSend.length),
+          cursor: promptForSend.length,
           prompt: promptForSend,
           detectTrigger: true,
         });

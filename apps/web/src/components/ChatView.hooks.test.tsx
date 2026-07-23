@@ -3496,6 +3496,38 @@ describe("ChatView send flows", () => {
     expect(optimisticUpdates.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("restores unsupported OpenCode dollar text at the raw prompt end", async () => {
+    seedConnectedServerThread();
+    h.commandResults["thread.startTurn"] = () =>
+      AsyncResult.failure(Cause.fail(new Error("turn rejected")));
+    renderServerRoute();
+    const prompt = "Retry $refactor in OpenCode";
+    const resetCursorState = vi.fn();
+    const { promptRef } = installComposerHandle({
+      resetCursorState,
+      getSendContext: () => ({
+        ...composerHandle().getSendContext(),
+        selectedProvider: ProviderDriverKind.make("opencode"),
+        selectedModelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "openai/gpt-5",
+        },
+        selectedModel: "openai/gpt-5",
+        selectedProviderModels: [],
+      }),
+    });
+    promptRef.current = prompt;
+
+    await (capturedProps("chatComposer")["onSend"] as () => Promise<void>)();
+
+    expect(resetCursorState).toHaveBeenCalledTimes(2);
+    expect(resetCursorState).toHaveBeenLastCalledWith({
+      cursor: prompt.length,
+      prompt,
+      detectTrigger: true,
+    });
+  });
+
   it("sends image attachments through FileReader data urls", async () => {
     class FakeFileReader {
       result: string | null = null;
