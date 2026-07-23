@@ -565,6 +565,11 @@ const server = NodeHTTP.createServer(async (request, response) => {
     sendJson(response, {});
     return;
   }
+  if (request.method === "POST" && pathname === "/t4code-fixture/shutdown") {
+    sendJson(response, { shuttingDown: true });
+    setTimeout(close, 0);
+    return;
+  }
   sendJson(response, {});
 });
 
@@ -622,7 +627,12 @@ function createProviderShims(shimDirectory: string, isWindows: boolean): void {
   }
 }
 
-function writeProviderSettings(stateRoot: string, shimDirectory: string, isWindows: boolean): void {
+function writeProviderSettings(
+  stateRoot: string,
+  shimDirectory: string,
+  fixtureUserHomePath: string,
+  isWindows: boolean,
+): void {
   const executablePath = (name: string): string =>
     NodePath.join(shimDirectory, isWindows ? `${name}.cmd` : name);
   const userDataDirectory = NodePath.join(stateRoot, "userdata");
@@ -637,6 +647,19 @@ function writeProviderSettings(stateRoot: string, shimDirectory: string, isWindo
           cursor: { enabled: true, binaryPath: executablePath("cursor-agent") },
           grok: { enabled: true, binaryPath: executablePath("grok") },
           opencode: { enabled: true, binaryPath: executablePath("opencode") },
+        },
+        providerInstances: {
+          cursor: {
+            driver: "cursor",
+            enabled: true,
+            environment: [
+              {
+                name: isWindows ? "USERPROFILE" : "HOME",
+                value: fixtureUserHomePath,
+                sensitive: false,
+              },
+            ],
+          },
         },
       },
       null,
@@ -737,7 +760,7 @@ export function prepareDesktopUiTestContext(
   const hostPlatform = environment.T4CODE_E2E_PLATFORM ?? process.platform;
   const isWindows = hostPlatform === "win" || hostPlatform === "win32";
   createProviderShims(shimDirectory, isWindows);
-  writeProviderSettings(stateRoot, shimDirectory, isWindows);
+  writeProviderSettings(stateRoot, shimDirectory, fixtureUserHomePath, isWindows);
 
   environment.T4CODE_E2E_RUN_ROOT = runRoot;
   environment.T4CODE_E2E_ARTIFACT_DIR = artifactDirectory;

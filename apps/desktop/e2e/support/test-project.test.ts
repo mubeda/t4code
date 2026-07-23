@@ -74,6 +74,32 @@ describe.each([
     expect(context.fixtureUserHomePath.startsWith(`${context.runRoot}${NodePath.sep}`)).toBe(true);
     expect(environment.T4CODE_E2E_USER_HOME).toBe(expectedFixtureUserHome);
     expect(NodeFS.readdirSync(context.fixtureUserHomePath)).toEqual([]);
+    const settings = JSON.parse(
+      NodeFS.readFileSync(NodePath.join(context.stateRoot, "userdata", "settings.json"), "utf8"),
+    ) as {
+      readonly providerInstances?: Record<
+        string,
+        {
+          readonly driver: string;
+          readonly environment: ReadonlyArray<{
+            readonly name: string;
+            readonly value: string;
+            readonly sensitive: boolean;
+          }>;
+        }
+      >;
+    };
+    expect(settings.providerInstances?.cursor).toEqual({
+      driver: "cursor",
+      enabled: true,
+      environment: [
+        {
+          name: platform === "win" ? "USERPROFILE" : "HOME",
+          value: expectedFixtureUserHome,
+          sensitive: false,
+        },
+      ],
+    });
     if (platform === "win") {
       expect(environment.USERPROFILE).toBe(expectedFixtureUserHome);
       expect(environment.HOME).toBe(expectedFixtureUserHome);

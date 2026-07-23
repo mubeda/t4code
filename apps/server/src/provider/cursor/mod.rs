@@ -5,7 +5,10 @@ pub mod runtime;
 
 #[cfg_attr(test, allow(unused_imports))]
 pub use acp::{AcpConnectionConfig, AcpJsonRpcConnection, IncomingEvent};
-pub use capabilities::{CursorWorkspaceCapabilities, discover_workspace_capabilities};
+pub use capabilities::{
+    CursorWorkspaceCapabilities, discover_workspace_capabilities,
+    discover_workspace_capabilities_with_environment,
+};
 #[cfg_attr(test, allow(unused_imports))]
 pub use model::{
     CursorAboutResult, CursorProviderModel, CursorProviderSnapshot,

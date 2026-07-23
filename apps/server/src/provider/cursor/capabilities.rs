@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
 };
 
@@ -14,10 +15,24 @@ pub struct CursorWorkspaceCapabilities {
 }
 
 pub async fn discover_workspace_capabilities(workspace: &Path) -> CursorWorkspaceCapabilities {
-    let home = dirs::home_dir();
+    discover_workspace_capabilities_with_home(workspace, dirs::home_dir().as_deref()).await
+}
+
+pub async fn discover_workspace_capabilities_with_environment(
+    workspace: &Path,
+    environment: &[(OsString, OsString)],
+) -> CursorWorkspaceCapabilities {
+    let home = configured_home(environment).or_else(dirs::home_dir);
+    discover_workspace_capabilities_with_home(workspace, home.as_deref()).await
+}
+
+async fn discover_workspace_capabilities_with_home(
+    workspace: &Path,
+    home: Option<&Path>,
+) -> CursorWorkspaceCapabilities {
     let mut capabilities = CursorWorkspaceCapabilities::default();
 
-    let command_roots = scoped_roots(workspace, home.as_deref(), ".cursor/commands");
+    let command_roots = scoped_roots(workspace, home, ".cursor/commands");
     let mut command_names = HashSet::new();
     for (root, _scope) in command_roots {
         for (name, _path) in markdown_files(&root).await {
@@ -28,7 +43,7 @@ pub async fn discover_workspace_capabilities(workspace: &Path) -> CursorWorkspac
     }
 
     let mut skill_names = HashSet::new();
-    for (root, scope) in skill_roots(workspace, home.as_deref()) {
+    for (root, scope) in skill_roots(workspace, home) {
         for (name, path) in skill_files(&root).await {
             if skill_names.insert(name.to_ascii_lowercase()) {
                 capabilities.skills.push(json!({
@@ -43,7 +58,7 @@ pub async fn discover_workspace_capabilities(workspace: &Path) -> CursorWorkspac
     }
 
     let mut agent_names = HashSet::new();
-    for (root, _scope) in agent_roots(workspace, home.as_deref()) {
+    for (root, _scope) in agent_roots(workspace, home) {
         for (name, _path) in markdown_files(&root).await {
             if agent_names.insert(name.to_ascii_lowercase()) {
                 capabilities.agents.push(json!({ "name": name }));
@@ -52,6 +67,31 @@ pub async fn discover_workspace_capabilities(workspace: &Path) -> CursorWorkspac
     }
 
     capabilities
+}
+
+fn configured_home(environment: &[(OsString, OsString)]) -> Option<PathBuf> {
+    let variable_names: &[&str] = if cfg!(windows) {
+        &["USERPROFILE", "HOME"]
+    } else {
+        &["HOME"]
+    };
+    variable_names.iter().find_map(|expected_name| {
+        environment
+            .iter()
+            .rev()
+            .find(|(name, value)| {
+                environment_name_matches(name, expected_name) && !value.is_empty()
+            })
+            .map(|(_, value)| PathBuf::from(value))
+    })
+}
+
+fn environment_name_matches(name: &OsStr, expected: &str) -> bool {
+    if cfg!(windows) {
+        name.to_string_lossy().eq_ignore_ascii_case(expected)
+    } else {
+        name == OsStr::new(expected)
+    }
 }
 
 fn scoped_roots(

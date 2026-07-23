@@ -3,6 +3,7 @@
 // @effect-diagnostics globalTimers:off - Native protocol polling runs outside an Effect runtime.
 // @effect-diagnostics globalFetch:off - The test probes its generated local OpenCode HTTP server.
 import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -19,44 +20,129 @@ import {
 interface PreparedProviderFixture {
   readonly context: DesktopUiTestContext;
   readonly environment: NodeJS.ProcessEnv;
+  readonly hostPlatform: ReturnType<typeof NodeOS.platform>;
+  readonly launchers: Record<ConfiguredProvider, string>;
 }
+
+type ConfiguredProvider = "codex" | "claudeAgent" | "cursor" | "opencode" | "grok";
 
 const preparedFixtures: PreparedProviderFixture[] = [];
 
 function prepareProviderFixture(): PreparedProviderFixture {
   // oxlint-disable-next-line t4code/no-global-process-runtime -- These integration tests execute shims for the current native host.
   const hostPlatform = NodeOS.platform();
+  const runRoot = NodeFS.mkdtempSync(
+    NodePath.join(NodeOS.tmpdir(), "t4code provider launcher root "),
+  );
   const environment: NodeJS.ProcessEnv = {
     ...process.env,
+    T4CODE_E2E_RUN_ROOT: runRoot,
+    T4CODE_E2E_ARTIFACT_DIR: NodePath.join(runRoot, "artifacts"),
     T4CODE_E2E_PLATFORM:
       hostPlatform === "win32" ? "win" : hostPlatform === "darwin" ? "mac" : "linux",
   };
   const context = prepareDesktopUiTestContext(environment);
-  const fixture = { context, environment };
+  const fixture = {
+    context,
+    environment,
+    hostPlatform,
+    launchers: readConfiguredLaunchers(context),
+  };
   preparedFixtures.push(fixture);
   return fixture;
 }
 
-function fixtureSourcePath(context: DesktopUiTestContext, name: string): string {
-  return NodePath.join(context.shimDirectory, `${name}-fixture.mjs`);
+function readConfiguredLaunchers(
+  context: DesktopUiTestContext,
+): Record<ConfiguredProvider, string> {
+  const settings = JSON.parse(
+    NodeFS.readFileSync(NodePath.join(context.stateRoot, "userdata", "settings.json"), "utf8"),
+  ) as {
+    readonly providers?: Partial<Record<ConfiguredProvider, { readonly binaryPath?: string }>>;
+  };
+  const launcher = (provider: ConfiguredProvider): string => {
+    const path = settings.providers?.[provider]?.binaryPath;
+    if (!path || !NodePath.isAbsolute(path) || !NodeFS.existsSync(path)) {
+      throw new Error(
+        `Configured ${provider} launcher is missing or invalid: ${JSON.stringify(path)}`,
+      );
+    }
+    return path;
+  };
+  return {
+    codex: launcher("codex"),
+    claudeAgent: launcher("claudeAgent"),
+    cursor: launcher("cursor"),
+    opencode: launcher("opencode"),
+    grok: launcher("grok"),
+  };
+}
+
+function windowsCommandToken(value: string): string {
+  if (/["\r\n]/u.test(value)) {
+    throw new Error(`Unsupported Windows fixture launcher token: ${JSON.stringify(value)}`);
+  }
+  return `"${value.replaceAll("%", "%%")}"`;
+}
+
+function configuredLauncherInvocation(
+  fixture: PreparedProviderFixture,
+  provider: ConfiguredProvider,
+  args: readonly string[],
+): { readonly command: string; readonly args: string[] } {
+  const launcher = fixture.launchers[provider];
+  if (fixture.hostPlatform !== "win32") {
+    return { command: launcher, args: [...args] };
+  }
+  const commandLine = `"${[launcher, ...args].map(windowsCommandToken).join(" ")}"`;
+  return {
+    command: fixture.environment.ComSpec ?? "cmd.exe",
+    args: ["/e:ON", "/v:OFF", "/d", "/s", "/c", commandLine],
+  };
+}
+
+function spawnConfiguredLauncherSync(
+  fixture: PreparedProviderFixture,
+  provider: ConfiguredProvider,
+  args: readonly string[],
+  input?: string,
+) {
+  const launch = configuredLauncherInvocation(fixture, provider, args);
+  return NodeChildProcess.spawnSync(launch.command, launch.args, {
+    encoding: "utf8",
+    env: fixture.environment,
+    windowsVerbatimArguments: fixture.hostPlatform === "win32",
+    ...(input === undefined ? {} : { input }),
+  });
+}
+
+function spawnConfiguredLauncher(
+  fixture: PreparedProviderFixture,
+  provider: ConfiguredProvider,
+  args: readonly string[],
+): NodeChildProcess.ChildProcess {
+  const launch = configuredLauncherInvocation(fixture, provider, args);
+  return NodeChildProcess.spawn(launch.command, launch.args, {
+    env: fixture.environment,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsVerbatimArguments: fixture.hostPlatform === "win32",
+  });
 }
 
 function exchangeJsonLines(
   fixture: PreparedProviderFixture,
-  name: string,
+  provider: ConfiguredProvider,
+  args: readonly string[],
   messages: ReadonlyArray<unknown>,
 ): Array<Record<string, unknown>> {
-  const result = NodeChildProcess.spawnSync(
-    process.execPath,
-    [fixtureSourcePath(fixture.context, name)],
-    {
-      encoding: "utf8",
-      env: fixture.environment,
-      input: `${messages.map((message) => JSON.stringify(message)).join("\n")}\n`,
-    },
+  const result = spawnConfiguredLauncherSync(
+    fixture,
+    provider,
+    args,
+    `${messages.map((message) => JSON.stringify(message)).join("\n")}\n`,
   );
   if (result.status !== 0) {
-    throw new Error(`${name} fixture failed (${result.status}): ${result.stderr}`);
+    throw new Error(`${provider} fixture failed (${result.status}): ${result.stderr}`);
   }
   return result.stdout
     .split(/\r?\n/u)
@@ -122,15 +208,11 @@ async function readServerSentEvent(
   let buffer = "";
   while (Date.now() < deadline) {
     const remaining = deadline - Date.now();
-    const chunk = await Promise.race([
+    const chunk = await withTimeout(
       reader.read(),
-      new Promise<never>((_, reject) => {
-        setTimeout(
-          () => reject(new Error(`Timed out waiting for SSE event ${eventType}.`)),
-          remaining,
-        );
-      }),
-    ]);
+      remaining,
+      `Timed out waiting for SSE event ${eventType}.`,
+    );
     if (chunk.done) {
       break;
     }
@@ -156,17 +238,43 @@ async function readServerSentEvent(
   throw new Error(`SSE event ${eventType} was not emitted. Buffered data: ${buffer}`);
 }
 
+async function withTimeout<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 async function stopFixtureProcess(child: NodeChildProcess.ChildProcess): Promise<void> {
   if (child.exitCode !== null) {
     return;
   }
   child.kill("SIGTERM");
-  await Promise.race([
+  await waitForFixtureProcessExit(child);
+}
+
+async function waitForFixtureProcessExit(child: NodeChildProcess.ChildProcess): Promise<void> {
+  if (child.exitCode !== null) {
+    return;
+  }
+  await withTimeout(
     new Promise<void>((resolve) => child.once("exit", () => resolve())),
-    new Promise<void>((_, reject) => {
-      setTimeout(() => reject(new Error("Fixture process did not stop after SIGTERM.")), 5_000);
-    }),
-  ]);
+    5_000,
+    "Fixture launcher process did not exit.",
+  );
 }
 
 afterEach(() => {
@@ -176,17 +284,38 @@ afterEach(() => {
 });
 
 describe("generated provider shims", () => {
+  it("executes configured host launchers from paths with spaces and forwards arguments", () => {
+    const fixture = prepareProviderFixture();
+    expect(fixture.context.runRoot).toContain(" ");
+    for (const [provider, expectedVersion] of [
+      ["codex", "codex-cli 99.0.0-fixture"],
+      ["claudeAgent", "2.1.200 (Claude Code)"],
+      ["cursor", "cursor-agent 99.0.0-fixture"],
+      ["opencode", "opencode 99.0.0-fixture"],
+      ["grok", "grok-cli 99.0.0-fixture"],
+    ] as const) {
+      const result = spawnConfiguredLauncherSync(fixture, provider, ["--version"]);
+      expect(result.status, `${provider}: ${result.stderr}`).toBe(0);
+      expect(result.stdout.trim()).toBe(expectedVersion);
+    }
+  });
+
   it("speaks Codex app-server inventory and turn protocols", () => {
     const fixture = prepareProviderFixture();
-    const responses = exchangeJsonLines(fixture, "codex", [
-      { id: 1, method: "initialize" },
-      { id: 2, method: "skills/list", params: { cwds: [fixture.context.projectPath] } },
-      {
-        id: 3,
-        method: "turn/start",
-        params: { input: [{ type: "text", text: "$refactor" }] },
-      },
-    ]);
+    const responses = exchangeJsonLines(
+      fixture,
+      "codex",
+      ["app-server"],
+      [
+        { id: 1, method: "initialize" },
+        { id: 2, method: "skills/list", params: { cwds: [fixture.context.projectPath] } },
+        {
+          id: 3,
+          method: "turn/start",
+          params: { input: [{ type: "text", text: "$refactor" }] },
+        },
+      ],
+    );
 
     expect(responseWithId(responses, 2)).toMatchObject({
       result: {
@@ -211,23 +340,28 @@ describe("generated provider shims", () => {
 
   it("speaks Claude control, skill reload, stream, and result protocols", () => {
     const fixture = prepareProviderFixture();
-    const responses = exchangeJsonLines(fixture, "claude", [
-      {
-        type: "control_request",
-        request_id: "initialize",
-        request: { subtype: "initialize" },
-      },
-      {
-        type: "control_request",
-        request_id: "skills",
-        request: { subtype: "reload_skills" },
-      },
-      {
-        type: "user",
-        session_id: "claude-fixture",
-        message: { content: [{ type: "text", text: "/compact" }] },
-      },
-    ]);
+    const responses = exchangeJsonLines(
+      fixture,
+      "claudeAgent",
+      ["--print", "--input-format", "stream-json", "--output-format", "stream-json"],
+      [
+        {
+          type: "control_request",
+          request_id: "initialize",
+          request: { subtype: "initialize" },
+        },
+        {
+          type: "control_request",
+          request_id: "skills",
+          request: { subtype: "reload_skills" },
+        },
+        {
+          type: "user",
+          session_id: "claude-fixture",
+          message: { content: [{ type: "text", text: "/compact" }] },
+        },
+      ],
+    );
 
     expect(responses).toContainEqual(
       expect.objectContaining({
@@ -260,17 +394,22 @@ describe("generated provider shims", () => {
 
   it("speaks Cursor ACP session and prompt protocols", () => {
     const fixture = prepareProviderFixture();
-    const responses = exchangeJsonLines(fixture, "cursor-agent", [
-      { jsonrpc: "2.0", id: 1, method: "initialize" },
-      { jsonrpc: "2.0", id: 2, method: "authenticate" },
-      { jsonrpc: "2.0", id: 3, method: "session/new", params: {} },
-      {
-        jsonrpc: "2.0",
-        id: 4,
-        method: "session/prompt",
-        params: { prompt: [{ type: "text", text: "/review" }] },
-      },
-    ]);
+    const responses = exchangeJsonLines(
+      fixture,
+      "cursor",
+      ["acp"],
+      [
+        { jsonrpc: "2.0", id: 1, method: "initialize" },
+        { jsonrpc: "2.0", id: 2, method: "authenticate" },
+        { jsonrpc: "2.0", id: 3, method: "session/new", params: {} },
+        {
+          jsonrpc: "2.0",
+          id: 4,
+          method: "session/prompt",
+          params: { prompt: [{ type: "text", text: "/review" }] },
+        },
+      ],
+    );
 
     expect(responseWithId(responses, 3)).toMatchObject({
       jsonrpc: "2.0",
@@ -292,19 +431,11 @@ describe("generated provider shims", () => {
     const fixture = prepareProviderFixture();
     const port = await reserveLocalPort();
     const endpoint = `http://127.0.0.1:${port}`;
-    const child = NodeChildProcess.spawn(
-      process.execPath,
-      [
-        fixtureSourcePath(fixture.context, "opencode"),
-        "serve",
-        "--hostname=127.0.0.1",
-        `--port=${port}`,
-      ],
-      {
-        env: fixture.environment,
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
+    const child = spawnConfiguredLauncher(fixture, "opencode", [
+      "serve",
+      "--hostname=127.0.0.1",
+      `--port=${port}`,
+    ]);
     const abort = new AbortController();
 
     try {
@@ -354,6 +485,14 @@ describe("generated provider shims", () => {
         { provider: "opencode", prompt: "@reviewer" },
       ]);
       await reader.cancel();
+      expect(
+        await (
+          await fetch(`${endpoint}/t4code-fixture/shutdown`, {
+            method: "POST",
+          })
+        ).json(),
+      ).toEqual({ shuttingDown: true });
+      await waitForFixtureProcessExit(child);
     } finally {
       abort.abort();
       await stopFixtureProcess(child);
@@ -362,17 +501,22 @@ describe("generated provider shims", () => {
 
   it("speaks Grok ACP session and prompt protocols", () => {
     const fixture = prepareProviderFixture();
-    const responses = exchangeJsonLines(fixture, "grok", [
-      { jsonrpc: "2.0", id: 1, method: "initialize" },
-      { jsonrpc: "2.0", id: 2, method: "authenticate" },
-      { jsonrpc: "2.0", id: 3, method: "session/create", params: {} },
-      {
-        jsonrpc: "2.0",
-        id: 4,
-        method: "session/prompt",
-        params: { prompt: [{ type: "text", text: "/skills" }] },
-      },
-    ]);
+    const responses = exchangeJsonLines(
+      fixture,
+      "grok",
+      ["agent", "stdio"],
+      [
+        { jsonrpc: "2.0", id: 1, method: "initialize" },
+        { jsonrpc: "2.0", id: 2, method: "authenticate" },
+        { jsonrpc: "2.0", id: 3, method: "session/create", params: {} },
+        {
+          jsonrpc: "2.0",
+          id: 4,
+          method: "session/prompt",
+          params: { prompt: [{ type: "text", text: "/skills" }] },
+        },
+      ],
+    );
 
     expect(responseWithId(responses, 3)).toMatchObject({
       jsonrpc: "2.0",

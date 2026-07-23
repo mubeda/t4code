@@ -517,7 +517,12 @@ async fn probe_one(
                     "error"
                 };
                 auth = about.auth;
-                let workspace_capabilities = cursor::discover_workspace_capabilities(cwd).await;
+                let workspace_capabilities =
+                    cursor::discover_workspace_capabilities_with_environment(
+                        cwd,
+                        &definition.environment,
+                    )
+                    .await;
                 capabilities.slash_commands = merge_slash_commands(
                     workspace_capabilities.slash_commands,
                     capabilities.slash_commands,
@@ -1874,6 +1879,78 @@ mod tests {
                 .agents
                 .iter()
                 .any(|agent| agent["name"] == "reviewer")
+        );
+    }
+
+    #[tokio::test]
+    async fn cursor_discovers_only_the_configured_environment_home() {
+        let workspace = tempfile::tempdir().expect("temporary Cursor workspace");
+        let configured_home = tempfile::tempdir().expect("temporary configured Cursor home");
+        let command_directory = configured_home.path().join(".cursor/commands");
+        let skill_directory = configured_home.path().join(".cursor/skills/user-review");
+        let agent_directory = configured_home.path().join(".cursor/agents");
+        tokio::fs::create_dir_all(&command_directory)
+            .await
+            .expect("create configured Cursor command directory");
+        tokio::fs::create_dir_all(&skill_directory)
+            .await
+            .expect("create configured Cursor skill directory");
+        tokio::fs::create_dir_all(&agent_directory)
+            .await
+            .expect("create configured Cursor agent directory");
+        tokio::fs::write(
+            command_directory.join("configured-review.md"),
+            "Review from the configured user home.",
+        )
+        .await
+        .expect("write configured Cursor command");
+        tokio::fs::write(skill_directory.join("SKILL.md"), "# Configured review")
+            .await
+            .expect("write configured Cursor skill");
+        tokio::fs::write(
+            agent_directory.join("configured-reviewer.md"),
+            "Review from the configured user home.",
+        )
+        .await
+        .expect("write configured Cursor agent");
+        let home_variable = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        let environment = vec![(
+            OsString::from(home_variable),
+            configured_home.path().as_os_str().to_owned(),
+        )];
+
+        let capabilities = cursor::discover_workspace_capabilities_with_environment(
+            workspace.path(),
+            &environment,
+        )
+        .await;
+
+        assert_eq!(
+            capabilities
+                .slash_commands
+                .iter()
+                .map(|command| command["name"].as_str().expect("Cursor command name"))
+                .collect::<Vec<_>>(),
+            vec!["configured-review"]
+        );
+        assert_eq!(
+            capabilities
+                .skills
+                .iter()
+                .map(|skill| (
+                    skill["name"].as_str().expect("Cursor skill name"),
+                    skill["scope"].as_str().expect("Cursor skill scope"),
+                ))
+                .collect::<Vec<_>>(),
+            vec![("user-review", "user")]
+        );
+        assert_eq!(
+            capabilities
+                .agents
+                .iter()
+                .map(|agent| agent["name"].as_str().expect("Cursor agent name"))
+                .collect::<Vec<_>>(),
+            vec!["configured-reviewer"]
         );
     }
 
