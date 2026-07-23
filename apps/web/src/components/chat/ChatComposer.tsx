@@ -36,6 +36,7 @@ import {
 import {
   clampCollapsedComposerCursor,
   collapseExpandedComposerCursor,
+  type ComposerInlineTokenContext,
   detectComposerTrigger,
   expandCollapsedComposerCursor,
   parseStandaloneComposerT4CodeAction,
@@ -803,6 +804,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => deriveComposerCapabilityProfile(selectedProviderStatus),
     [selectedProviderStatus],
   );
+  const composerInlineTokenContext = useMemo<ComposerInlineTokenContext>(
+    () => ({
+      mentionableAgentNames: composerCapabilities.mentionableAgentNames,
+      enabledDollarSkillNames: new Set(
+        composerCapabilities.dollarSkills.map((skill) => skill.name),
+      ),
+    }),
+    [composerCapabilities],
+  );
   const selectedProviderModels = useMemo<ReadonlyArray<ServerProvider["models"][number]>>(
     () => selectedProviderEntry?.models ?? [],
     [selectedProviderEntry],
@@ -889,11 +899,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Composer-local state
   // ------------------------------------------------------------------
   const [composerCursor, setComposerCursor] = useState(() =>
-    collapseExpandedComposerCursor(
-      prompt,
-      prompt.length,
-      composerCapabilities.mentionableAgentNames,
-    ),
+    collapseExpandedComposerCursor(prompt, prompt.length, composerInlineTokenContext),
   );
   const [composerTrigger, setComposerTrigger] = useState<ComposerTrigger | null>(() =>
     detectComposerTrigger(prompt, prompt.length, composerCapabilities.trigger),
@@ -916,6 +922,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerEditorRef = useRef<ComposerPromptEditorHandle>(null);
   const composerCapabilitiesRef = useRef(composerCapabilities);
   composerCapabilitiesRef.current = composerCapabilities;
+  const composerInlineTokenContextRef = useRef(composerInlineTokenContext);
+  composerInlineTokenContextRef.current = composerInlineTokenContext;
+  const previousComposerCursorMappingRef = useRef({
+    prompt,
+    inlineTokenContext: composerInlineTokenContext,
+  });
   const composerFormRef = useRef<HTMLFormElement>(null);
   const composerSurfaceRef = useRef<HTMLDivElement>(null);
   const composerSelectLockRef = useRef(false);
@@ -1060,7 +1072,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       const nextCursor = collapseExpandedComposerCursor(
         nextPrompt,
         nextPrompt.length,
-        composerCapabilities.mentionableAgentNames,
+        composerInlineTokenContext,
       );
       setComposerCursor(nextCursor);
       setComposerTrigger(
@@ -1071,6 +1083,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [
       composerCapabilities,
       composerDraftTarget,
+      composerInlineTokenContext,
       promptRef,
       scheduleComposerFocus,
       setComposerDraftPrompt,
@@ -1162,7 +1175,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       const nextCursor = collapseExpandedComposerCursor(
         removal.prompt,
         removal.cursor,
-        composerCapabilities.mentionableAgentNames,
+        composerInlineTokenContext,
       );
       setComposerCursor(nextCursor);
       setComposerTrigger(
@@ -1172,6 +1185,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [
       composerDraftTarget,
       composerCapabilities,
+      composerInlineTokenContext,
       composerTerminalContexts,
       promptRef,
       removeComposerDraftTerminalContext,
@@ -1184,10 +1198,26 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   useEffect(() => {
     promptRef.current = prompt;
-    setComposerCursor((existing) =>
-      clampCollapsedComposerCursor(prompt, existing, composerCapabilities.mentionableAgentNames),
-    );
-  }, [composerCapabilities.mentionableAgentNames, prompt, promptRef]);
+    const previousMapping = previousComposerCursorMappingRef.current;
+    previousComposerCursorMappingRef.current = {
+      prompt,
+      inlineTokenContext: composerInlineTokenContext,
+    };
+    setComposerCursor((existing) => {
+      if (
+        previousMapping.prompt === prompt &&
+        previousMapping.inlineTokenContext !== composerInlineTokenContext
+      ) {
+        const expandedCursor = expandCollapsedComposerCursor(
+          prompt,
+          existing,
+          previousMapping.inlineTokenContext,
+        );
+        return collapseExpandedComposerCursor(prompt, expandedCursor, composerInlineTokenContext);
+      }
+      return clampCollapsedComposerCursor(prompt, existing, composerInlineTokenContext);
+    });
+  }, [composerInlineTokenContext, prompt, promptRef]);
 
   useEffect(() => {
     composerImagesRef.current = composerImages;
@@ -1264,17 +1294,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     const nextCursor = collapseExpandedComposerCursor(
       nextCustomAnswer,
       nextCustomAnswer.length,
-      composerCapabilities.mentionableAgentNames,
+      composerInlineTokenContext,
     );
     setComposerCursor(nextCursor);
     setComposerTrigger(
       detectComposerTrigger(
         nextCustomAnswer,
-        expandCollapsedComposerCursor(
-          nextCustomAnswer,
-          nextCursor,
-          composerCapabilities.mentionableAgentNames,
-        ),
+        expandCollapsedComposerCursor(nextCustomAnswer, nextCursor, composerInlineTokenContext),
         composerCapabilities.trigger,
       ),
     );
@@ -1284,6 +1310,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activePendingProgress?.activeQuestion?.id,
     activePendingUserInput?.requestId,
     composerCapabilities,
+    composerInlineTokenContext,
     promptRef,
   ]);
 
@@ -1297,7 +1324,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       collapseExpandedComposerCursor(
         promptRef.current,
         promptRef.current.length,
-        currentCapabilities.mentionableAgentNames,
+        composerInlineTokenContextRef.current,
       ),
     );
     setComposerTrigger(
@@ -1503,12 +1530,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       const nextCursor = collapseExpandedComposerCursor(
         next.text,
         next.cursor,
-        composerCapabilities.mentionableAgentNames,
+        composerInlineTokenContext,
       );
       const nextExpandedCursor = expandCollapsedComposerCursor(
         next.text,
         nextCursor,
-        composerCapabilities.mentionableAgentNames,
+        composerInlineTokenContext,
       );
       promptRef.current = next.text;
       const activePendingQuestion = activePendingProgress?.activeQuestion;
@@ -1538,6 +1565,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       activePendingProgress?.activeQuestion,
       activePendingUserInput,
       composerCapabilities,
+      composerInlineTokenContext,
       onChangeActivePendingUserInputCustomAnswer,
       promptRef,
       setPrompt,
@@ -1560,16 +1588,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       expandedCursor: expandCollapsedComposerCursor(
         promptRef.current,
         composerCursor,
-        composerCapabilities.mentionableAgentNames,
+        composerInlineTokenContext,
       ),
       terminalContextIds: composerTerminalContexts.map((context) => context.id),
     };
-  }, [
-    composerCapabilities.mentionableAgentNames,
-    composerCursor,
-    composerTerminalContexts,
-    promptRef,
-  ]);
+  }, [composerInlineTokenContext, composerCursor, composerTerminalContexts, promptRef]);
 
   useLayoutEffect(() => {
     const snapshot = readComposerSnapshot();
@@ -1996,7 +2019,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         const cursor = clampCollapsedComposerCursor(
           promptForState,
           options?.cursor ?? 0,
-          composerCapabilities.mentionableAgentNames,
+          composerInlineTokenContext,
         );
         setComposerHighlightedItemId(null);
         setComposerHighlightedSearchKey(null);
@@ -2005,11 +2028,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           options?.detectTrigger
             ? detectComposerTrigger(
                 promptForState,
-                expandCollapsedComposerCursor(
-                  promptForState,
-                  cursor,
-                  composerCapabilities.mentionableAgentNames,
-                ),
+                expandCollapsedComposerCursor(promptForState, cursor, composerInlineTokenContext),
                 composerCapabilities.trigger,
               )
             : null,
@@ -2023,7 +2042,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           expandedCursor: expandCollapsedComposerCursor(
             promptRef.current,
             composerCursor,
-            composerCapabilities.mentionableAgentNames,
+            composerInlineTokenContext,
           ),
           terminalContextIds: composerTerminalContexts.map((context) => context.id),
         };
@@ -2034,7 +2053,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         const nextCollapsedCursor = collapseExpandedComposerCursor(
           insertion.prompt,
           insertion.cursor,
-          composerCapabilities.mentionableAgentNames,
+          composerInlineTokenContext,
         );
         const inserted = insertComposerDraftTerminalContext(
           composerDraftTarget,
@@ -2075,6 +2094,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [
       activeThread,
       composerCapabilities,
+      composerInlineTokenContext,
       composerDraftTarget,
       composerCursor,
       composerTerminalContexts,

@@ -161,8 +161,9 @@ const threadRef = scopeThreadRef(environmentId, threadId);
 const codexInstanceId = ProviderInstanceId.make("codex");
 const claudeInstanceId = ProviderInstanceId.make("claude-work");
 const now = "2026-07-23T00:00:00.000Z";
-const prompt = "ask $ref tail";
-const midDraftCursor = 8;
+const prompt = "ask $refactor then $ref";
+const supportedDraftCursor = "ask ".length + 1 + " then $ref".length;
+const expandedDraftCursor = prompt.length;
 const emptyKeybindings = [] as unknown as ResolvedKeybindingsConfig;
 
 const supportedProvider: ServerProvider = {
@@ -331,8 +332,8 @@ beforeEach(() => {
   h.resolverInputs.length = 0;
   h.snapshot = {
     value: prompt,
-    cursor: midDraftCursor,
-    expandedCursor: midDraftCursor,
+    cursor: supportedDraftCursor,
+    expandedCursor: expandedDraftCursor,
     terminalContextIds: [],
   };
   vi.clearAllMocks();
@@ -376,12 +377,12 @@ describe("ChatComposer provider selection rerenders", () => {
           cursorAdjacentToMention: boolean,
           terminalContextIds: string[],
         ) => void
-      )(prompt, midDraftCursor, midDraftCursor, false, []);
+      )(prompt, supportedDraftCursor, expandedDraftCursor, false, []);
     });
 
     expect(container.querySelector('[data-mock="composer-command-menu"]')).not.toBeNull();
     expect(h.menuProps?.["activeItemId"]).toBe("provider-skill:codex:dollar:refactor");
-    expect(h.editorProps?.["cursor"]).toBe(midDraftCursor);
+    expect(h.editorProps?.["cursor"]).toBe(supportedDraftCursor);
     expect(h.providerPickerProps?.["activeInstanceId"]).toBe(codexInstanceId);
     expect(composerRef.current?.getSendContext()).toMatchObject({
       selectedProvider: ProviderDriverKind.make("codex"),
@@ -411,11 +412,7 @@ describe("ChatComposer provider selection rerenders", () => {
     expect(useComposerDraftStore.getState().getComposerDraft(threadRef)?.prompt).toBe(prompt);
     expect(promptRef.current).toBe(prompt);
     expect(h.editorProps?.["value"]).toBe(prompt);
-    expect(h.editorProps?.["cursor"]).toBe(midDraftCursor);
-    expect(composerRef.current?.readSnapshot()).toMatchObject({
-      cursor: midDraftCursor,
-      expandedCursor: midDraftCursor,
-    });
+    expect(h.editorProps?.["cursor"]).toBe(expandedDraftCursor);
     expect(h.providerPickerProps?.["activeInstanceId"]).toBe(claudeInstanceId);
     expect(composerRef.current?.getSendContext()).toMatchObject({
       selectedProvider: ProviderDriverKind.make("claudeAgent"),

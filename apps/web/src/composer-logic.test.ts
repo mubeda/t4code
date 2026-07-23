@@ -16,6 +16,12 @@ const allCapabilities = {
   providerSlash: true,
   providerDollarSkill: true,
 };
+const unsupportedDollarSkillContext = {
+  enabledDollarSkillNames: new Set<string>(),
+};
+const refactorDollarSkillContext = {
+  enabledDollarSkillNames: new Set(["refactor"]),
+};
 
 function detectComposerTrigger(text: string, cursor: number) {
   return detectCapabilityComposerTrigger(text, cursor, allCapabilities);
@@ -252,12 +258,26 @@ describe("expandCollapsedComposerCursor", () => {
   });
 
   it("maps collapsed skill cursor to expanded text cursor", () => {
-    const text = "run $review-follow-up then";
+    const text = "run $refactor then";
     const collapsedCursorAfterSkill = "run ".length + 2;
-    const expandedCursorAfterSkill = "run $review-follow-up ".length;
+    const expandedCursorAfterSkill = "run $refactor ".length;
 
-    expect(expandCollapsedComposerCursor(text, collapsedCursorAfterSkill)).toBe(
-      expandedCursorAfterSkill,
+    expect(
+      expandCollapsedComposerCursor(text, collapsedCursorAfterSkill, refactorDollarSkillContext),
+    ).toBe(expandedCursorAfterSkill);
+  });
+
+  it("keeps unsupported dollar text in identity cursor space", () => {
+    const text = "use $refactor now";
+
+    expect(clampCollapsedComposerCursor(text, text.length, unsupportedDollarSkillContext)).toBe(
+      text.length,
+    );
+    expect(collapseExpandedComposerCursor(text, text.length, unsupportedDollarSkillContext)).toBe(
+      text.length,
+    );
+    expect(expandCollapsedComposerCursor(text, text.length, unsupportedDollarSkillContext)).toBe(
+      text.length,
     );
   });
 
@@ -268,14 +288,20 @@ describe("expandCollapsedComposerCursor", () => {
     const expandedCursorAfterAgent = "ask @reviewer ".length;
 
     expect(
-      expandCollapsedComposerCursor(text, collapsedCursorAfterAgent, mentionableAgentNames),
+      expandCollapsedComposerCursor(text, collapsedCursorAfterAgent, {
+        mentionableAgentNames,
+      }),
     ).toBe(expandedCursorAfterAgent);
     expect(
-      collapseExpandedComposerCursor(text, expandedCursorAfterAgent, mentionableAgentNames),
+      collapseExpandedComposerCursor(text, expandedCursorAfterAgent, {
+        mentionableAgentNames,
+      }),
     ).toBe(collapsedCursorAfterAgent);
-    expect(clampCollapsedComposerCursor(text, text.length, mentionableAgentNames)).toBe(
-      "ask ".length + 1 + " next".length,
-    );
+    expect(
+      clampCollapsedComposerCursor(text, text.length, {
+        mentionableAgentNames,
+      }),
+    ).toBe("ask ".length + 1 + " next".length);
   });
 
   it("maps token boundaries, terminal placeholders, and non-finite cursors", () => {
@@ -358,13 +384,13 @@ describe("collapseExpandedComposerCursor", () => {
   });
 
   it("maps expanded skill cursor back to collapsed cursor", () => {
-    const text = "run $review-follow-up then";
+    const text = "run $refactor then";
     const collapsedCursorAfterSkill = "run ".length + 2;
-    const expandedCursorAfterSkill = "run $review-follow-up ".length;
+    const expandedCursorAfterSkill = "run $refactor ".length;
 
-    expect(collapseExpandedComposerCursor(text, expandedCursorAfterSkill)).toBe(
-      collapsedCursorAfterSkill,
-    );
+    expect(
+      collapseExpandedComposerCursor(text, expandedCursorAfterSkill, refactorDollarSkillContext),
+    ).toBe(collapsedCursorAfterSkill);
   });
 
   it("collapses positions inside each inline token type", () => {
@@ -461,12 +487,47 @@ describe("isCollapsedCursorAdjacentToInlineToken", () => {
   });
 
   it("treats skill pills as inline tokens for adjacency checks", () => {
-    const text = "run $review-follow-up next";
+    const text = "run $refactor next";
     const tokenStart = "run ".length;
     const tokenEnd = tokenStart + 1;
 
-    expect(isCollapsedCursorAdjacentToInlineToken(text, tokenEnd, "left")).toBe(true);
-    expect(isCollapsedCursorAdjacentToInlineToken(text, tokenStart, "right")).toBe(true);
+    expect(
+      isCollapsedCursorAdjacentToInlineToken(text, tokenEnd, "left", refactorDollarSkillContext),
+    ).toBe(true);
+    expect(
+      isCollapsedCursorAdjacentToInlineToken(text, tokenStart, "right", refactorDollarSkillContext),
+    ).toBe(true);
+  });
+
+  it("keeps unsupported dollar text non-adjacent like ordinary text", () => {
+    const text = "use $refactor now";
+    const dollarStart = "use ".length;
+    const dollarEnd = "use $refactor".length;
+
+    expect(
+      isCollapsedCursorAdjacentToInlineToken(
+        text,
+        dollarStart,
+        "right",
+        unsupportedDollarSkillContext,
+      ),
+    ).toBe(false);
+    expect(
+      isCollapsedCursorAdjacentToInlineToken(
+        text,
+        dollarEnd,
+        "left",
+        unsupportedDollarSkillContext,
+      ),
+    ).toBe(false);
+    expect(
+      isCollapsedCursorAdjacentToInlineToken(
+        text,
+        text.length,
+        "left",
+        unsupportedDollarSkillContext,
+      ),
+    ).toBe(false);
   });
 
   it("treats mentionable agent pills as inline tokens for adjacency checks", () => {
@@ -476,10 +537,14 @@ describe("isCollapsedCursorAdjacentToInlineToken", () => {
     const tokenEnd = tokenStart + 1;
 
     expect(
-      isCollapsedCursorAdjacentToInlineToken(text, tokenEnd, "left", mentionableAgentNames),
+      isCollapsedCursorAdjacentToInlineToken(text, tokenEnd, "left", {
+        mentionableAgentNames,
+      }),
     ).toBe(true);
     expect(
-      isCollapsedCursorAdjacentToInlineToken(text, tokenStart, "right", mentionableAgentNames),
+      isCollapsedCursorAdjacentToInlineToken(text, tokenStart, "right", {
+        mentionableAgentNames,
+      }),
     ).toBe(true);
   });
 });

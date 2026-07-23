@@ -16,6 +16,24 @@ export type {
   ComposerTriggerProfile,
 } from "@t4code/shared/composerTrigger";
 
+export interface ComposerInlineTokenContext {
+  readonly mentionableAgentNames?: ReadonlySet<string>;
+  readonly enabledDollarSkillNames?: ReadonlySet<string>;
+}
+
+const EMPTY_INLINE_TOKEN_NAMES: ReadonlySet<string> = new Set();
+
+function splitPromptWithInlineTokenContext(text: string, context: ComposerInlineTokenContext) {
+  return splitPromptIntoComposerSegments(
+    text,
+    [],
+    context.mentionableAgentNames ?? EMPTY_INLINE_TOKEN_NAMES,
+    context.enabledDollarSkillNames === undefined
+      ? {}
+      : { enabledDollarSkillNames: context.enabledDollarSkillNames },
+  );
+}
+
 const isInlineTokenSegment = (
   segment:
     | { type: "text"; text: string }
@@ -43,10 +61,10 @@ function isWhitespace(char: string): boolean {
 export function expandCollapsedComposerCursor(
   text: string,
   cursorInput: number,
-  mentionableAgentNames: ReadonlySet<string> = new Set(),
+  context: ComposerInlineTokenContext = {},
 ): number {
   const collapsedCursor = clampCursor(text, cursorInput);
-  const segments = splitPromptIntoComposerSegments(text, [], mentionableAgentNames);
+  const segments = splitPromptWithInlineTokenContext(text, context);
   if (segments.length === 0) {
     return collapsedCursor;
   }
@@ -139,10 +157,10 @@ function clampCollapsedComposerCursorForSegments(
 export function clampCollapsedComposerCursor(
   text: string,
   cursorInput: number,
-  mentionableAgentNames: ReadonlySet<string> = new Set(),
+  context: ComposerInlineTokenContext = {},
 ): number {
   return clampCollapsedComposerCursorForSegments(
-    splitPromptIntoComposerSegments(text, [], mentionableAgentNames),
+    splitPromptWithInlineTokenContext(text, context),
     cursorInput,
   );
 }
@@ -150,10 +168,10 @@ export function clampCollapsedComposerCursor(
 export function collapseExpandedComposerCursor(
   text: string,
   cursorInput: number,
-  mentionableAgentNames: ReadonlySet<string> = new Set(),
+  context: ComposerInlineTokenContext = {},
 ): number {
   const expandedCursor = clampCursor(text, cursorInput);
-  const segments = splitPromptIntoComposerSegments(text, [], mentionableAgentNames);
+  const segments = splitPromptWithInlineTokenContext(text, context);
   if (segments.length === 0) {
     return expandedCursor;
   }
@@ -222,9 +240,9 @@ export function isCollapsedCursorAdjacentToInlineToken(
   text: string,
   cursorInput: number,
   direction: "left" | "right",
-  mentionableAgentNames: ReadonlySet<string> = new Set(),
+  context: ComposerInlineTokenContext = {},
 ): boolean {
-  const segments = splitPromptIntoComposerSegments(text, [], mentionableAgentNames);
+  const segments = splitPromptWithInlineTokenContext(text, context);
   if (!segments.some(isInlineTokenSegment)) {
     return false;
   }

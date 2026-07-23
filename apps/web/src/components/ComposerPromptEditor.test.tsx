@@ -549,8 +549,13 @@ describe("ComposerPromptEditor rendering", () => {
       inventory: [{ ...skills[0]!, invocation: "slash" as const }],
     },
   ])("keeps $label provider dollar expressions as plain text", ({ inventory }) => {
-    const { editor } = renderEditor({ value: "use $refactor now", skills: inventory });
-    expect(readRootText(editor)).toBe("use $refactor now");
+    const source = "use $refactor now";
+    const { editor, editorRef } = renderEditor({
+      value: source,
+      cursor: source.length,
+      skills: inventory,
+    });
+    expect(readRootText(editor)).toBe(source);
     const skillTypes = editor.getEditorState().read(() =>
       $paragraph()
         .getChildren()
@@ -558,6 +563,10 @@ describe("ComposerPromptEditor rendering", () => {
         .map((child) => child.getTextContent()),
     );
     expect(skillTypes).toEqual([]);
+    expect(editorRef.current?.readSnapshot()).toMatchObject({
+      cursor: source.length,
+      expandedCursor: source.length,
+    });
   });
 });
 
@@ -775,10 +784,11 @@ describe("ComposerPromptEditor inline token nodes", () => {
     const editorRef = createRef<ComposerPromptEditorHandle>();
     const onChange = vi.fn();
     const source = "use $refactor now";
+    const supportedCursor = "use ".length + 1 + " now".length;
     const renderWithSkills = (nextSkills: ReadonlyArray<ServerProviderSkill>) => (
       <ComposerPromptEditor
         value={source}
-        cursor={source.length}
+        cursor={supportedCursor}
         terminalContexts={[]}
         skills={nextSkills}
         agents={[]}
@@ -795,6 +805,10 @@ describe("ComposerPromptEditor inline token nodes", () => {
       await act(async () => root.render(renderWithSkills(skills)));
       const editor = lastEditor();
       expect(container.querySelector('[data-composer-skill-chip="true"]')).not.toBeNull();
+      expect(editorRef.current?.readSnapshot()).toMatchObject({
+        cursor: supportedCursor,
+        expandedCursor: source.length,
+      });
 
       await act(async () => root.render(renderWithSkills([])));
 
@@ -802,6 +816,8 @@ describe("ComposerPromptEditor inline token nodes", () => {
       expect(container.querySelector('[data-composer-skill-chip="true"]')).toBeNull();
       expect(editorRef.current?.readSnapshot()).toMatchObject({
         value: source,
+        cursor: source.length,
+        expandedCursor: source.length,
       });
       expect(onChange).not.toHaveBeenCalled();
     } finally {

@@ -53,6 +53,7 @@ import { BotIcon } from "lucide-react";
 import {
   clampCollapsedComposerCursor,
   collapseExpandedComposerCursor,
+  type ComposerInlineTokenContext,
   expandCollapsedComposerCursor,
   isCollapsedCursorAdjacentToInlineToken,
 } from "~/composer-logic";
@@ -367,6 +368,16 @@ function skillMetadataByName(
         },
       ]),
   );
+}
+
+function composerInlineTokenContext(
+  agentMetadata: ReadonlyMap<string, ComposerAgentMetadata>,
+  skillMetadata: ReadonlyMap<string, ComposerSkillMetadata>,
+): ComposerInlineTokenContext {
+  return {
+    mentionableAgentNames: new Set(agentMetadata.keys()),
+    enabledDollarSkillNames: new Set(skillMetadata.keys()),
+  };
 }
 
 function ComposerSkillDecorator(props: { skillLabel: string; skillDescription: string | null }) {
@@ -1126,7 +1137,7 @@ function ComposerCommandKeyPlugin(props: {
   return null;
 }
 
-function ComposerInlineTokenArrowPlugin(props: { mentionableAgentNames: ReadonlySet<string> }) {
+function ComposerInlineTokenArrowPlugin(props: { inlineTokenContext: ComposerInlineTokenContext }) {
   const [editor] = useLexicalComposerContext();
 
   useEffect(() => {
@@ -1145,7 +1156,7 @@ function ComposerInlineTokenArrowPlugin(props: { mentionableAgentNames: Readonly
               promptValue,
               currentOffset,
               "left",
-              props.mentionableAgentNames,
+              props.inlineTokenContext,
             )
           ) {
             return;
@@ -1179,7 +1190,7 @@ function ComposerInlineTokenArrowPlugin(props: { mentionableAgentNames: Readonly
               promptValue,
               currentOffset,
               "right",
-              props.mentionableAgentNames,
+              props.inlineTokenContext,
             )
           ) {
             return;
@@ -1201,7 +1212,7 @@ function ComposerInlineTokenArrowPlugin(props: { mentionableAgentNames: Readonly
       unregisterLeft();
       unregisterRight();
     };
-  }, [editor, props.mentionableAgentNames]);
+  }, [editor, props.inlineTokenContext]);
 
   return null;
 }
@@ -1386,7 +1397,7 @@ function ComposerSurroundSelectionPlugin(props: {
       const selectionStart = collapseExpandedComposerCursor(
         nextValue,
         selectionSnapshot.expandedStart,
-        new Set(agentMetadataRef.current.keys()),
+        composerInlineTokenContext(agentMetadataRef.current, skillMetadataRef.current),
       );
       $setSelectionRangeAtComposerOffsets(
         selectionStart + inputData.length,
@@ -1517,7 +1528,7 @@ function ComposerSurroundSelectionPlugin(props: {
             const replacementStart = collapseExpandedComposerCursor(
               currentValue,
               pendingDeadKeySelection.expandedStart,
-              new Set(agentMetadataRef.current.keys()),
+              composerInlineTokenContext(agentMetadataRef.current, skillMetadataRef.current),
             );
             $setSelectionRangeAtComposerOffsets(replacementStart, replacementStart + 1);
             const replacementSelection = $getSelection();
@@ -1602,16 +1613,24 @@ function ComposerPromptEditorInner({
   const agentMetadata = useMemo(() => agentMetadataByName(agents), [agentsSignature]);
   const agentMetadataRef = useRef(agentMetadata);
   const mentionableAgentNames = useMemo(() => new Set(agentMetadata.keys()), [agentMetadata]);
-  const initialCursor = clampCollapsedComposerCursor(value, cursor, mentionableAgentNames);
   const terminalContextsSignature = terminalContextSignature(terminalContexts);
   const terminalContextsSignatureRef = useRef(terminalContextsSignature);
   const skillsSignature = skillSignature(skills);
   const skillsSignatureRef = useRef(skillsSignature);
-  const skillMetadataRef = useRef(skillMetadataByName(skills));
+  const skillMetadata = useMemo(() => skillMetadataByName(skills), [skillsSignature]);
+  const skillMetadataRef = useRef(skillMetadata);
+  const inlineTokenContext = useMemo<ComposerInlineTokenContext>(
+    () => ({
+      mentionableAgentNames,
+      enabledDollarSkillNames: new Set(skillMetadata.keys()),
+    }),
+    [mentionableAgentNames, skillMetadata],
+  );
+  const initialCursor = clampCollapsedComposerCursor(value, cursor, inlineTokenContext);
   const snapshotRef = useRef({
     value,
     cursor: initialCursor,
-    expandedCursor: expandCollapsedComposerCursor(value, initialCursor, mentionableAgentNames),
+    expandedCursor: expandCollapsedComposerCursor(value, initialCursor, inlineTokenContext),
     terminalContextIds: terminalContexts.map((context) => context.id),
   });
   const isApplyingControlledUpdateRef = useRef(false);
@@ -1629,19 +1648,23 @@ function ComposerPromptEditorInner({
   }, [agentMetadata]);
 
   useLayoutEffect(() => {
-    skillMetadataRef.current = skillMetadataByName(skills);
-  }, [skills]);
+    skillMetadataRef.current = skillMetadata;
+  }, [skillMetadata]);
 
   useEffect(() => {
     editor.setEditable(!disabled);
   }, [disabled, editor]);
 
   useLayoutEffect(() => {
-    const normalizedCursor = clampCollapsedComposerCursor(value, cursor, mentionableAgentNames);
     const previousSnapshot = snapshotRef.current;
     const agentsChanged = agentsSignatureRef.current !== agentsSignature;
     const contextsChanged = terminalContextsSignatureRef.current !== terminalContextsSignature;
     const skillsChanged = skillsSignatureRef.current !== skillsSignature;
+    const controlledCursor = clampCollapsedComposerCursor(value, cursor, inlineTokenContext);
+    const normalizedCursor =
+      skillsChanged && previousSnapshot.value === value && previousSnapshot.cursor === cursor
+        ? collapseExpandedComposerCursor(value, previousSnapshot.expandedCursor, inlineTokenContext)
+        : controlledCursor;
     if (
       previousSnapshot.value === value &&
       previousSnapshot.cursor === normalizedCursor &&
@@ -1655,7 +1678,7 @@ function ComposerPromptEditorInner({
     snapshotRef.current = {
       value,
       cursor: normalizedCursor,
-      expandedCursor: expandCollapsedComposerCursor(value, normalizedCursor, mentionableAgentNames),
+      expandedCursor: expandCollapsedComposerCursor(value, normalizedCursor, inlineTokenContext),
       terminalContextIds: terminalContexts.map((context) => context.id),
     };
     agentsSignatureRef.current = agentsSignature;
@@ -1701,7 +1724,7 @@ function ComposerPromptEditorInner({
     agentsSignature,
     cursor,
     editor,
-    mentionableAgentNames,
+    inlineTokenContext,
     skillsSignature,
     terminalContexts,
     terminalContextsSignature,
@@ -1715,7 +1738,7 @@ function ComposerPromptEditorInner({
       const boundedCursor = clampCollapsedComposerCursor(
         snapshotRef.current.value,
         nextCursor,
-        mentionableAgentNames,
+        inlineTokenContext,
       );
       rootElement.focus({ preventScroll: true });
       editor.update(() => {
@@ -1727,7 +1750,7 @@ function ComposerPromptEditorInner({
         expandedCursor: expandCollapsedComposerCursor(
           snapshotRef.current.value,
           boundedCursor,
-          mentionableAgentNames,
+          inlineTokenContext,
         ),
         terminalContextIds: snapshotRef.current.terminalContextIds,
       };
@@ -1739,7 +1762,7 @@ function ComposerPromptEditorInner({
         snapshotRef.current.terminalContextIds,
       );
     },
-    [editor, mentionableAgentNames],
+    [editor, inlineTokenContext],
   );
 
   const readSnapshot = useCallback((): {
@@ -1754,12 +1777,12 @@ function ComposerPromptEditorInner({
       const fallbackCursor = clampCollapsedComposerCursor(
         nextValue,
         snapshotRef.current.cursor,
-        mentionableAgentNames,
+        inlineTokenContext,
       );
       const nextCursor = clampCollapsedComposerCursor(
         nextValue,
         $readSelectionOffsetFromEditorState(fallbackCursor),
-        mentionableAgentNames,
+        inlineTokenContext,
       );
       const fallbackExpandedCursor = clampExpandedCursor(
         nextValue,
@@ -1779,7 +1802,7 @@ function ComposerPromptEditorInner({
     });
     snapshotRef.current = snapshot;
     return snapshot;
-  }, [editor, mentionableAgentNames]);
+  }, [editor, inlineTokenContext]);
 
   useImperativeHandle(
     editorRef,
@@ -1793,13 +1816,13 @@ function ComposerPromptEditorInner({
           collapseExpandedComposerCursor(
             snapshotRef.current.value,
             snapshotRef.current.value.length,
-            mentionableAgentNames,
+            inlineTokenContext,
           ),
         );
       },
       readSnapshot,
     }),
-    [focusAt, mentionableAgentNames, readSnapshot],
+    [focusAt, inlineTokenContext, readSnapshot],
   );
 
   const handleEditorChange = useCallback(
@@ -1809,12 +1832,12 @@ function ComposerPromptEditorInner({
         const fallbackCursor = clampCollapsedComposerCursor(
           nextValue,
           snapshotRef.current.cursor,
-          mentionableAgentNames,
+          inlineTokenContext,
         );
         const nextCursor = clampCollapsedComposerCursor(
           nextValue,
           $readSelectionOffsetFromEditorState(fallbackCursor),
-          mentionableAgentNames,
+          inlineTokenContext,
         );
         const fallbackExpandedCursor = clampExpandedCursor(
           nextValue,
@@ -1849,13 +1872,13 @@ function ComposerPromptEditorInner({
             nextValue,
             nextCursor,
             "left",
-            mentionableAgentNames,
+            inlineTokenContext,
           ) ||
           isCollapsedCursorAdjacentToInlineToken(
             nextValue,
             nextCursor,
             "right",
-            mentionableAgentNames,
+            inlineTokenContext,
           );
         onChangeRef.current(
           nextValue,
@@ -1866,7 +1889,7 @@ function ComposerPromptEditorInner({
         );
       });
     },
-    [mentionableAgentNames],
+    [inlineTokenContext],
   );
 
   return (
@@ -1901,7 +1924,7 @@ function ComposerPromptEditorInner({
           skills={skills}
           agents={agents}
         />
-        <ComposerInlineTokenArrowPlugin mentionableAgentNames={mentionableAgentNames} />
+        <ComposerInlineTokenArrowPlugin inlineTokenContext={inlineTokenContext} />
         <ComposerInlineTokenSelectionNormalizePlugin />
         <ComposerInlineTokenBackspacePlugin />
         <HistoryPlugin />
