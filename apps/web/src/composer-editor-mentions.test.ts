@@ -165,6 +165,28 @@ describe("splitPromptIntoComposerSegments", () => {
     ]);
   });
 
+  it("treats terminal placeholders as native-reference delimiters", () => {
+    expect(
+      splitPromptIntoComposerSegments(
+        `Inspect @src/before.ts${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}@src/after.ts `,
+      ),
+    ).toEqual([
+      { type: "text", text: "Inspect " },
+      {
+        type: "mention",
+        path: "src/before.ts",
+        source: "@src/before.ts",
+      },
+      { type: "terminal-context", context: null },
+      {
+        type: "mention",
+        path: "src/after.ts",
+        source: "@src/after.ts",
+      },
+      { type: "text", text: " " },
+    ]);
+  });
+
   it("preserves consecutive terminal context placeholders without dropping positions", () => {
     expect(
       splitPromptIntoComposerSegments(

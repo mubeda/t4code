@@ -57,6 +57,7 @@ function forEachPromptSegmentSlice(
           type: "text";
           text: string;
           promptOffset: number;
+          terminatedByTerminalContext: boolean;
         }
       | {
           type: "terminal-context";
@@ -77,6 +78,7 @@ function forEachPromptSegmentSlice(
         type: "text",
         text: prompt.slice(textCursor, index),
         promptOffset: textCursor,
+        terminatedByTerminalContext: true,
       }) === true
     ) {
       return true;
@@ -93,6 +95,7 @@ function forEachPromptSegmentSlice(
       type: "text",
       text: prompt.slice(textCursor),
       promptOffset: textCursor,
+      terminatedByTerminalContext: false,
     }) === true
   ) {
     return true;
@@ -157,7 +160,7 @@ function trailingNativeMentionToken(text: string): ComposerInlineToken | null {
 function splitPromptTextIntoComposerSegments(
   text: string,
   mentionableAgentNames: ReadonlySet<string>,
-  options: SplitPromptIntoComposerSegmentsOptions,
+  parseTrailingReference: boolean,
 ): ComposerPromptSegment[] {
   const segments: ComposerPromptSegment[] = [];
   if (!text) {
@@ -165,7 +168,7 @@ function splitPromptTextIntoComposerSegments(
   }
 
   const tokenMatches = [...collectComposerInlineTokens(text)];
-  if (options.reconstructTrailingReferences) {
+  if (parseTrailingReference) {
     const trailingMention = trailingNativeMentionToken(text);
     if (
       trailingMention &&
@@ -267,7 +270,11 @@ export function splitPromptIntoComposerSegments(
   forEachPromptSegmentSlice(prompt, (slice) => {
     if (slice.type === "text") {
       segments.push(
-        ...splitPromptTextIntoComposerSegments(slice.text, mentionableAgentNames, options),
+        ...splitPromptTextIntoComposerSegments(
+          slice.text,
+          mentionableAgentNames,
+          options.reconstructTrailingReferences === true || slice.terminatedByTerminalContext,
+        ),
       );
       return false;
     }

@@ -59,6 +59,7 @@ import {
 import {
   selectionTouchesMentionBoundary,
   splitPromptIntoComposerSegments,
+  type SplitPromptIntoComposerSegmentsOptions,
 } from "~/composer-editor-mentions";
 import {
   INLINE_TERMINAL_CONTEXT_PLACEHOLDER,
@@ -954,6 +955,7 @@ function $setComposerEditorPrompt(
   terminalContexts: ReadonlyArray<TerminalContextDraft>,
   agentMetadata: ReadonlyMap<string, ComposerAgentMetadata>,
   skillMetadata: ReadonlyMap<string, ComposerSkillMetadata>,
+  segmentOptions: SplitPromptIntoComposerSegmentsOptions = {},
 ): void {
   const root = $getRoot();
   root.clear();
@@ -964,7 +966,7 @@ function $setComposerEditorPrompt(
     prompt,
     terminalContexts,
     new Set(agentMetadata.keys()),
-    { reconstructTrailingReferences: true },
+    segmentOptions,
   );
   for (const segment of segments) {
     if (segment.type === "mention") {
@@ -1648,6 +1650,7 @@ function ComposerPromptEditorInner({
 
     const rootElement = editor.getRootElement();
     const isFocused = Boolean(rootElement && document.activeElement === rootElement);
+    const reconstructTrailingReferences = previousSnapshot.value !== value || !isFocused;
     if (
       previousSnapshot.value === value &&
       !agentsChanged &&
@@ -1668,6 +1671,7 @@ function ComposerPromptEditorInner({
           terminalContexts,
           agentMetadataRef.current,
           skillMetadataRef.current,
+          { reconstructTrailingReferences },
         );
       }
       if (shouldRewriteEditorState || isFocused) {
@@ -1925,6 +1929,7 @@ export function ComposerPromptEditor({
           initialTerminalContextsRef.current,
           initialAgentMetadataRef.current,
           initialSkillMetadataRef.current,
+          { reconstructTrailingReferences: true },
         );
       },
       onError: (error) => {

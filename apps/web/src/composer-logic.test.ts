@@ -303,6 +303,27 @@ describe("expandCollapsedComposerCursor", () => {
     expect(expandCollapsedComposerCursor(INLINE_TERMINAL_CONTEXT_PLACEHOLDER, 1)).toBe(1);
     expect(expandCollapsedComposerCursor("plain", Number.POSITIVE_INFINITY)).toBe(5);
   });
+
+  it("maps native references across terminal placeholder delimiters", () => {
+    const text = `open @src/a.ts${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}@src/b.ts `;
+
+    expect(expandCollapsedComposerCursor(text, 6)).toBe("open @src/a.ts".length);
+    expect(expandCollapsedComposerCursor(text, 7)).toBe(
+      `open @src/a.ts${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}`.length,
+    );
+    expect(expandCollapsedComposerCursor(text, 8)).toBe(text.length - 1);
+    expect(collapseExpandedComposerCursor(text, "open @src/a.ts".length)).toBe(6);
+    expect(
+      collapseExpandedComposerCursor(
+        text,
+        `open @src/a.ts${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}`.length,
+      ),
+    ).toBe(7);
+    expect(collapseExpandedComposerCursor(text, text.length - 1)).toBe(8);
+    expect(clampCollapsedComposerCursor(text, Number.POSITIVE_INFINITY)).toBe(9);
+    expect(isCollapsedCursorAdjacentToInlineToken(text, 6, "left")).toBe(true);
+    expect(isCollapsedCursorAdjacentToInlineToken(text, 7, "right")).toBe(true);
+  });
 });
 
 describe("collapseExpandedComposerCursor", () => {

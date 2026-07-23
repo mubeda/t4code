@@ -46,6 +46,7 @@ const harness = vi.hoisted(() => ({
   executed: [] as Array<() => unknown>,
   editors: [] as unknown[],
   useRealEffects: false,
+  observedOnChangeUpdates: 0,
 }));
 
 vi.mock("react", async (importOriginal) => {
@@ -107,6 +108,7 @@ vi.mock("@lexical/react/LexicalHistoryPlugin", async () => {
 vi.mock("@lexical/react/LexicalOnChangePlugin", async () => {
   const { useLexicalComposerContext } = await import("@lexical/react/LexicalComposerContext");
   const { HISTORY_MERGE_TAG } = await import("lexical");
+  const { useEffect } = await import("react");
   return {
     OnChangePlugin: function OnChangePluginProbe(props: {
       onChange: (
@@ -116,16 +118,16 @@ vi.mock("@lexical/react/LexicalOnChangePlugin", async () => {
       ) => void;
     }) {
       const [editor] = useLexicalComposerContext();
-      if (harness.useRealEffects) {
-        return null;
-      }
-      harness.effects.push(() =>
-        editor.registerUpdateListener(({ editorState, prevEditorState, tags }) => {
-          if (tags.has(HISTORY_MERGE_TAG) || prevEditorState.isEmpty()) {
-            return;
-          }
-          props.onChange(editorState, editor, tags);
-        }),
+      useEffect(
+        () =>
+          editor.registerUpdateListener(({ editorState, prevEditorState, tags }) => {
+            harness.observedOnChangeUpdates += 1;
+            if (tags.has(HISTORY_MERGE_TAG) || prevEditorState.isEmpty()) {
+              return;
+            }
+            props.onChange(editorState, editor, tags);
+          }),
+        [editor, props],
       );
       return null;
     },
@@ -437,6 +439,7 @@ beforeEach(() => {
   harness.effects.length = 0;
   harness.executed.length = 0;
   harness.editors.length = 0;
+  harness.observedOnChangeUpdates = 0;
 });
 
 afterEach(() => {
@@ -507,6 +510,29 @@ describe("ComposerPromptEditor rendering", () => {
           .map((child) => child.getType()),
       ),
     ).toContain("composer-mention");
+  });
+
+  it("reconstructs native references adjacent to terminal context placeholders", () => {
+    const value = `Inspect @src/before.ts${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}@src/after.ts `;
+    const { editor } = renderEditor({
+      value,
+      terminalContexts: [terminalContext("ctx-between")],
+    });
+
+    expect(readRootText(editor)).toBe(value);
+    expect(
+      editor.getEditorState().read(() =>
+        $paragraph()
+          .getChildren()
+          .map((child) => child.getType()),
+      ),
+    ).toEqual([
+      "text",
+      "composer-mention",
+      "composer-terminal-context",
+      "composer-mention",
+      "text",
+    ]);
   });
 
   it("falls back to the formatted skill name when metadata is missing", () => {
@@ -762,8 +788,10 @@ describe("ComposerPromptEditor inline token nodes", () => {
         cursor,
       });
 
+      harness.observedOnChangeUpdates = 0;
       await act(async () => root.render(renderWithAgents(agents)));
       expect(lastEditor()).toBe(initialEditor);
+      expect(harness.observedOnChangeUpdates).toBeGreaterThan(0);
       expect(container.querySelector('[data-composer-agent-chip="true"]')).not.toBeNull();
       expect(container.querySelector('[data-composer-mention-chip="true"]')).toBeNull();
       expect(editorRef.current?.readSnapshot()).toMatchObject({
@@ -778,6 +806,82 @@ describe("ComposerPromptEditor inline token nodes", () => {
       expect(editorRef.current?.readSnapshot()).toMatchObject({
         value: source,
         cursor,
+      });
+      expect(onChange).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      harness.useRealEffects = false;
+      (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
+    }
+  });
+
+  it("keeps a focused incomplete EOF query as text during metadata refresh", async () => {
+    harness.useRealEffects = true;
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const editorRef = createRef<ComposerPromptEditorHandle>();
+    const onChange = vi.fn();
+    const initialSource = "ask ";
+    const typedSource = "ask @pac";
+    const typedCursor = typedSource.length;
+    const renderEditorWith = (
+      value: string,
+      cursor: number,
+      nextAgents: ReadonlyArray<ServerProviderAgent>,
+    ) => (
+      <ComposerPromptEditor
+        value={value}
+        cursor={cursor}
+        terminalContexts={[]}
+        skills={[]}
+        agents={nextAgents}
+        disabled={false}
+        placeholder="Ask anything"
+        onRemoveTerminalContext={vi.fn()}
+        onChange={onChange}
+        onPaste={vi.fn()}
+        editorRef={editorRef}
+      />
+    );
+
+    try {
+      await act(async () => root.render(renderEditorWith(initialSource, initialSource.length, [])));
+      const editor = lastEditor();
+      editorRef.current?.focusAtEnd();
+      onChange.mockClear();
+
+      await act(async () => {
+        editor.update(
+          () => {
+            const selection = $getSelection();
+            if (!$isRangeSelection(selection)) {
+              throw new Error("expected a focused range selection");
+            }
+            selection.insertText("@pac");
+          },
+          { discrete: true },
+        );
+      });
+      expect(onChange).toHaveBeenLastCalledWith(typedSource, typedCursor, typedCursor, false, []);
+
+      await act(async () => root.render(renderEditorWith(typedSource, typedCursor, [])));
+      onChange.mockClear();
+      harness.observedOnChangeUpdates = 0;
+      await act(async () => root.render(renderEditorWith(typedSource, typedCursor, agents)));
+
+      expect(lastEditor()).toBe(editor);
+      expect(harness.observedOnChangeUpdates).toBeGreaterThan(0);
+      expect(document.activeElement).toBe(
+        container.querySelector('[data-testid="composer-editor"]'),
+      );
+      expect(container.querySelector('[data-composer-mention-chip="true"]')).toBeNull();
+      expect(container.querySelector('[data-composer-agent-chip="true"]')).toBeNull();
+      expect(editorRef.current?.readSnapshot()).toMatchObject({
+        value: typedSource,
+        cursor: typedCursor,
       });
       expect(onChange).not.toHaveBeenCalled();
     } finally {
