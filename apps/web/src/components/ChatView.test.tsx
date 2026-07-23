@@ -26,6 +26,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import {
   ApprovalRequestId,
   EnvironmentId,
+  MessageId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -1317,6 +1318,59 @@ describe("ChatView handlers (captured from mocked children)", () => {
     expect(
       (startCalls[0]!.input as { input: Record<string, unknown> }).input["bootstrap"],
     ).toBeUndefined();
+  });
+
+  it("canonicalizes legacy file links before starting a provider turn", async () => {
+    seedConnectedServerThread();
+
+    renderServerRoute();
+    const composer = capturedProps<Record<string, unknown>>("chatComposer");
+    const composerRef = composer["composerRef"] as RefObject<ChatComposerHandle | null>;
+    composerRef.current = composerHandle();
+    const promptRef = composer["promptRef"] as RefObject<string>;
+    promptRef.current = "Inspect [main.ts](src/main.ts) and @README.md";
+
+    await (composer["onSend"] as () => Promise<void>)();
+
+    expect(commandCallsFor("thread.startTurn")[0]!.input).toMatchObject({
+      input: {
+        message: { text: "Inspect @src/main.ts and @README.md" },
+      },
+    });
+  });
+
+  it("does not rewrite normal Markdown links or historical messages", async () => {
+    const legacyHistoricalText = "Previously inspected [main.ts](src/main.ts)";
+    const historicalThread = makeThread({
+      messages: [
+        {
+          id: MessageId.make("historical-message"),
+          role: "user",
+          text: legacyHistoricalText,
+          turnId: null,
+          createdAt: now,
+          updatedAt: now,
+          streaming: false,
+        },
+      ],
+    });
+    seedConnectedServerThread(historicalThread);
+
+    renderServerRoute();
+    const composer = capturedProps<Record<string, unknown>>("chatComposer");
+    const composerRef = composer["composerRef"] as RefObject<ChatComposerHandle | null>;
+    composerRef.current = composerHandle();
+    const promptRef = composer["promptRef"] as RefObject<string>;
+    promptRef.current = "Read [docs](https://example.com) first";
+
+    await (composer["onSend"] as () => Promise<void>)();
+
+    expect(commandCallsFor("thread.startTurn")[0]!.input).toMatchObject({
+      input: {
+        message: { text: "Read [docs](https://example.com) first" },
+      },
+    });
+    expect(historicalThread.messages[0]?.text).toBe(legacyHistoricalText);
   });
 
   it("onSend reports a failure from the turn start as a thread error", async () => {

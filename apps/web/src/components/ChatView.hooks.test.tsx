@@ -3474,16 +3474,21 @@ describe("ChatView send flows", () => {
         resetCalls.push(options ?? null);
       },
     });
-    promptRef.current = "please fail";
+    promptRef.current = "Retry [main.ts](src/main.ts) and @README.md";
 
     const composer = capturedProps("chatComposer");
     await (composer["onSend"] as () => Promise<void>)();
 
     // Restore pass: prompt written back to the ref and the draft store.
-    expect(promptRef.current).toBe("please fail");
+    expect(promptRef.current).toBe("Retry @src/main.ts and @README.md");
     expect(useComposerDraftStore.getState().getComposerDraft(threadRef)?.prompt).toBe(
-      "please fail",
+      "Retry @src/main.ts and @README.md",
     );
+    expect(commandCallsFor("thread.startTurn")[0]?.input).toMatchObject({
+      input: {
+        message: { text: "Retry @src/main.ts and @README.md" },
+      },
+    });
     // The cursor reset ran once on clear and once on restore.
     expect(resetCalls.length).toBe(2);
     // Optimistic message add + removal updaters both executed.

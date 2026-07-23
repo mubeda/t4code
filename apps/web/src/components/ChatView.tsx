@@ -32,6 +32,7 @@ import {
   scopeThreadRef,
 } from "@t4code/client-runtime/environment";
 import { applyClaudePromptEffortPrefix, resolvePromptInjectedEffort } from "@t4code/shared/model";
+import { canonicalizeLegacyComposerFileReferences } from "@t4code/shared/composerReferences";
 import { resolveProviderSessionDefault } from "@t4code/shared/providerSessionDefaults";
 import { CHAT_LIST_ANCHOR_OFFSET } from "@t4code/shared/chatList";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t4code/shared/projectScripts";
@@ -4178,7 +4179,7 @@ function ChatViewContent(props: ChatViewProps) {
       selectedPromptEffort: ctxSelectedPromptEffort,
       selectedModelSelection: ctxSelectedModelSelection,
     } = sendCtx;
-    const promptForSend = promptRef.current;
+    const promptForSend = canonicalizeLegacyComposerFileReferences(promptRef.current);
     const {
       trimmedPrompt: trimmed,
       sendableTerminalContexts: sendableComposerTerminalContexts,
