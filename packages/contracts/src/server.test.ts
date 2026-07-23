@@ -24,6 +24,20 @@ const decodeProcessDiagnosticsEntry = Schema.decodeUnknownSync(ServerProcessDiag
 const decodeProcessResourceTotals = Schema.decodeUnknownSync(ServerProcessResourceTotals);
 const encodeProviderUpdateError = Schema.encodeSync(ServerProviderUpdateError);
 
+const baseProviderSnapshot = {
+  instanceId: "codex",
+  driver: "codex",
+  enabled: true,
+  installed: true,
+  version: "1.0.0",
+  status: "ready",
+  auth: {
+    status: "authenticated",
+  },
+  checkedAt: "2026-04-10T00:00:00.000Z",
+  models: [],
+};
+
 describe("ServerProvider", () => {
   it("defaults capability arrays when decoding provider snapshots", () => {
     const parsed = decodeServerProvider({
@@ -115,6 +129,27 @@ describe("ServerProvider", () => {
         }),
       ),
     ).toBe(false);
+  });
+
+  it("decodes optional provider-agent invocation metadata", () => {
+    const parsed = decodeServerProvider({
+      ...baseProviderSnapshot,
+      agents: [{ name: "legacy-agent" }, { name: "reviewer", invocation: "mention" }],
+    });
+
+    expect(parsed.agents).toEqual([
+      { name: "legacy-agent" },
+      { name: "reviewer", invocation: "mention" },
+    ]);
+  });
+
+  it("rejects unknown provider-agent invocation metadata", () => {
+    expect(() =>
+      decodeServerProvider({
+        ...baseProviderSnapshot,
+        agents: [{ name: "reviewer", invocation: "slash" }],
+      }),
+    ).toThrow();
   });
 });
 

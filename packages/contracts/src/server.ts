@@ -95,11 +95,15 @@ export const ServerProviderSkill = Schema.Struct({
 });
 export type ServerProviderSkill = typeof ServerProviderSkill.Type;
 
+export const ServerProviderAgentInvocation = Schema.Literals(["mention"]);
+export type ServerProviderAgentInvocation = typeof ServerProviderAgentInvocation.Type;
+
 export const ServerProviderAgent = Schema.Struct({
   name: TrimmedNonEmptyString,
   description: Schema.optional(TrimmedNonEmptyString),
   model: Schema.optional(TrimmedNonEmptyString),
   mode: Schema.optional(TrimmedNonEmptyString),
+  invocation: Schema.optional(ServerProviderAgentInvocation),
 });
 export type ServerProviderAgent = typeof ServerProviderAgent.Type;
 

@@ -155,6 +155,14 @@ fn agent_inventory(agents: &Value) -> Vec<Value> {
                     result[key] = json!(value);
                 }
             }
+            let mode = agent
+                .get("mode")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            if matches!(mode, Some("subagent" | "all")) {
+                result["invocation"] = json!("mention");
+            }
             Some(result)
         })
         .collect()
@@ -300,6 +308,27 @@ fn infer_default_variant(provider_id: &str, variants: &[&str]) -> Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_inventory_marks_only_visible_subagent_capable_agents_as_mentions() {
+        let inventory = agent_inventory(&json!([
+            { "name": "plan", "mode": "primary" },
+            { "name": "review", "mode": "subagent" },
+            { "name": "build", "mode": "all" },
+            { "name": "secret", "mode": "subagent", "hidden": true }
+        ]));
+
+        assert_eq!(inventory.len(), 3);
+        assert!(inventory.iter().any(|agent| {
+            agent["name"] == "plan" && agent.get("invocation").is_none()
+        }));
+        assert!(inventory.iter().any(|agent| {
+            agent["name"] == "review" && agent["invocation"] == "mention"
+        }));
+        assert!(inventory.iter().any(|agent| {
+            agent["name"] == "build" && agent["invocation"] == "mention"
+        }));
+    }
 
     #[test]
     fn inventory_excludes_models_from_disconnected_providers() {
