@@ -115,11 +115,18 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       return favorites.length > 0 ? "favorites" : props.activeInstanceId;
     },
   );
+  const isInstanceSelectionLocked = props.lockToActiveInstance || props.lockedProvider !== null;
   const keybindings = useMemo<ResolvedKeybindingsConfig>(
     () => providedKeybindings ?? [],
     [providedKeybindings],
   );
   const updateSettings = useUpdateClientSettings();
+
+  useLayoutEffect(() => {
+    if (isInstanceSelectionLocked) {
+      setSelectedInstanceId(props.activeInstanceId);
+    }
+  }, [isInstanceSelectionLocked, props.activeInstanceId]);
 
   const focusSearchInput = useCallback(() => {
     searchInputRef.current?.focus({ preventScroll: true });

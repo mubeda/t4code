@@ -33,6 +33,11 @@ export type ComposerPromptSegment =
 
 export interface SplitPromptIntoComposerSegmentsOptions {
   readonly reconstructTrailingReferences?: boolean;
+  /**
+   * When provided, only matching names reconstruct as skill segments.
+   * Omission preserves provider-agnostic parsing for cursor utilities.
+   */
+  readonly enabledDollarSkillNames?: ReadonlySet<string>;
 }
 
 function rangeIncludesIndex(start: number, end: number, index: number): boolean {
@@ -160,6 +165,7 @@ function trailingNativeMentionToken(text: string): ComposerInlineToken | null {
 function splitPromptTextIntoComposerSegments(
   text: string,
   mentionableAgentNames: ReadonlySet<string>,
+  enabledDollarSkillNames: ReadonlySet<string> | null,
   parseTrailingReference: boolean,
 ): ComposerPromptSegment[] {
   const segments: ComposerPromptSegment[] = [];
@@ -207,8 +213,13 @@ function splitPromptTextIntoComposerSegments(
           source: match.source,
         });
       }
-    } else {
+    } else if (
+      enabledDollarSkillNames === null ||
+      enabledDollarSkillNames.has(match.value.toLowerCase())
+    ) {
       segments.push({ type: "skill", name: match.value });
+    } else {
+      pushTextSegment(segments, match.source);
     }
 
     cursor = match.end;
@@ -266,6 +277,10 @@ export function splitPromptIntoComposerSegments(
   }
 
   const segments: ComposerPromptSegment[] = [];
+  const enabledDollarSkillNames =
+    options.enabledDollarSkillNames === undefined
+      ? null
+      : new Set([...options.enabledDollarSkillNames].map((name) => name.trim().toLowerCase()));
   let terminalContextIndex = 0;
   forEachPromptSegmentSlice(prompt, (slice) => {
     if (slice.type === "text") {
@@ -273,6 +288,7 @@ export function splitPromptIntoComposerSegments(
         ...splitPromptTextIntoComposerSegments(
           slice.text,
           mentionableAgentNames,
+          enabledDollarSkillNames,
           options.reconstructTrailingReferences === true || slice.terminatedByTerminalContext,
         ),
       );

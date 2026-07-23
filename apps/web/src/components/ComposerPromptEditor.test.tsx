@@ -193,18 +193,21 @@ const skills: ServerProviderSkill[] = [
     path: "/skills/refactor",
     scope: "project",
     enabled: true,
+    invocation: "dollar",
   },
   {
     name: "docs",
     description: "   ",
     path: "/skills/docs",
     enabled: true,
+    invocation: "dollar",
   },
   {
     name: "lint",
     description: "Lint the workspace",
     path: "/skills/lint",
     enabled: false,
+    invocation: "dollar",
   },
 ];
 
@@ -535,16 +538,26 @@ describe("ComposerPromptEditor rendering", () => {
     ]);
   });
 
-  it("falls back to the formatted skill name when metadata is missing", () => {
-    const { editor } = renderEditor({ value: "use $unknown now", skills });
-    expect(readRootText(editor)).toBe("use $unknown now");
+  it.each([
+    { label: "missing", inventory: [] },
+    {
+      label: "disabled",
+      inventory: [{ ...skills[0]!, enabled: false }],
+    },
+    {
+      label: "slash-only",
+      inventory: [{ ...skills[0]!, invocation: "slash" as const }],
+    },
+  ])("keeps $label provider dollar expressions as plain text", ({ inventory }) => {
+    const { editor } = renderEditor({ value: "use $refactor now", skills: inventory });
+    expect(readRootText(editor)).toBe("use $refactor now");
     const skillTypes = editor.getEditorState().read(() =>
       $paragraph()
         .getChildren()
         .filter((child) => child.getType() === "composer-skill")
         .map((child) => child.getTextContent()),
     );
-    expect(skillTypes).toEqual(["$unknown"]);
+    expect(skillTypes).toEqual([]);
   });
 });
 
@@ -751,6 +764,52 @@ describe("ComposerPromptEditor inline token nodes", () => {
 
     const terminalMarkup = decorate(nodes.terminal);
     expect(terminalMarkup).toContain("Terminal 1");
+  });
+
+  it("reconstructs dollar text when the active provider skill inventory changes", async () => {
+    harness.useRealEffects = true;
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const editorRef = createRef<ComposerPromptEditorHandle>();
+    const onChange = vi.fn();
+    const source = "use $refactor now";
+    const renderWithSkills = (nextSkills: ReadonlyArray<ServerProviderSkill>) => (
+      <ComposerPromptEditor
+        value={source}
+        cursor={source.length}
+        terminalContexts={[]}
+        skills={nextSkills}
+        agents={[]}
+        disabled={false}
+        placeholder="Ask anything"
+        onRemoveTerminalContext={vi.fn()}
+        onChange={onChange}
+        onPaste={vi.fn()}
+        editorRef={editorRef}
+      />
+    );
+
+    try {
+      await act(async () => root.render(renderWithSkills(skills)));
+      const editor = lastEditor();
+      expect(container.querySelector('[data-composer-skill-chip="true"]')).not.toBeNull();
+
+      await act(async () => root.render(renderWithSkills([])));
+
+      expect(lastEditor()).toBe(editor);
+      expect(container.querySelector('[data-composer-skill-chip="true"]')).toBeNull();
+      expect(editorRef.current?.readSnapshot()).toMatchObject({
+        value: source,
+      });
+      expect(onChange).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      harness.useRealEffects = false;
+      (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
+    }
   });
 
   it("updates the same editor when provider agent metadata changes", async () => {

@@ -139,9 +139,33 @@ describe("splitPromptIntoComposerSegments", () => {
   });
 
   it("splits skill tokens followed by whitespace into skill segments", () => {
-    expect(splitPromptIntoComposerSegments("Use $review-follow-up please")).toEqual([
+    expect(
+      splitPromptIntoComposerSegments("Use $review-follow-up please", [], new Set(), {
+        enabledDollarSkillNames: new Set(["review-follow-up"]),
+      }),
+    ).toEqual([
       { type: "text", text: "Use " },
       { type: "skill", name: "review-follow-up" },
+      { type: "text", text: " please" },
+    ]);
+  });
+
+  it("keeps unsupported dollar expressions as ordinary text", () => {
+    expect(
+      splitPromptIntoComposerSegments("Use $refactor please", [], new Set(), {
+        enabledDollarSkillNames: new Set(),
+      }),
+    ).toEqual([{ type: "text", text: "Use $refactor please" }]);
+  });
+
+  it("matches enabled dollar skill names case-insensitively like command search", () => {
+    expect(
+      splitPromptIntoComposerSegments("Use $REFACTOR please", [], new Set(), {
+        enabledDollarSkillNames: new Set(["refactor"]),
+      }),
+    ).toEqual([
+      { type: "text", text: "Use " },
+      { type: "skill", name: "REFACTOR" },
       { type: "text", text: " please" },
     ]);
   });
@@ -203,6 +227,9 @@ describe("splitPromptIntoComposerSegments", () => {
     expect(
       splitPromptIntoComposerSegments(
         `Inspect ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}$review-follow-up after @AGENTS.md `,
+        [],
+        new Set(),
+        { enabledDollarSkillNames: new Set(["review-follow-up"]) },
       ),
     ).toEqual([
       { type: "text", text: "Inspect " },

@@ -527,6 +527,37 @@ describe("ModelPickerContent", () => {
     },
   );
 
+  it("follows active instance changes while the mounted picker is locked", () => {
+    render(buildProps({ lockToActiveInstance: true }));
+    expect(renderedRowKeys()).toEqual(["codex:gpt-5", "codex:gpt-5-codex"]);
+
+    render(
+      buildProps({
+        activeInstanceId: id("claude"),
+        model: "opus",
+        lockToActiveInstance: true,
+      }),
+    );
+    hooks.runEffects();
+    rerender();
+
+    expect(renderedRowKeys()).toEqual(["claude:opus"]);
+  });
+
+  it("preserves the user's sidebar selection when the unlocked active instance changes", () => {
+    render(buildProps());
+    captured.sidebar[0]?.onSelectInstance("claude");
+    rerender();
+    expect(renderedRowKeys()).toEqual(["claude:opus"]);
+
+    render(buildProps({ activeInstanceId: id("gemini"), model: "flash" }));
+    hooks.runEffects();
+    rerender();
+
+    expect(captured.sidebar[0]?.selectedInstanceId).toBe("claude");
+    expect(renderedRowKeys()).toEqual(["claude:opus"]);
+  });
+
   it("renders only ready instances' models for the active instance", () => {
     const markup = render(buildProps());
 

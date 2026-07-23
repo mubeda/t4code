@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const harness = vi.hoisted(() => ({
   buttonProps: [] as Array<Record<string, unknown>>,
+  comboboxItemProps: [] as Array<Record<string, unknown>>,
   getDisplayName: vi.fn(() => "Display model"),
   getTriggerLabel: vi.fn(() => "Trigger model"),
 }));
@@ -16,9 +17,18 @@ vi.mock("./providerIconUtils", () => ({
   },
 }));
 vi.mock("../ui/combobox", () => ({
-  ComboboxItem: ({ children, ...props }: Record<string, unknown>) => (
-    <div data-disabled={String(props.disabled)}>{children as React.ReactNode}</div>
-  ),
+  ComboboxItem: ({ children, ...props }: Record<string, unknown>) => {
+    harness.comboboxItemProps.push(props);
+    return (
+      <div
+        data-disabled={String(props.disabled)}
+        data-model-picker-instance-id={props["data-model-picker-instance-id"] as string}
+        data-model-picker-model-slug={props["data-model-picker-model-slug"] as string}
+      >
+        {children as React.ReactNode}
+      </div>
+    );
+  },
 }));
 vi.mock("../ui/button", () => ({
   Button: (props: Record<string, unknown>) => {
@@ -58,11 +68,26 @@ function renderRow(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   harness.buttonProps.length = 0;
+  harness.comboboxItemProps.length = 0;
   harness.getDisplayName.mockClear();
   harness.getTriggerLabel.mockClear();
 });
 
 describe("ModelListRow", () => {
+  it("exposes stable provider instance and model slug ownership attributes", () => {
+    const markup = renderRow({
+      instanceId: "codex_personal",
+      model: { slug: "openai:gpt-5", name: "GPT-5" },
+    });
+
+    expect(harness.comboboxItemProps[0]).toMatchObject({
+      "data-model-picker-instance-id": "codex_personal",
+      "data-model-picker-model-slug": "openai:gpt-5",
+    });
+    expect(markup).toContain('data-model-picker-instance-id="codex_personal"');
+    expect(markup).toContain('data-model-picker-model-slug="openai:gpt-5"');
+  });
+
   it("renders simple and fully decorated model rows", () => {
     expect(renderRow()).toContain("Display model");
     expect(harness.getDisplayName).toHaveBeenCalledWith(model, undefined);

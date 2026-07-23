@@ -357,13 +357,15 @@ function skillMetadataByName(
   skills: ReadonlyArray<ServerProviderSkill>,
 ): ReadonlyMap<string, ComposerSkillMetadata> {
   return new Map(
-    skills.map((skill) => [
-      skill.name,
-      {
-        label: formatProviderSkillDisplayName(skill),
-        description: resolveSkillDescription(skill),
-      },
-    ]),
+    skills
+      .filter((skill) => skill.enabled && skill.invocation === "dollar")
+      .map((skill) => [
+        skill.name.trim().toLowerCase(),
+        {
+          label: formatProviderSkillDisplayName(skill),
+          description: resolveSkillDescription(skill),
+        },
+      ]),
   );
 }
 
@@ -603,6 +605,7 @@ function skillSignature(skills: ReadonlyArray<ServerProviderSkill>): string {
         skill.path,
         skill.scope ?? "",
         skill.enabled ? "1" : "0",
+        skill.invocation ?? "",
       ].join("\u001f"),
     )
     .join("\u001e");
@@ -974,7 +977,10 @@ function $setComposerEditorPrompt(
     prompt,
     terminalContexts,
     new Set(agentMetadata.keys()),
-    segmentOptions,
+    {
+      ...segmentOptions,
+      enabledDollarSkillNames: new Set(skillMetadata.keys()),
+    },
   );
   for (const segment of segments) {
     if (segment.type === "mention") {
@@ -991,7 +997,7 @@ function $setComposerEditorPrompt(
       continue;
     }
     if (segment.type === "skill") {
-      const metadata = skillMetadata.get(segment.name);
+      const metadata = skillMetadata.get(segment.name.toLowerCase());
       paragraph.append(
         $createComposerSkillNode(
           segment.name,
