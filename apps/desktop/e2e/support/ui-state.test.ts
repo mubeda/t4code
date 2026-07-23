@@ -90,6 +90,7 @@ describe("packaged composer acceptance contract", () => {
       "const composerLogBaseline = readProviderInputLog(preparedProviderInputLogPath).length",
     );
     expect(source).toContain(".slice(composerLogBaseline)");
+    expect(source.match(/await activateProviderPanel\("Main"\)/g)).toHaveLength(2);
     expect(source).toContain("expect(actualProviderInputs).toEqual(expectedProviderInputs)");
     for (const prompt of [
       '"$refactor"',

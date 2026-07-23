@@ -643,7 +643,7 @@ async function persistProviderDraftsAndRestart(): Promise<void> {
   }
 
   const codexPrompt = "$refactor ";
-  await activateProviderPanel("Codex");
+  await activateProviderPanel("Main");
   await setComposerValue(codexPrompt);
   await browser.waitUntil(() => persistedDraftMatches(hostThreadId, codexPrompt), {
     timeoutMsg: "The Codex panel draft was not flushed to storage.",
@@ -682,7 +682,7 @@ async function persistProviderDraftsAndRestart(): Promise<void> {
     NodePath.join(preparedArtifactDirectory, "composer-restored-chips.png"),
   );
 
-  await activateProviderPanel("Codex");
+  await activateProviderPanel("Main");
   expect(await persistedDraftMatches(hostThreadId, codexPrompt)).toBe(true);
   await waitForComposerValue(codexPrompt);
   await browser.waitUntil(codexDraftChipsAreValid, {
