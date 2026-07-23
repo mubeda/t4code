@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { ProviderDriverKind } from "@t4code/contracts";
+import { ProviderInstanceId } from "@t4code/contracts";
 import { act, type ReactElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -69,7 +69,8 @@ vi.mock("../ui/command", () => ({
   ),
 }));
 
-import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
+import { ComposerCommandMenu } from "./ComposerCommandMenu";
+import type { ComposerCommandItem } from "./composerCommandItems";
 
 interface MountedTree {
   readonly container: HTMLDivElement;
@@ -80,57 +81,67 @@ const mountedTrees: MountedTree[] = [];
 const onHighlightedItemChange = vi.fn();
 const onSelect = vi.fn();
 
-function pathItem(id = "path-1"): ComposerCommandItem {
+function fileItem(id = "file-1"): ComposerCommandItem {
   return {
     id,
-    type: "path",
+    type: "file-reference",
+    group: "files",
     path: "src/main.ts",
     pathKind: "file",
     label: "src/main.ts",
     description: "Project file",
+    replacement: "@src/main.ts ",
   };
 }
 
-function slashItem(id = "slash-1"): ComposerCommandItem {
+function actionItem(id = "action-1"): ComposerCommandItem {
   return {
     id,
-    type: "slash-command",
-    command: { name: "review" } as never,
-    label: "/review",
-    description: "Review changes",
+    type: "t4code-action",
+    group: "t4code",
+    action: "plan",
+    label: ":plan",
+    description: "Switch to plan mode",
+    replacement: null,
   };
 }
 
-function providerCommandItem(id = "provider-1"): ComposerCommandItem {
+function providerCommandItem(id = "command-1"): ComposerCommandItem {
   return {
     id,
-    type: "provider-slash-command",
-    provider: ProviderDriverKind.make("codex"),
+    type: "provider-command",
+    group: "commands",
+    providerInstanceId: ProviderInstanceId.make("codex"),
     command: { name: "compact" } as never,
     label: "/compact",
     description: "Compact context",
+    replacement: "/compact ",
   };
 }
 
 function agentItem(id = "agent-1"): ComposerCommandItem {
   return {
     id,
-    type: "provider-agent",
-    provider: ProviderDriverKind.make("claude"),
+    type: "agent-reference",
+    group: "agents",
+    providerInstanceId: ProviderInstanceId.make("claude"),
     agent: { name: "planner" } as never,
-    label: "planner",
+    label: "@planner",
     description: "Planning agent",
+    replacement: "@planner ",
   };
 }
 
 function skillItem(id = "skill-1"): ComposerCommandItem {
   return {
     id,
-    type: "skill",
-    provider: ProviderDriverKind.make("codex"),
-    skill: { id: "coverage-skill", name: "Coverage" } as never,
-    label: "Coverage",
+    type: "provider-skill",
+    group: "skills",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    skill: { path: "/skills/coverage", name: "coverage" } as never,
+    label: "$coverage",
     description: "Improve tests",
+    replacement: "$coverage ",
   };
 }
 
@@ -142,7 +153,7 @@ function renderMenu(
       items={[]}
       resolvedTheme="light"
       isLoading={false}
-      triggerKind={null}
+      emptyStateText="No matching command."
       activeItemId={null}
       onHighlightedItemChange={onHighlightedItemChange}
       onSelect={onSelect}
@@ -184,33 +195,24 @@ afterEach(async () => {
 });
 
 describe("ComposerCommandMenu empty states", () => {
-  it.each([
-    ["skill", true, "Searching workspace skills..."],
-    ["skill", false, "No skills found. Try / to browse provider commands."],
-    ["path", true, "Searching workspace files..."],
-    ["path", false, "No matching files or folders."],
-    ["slash-command", false, "No matching command."],
-  ] as const)("renders the %s empty state", async (triggerKind, isLoading, expected) => {
-    const mounted = await mount(renderMenu({ triggerKind, isLoading }));
+  it("renders the semantic empty-state text", async () => {
+    const mounted = await mount(renderMenu({ emptyStateText: "No matching files or agents." }));
 
-    expect(mounted.container.textContent).toContain(expected);
+    expect(mounted.container.textContent).toContain("No matching files or agents.");
   });
 
-  it("prefers custom empty-state text", async () => {
-    const mounted = await mount(
-      renderMenu({ triggerKind: "path", emptyStateText: "Nothing in this workspace." }),
-    );
+  it("renders a path-search loading state", async () => {
+    const mounted = await mount(renderMenu({ isLoading: true }));
 
-    expect(mounted.container.textContent).toContain("Nothing in this workspace.");
+    expect(mounted.container.textContent).toContain("Searching workspace files...");
   });
 });
 
 describe("ComposerCommandMenu grouping", () => {
-  it("groups slash commands into built-in, provider, and agent sections", async () => {
+  it("renders semantic groups in their fixed order", async () => {
     const mounted = await mount(
       renderMenu({
-        triggerKind: "slash-command",
-        items: [agentItem(), slashItem(), providerCommandItem()],
+        items: [agentItem(), fileItem(), skillItem(), providerCommandItem(), actionItem()],
       }),
     );
 
@@ -218,30 +220,17 @@ describe("ComposerCommandMenu grouping", () => {
       Array.from(mounted.container.querySelectorAll("[data-command-group-label]"), (node) =>
         node.textContent?.trim(),
       ),
-    ).toEqual(["Built-in", "Provider", "Agents"]);
-    expect(mounted.container.querySelectorAll("[data-command-separator]")).toHaveLength(2);
+    ).toEqual(["T4Code", "Commands", "Skills", "Files", "Agents"]);
+    expect(mounted.container.querySelectorAll("[data-command-separator]")).toHaveLength(4);
   });
 
-  it("uses one unlabeled group when slash grouping is disabled", async () => {
-    const mounted = await mount(
-      renderMenu({
-        triggerKind: "slash-command",
-        groupSlashCommandSections: false,
-        items: [slashItem(), providerCommandItem()],
-      }),
-    );
-
-    expect(mounted.container.querySelectorAll("[data-command-group]")).toHaveLength(1);
-    expect(mounted.container.querySelectorAll("[data-command-group-label]")).toHaveLength(0);
-  });
-
-  it("places skill results in a labeled skills group", async () => {
-    const mounted = await mount(renderMenu({ triggerKind: "skill", items: [skillItem()] }));
+  it("labels a single semantic group and shows provider skill source", async () => {
+    const mounted = await mount(renderMenu({ items: [skillItem()] }));
 
     expect(mounted.container.querySelector("[data-command-group-label]")?.textContent).toBe(
       "Skills",
     );
-    expect(mounted.container.textContent).toContain("source:coverage-skill");
+    expect(mounted.container.textContent).toContain("source:unknown");
   });
 });
 
@@ -249,7 +238,7 @@ describe("ComposerCommandMenu item behavior", () => {
   it("renders each item type with its semantic glyph", async () => {
     const mounted = await mount(
       renderMenu({
-        items: [pathItem(), slashItem(), providerCommandItem(), agentItem(), skillItem()],
+        items: [fileItem(), actionItem(), providerCommandItem(), agentItem(), skillItem()],
       }),
     );
 
@@ -261,8 +250,8 @@ describe("ComposerCommandMenu item behavior", () => {
   });
 
   it("highlights inactive items, preserves active items, and selects by click", async () => {
-    const inactive = pathItem("inactive");
-    const active = slashItem("active");
+    const inactive = fileItem("inactive");
+    const active = actionItem("active");
     const mounted = await mount(renderMenu({ items: [inactive, active], activeItemId: "active" }));
     const inactiveButton = mounted.container.querySelector<HTMLElement>(
       '[data-composer-item-id="inactive"]',
@@ -303,7 +292,7 @@ describe("ComposerCommandMenu item behavior", () => {
       .spyOn(HTMLElement.prototype, "scrollIntoView")
       .mockImplementation(() => undefined);
 
-    await mount(renderMenu({ items: [pathItem("path:active")], activeItemId: "path:active" }));
+    await mount(renderMenu({ items: [fileItem("path:active")], activeItemId: "path:active" }));
 
     expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
   });

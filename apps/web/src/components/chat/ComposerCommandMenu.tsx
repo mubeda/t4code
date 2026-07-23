@@ -1,14 +1,7 @@
-import {
-  type ProjectEntry,
-  type ProviderDriverKind,
-  type ServerProviderAgent,
-  type ServerProviderSkill,
-  type ServerProviderSlashCommand,
-} from "@t4code/contracts";
 import { BotIcon } from "lucide-react";
 import { memo, useLayoutEffect, useMemo, useRef } from "react";
 
-import { type ComposerSlashCommand, type LegacyComposerTriggerKind } from "../../composer-logic";
+import type { LegacyComposerTriggerKind } from "../../composer-logic";
 import { formatProviderSkillInstallSource } from "~/providerSkillPresentation";
 import { cn } from "~/lib/utils";
 import {
@@ -19,54 +12,25 @@ import {
   CommandList,
   CommandSeparator,
 } from "../ui/command";
+import {
+  type ComposerCommandGroupId,
+  type RenderableComposerCommandItem,
+} from "./composerCommandItems";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 
-export type ComposerCommandItem =
-  | {
-      id: string;
-      type: "path";
-      path: string;
-      pathKind: ProjectEntry["kind"];
-      label: string;
-      description: string;
-    }
-  | {
-      id: string;
-      type: "slash-command";
-      command: ComposerSlashCommand;
-      label: string;
-      description: string;
-    }
-  | {
-      id: string;
-      type: "provider-slash-command";
-      provider: ProviderDriverKind;
-      command: ServerProviderSlashCommand;
-      label: string;
-      description: string;
-    }
-  | {
-      id: string;
-      type: "provider-agent";
-      provider: ProviderDriverKind;
-      agent: ServerProviderAgent;
-      label: string;
-      description: string;
-    }
-  | {
-      id: string;
-      type: "skill";
-      provider: ProviderDriverKind;
-      skill: ServerProviderSkill;
-      label: string;
-      description: string;
-    };
-
 type ComposerCommandGroup = {
-  id: string;
-  label: string | null;
-  items: ComposerCommandItem[];
+  id: ComposerCommandGroupId;
+  label: string;
+  items: RenderableComposerCommandItem[];
 };
+
+const GROUPS = [
+  ["t4code", "T4Code"],
+  ["commands", "Commands"],
+  ["skills", "Skills"],
+  ["files", "Files"],
+  ["agents", "Agents"],
+] as const satisfies ReadonlyArray<readonly [ComposerCommandGroupId, string]>;
 
 function SkillGlyph(props: { className?: string }) {
   return (
@@ -87,52 +51,51 @@ function SkillGlyph(props: { className?: string }) {
   );
 }
 
-function groupCommandItems(
-  items: ComposerCommandItem[],
-  triggerKind: LegacyComposerTriggerKind | null,
-  groupSlashCommandSections: boolean,
-): ComposerCommandGroup[] {
-  if (triggerKind === "skill") {
-    return items.length > 0 ? [{ id: "skills", label: "Skills", items }] : [];
+function itemGroup(item: RenderableComposerCommandItem): ComposerCommandGroupId {
+  if ("group" in item) {
+    return item.group;
   }
-  if (triggerKind !== "slash-command" || !groupSlashCommandSections) {
-    return [{ id: "default", label: null, items }];
+  if (item.type === "slash-command") {
+    return "t4code";
   }
-
-  const builtInItems = items.filter((item) => item.type === "slash-command");
-  const providerItems = items.filter((item) => item.type === "provider-slash-command");
-  const agentItems = items.filter((item) => item.type === "provider-agent");
-
-  const groups: ComposerCommandGroup[] = [];
-  if (builtInItems.length > 0) {
-    groups.push({ id: "built-in", label: "Built-in", items: builtInItems });
+  if (item.type === "provider-slash-command") {
+    return "commands";
   }
-  if (providerItems.length > 0) {
-    groups.push({ id: "provider", label: "Provider", items: providerItems });
+  if (item.type === "skill") {
+    return "skills";
   }
-  if (agentItems.length > 0) {
-    groups.push({ id: "agents", label: "Agents", items: agentItems });
+  if (item.type === "path") {
+    return "files";
   }
-  return groups;
+  return "agents";
 }
 
+function groupCommandItems(
+  items: ReadonlyArray<RenderableComposerCommandItem>,
+): ComposerCommandGroup[] {
+  return GROUPS.flatMap(([id, label]) => {
+    const groupItems = items.filter((item) => itemGroup(item) === id);
+    return groupItems.length > 0 ? [{ id, label, items: groupItems }] : [];
+  });
+}
+
+type ComposerCommandMenuSelectionHandler = {
+  bivarianceHack(item: RenderableComposerCommandItem): void;
+}["bivarianceHack"];
+
 export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
-  items: ComposerCommandItem[];
+  items: ReadonlyArray<RenderableComposerCommandItem>;
   resolvedTheme: "light" | "dark";
   isLoading: boolean;
-  triggerKind: LegacyComposerTriggerKind | null;
-  groupSlashCommandSections?: boolean;
+  /** @deprecated Legacy `ChatComposer` adapter; semantic items own their group. */
+  triggerKind?: LegacyComposerTriggerKind | null;
   emptyStateText?: string;
   activeItemId: string | null;
   onHighlightedItemChange: (itemId: string | null) => void;
-  onSelect: (item: ComposerCommandItem) => void;
+  onSelect: ComposerCommandMenuSelectionHandler;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
-  const groups = useMemo(
-    () =>
-      groupCommandItems(props.items, props.triggerKind, props.groupSlashCommandSections ?? true),
-    [props.groupSlashCommandSections, props.items, props.triggerKind],
-  );
+  const groups = useMemo(() => groupCommandItems(props.items), [props.items]);
 
   useLayoutEffect(() => {
     if (!props.activeItemId || !listRef.current) return;
@@ -162,11 +125,9 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
               <div key={group.id}>
                 {groupIndex > 0 ? <CommandSeparator className="my-0.5" /> : null}
                 <CommandGroup>
-                  {group.label ? (
-                    <CommandGroupLabel className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/55">
-                      {group.label}
-                    </CommandGroupLabel>
-                  ) : null}
+                  <CommandGroupLabel className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/55">
+                    {group.label}
+                  </CommandGroupLabel>
                   {group.items.map((item) => (
                     <ComposerCommandMenuItem
                       key={item.id}
@@ -183,28 +144,11 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
           </CommandList>
         ) : (
           <div className="px-5 py-3.5">
-            {props.triggerKind === "skill" ? (
-              <CommandGroup>
-                <CommandGroupLabel className="px-0 pt-0 pb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/55">
-                  Skills
-                </CommandGroupLabel>
-                <p className="text-muted-foreground/70 text-xs">
-                  {props.isLoading
-                    ? "Searching workspace skills..."
-                    : (props.emptyStateText ??
-                      "No skills found. Try / to browse provider commands.")}
-                </p>
-              </CommandGroup>
-            ) : (
-              <p className="text-muted-foreground/70 text-xs">
-                {props.isLoading
-                  ? "Searching workspace files..."
-                  : (props.emptyStateText ??
-                    (props.triggerKind === "path"
-                      ? "No matching files or folders."
-                      : "No matching command."))}
-              </p>
-            )}
+            <p className="text-muted-foreground/70 text-xs">
+              {props.isLoading
+                ? "Searching workspace files..."
+                : (props.emptyStateText ?? "No matching command.")}
+            </p>
           </div>
         )}
       </div>
@@ -213,14 +157,16 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
 });
 
 const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
-  item: ComposerCommandItem;
+  item: RenderableComposerCommandItem;
   resolvedTheme: "light" | "dark";
   isActive: boolean;
   onHighlight: (itemId: string | null) => void;
-  onSelect: (item: ComposerCommandItem) => void;
+  onSelect: ComposerCommandMenuSelectionHandler;
 }) {
   const skillSourceLabel =
-    props.item.type === "skill" ? formatProviderSkillInstallSource(props.item.skill) : null;
+    props.item.type === "provider-skill" || props.item.type === "skill"
+      ? formatProviderSkillInstallSource(props.item.skill)
+      : null;
 
   return (
     <CommandItem
@@ -240,25 +186,25 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
         props.onSelect(props.item);
       }}
     >
-      {props.item.type === "path" ? (
+      {props.item.type === "file-reference" || props.item.type === "path" ? (
         <PierreEntryIcon
           pathValue={props.item.path}
           kind={props.item.pathKind}
           theme={props.resolvedTheme}
         />
       ) : null}
-      {props.item.type === "slash-command" ? (
+      {props.item.type === "t4code-action" || props.item.type === "slash-command" ? (
         <BotIcon className="size-4 shrink-0 text-muted-foreground/80" />
       ) : null}
-      {props.item.type === "provider-agent" ? (
+      {props.item.type === "agent-reference" || props.item.type === "provider-agent" ? (
         <BotIcon className="size-4 shrink-0 text-muted-foreground/80" />
       ) : null}
-      {props.item.type === "provider-slash-command" ? (
+      {props.item.type === "provider-command" || props.item.type === "provider-slash-command" ? (
         <span className="inline-flex size-4 shrink-0 items-center justify-center text-muted-foreground/80">
           <SkillGlyph className="size-3.5" />
         </span>
       ) : null}
-      {props.item.type === "skill" ? (
+      {props.item.type === "provider-skill" || props.item.type === "skill" ? (
         <span className="inline-flex size-4 shrink-0 items-center justify-center text-muted-foreground/80">
           <SkillGlyph className="size-3.5" />
         </span>

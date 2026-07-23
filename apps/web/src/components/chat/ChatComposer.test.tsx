@@ -1320,7 +1320,7 @@ describe("ChatComposer command menu", () => {
       "provider-slash-command:codex:review",
       "provider-agent:codex:code-reviewer",
     ]);
-    expect(menu["groupSlashCommandSections"]).toBe(true);
+    expect(menu).not.toHaveProperty("groupSlashCommandSections");
     expect(menu["emptyStateText"]).toBe("No matching command.");
   });
 
@@ -1342,7 +1342,7 @@ describe("ChatComposer command menu", () => {
     // command does not match and is filtered out.
     expect(items[0]?.["id"]).toBe("slash:model");
     expect(items.map((item) => item["id"])).not.toContain("provider-slash-command:codex:review");
-    expect(findCapture("ComposerCommandMenu")["groupSlashCommandSections"]).toBe(false);
+    expect(findCapture("ComposerCommandMenu")).not.toHaveProperty("groupSlashCommandSections");
   });
 
   it("lists provider skills for a skill trigger", () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { ProviderDriverKind } from "@t4code/contracts";
 
-import type { ComposerCommandItem } from "./ComposerCommandMenu";
+import type { LegacyComposerCommandItem } from "./composerCommandItems";
 import { searchSlashCommandItems } from "./composerSlashCommandSearch";
 
 describe("searchSlashCommandItems", () => {
@@ -38,7 +38,9 @@ describe("searchSlashCommandItems", () => {
         label: "/ui-review",
         description: "Review user interfaces",
       },
-    ] satisfies Array<Extract<ComposerCommandItem, { type: "provider-slash-command" | "skill" }>>;
+    ] satisfies Array<
+      Extract<LegacyComposerCommandItem, { type: "provider-slash-command" | "skill" }>
+    >;
 
     expect(searchSlashCommandItems(items, "ui").map((item) => item.id)).toEqual([
       "provider-slash-command:claudeAgent:ui",
@@ -69,7 +71,9 @@ describe("searchSlashCommandItems", () => {
         label: "/github",
         description: "General GitHub help",
       },
-    ] satisfies Array<Extract<ComposerCommandItem, { type: "provider-slash-command" | "skill" }>>;
+    ] satisfies Array<
+      Extract<LegacyComposerCommandItem, { type: "provider-slash-command" | "skill" }>
+    >;
 
     expect(searchSlashCommandItems(items, "gfc").map((item) => item.id)).toEqual([
       "slash-skill:claudeAgent:gh-fix-ci",

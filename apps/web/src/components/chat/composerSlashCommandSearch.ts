@@ -4,12 +4,15 @@ import {
   scoreQueryMatch,
 } from "@t4code/shared/searchRanking";
 
-import type { ComposerCommandItem } from "./ComposerCommandMenu";
+import type { LegacyComposerCommandItem } from "./composerCommandItems";
 
-type SlashSearchItem = Extract<ComposerCommandItem, { type: "provider-slash-command" | "skill" }>;
+type SlashSearchItem = Extract<
+  LegacyComposerCommandItem,
+  { type: "provider-slash-command" | "skill" }
+>;
 
 type LegacySlashSearchItem = Extract<
-  ComposerCommandItem,
+  LegacyComposerCommandItem,
   { type: "slash-command" | "provider-slash-command" | "provider-agent" }
 >;
 

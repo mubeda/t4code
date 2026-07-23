@@ -48,4 +48,40 @@ describe("resolveComposerMenuActiveItemId", () => {
       }),
     ).toBe("top");
   });
+
+  it("prefers an exact match when no same-search highlight can be preserved", () => {
+    expect(
+      resolveComposerMenuActiveItemId({
+        items,
+        highlightedItemId: "second",
+        currentSearchKey: "reference:planner",
+        highlightedSearchKey: "reference:plan",
+        preferredItemId: "third",
+      }),
+    ).toBe("third");
+  });
+
+  it("preserves a same-search highlight ahead of the preferred exact match", () => {
+    expect(
+      resolveComposerMenuActiveItemId({
+        items,
+        highlightedItemId: "second",
+        currentSearchKey: "reference:planner",
+        highlightedSearchKey: "reference:planner",
+        preferredItemId: "third",
+      }),
+    ).toBe("second");
+  });
+
+  it("ignores a preferred item that is not present", () => {
+    expect(
+      resolveComposerMenuActiveItemId({
+        items,
+        highlightedItemId: null,
+        currentSearchKey: "reference:planner",
+        highlightedSearchKey: null,
+        preferredItemId: "missing",
+      }),
+    ).toBe("top");
+  });
 });

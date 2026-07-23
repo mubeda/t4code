@@ -68,7 +68,8 @@ import {
 } from "../composerFooterLayout";
 import { type ComposerPromptEditorHandle, ComposerPromptEditor } from "../ComposerPromptEditor";
 import { ProviderModelPicker } from "./ProviderModelPicker";
-import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
+import { ComposerCommandMenu } from "./ComposerCommandMenu";
+import type { LegacyComposerCommandItem } from "./composerCommandItems";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
@@ -892,8 +893,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerSurfaceRef = useRef<HTMLDivElement>(null);
   const composerSelectLockRef = useRef(false);
   const composerMenuOpenRef = useRef(false);
-  const composerMenuItemsRef = useRef<ComposerCommandItem[]>([]);
-  const activeComposerMenuItemRef = useRef<ComposerCommandItem | null>(null);
+  const composerMenuItemsRef = useRef<LegacyComposerCommandItem[]>([]);
+  const activeComposerMenuItemRef = useRef<LegacyComposerCommandItem | null>(null);
   const composerBlurFrameRef = useRef<number | null>(null);
   const mobileComposerExpandFrameRef = useRef<number | null>(null);
   const mobileComposerExpandReleaseFrameRef = useRef<number | null>(null);
@@ -936,7 +937,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     query: isPathTrigger ? pathTriggerQuery : null,
   });
 
-  const composerMenuItems = useMemo<ComposerCommandItem[]>(() => {
+  const composerMenuItems = useMemo<LegacyComposerCommandItem[]>(() => {
     if (!composerTrigger) return [];
     if (composerTrigger.kind === "path") {
       return workspaceEntries.entries.map((entry) => ({
@@ -971,7 +972,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           label: "/default",
           description: "Switch this thread back to normal build mode",
         },
-      ] satisfies ReadonlyArray<Extract<ComposerCommandItem, { type: "slash-command" }>>;
+      ] satisfies ReadonlyArray<Extract<LegacyComposerCommandItem, { type: "slash-command" }>>;
       const providerSlashCommandItems = (selectedProviderStatus?.slashCommands ?? []).map(
         (command) => ({
           id: `provider-slash-command:${selectedProvider}:${command.name}`,
@@ -1558,7 +1559,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   }, [readComposerSnapshot]);
 
   const onSelectComposerItem = useCallback(
-    (item: ComposerCommandItem) => {
+    (item: LegacyComposerCommandItem) => {
       if (composerSelectLockRef.current) return;
       composerSelectLockRef.current = true;
       window.requestAnimationFrame(() => {
@@ -2281,10 +2282,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   resolvedTheme={resolvedTheme}
                   isLoading={isComposerMenuLoading}
                   triggerKind={composerTriggerKind}
-                  groupSlashCommandSections={
-                    composerTrigger?.kind === "slash-command" &&
-                    composerTrigger.query.trim().length === 0
-                  }
                   emptyStateText={composerMenuEmptyState}
                   activeItemId={activeComposerMenuItem?.id ?? null}
                   onHighlightedItemChange={onComposerMenuItemHighlighted}
