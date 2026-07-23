@@ -179,6 +179,19 @@ async function waitForComposerItemsToClose(): Promise<void> {
   });
 }
 
+async function appendAndSelectComposerItem(
+  input: string,
+  itemId: string,
+  expectedValue: string,
+): Promise<void> {
+  const editor = composerEditor();
+  await editor.click();
+  await editor.addValue(input);
+  await waitForComposerItem(itemId);
+  await clickVisibleComposerItem(itemId);
+  await waitForComposerValue(expectedValue);
+}
+
 async function visibleComposerChipTexts(
   attribute: "data-composer-mention-chip" | "data-composer-skill-chip" | "data-composer-agent-chip",
 ): Promise<string[]> {
@@ -644,7 +657,8 @@ async function persistProviderDraftsAndRestart(): Promise<void> {
 
   const codexPrompt = "$refactor ";
   await activateProviderPanel("Main");
-  await setComposerValue(codexPrompt);
+  await setComposerValue("");
+  await appendAndSelectComposerItem("$ref", "provider-skill:codex:dollar:refactor", codexPrompt);
   await browser.waitUntil(() => persistedDraftMatches(hostThreadId, codexPrompt), {
     timeoutMsg: "The Codex panel draft was not flushed to storage.",
   });
@@ -654,7 +668,19 @@ async function persistProviderDraftsAndRestart(): Promise<void> {
 
   const openCodePrompt = "opencode @README.md @reviewer $refactor ";
   await activateProviderPanel("OpenCode");
-  await setComposerValue(openCodePrompt);
+  await setComposerValue("opencode ");
+  await appendAndSelectComposerItem(
+    "@README",
+    "file-reference:file:README.md",
+    "opencode @README.md ",
+  );
+  await appendAndSelectComposerItem(
+    "@rev",
+    "agent-reference:opencode:reviewer",
+    "opencode @README.md @reviewer ",
+  );
+  await composerEditor().addValue("$refactor ");
+  await waitForComposerValue(openCodePrompt);
   await browser.waitUntil(() => persistedDraftMatches(openCodePanelThreadId, openCodePrompt), {
     timeoutMsg: "The OpenCode panel draft was not flushed to storage.",
   });

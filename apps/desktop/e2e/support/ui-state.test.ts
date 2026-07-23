@@ -91,6 +91,8 @@ describe("packaged composer acceptance contract", () => {
     );
     expect(source).toContain(".slice(composerLogBaseline)");
     expect(source.match(/await activateProviderPanel\("Main"\)/g)).toHaveLength(2);
+    expect(source.match(/await appendAndSelectComposerItem/g)).toHaveLength(3);
+    expect(source).toContain('await composerEditor().addValue("$refactor ")');
     expect(source).toContain("expect(actualProviderInputs).toEqual(expectedProviderInputs)");
     for (const prompt of [
       '"$refactor"',
