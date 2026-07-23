@@ -82,7 +82,7 @@ fn rust_registry_matches_the_active_typescript_rpc_group() {
         .collect::<Vec<_>>();
 
     assert_eq!(rust_methods, manifest.methods);
-    assert_eq!(rust_methods.len(), 80);
+    assert_eq!(rust_methods.len(), 81);
     assert_eq!(
         rust_methods
             .iter()
