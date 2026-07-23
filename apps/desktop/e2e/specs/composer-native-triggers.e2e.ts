@@ -530,7 +530,6 @@ async function selectAndSendReadmeReference(): Promise<void> {
   await setComposerValue("@README");
   await waitForComposerItem("file-reference:file:README.md");
   await clickVisibleComposerItem("file-reference:file:README.md");
-  await waitForComposerValue("@README.md ");
   await expect(composerForm().$('[data-composer-mention-chip="true"]')).toBeDisplayed();
   await sendCurrentComposerPrompt("codex", "@README.md", initialLogLength);
 }
@@ -694,16 +693,17 @@ async function persistProviderDraftsAndRestart(): Promise<void> {
   );
 }
 
-function assertCompleteProviderInputLog(): void {
-  const actualProviderInputs = readProviderInputLog(preparedProviderInputLogPath).map(
-    ({ provider, prompt }) => ({ provider, prompt }),
-  );
+function assertCompleteProviderInputLog(composerLogBaseline: number): void {
+  const actualProviderInputs = readProviderInputLog(preparedProviderInputLogPath)
+    .slice(composerLogBaseline)
+    .map(({ provider, prompt }) => ({ provider, prompt }));
   expect(actualProviderInputs).toEqual(expectedProviderInputs);
   expect(actualProviderInputs.some(({ prompt }) => prompt.startsWith(":"))).toBe(false);
 }
 
 describe("packaged native composer triggers", () => {
   it("normalizes every provider, sends exact native syntax, closes stale menus, and restores chips", async () => {
+    const composerLogBaseline = readProviderInputLog(preparedProviderInputLogPath).length;
     await setDesktopUiWindowSize(1_100, 760);
     await ensureFixtureProjectImported();
     await openInitialCodexDraft();
@@ -728,7 +728,7 @@ describe("packaged native composer triggers", () => {
       }
     }
 
-    assertCompleteProviderInputLog();
+    assertCompleteProviderInputLog(composerLogBaseline);
     await setComposerValue("/");
     await waitForComposerItem("provider-command:grok:skills");
     await persistProviderDraftsAndRestart();

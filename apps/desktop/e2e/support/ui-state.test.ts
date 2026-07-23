@@ -86,6 +86,10 @@ describe("packaged composer acceptance contract", () => {
 
     expect(source).toContain("await browser.reloadSession()");
     expect(source).not.toContain("await browser.refresh()");
+    expect(source).toContain(
+      "const composerLogBaseline = readProviderInputLog(preparedProviderInputLogPath).length",
+    );
+    expect(source).toContain(".slice(composerLogBaseline)");
     expect(source).toContain("expect(actualProviderInputs).toEqual(expectedProviderInputs)");
     for (const prompt of [
       '"$refactor"',
