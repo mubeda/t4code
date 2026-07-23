@@ -119,3 +119,38 @@ The structured code review found two Important races (stale item application and
 - Local action discard now has both store-level and direct-parent URL-revocation assertions, while the existing normal-send non-revocation contract remains unchanged.
 
 The focused re-review found no remaining Critical or Important issues and assessed the formal fixes as merge-ready.
+
+## Second formal re-review fixes
+
+### RED evidence
+
+- `vp test run apps/web/src/components/chat/ChatComposer.rerender.test.tsx apps/web/src/components/ChatView.hooks.test.tsx`
+  - 1 test file failed and 1 passed; 3 tests failed and 106 passed.
+  - With an actionable plan, standalone `:plan` and `:default` each reached `thread.startTurn` as plan feedback because the plan-follow-up branch ran before the local-action safety parser.
+  - Ordinary plan feedback with an attached blob cleared the draft without calling `URL.revokeObjectURL`.
+  - The strengthened same-component Codex-to-Claude provider/instance switch test passed on RED, confirming the production dependency logic already handled the real identity transition; the missing piece was integration coverage.
+
+### Fixes
+
+- The persistent rerender regression now switches from the `codex` instance/driver to a distinct `claude-work` / `claudeAgent` provider in the same mounted `ChatComposer`.
+- The provider-switch regression asserts the menu and highlight close, `ProviderModelPicker` selects the new instance, `getSendContext` recomputes the provider and model-selection instance, draft text remains unchanged, and both collapsed and expanded mid-draft cursor coordinates remain stable.
+- `ChatView` now parses standalone `:plan` / `:default` before plan-follow-up submission, so direct-parent calls cannot reinterpret local action text as plan feedback.
+- The ordinary plan-follow-up path now uses `discardComposerContent` because attached images and contexts are not handed to its optimistic/provider message. Blob previews are revoked exactly once and every owned context slice is cleared.
+
+### GREEN evidence
+
+- `vp test run apps/web/src/components/chat/ChatComposer.rerender.test.tsx apps/web/src/components/ChatView.hooks.test.tsx`
+  - 2 test files passed; 109 tests passed.
+- `vp test run apps/web/src/composerDraftStore.test.ts apps/web/src/components/ChatView.test.tsx apps/web/src/components/ChatView.hooks.test.tsx apps/web/src/components/chat/ChatComposer.test.tsx apps/web/src/components/chat/ChatComposer.rerender.test.tsx`
+  - 5 test files passed; 384 tests passed.
+- `vp check`
+  - all 1,604 files correctly formatted; no warnings or lint errors across 1,220 files.
+- `vp run typecheck`
+  - all 11 package checks passed.
+
+### Second re-review self-review
+
+- Local action parsing remains limited to native `:plan` / `:default` handling at the ChatView safety boundary; Task 7 send canonicalization is untouched.
+- Direct local actions under an actionable plan assert zero turn starts, one cursor reset, one blob revocation, and empty prompt/image/terminal/element/annotation/review slices.
+- Ordinary plan feedback retains one `thread.startTurn` while using discard ownership for contexts the follow-up message does not consume.
+- The provider-switch test rerenders the same React root and component identity; it does not remount or seed the post-switch hook state.

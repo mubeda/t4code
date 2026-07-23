@@ -666,6 +666,32 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
   };
 }
 
+function makeActionablePlanThread(suffix: string): Thread {
+  const turnId = TurnId.make(`turn-plan-${suffix}`);
+  return makeThread({
+    interactionMode: "plan",
+    latestTurn: {
+      turnId,
+      state: "completed",
+      requestedAt: now,
+      startedAt: now,
+      completedAt: later,
+      assistantMessageId: null,
+    },
+    proposedPlans: [
+      {
+        id: OrchestrationProposedPlanId.make(`plan-${suffix}`),
+        turnId,
+        planMarkdown: "# Plan\n\n1. do the thing",
+        implementedAt: null,
+        implementationThreadId: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+  });
+}
+
 function makeSession(overrides: Partial<NonNullable<Thread["session"]>> = {}) {
   return {
     threadId,
@@ -856,6 +882,92 @@ function installComposerHandle(overrides: Partial<ChatComposerHandle> = {}): {
   const handle = composerHandle(overrides);
   composerRef.current = handle;
   return { handle, promptRef: composer["promptRef"] as RefObject<string> };
+}
+
+function makeOwnedComposerContexts(suffix: string) {
+  return {
+    image: {
+      type: "image" as const,
+      id: `image-${suffix}` as ChatAttachmentId,
+      name: "plan-follow-up.png",
+      mimeType: "image/png",
+      sizeBytes: 4,
+      previewUrl: `blob:plan-follow-up-${suffix}`,
+      file: new File(["fake"], "plan-follow-up.png", { type: "image/png" }),
+    },
+    terminalContext: {
+      id: `terminal-${suffix}`,
+      threadId,
+      createdAt: now,
+      terminalId: "terminal-1",
+      terminalLabel: "Shell",
+      lineStart: 1,
+      lineEnd: 2,
+      text: "build output",
+    } satisfies TerminalContextDraft,
+    elementContext: {
+      id: `element-${suffix}`,
+      threadId,
+      pageUrl: "http://localhost:3000",
+      pageTitle: "Demo",
+      tagName: "button",
+      selector: ".save",
+      htmlPreview: "<button>Save</button>",
+      componentName: "SaveButton",
+      source: null,
+      styles: "",
+      pickedAt: now,
+    },
+    previewAnnotation: {
+      id: `annotation-${suffix}`,
+      pageUrl: "http://localhost:3000",
+      pageTitle: "Demo",
+      comment: "Fix this",
+      elements: [],
+      regions: [],
+      strokes: [],
+      styleChanges: [],
+      screenshot: null,
+      createdAt: now,
+    },
+    reviewComment: {
+      id: `comment-${suffix}`,
+      sectionId: "file:src/app.ts",
+      sectionTitle: "src/app.ts",
+      filePath: "src/app.ts",
+      startIndex: 0,
+      endIndex: 1,
+      rangeLabel: "L1",
+      text: "Tighten this",
+      diff: "+const value = 1;",
+    },
+  };
+}
+
+function seedOwnedComposerContexts(
+  actionText: string,
+  contexts: ReturnType<typeof makeOwnedComposerContexts>,
+): void {
+  const store = useComposerDraftStore.getState();
+  store.setPrompt(threadRef, actionText);
+  store.addImages(threadRef, [contexts.image]);
+  store.setTerminalContexts(threadRef, [contexts.terminalContext]);
+  store.setElementContexts(threadRef, [contexts.elementContext]);
+  store.setPreviewAnnotations(threadRef, [contexts.previewAnnotation]);
+  store.setReviewComments(threadRef, [contexts.reviewComment]);
+}
+
+function sendContextWithOwnedComposerContexts(
+  contexts: ReturnType<typeof makeOwnedComposerContexts>,
+): ReturnType<ChatComposerHandle["getSendContext"]> {
+  return {
+    ...composerHandle().getSendContext(),
+    images: [contexts.image],
+    terminalContexts: [contexts.terminalContext],
+    elementContexts: [contexts.elementContext],
+    previewAnnotations: [contexts.previewAnnotation],
+    reviewComments: [contexts.reviewComment],
+  };
 }
 
 function seedFreshLocalDraft(
@@ -3540,6 +3652,75 @@ describe("ChatView send flows", () => {
     expect(messages).toEqual(
       expect.arrayContaining(["Failed to send message.", "Failed to interrupt the current turn."]),
     );
+  });
+
+  it.each([
+    [":plan", "plan"],
+    [":default", "default"],
+  ] as const)(
+    "keeps plan-follow-up %s local before feedback submission and releases owned contexts",
+    async (actionText, expectedMode) => {
+      seedConnectedServerThread(makeActionablePlanThread(`local-${expectedMode}`));
+      renderServerRoute();
+      const contexts = makeOwnedComposerContexts(`local-${expectedMode}`);
+      seedOwnedComposerContexts(actionText, contexts);
+      const revokeObjectUrl = vi.spyOn(URL, "revokeObjectURL");
+      const resetCursorState = vi.fn();
+      const { promptRef } = installComposerHandle({
+        resetCursorState,
+        getSendContext: () => sendContextWithOwnedComposerContexts(contexts),
+      });
+      promptRef.current = actionText;
+
+      const composer = capturedProps("chatComposer");
+      expect(composer["showPlanFollowUpPrompt"]).toBe(true);
+      await (composer["onSend"] as () => Promise<void>)();
+
+      expect(commandCallsFor("thread.startTurn")).toHaveLength(0);
+      expect(promptRef.current).toBe("");
+      expect(resetCursorState).toHaveBeenCalledTimes(1);
+      expect(revokeObjectUrl).toHaveBeenCalledTimes(1);
+      expect(revokeObjectUrl).toHaveBeenCalledWith(contexts.image.previewUrl);
+      const clearedDraft = useComposerDraftStore.getState().getComposerDraft(threadRef);
+      expect(clearedDraft?.prompt ?? "").toBe("");
+      expect(clearedDraft?.images ?? []).toEqual([]);
+      expect(clearedDraft?.terminalContexts ?? []).toEqual([]);
+      expect(clearedDraft?.elementContexts ?? []).toEqual([]);
+      expect(clearedDraft?.previewAnnotations ?? []).toEqual([]);
+      expect(clearedDraft?.reviewComments ?? []).toEqual([]);
+      expect(clearedDraft?.interactionMode ?? "plan").toBe(expectedMode);
+    },
+  );
+
+  it("releases owned attachments while submitting ordinary plan follow-up feedback", async () => {
+    seedConnectedServerThread(makeActionablePlanThread("feedback"));
+    renderServerRoute();
+    const contexts = makeOwnedComposerContexts("feedback");
+    seedOwnedComposerContexts("please refine this", contexts);
+    const revokeObjectUrl = vi.spyOn(URL, "revokeObjectURL");
+    const resetCursorState = vi.fn();
+    const { promptRef } = installComposerHandle({
+      resetCursorState,
+      getSendContext: () => sendContextWithOwnedComposerContexts(contexts),
+    });
+    promptRef.current = "please refine this";
+
+    await (capturedProps("chatComposer")["onSend"] as () => Promise<void>)();
+
+    expect(commandCallsFor("thread.startTurn")).toHaveLength(1);
+    expect(promptRef.current).toBe("");
+    expect(resetCursorState).toHaveBeenCalledTimes(1);
+    expect(revokeObjectUrl).toHaveBeenCalledTimes(1);
+    expect(revokeObjectUrl).toHaveBeenCalledWith(contexts.image.previewUrl);
+    expect(useComposerDraftStore.getState().getComposerDraft(threadRef)).toMatchObject({
+      prompt: "",
+      images: [],
+      terminalContexts: [],
+      elementContexts: [],
+      previewAnnotations: [],
+      reviewComments: [],
+      interactionMode: "plan",
+    });
   });
 
   it("submits a plan follow-up instead of a regular turn when a plan is actionable", async () => {

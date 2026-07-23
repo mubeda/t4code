@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 const h = vi.hoisted(() => ({
   editorProps: null as Record<string, unknown> | null,
   menuProps: null as Record<string, unknown> | null,
+  providerPickerProps: null as Record<string, unknown> | null,
   resolverInputs: [] as Array<{
     items: ReadonlyArray<{ id: string }>;
     highlightedItemId: string | null;
@@ -90,7 +91,13 @@ vi.mock("./ComposerCommandMenu", () => ({
 }));
 
 vi.mock("./ProviderModelPicker", () => ({
-  ProviderModelPicker: passthrough(),
+  ProviderModelPicker: (props: Record<string, unknown>) => {
+    h.providerPickerProps = props;
+    return React.createElement("div", {
+      "data-mock": "provider-model-picker",
+      "data-instance": String(props["activeInstanceId"]),
+    });
+  },
 }));
 vi.mock("./ComposerPendingApprovalActions", () => ({
   ComposerPendingApprovalActions: passthrough(),
@@ -152,6 +159,7 @@ const projectId = ProjectId.make("project-1");
 const threadId = ThreadId.make("thread-1");
 const threadRef = scopeThreadRef(environmentId, threadId);
 const codexInstanceId = ProviderInstanceId.make("codex");
+const claudeInstanceId = ProviderInstanceId.make("claude-work");
 const now = "2026-07-23T00:00:00.000Z";
 const prompt = "ask $ref tail";
 const midDraftCursor = 8;
@@ -180,8 +188,25 @@ const supportedProvider: ServerProvider = {
 };
 
 const unsupportedProvider: ServerProvider = {
-  ...supportedProvider,
+  instanceId: claudeInstanceId,
+  driver: ProviderDriverKind.make("claudeAgent"),
+  enabled: true,
+  installed: true,
+  version: "1.0.0",
+  status: "ready",
+  auth: { status: "authenticated" },
+  checkedAt: now,
+  models: [
+    {
+      slug: "claude-sonnet-5",
+      name: "Claude Sonnet 5",
+      isCustom: false,
+      capabilities: null,
+    },
+  ],
+  slashCommands: [],
   skills: [],
+  agents: [],
 };
 
 function makeThread(): Thread {
@@ -212,6 +237,7 @@ function makeProps(
   providerStatuses: ServerProvider[],
   composerRef: RefObject<ChatComposerHandle | null>,
   promptRef: RefObject<string>,
+  selectedProviderStatus: ServerProvider,
 ): ChatComposerProps {
   return {
     composerDraftTarget: threadRef,
@@ -249,8 +275,8 @@ function makeProps(
     lockedProvider: null,
     providerStatuses,
     activeProjectDefaultModelSelection: {
-      instanceId: codexInstanceId,
-      model: "gpt-5.4",
+      instanceId: selectedProviderStatus.instanceId,
+      model: selectedProviderStatus.models[0]!.slug,
     },
     activeThreadModelSelection: null,
     activeThreadActivities: [],
@@ -301,6 +327,7 @@ beforeEach(() => {
   resettableComposerStore.setState({ ...pristineComposerState }, true);
   h.editorProps = null;
   h.menuProps = null;
+  h.providerPickerProps = null;
   h.resolverInputs.length = 0;
   h.snapshot = {
     value: prompt,
@@ -321,13 +348,22 @@ afterEach(async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
 });
 
-describe("ChatComposer provider capability rerenders", () => {
-  it("closes and clears a live menu without moving a mid-draft cursor or changing text", async () => {
+describe("ChatComposer provider selection rerenders", () => {
+  it("recomputes provider state and closes a live menu across a real provider switch", async () => {
     const composerRef = React.createRef<ChatComposerHandle>();
     const promptRef = { current: prompt };
 
     await act(async () => {
-      root.render(<ChatComposer {...makeProps([supportedProvider], composerRef, promptRef)} />);
+      root.render(
+        <ChatComposer
+          {...makeProps(
+            [supportedProvider, unsupportedProvider],
+            composerRef,
+            promptRef,
+            supportedProvider,
+          )}
+        />,
+      );
     });
     await act(async () => {
       const onChange = h.editorProps?.["onChange"];
@@ -346,10 +382,24 @@ describe("ChatComposer provider capability rerenders", () => {
     expect(container.querySelector('[data-mock="composer-command-menu"]')).not.toBeNull();
     expect(h.menuProps?.["activeItemId"]).toBe("provider-skill:codex:dollar:refactor");
     expect(h.editorProps?.["cursor"]).toBe(midDraftCursor);
+    expect(h.providerPickerProps?.["activeInstanceId"]).toBe(codexInstanceId);
+    expect(composerRef.current?.getSendContext()).toMatchObject({
+      selectedProvider: ProviderDriverKind.make("codex"),
+      selectedModelSelection: { instanceId: codexInstanceId },
+    });
 
     h.resolverInputs.length = 0;
     await act(async () => {
-      root.render(<ChatComposer {...makeProps([unsupportedProvider], composerRef, promptRef)} />);
+      root.render(
+        <ChatComposer
+          {...makeProps(
+            [supportedProvider, unsupportedProvider],
+            composerRef,
+            promptRef,
+            unsupportedProvider,
+          )}
+        />,
+      );
     });
 
     expect(container.querySelector('[data-mock="composer-command-menu"]')).toBeNull();
@@ -362,5 +412,14 @@ describe("ChatComposer provider capability rerenders", () => {
     expect(promptRef.current).toBe(prompt);
     expect(h.editorProps?.["value"]).toBe(prompt);
     expect(h.editorProps?.["cursor"]).toBe(midDraftCursor);
+    expect(composerRef.current?.readSnapshot()).toMatchObject({
+      cursor: midDraftCursor,
+      expandedCursor: midDraftCursor,
+    });
+    expect(h.providerPickerProps?.["activeInstanceId"]).toBe(claudeInstanceId);
+    expect(composerRef.current?.getSendContext()).toMatchObject({
+      selectedProvider: ProviderDriverKind.make("claudeAgent"),
+      selectedModelSelection: { instanceId: claudeInstanceId },
+    });
   });
 });
