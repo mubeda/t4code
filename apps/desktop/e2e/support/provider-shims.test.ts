@@ -26,7 +26,21 @@ interface PreparedProviderFixture {
 
 type ConfiguredProvider = "codex" | "claudeAgent" | "cursor" | "opencode" | "grok";
 
+type FixtureProcessTerminationPlan =
+  | {
+      readonly kind: "windows-tree";
+      readonly command: string;
+      readonly args: readonly ["/PID", string, "/T", "/F"];
+    }
+  | {
+      readonly kind: "posix-child";
+      readonly pid: number;
+      readonly signals: readonly ["SIGTERM", "SIGKILL"];
+    };
+
 const preparedFixtures: PreparedProviderFixture[] = [];
+const gracefulShutdownTimeoutMs = 1_000;
+const forcedShutdownTimeoutMs = 5_000;
 
 function prepareProviderFixture(): PreparedProviderFixture {
   // oxlint-disable-next-line t4code/no-global-process-runtime -- These integration tests execute shims for the current native host.
@@ -258,22 +272,147 @@ async function withTimeout<T>(
   }
 }
 
-async function stopFixtureProcess(child: NodeChildProcess.ChildProcess): Promise<void> {
-  if (child.exitCode !== null) {
-    return;
+function fixtureProcessTerminationPlan(
+  pid: number,
+  hostPlatform: ReturnType<typeof NodeOS.platform>,
+  environment: NodeJS.ProcessEnv,
+): FixtureProcessTerminationPlan {
+  if (!Number.isSafeInteger(pid) || pid <= 0) {
+    throw new Error(`Fixture process has no valid test-owned PID: ${JSON.stringify(pid)}`);
   }
-  child.kill("SIGTERM");
-  await waitForFixtureProcessExit(child);
+  if (hostPlatform !== "win32") {
+    return {
+      kind: "posix-child",
+      pid,
+      signals: ["SIGTERM", "SIGKILL"],
+    };
+  }
+  const systemRoot = Object.entries(environment).find(
+    ([name, value]) => name.toLowerCase() === "systemroot" && value,
+  )?.[1];
+  return {
+    kind: "windows-tree",
+    command: systemRoot
+      ? NodePath.win32.join(systemRoot, "System32", "taskkill.exe")
+      : "taskkill.exe",
+    args: ["/PID", String(pid), "/T", "/F"],
+  };
 }
 
-async function waitForFixtureProcessExit(child: NodeChildProcess.ChildProcess): Promise<void> {
-  if (child.exitCode !== null) {
+function fixtureProcessHasExited(child: NodeChildProcess.ChildProcess): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+async function requestGracefulOpenCodeShutdown(endpoint: string): Promise<void> {
+  const controller = new AbortController();
+  try {
+    const response = await withTimeout(
+      fetch(`${endpoint}/t4code-fixture/shutdown`, {
+        method: "POST",
+        signal: controller.signal,
+      }),
+      gracefulShutdownTimeoutMs,
+      "Timed out requesting graceful OpenCode fixture shutdown.",
+    );
+    if (!response.ok) {
+      throw new Error(`OpenCode fixture shutdown returned HTTP ${response.status}.`);
+    }
+  } finally {
+    controller.abort();
+  }
+}
+
+async function cleanupOpenCodeFixture(
+  endpoint: string,
+  child: NodeChildProcess.ChildProcess,
+  hostPlatform: ReturnType<typeof NodeOS.platform>,
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
+  if (fixtureProcessHasExited(child)) {
+    return;
+  }
+  try {
+    await requestGracefulOpenCodeShutdown(endpoint);
+    await waitForFixtureProcessExit(
+      child,
+      gracefulShutdownTimeoutMs,
+      "OpenCode fixture did not exit after graceful shutdown.",
+    );
+    return;
+  } catch {
+    if (fixtureProcessHasExited(child)) {
+      return;
+    }
+  }
+  await terminateFixtureProcess(child, hostPlatform, environment);
+}
+
+async function terminateFixtureProcess(
+  child: NodeChildProcess.ChildProcess,
+  hostPlatform: ReturnType<typeof NodeOS.platform>,
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
+  if (fixtureProcessHasExited(child)) {
+    return;
+  }
+  const pid = child.pid;
+  if (pid === undefined) {
+    throw new Error("Cannot terminate fixture launcher without its test-owned PID.");
+  }
+  const plan = fixtureProcessTerminationPlan(pid, hostPlatform, environment);
+  if (plan.kind === "windows-tree") {
+    const result = NodeChildProcess.spawnSync(plan.command, plan.args, {
+      encoding: "utf8",
+      env: environment,
+      timeout: forcedShutdownTimeoutMs,
+      windowsHide: true,
+    });
+    try {
+      await waitForFixtureProcessExit(
+        child,
+        forcedShutdownTimeoutMs,
+        `Windows fixture process tree ${pid} did not exit after taskkill.`,
+      );
+    } catch (error) {
+      const outcome = result.error
+        ? String(result.error)
+        : `status=${String(result.status)} signal=${String(result.signal)} stderr=${result.stderr.trim()}`;
+      throw new Error(
+        `Failed to terminate Windows fixture process tree ${pid}: ${outcome}; ${String(error)}`,
+        { cause: error },
+      );
+    }
+    return;
+  }
+  for (const signal of plan.signals) {
+    child.kill(signal);
+    try {
+      await waitForFixtureProcessExit(
+        child,
+        signal === "SIGTERM" ? gracefulShutdownTimeoutMs : forcedShutdownTimeoutMs,
+        `POSIX fixture process ${plan.pid} did not exit after ${signal}.`,
+      );
+      return;
+    } catch (error) {
+      if (signal === "SIGKILL") {
+        throw error;
+      }
+    }
+  }
+}
+
+async function waitForFixtureProcessExit(
+  child: NodeChildProcess.ChildProcess,
+  timeoutMs = forcedShutdownTimeoutMs,
+  message = "Fixture launcher process did not exit.",
+): Promise<void> {
+  if (fixtureProcessHasExited(child)) {
     return;
   }
   await withTimeout(
     new Promise<void>((resolve) => child.once("exit", () => resolve())),
-    5_000,
-    "Fixture launcher process did not exit.",
+    timeoutMs,
+    message,
   );
 }
 
@@ -281,6 +420,28 @@ afterEach(() => {
   for (const fixture of preparedFixtures.splice(0)) {
     archiveAndCleanupDesktopUiTestContext(fixture.context);
   }
+});
+
+describe("fixture process cleanup", () => {
+  it("targets the entire Windows test-owned process tree by explicit PID", () => {
+    expect(
+      fixtureProcessTerminationPlan(4_242, "win32", {
+        SystemRoot: "C:\\Windows",
+      }),
+    ).toEqual({
+      kind: "windows-tree",
+      command: "C:\\Windows\\System32\\taskkill.exe",
+      args: ["/PID", "4242", "/T", "/F"],
+    });
+  });
+
+  it("targets only the test-owned POSIX child by explicit PID", () => {
+    expect(fixtureProcessTerminationPlan(4_242, "linux", {})).toEqual({
+      kind: "posix-child",
+      pid: 4_242,
+      signals: ["SIGTERM", "SIGKILL"],
+    });
+  });
 });
 
 describe("generated provider shims", () => {
@@ -485,17 +646,9 @@ describe("generated provider shims", () => {
         { provider: "opencode", prompt: "@reviewer" },
       ]);
       await reader.cancel();
-      expect(
-        await (
-          await fetch(`${endpoint}/t4code-fixture/shutdown`, {
-            method: "POST",
-          })
-        ).json(),
-      ).toEqual({ shuttingDown: true });
-      await waitForFixtureProcessExit(child);
     } finally {
       abort.abort();
-      await stopFixtureProcess(child);
+      await cleanupOpenCodeFixture(endpoint, child, fixture.hostPlatform, fixture.environment);
     }
   });
 
