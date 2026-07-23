@@ -1602,7 +1602,7 @@ describe("TerminalViewport mounted lifecycle", () => {
     expect(darkSpec.terminal.env).toMatchObject({ T4CODE_OSC_BACKGROUND: "14,18,24" });
   });
 
-  it("marks structured Windows provider launches with the authoritative console theme", async () => {
+  it("limits the persistent Windows console theme to Codex", async () => {
     testState.attachedSessionInputs.length = 0;
     testState.resolvedTheme = "light";
     await mount(
@@ -1634,26 +1634,30 @@ describe("TerminalViewport mounted lifecycle", () => {
       T4CODE_WINDOWS_CONSOLE_THEME: "light",
     });
 
-    testState.attachedSessionInputs.length = 0;
-    await mount(
-      <TerminalViewport
-        {...viewportProps({
-          terminalId: "term-opencode-windows-console-theme",
-          command: decodeTerminalLaunchCommand({
-            executable: "opencode",
-            args: [],
-            env: { T4CODE_WINDOWS_CONSOLE_THEME: "command" },
-          })!,
-          runtimeEnv: { T4CODE_WINDOWS_CONSOLE_THEME: "runtime" },
-        })}
-      />,
-    );
-    const openCodeSpec = testState.attachedSessionInputs.at(-1) as {
-      terminal: { env?: Record<string, string> };
-    };
-    expect(openCodeSpec.terminal.env).toMatchObject({
-      T4CODE_WINDOWS_CONSOLE_THEME: "light",
-    });
+    for (const [terminalId, executable, args, expected] of [
+      ["term-cursor-windows-console-theme", "cursor-agent", ["--yolo"], undefined],
+      [
+        "term-claude-windows-console-theme",
+        "claude",
+        ["--dangerously-skip-permissions"],
+        undefined,
+      ],
+      ["term-opencode-windows-console-theme", "opencode", [], undefined],
+    ] as const) {
+      testState.attachedSessionInputs.length = 0;
+      await mount(
+        <TerminalViewport
+          {...viewportProps({
+            terminalId,
+            command: decodeTerminalLaunchCommand({ executable, args: [...args] })!,
+          })}
+        />,
+      );
+      const spec = testState.attachedSessionInputs.at(-1) as {
+        terminal: { env?: Record<string, string> };
+      };
+      expect(spec.terminal.env?.T4CODE_WINDOWS_CONSOLE_THEME).toBe(expected);
+    }
   });
 
   it("does not add the Windows console theme marker to Codex on a non-Windows host", async () => {
@@ -3054,7 +3058,7 @@ describe("TerminalViewport mounted lifecycle", () => {
     }
   });
 
-  it("uses the authoritative console theme when reattaching a Windows Cursor terminal", async () => {
+  it("ignores the Codex-only console theme when reattaching a Windows Cursor terminal", async () => {
     testState.resolvedTheme = "dark";
     testState.session.consoleTheme = "light";
     document.documentElement.classList.add("dark");
@@ -3067,15 +3071,13 @@ describe("TerminalViewport mounted lifecycle", () => {
       await mount(<TerminalViewport {...props} />);
 
       expect(xtermState.terminals[0]?.options.theme).toEqual(
-        expect.objectContaining({ background: "rgb(255, 255, 255)" }),
+        expect.objectContaining({ background: "rgb(14, 18, 24)" }),
       );
-      expect(buttonByLabel("Restart Cursor Terminal to apply Dark theme").disabled).toBe(false);
+      expect(document.querySelector('button[aria-label^="Restart Cursor Terminal"]')).toBeNull();
       const attachment = testState.attachedSessionInputs.at(-1) as {
         terminal: { env?: Record<string, string> };
       };
-      expect(attachment.terminal.env).toMatchObject({
-        T4CODE_WINDOWS_CONSOLE_THEME: "dark",
-      });
+      expect(attachment.terminal.env).not.toHaveProperty("T4CODE_WINDOWS_CONSOLE_THEME");
     } finally {
       document.documentElement.classList.remove("dark");
       document.body.style.removeProperty("background-color");

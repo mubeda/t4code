@@ -126,13 +126,13 @@ async fn probe_inner(
     cwd: &Path,
     include_slow_capabilities: bool,
 ) -> Vec<ProviderProbeResult> {
-    let mut snapshots = Vec::new();
-    for definition in definitions(settings) {
-        if selected.is_none_or(|selected| selected == definition.instance_id) {
-            snapshots.push(probe_one(definition, cwd, include_slow_capabilities).await);
-        }
-    }
-    snapshots
+    futures_util::future::join_all(
+        definitions(settings)
+            .into_iter()
+            .filter(|definition| selected.is_none_or(|id| id == definition.instance_id))
+            .map(|definition| probe_one(definition, cwd, include_slow_capabilities)),
+    )
+    .await
 }
 
 fn definitions(settings: &Value) -> Vec<ProviderDefinition> {
@@ -1756,6 +1756,56 @@ mod tests {
 
         assert_eq!(commands[0]["name"], "review");
         assert_eq!(commands[0]["input"]["hint"], "arguments");
+    }
+
+    #[tokio::test]
+    async fn full_probe_does_not_serialize_independent_provider_inventories() {
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(6));
+        let app = Router::new()
+            .route(
+                "/{*path}",
+                get(move || {
+                    let barrier = barrier.clone();
+                    async move {
+                        barrier.wait().await;
+                        Json(json!({}))
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake OpenCode server");
+        let endpoint = format!("http://{}", listener.local_addr().expect("local address"));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve fake OpenCode API");
+        });
+        let settings = json!({
+            "providerInstances": {
+                "first": {
+                    "driver": "opencode",
+                    "enabled": true,
+                    "config": { "serverUrl": endpoint }
+                },
+                "second": {
+                    "driver": "opencode",
+                    "enabled": true,
+                    "config": { "serverUrl": endpoint }
+                }
+            }
+        });
+
+        let result = timeout(
+            Duration::from_secs(2),
+            probe_full(&settings, None, Path::new(".")),
+        )
+        .await;
+        server.abort();
+
+        let result = result.expect("independent provider probes should not block each other");
+        assert_eq!(result[0].snapshot["instanceId"], "first");
+        assert_eq!(result[1].snapshot["instanceId"], "second");
     }
 
     #[tokio::test]

@@ -409,6 +409,15 @@ function terminalThemesEqual(left: ITheme, right: ITheme): boolean {
   return true;
 }
 
+function usesPersistentWindowsConsoleTheme(command: TerminalLaunchCommand | undefined): boolean {
+  if (!command) return false;
+  const executable = command.executable.split(/[\\/]/).at(-1)?.toLowerCase() ?? "";
+  return (
+    executable.includes("codex") ||
+    command.args.includes("--dangerously-bypass-approvals-and-sandbox")
+  );
+}
+
 function repaintTerminalTheme(
   terminal: Terminal,
   resolvedTheme: TerminalThemeMode,
@@ -704,8 +713,9 @@ export function TerminalViewport({
   });
   const readTerminalLabel = useEffectEvent(() => terminalLabel);
   const hasAuthoritativeHostConfig = serverConfig !== null;
-  const isWindowsProviderTerminal =
-    command !== undefined && serverConfig?.environment.platform.os === "windows";
+  const hasPersistentWindowsConsoleTheme =
+    serverConfig?.environment.platform.os === "windows" &&
+    usesPersistentWindowsConsoleTheme(command);
   const attachmentThemeTargetKey = `${environmentId}\u0000${threadId}\u0000${terminalId}`;
   const attachmentLaunchThemeRef = useRef<{
     readonly targetKey: string;
@@ -736,10 +746,10 @@ export function TerminalViewport({
       commandEnv: command?.env,
       runtimeEnv,
       resolvedTheme: attachmentLaunchTheme,
-      windowsConsoleTheme: isWindowsProviderTerminal,
+      windowsConsoleTheme: hasPersistentWindowsConsoleTheme,
     });
     return Object.keys(merged).length > 0 ? merged : undefined;
-  }, [attachmentLaunchTheme, command, isWindowsProviderTerminal, runtimeEnv]);
+  }, [attachmentLaunchTheme, command, hasPersistentWindowsConsoleTheme, runtimeEnv]);
   const terminalSession = useAttachedTerminalSession({
     environmentId,
     terminal: {
@@ -800,14 +810,14 @@ export function TerminalViewport({
   const launchThemeRef = useRef<TerminalLaunchThemeState | null>(null);
   const activeThemeRestartRequest = themeRestartRequestRef.current;
   launchThemeRef.current = retainTerminalLaunchTheme(launchThemeRef.current, {
-    persistentConsoleTheme: isWindowsProviderTerminal,
+    persistentConsoleTheme: hasPersistentWindowsConsoleTheme,
     generation: terminalGeneration,
-    resolvedTheme: isWindowsProviderTerminal ? attachmentLaunchTheme : resolvedTheme,
+    resolvedTheme: hasPersistentWindowsConsoleTheme ? attachmentLaunchTheme : resolvedTheme,
     authoritativeTheme: terminalSession.consoleTheme,
     restartRequest: activeThemeRestartRequest,
   });
   if (
-    isWindowsProviderTerminal &&
+    hasPersistentWindowsConsoleTheme &&
     activeThemeRestartRequest !== null &&
     terminalGeneration > activeThemeRestartRequest.sourceGeneration &&
     attachmentLaunchThemeRef.current.targetKey === attachmentThemeTargetKey &&
@@ -819,13 +829,13 @@ export function TerminalViewport({
       pinned: true,
     };
   }
-  const effectiveTerminalTheme = isWindowsProviderTerminal
+  const effectiveTerminalTheme = hasPersistentWindowsConsoleTheme
     ? launchThemeRef.current.theme
     : resolvedTheme;
   const effectiveTerminalThemeRef = useRef(effectiveTerminalTheme);
   effectiveTerminalThemeRef.current = effectiveTerminalTheme;
   const nativeThemeMismatch =
-    isWindowsProviderTerminal &&
+    hasPersistentWindowsConsoleTheme &&
     terminalStatus === "running" &&
     effectiveTerminalTheme !== resolvedTheme;
   const [dismissedThemeNotice, setDismissedThemeNotice] = useState<{
@@ -856,7 +866,8 @@ export function TerminalViewport({
 
   const restartForTheme = useCallback(() => {
     const terminal = terminalRef.current;
-    if (!terminal || !isWindowsProviderTerminal || themeRestartRequestRef.current !== null) return;
+    if (!terminal || !hasPersistentWindowsConsoleTheme || themeRestartRequestRef.current !== null)
+      return;
 
     const targetSpawnEnv = mergeTerminalSpawnEnv({
       commandEnv: command?.env,
@@ -928,7 +939,7 @@ export function TerminalViewport({
     command,
     cwd,
     environmentId,
-    isWindowsProviderTerminal,
+    hasPersistentWindowsConsoleTheme,
     runTerminalRestart,
     resolvedTheme,
     runtimeEnv,
