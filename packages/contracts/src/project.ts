@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
-const PROJECT_SEARCH_ENTRIES_MAX_LIMIT = 200;
+const PROJECT_ENTRIES_MAX_LIMIT = 200;
 const PROJECT_WRITE_FILE_PATH_MAX_LENGTH = 512;
 const PROJECT_READ_FILE_PATH_MAX_LENGTH = 512;
 const PROJECT_ENTRY_PATH_MAX_LENGTH = 512;
@@ -9,7 +9,7 @@ const PROJECT_ENTRY_PATH_MAX_LENGTH = 512;
 export const ProjectSearchEntriesInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
   query: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
-  limit: PositiveInt.check(Schema.isLessThanOrEqualTo(PROJECT_SEARCH_ENTRIES_MAX_LIMIT)),
+  limit: PositiveInt.check(Schema.isLessThanOrEqualTo(PROJECT_ENTRIES_MAX_LIMIT)),
 });
 export type ProjectSearchEntriesInput = typeof ProjectSearchEntriesInput.Type;
 
@@ -29,6 +29,7 @@ export type ProjectSearchEntriesResult = typeof ProjectSearchEntriesResult.Type;
 
 export const ProjectListEntriesInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
+  limit: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(PROJECT_ENTRIES_MAX_LIMIT))),
 });
 export type ProjectListEntriesInput = typeof ProjectListEntriesInput.Type;
 

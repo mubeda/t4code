@@ -14,6 +14,8 @@ use tokio_util::sync::CancellationToken;
 use super::paths::normalize_root;
 use super::{EntryKind, SearchLimits, WorkspaceError, WorkspaceSearchIndex, WorkspaceService};
 
+const PROJECT_ENTRIES_MAX_LIMIT: usize = 200;
+
 pub const TASK_SIX_RPC_METHODS: [&str; 11] = [
     "projects.searchEntries",
     "projects.listEntries",
@@ -176,11 +178,14 @@ impl WorkspaceRpc {
                 }
             }
             "projects.listEntries" => {
-                let input: CwdInput = decode(payload)?;
+                let input: ListInput = decode(payload)?;
                 let index = self.index(&input.cwd).await.map_err(|error| {
                     entries_wire_error("ProjectListEntriesError", &input.cwd, &error)
                 })?;
-                encode(index.list().await).map_err(|error| {
+                let limit = input
+                    .limit
+                    .map(|limit| limit.clamp(1, PROJECT_ENTRIES_MAX_LIMIT));
+                encode(index.list(limit).await).map_err(|error| {
                     entries_wire_error("ProjectListEntriesError", &input.cwd, &error)
                 })
             }
@@ -189,7 +194,12 @@ impl WorkspaceRpc {
                 let index = self.index(&input.cwd).await.map_err(|error| {
                     entries_wire_error("ProjectSearchEntriesError", &input.cwd, &error)
                 })?;
-                encode(index.search(&input.query, input.limit.min(200)).await).map_err(|error| {
+                encode(
+                    index
+                        .search(&input.query, input.limit.min(PROJECT_ENTRIES_MAX_LIMIT))
+                        .await,
+                )
+                .map_err(|error| {
                     entries_wire_error("ProjectSearchEntriesError", &input.cwd, &error)
                 })
             }
@@ -435,8 +445,9 @@ fn defect(message: &str) -> Value {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CwdInput {
+struct ListInput {
     cwd: String,
+    limit: Option<usize>,
 }
 
 #[derive(Deserialize)]

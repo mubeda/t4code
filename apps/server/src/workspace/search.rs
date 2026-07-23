@@ -98,11 +98,17 @@ impl WorkspaceSearchIndex {
         Ok(())
     }
 
-    pub async fn list(&self) -> SearchResult {
+    pub async fn list(&self, limit: Option<usize>) -> SearchResult {
         let snapshot = self.snapshot.read().await;
+        let effective_limit = limit.unwrap_or(snapshot.entries.len());
         SearchResult {
-            entries: snapshot.entries.clone(),
-            truncated: snapshot.truncated,
+            truncated: snapshot.truncated || snapshot.entries.len() > effective_limit,
+            entries: snapshot
+                .entries
+                .iter()
+                .take(effective_limit)
+                .cloned()
+                .collect(),
         }
     }
 
@@ -426,7 +432,7 @@ mod tests {
         let index = WorkspaceSearchIndex::new(root.path().to_path_buf(), SearchLimits::default());
         index.refresh(CancellationToken::new()).await.unwrap();
         let paths = index
-            .list()
+            .list(None)
             .await
             .entries
             .into_iter()
@@ -436,6 +442,44 @@ mod tests {
         assert!(paths.contains(&"tracked.txt".to_owned()));
         assert!(paths.contains(&"untracked.txt".to_owned()));
         assert!(!paths.iter().any(|path| path.starts_with("ignored-cache")));
+    }
+
+    #[tokio::test]
+    async fn list_returns_only_the_requested_prefix_and_reports_truncation() {
+        let root = tempfile::tempdir().unwrap();
+        for path in ["alpha.txt", "bravo.txt", "charlie.txt"] {
+            std::fs::write(root.path().join(path), "").unwrap();
+        }
+        let index = WorkspaceSearchIndex::new(root.path().to_path_buf(), SearchLimits::default());
+        index.refresh(CancellationToken::new()).await.unwrap();
+
+        let full = index.list(None).await;
+        assert_eq!(full.entries.len(), 3);
+        assert!(!full.truncated);
+
+        let bounded = index.list(Some(2)).await;
+        assert_eq!(bounded.entries, full.entries[..2]);
+        assert!(bounded.truncated);
+
+        let within_snapshot = index.list(Some(200)).await;
+        assert_eq!(within_snapshot.entries, full.entries);
+        assert!(!within_snapshot.truncated);
+
+        let snapshot_limited = WorkspaceSearchIndex::new(
+            root.path().to_path_buf(),
+            SearchLimits {
+                max_entries: 2,
+                max_memory_bytes: usize::MAX,
+                max_path_bytes: usize::MAX,
+            },
+        );
+        snapshot_limited
+            .refresh(CancellationToken::new())
+            .await
+            .unwrap();
+        let snapshot_truncated = snapshot_limited.list(Some(200)).await;
+        assert_eq!(snapshot_truncated.entries.len(), 2);
+        assert!(snapshot_truncated.truncated);
     }
 
     #[tokio::test]
@@ -456,7 +500,7 @@ mod tests {
 
         let index = WorkspaceSearchIndex::new(root.path().to_path_buf(), SearchLimits::default());
         index.refresh(CancellationToken::new()).await.unwrap();
-        let listed = index.list().await;
+        let listed = index.list(None).await;
         assert!(
             listed
                 .entries
@@ -493,7 +537,7 @@ mod tests {
             },
         );
         limited.refresh(CancellationToken::new()).await.unwrap();
-        assert!(limited.list().await.truncated);
+        assert!(limited.list(None).await.truncated);
 
         let memory_limited = WorkspaceSearchIndex::new(
             root.path().to_path_buf(),
@@ -507,7 +551,7 @@ mod tests {
             .refresh(CancellationToken::new())
             .await
             .unwrap();
-        assert!(memory_limited.list().await.truncated);
+        assert!(memory_limited.list(None).await.truncated);
 
         let cancelled = CancellationToken::new();
         cancelled.cancel();

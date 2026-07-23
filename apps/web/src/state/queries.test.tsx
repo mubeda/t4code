@@ -500,7 +500,7 @@ describe("useComposerPathSearch", () => {
         key: expect.any(String),
         args: {
           environmentId: "environment-1",
-          input: { cwd: "/repo" },
+          input: { cwd: "/repo", limit: 80 },
         },
       },
     ]);

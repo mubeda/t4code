@@ -149,7 +149,7 @@ async fn search_honors_ignores_pagination_and_memory_limits() {
         .await
         .expect("refresh");
 
-    let listed = index.list().await;
+    let listed = index.list(None).await;
     assert!(listed.truncated);
     assert!(listed.entries.iter().all(|entry| {
         !entry.path.starts_with("node_modules") && !entry.path.starts_with(".convex")
@@ -184,7 +184,7 @@ async fn cancelled_index_refresh_does_not_replace_the_previous_snapshot() {
         index.refresh(cancelled).await,
         Err(WorkspaceError::Cancelled)
     ));
-    let listed = index.list().await;
+    let listed = index.list(None).await;
     assert!(
         listed
             .entries
@@ -192,6 +192,44 @@ async fn cancelled_index_refresh_does_not_replace_the_previous_snapshot() {
             .any(|entry| entry.path == "before.txt")
     );
     assert!(!listed.entries.iter().any(|entry| entry.path == "after.txt"));
+}
+
+#[tokio::test]
+async fn workspace_rpc_bounds_list_entries_and_preserves_unbounded_calls() {
+    let root = TempDir::new().expect("root");
+    for index in 0..205 {
+        write(root.path(), &format!("file-{index:03}.txt"), b"").await;
+    }
+    let rpc = WorkspaceRpc::new(WorkspaceService::default());
+    let cwd = path_string(root.path());
+
+    let bounded = rpc
+        .handle("projects.listEntries", json!({ "cwd": cwd, "limit": 80 }))
+        .await
+        .expect("bounded list");
+    assert_eq!(bounded["entries"].as_array().expect("entries").len(), 80);
+    assert_eq!(bounded["truncated"], true);
+
+    let minimum = rpc
+        .handle("projects.listEntries", json!({ "cwd": cwd, "limit": 0 }))
+        .await
+        .expect("minimum-clamped list");
+    assert_eq!(minimum["entries"].as_array().expect("entries").len(), 1);
+    assert_eq!(minimum["truncated"], true);
+
+    let maximum = rpc
+        .handle("projects.listEntries", json!({ "cwd": cwd, "limit": 500 }))
+        .await
+        .expect("maximum-clamped list");
+    assert_eq!(maximum["entries"].as_array().expect("entries").len(), 200);
+    assert_eq!(maximum["truncated"], true);
+
+    let unbounded = rpc
+        .handle("projects.listEntries", json!({ "cwd": cwd }))
+        .await
+        .expect("unbounded list");
+    assert_eq!(unbounded["entries"].as_array().expect("entries").len(), 205);
+    assert_eq!(unbounded["truncated"], false);
 }
 
 #[tokio::test]

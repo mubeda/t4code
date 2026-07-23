@@ -5,6 +5,7 @@ import {
   ProjectCreateEntryError,
   ProjectDeleteEntryError,
   ProjectDuplicateEntryError,
+  ProjectListEntriesInput,
   ProjectListEntriesError,
   ProjectReadFileError,
   ProjectRenameEntryError,
@@ -14,6 +15,7 @@ import {
 
 const withDecodedMessage = <T extends object>(props: T, message: unknown): T =>
   Object.assign({}, props, { message }) as T;
+const decodeListEntriesInput = Schema.decodeUnknownSync(ProjectListEntriesInput);
 const decodeListError = Schema.decodeUnknownSync(ProjectListEntriesError);
 const decodeCreateError = Schema.decodeUnknownSync(ProjectCreateEntryError);
 const decodeRenameError = Schema.decodeUnknownSync(ProjectRenameEntryError);
@@ -21,6 +23,26 @@ const decodeDeleteError = Schema.decodeUnknownSync(ProjectDeleteEntryError);
 const decodeDuplicateError = Schema.decodeUnknownSync(ProjectDuplicateEntryError);
 const decodeSearchError = Schema.decodeUnknownSync(ProjectSearchEntriesError);
 const decodeWriteError = Schema.decodeUnknownSync(ProjectWriteFileError);
+
+describe("project RPC inputs", () => {
+  it("accepts an omitted list limit and positive limits through 200", () => {
+    expect(decodeListEntriesInput({ cwd: "/workspace" })).toEqual({
+      cwd: "/workspace",
+    });
+    expect(decodeListEntriesInput({ cwd: "/workspace", limit: 1 })).toEqual({
+      cwd: "/workspace",
+      limit: 1,
+    });
+    expect(decodeListEntriesInput({ cwd: "/workspace", limit: 200 })).toEqual({
+      cwd: "/workspace",
+      limit: 200,
+    });
+  });
+
+  it.each([0, -1, 1.5, 201])("rejects the invalid list limit %s", (limit) => {
+    expect(() => decodeListEntriesInput({ cwd: "/workspace", limit })).toThrow();
+  });
+});
 
 describe("project RPC errors", () => {
   it("derives stable messages from structured request context while retaining causes", () => {

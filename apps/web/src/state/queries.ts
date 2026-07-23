@@ -206,6 +206,7 @@ export function useComposerPathSearch(target: ComposerPathSearchTarget) {
             environmentId: debouncedTarget.environmentId,
             input: {
               cwd: debouncedTarget.cwd,
+              limit: COMPOSER_PATH_SEARCH_LIMIT,
             },
           })
       : null,
