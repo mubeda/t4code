@@ -58,6 +58,7 @@ const isInlineTokenSegment = (
   segment:
     | { type: "text"; text: string }
     | { type: "mention" }
+    | { type: "agent" }
     | { type: "skill" }
     | { type: "terminal-context" },
 ): boolean => segment.type !== "text";
@@ -77,9 +78,13 @@ function isWhitespace(char: string): boolean {
   );
 }
 
-export function expandCollapsedComposerCursor(text: string, cursorInput: number): number {
+export function expandCollapsedComposerCursor(
+  text: string,
+  cursorInput: number,
+  mentionableAgentNames: ReadonlySet<string> = new Set(),
+): number {
   const collapsedCursor = clampCursor(text, cursorInput);
-  const segments = splitPromptIntoComposerSegments(text);
+  const segments = splitPromptIntoComposerSegments(text, [], mentionableAgentNames);
   if (segments.length === 0) {
     return collapsedCursor;
   }
@@ -89,6 +94,15 @@ export function expandCollapsedComposerCursor(text: string, cursorInput: number)
 
   for (const segment of segments) {
     if (segment.type === "mention") {
+      const expandedLength = segment.source.length;
+      if (remaining <= 1) {
+        return expandedCursor + (remaining === 0 ? 0 : expandedLength);
+      }
+      remaining -= 1;
+      expandedCursor += expandedLength;
+      continue;
+    }
+    if (segment.type === "agent") {
       const expandedLength = segment.source.length;
       if (remaining <= 1) {
         return expandedCursor + (remaining === 0 ? 0 : expandedLength);
@@ -130,6 +144,7 @@ function collapsedSegmentLength(
   segment:
     | { type: "text"; text: string }
     | { type: "mention" }
+    | { type: "agent" }
     | { type: "skill" }
     | { type: "terminal-context" },
 ): number {
@@ -143,6 +158,7 @@ function clampCollapsedComposerCursorForSegments(
   segments: ReadonlyArray<
     | { type: "text"; text: string }
     | { type: "mention" }
+    | { type: "agent" }
     | { type: "skill" }
     | { type: "terminal-context" }
   >,
@@ -158,16 +174,24 @@ function clampCollapsedComposerCursorForSegments(
   return Math.max(0, Math.min(collapsedLength, Math.floor(cursorInput)));
 }
 
-export function clampCollapsedComposerCursor(text: string, cursorInput: number): number {
+export function clampCollapsedComposerCursor(
+  text: string,
+  cursorInput: number,
+  mentionableAgentNames: ReadonlySet<string> = new Set(),
+): number {
   return clampCollapsedComposerCursorForSegments(
-    splitPromptIntoComposerSegments(text),
+    splitPromptIntoComposerSegments(text, [], mentionableAgentNames),
     cursorInput,
   );
 }
 
-export function collapseExpandedComposerCursor(text: string, cursorInput: number): number {
+export function collapseExpandedComposerCursor(
+  text: string,
+  cursorInput: number,
+  mentionableAgentNames: ReadonlySet<string> = new Set(),
+): number {
   const expandedCursor = clampCursor(text, cursorInput);
-  const segments = splitPromptIntoComposerSegments(text);
+  const segments = splitPromptIntoComposerSegments(text, [], mentionableAgentNames);
   if (segments.length === 0) {
     return expandedCursor;
   }
@@ -177,6 +201,18 @@ export function collapseExpandedComposerCursor(text: string, cursorInput: number
 
   for (const segment of segments) {
     if (segment.type === "mention") {
+      const expandedLength = segment.source.length;
+      if (remaining === 0) {
+        return collapsedCursor;
+      }
+      if (remaining <= expandedLength) {
+        return collapsedCursor + 1;
+      }
+      remaining -= expandedLength;
+      collapsedCursor += 1;
+      continue;
+    }
+    if (segment.type === "agent") {
       const expandedLength = segment.source.length;
       if (remaining === 0) {
         return collapsedCursor;
@@ -224,8 +260,9 @@ export function isCollapsedCursorAdjacentToInlineToken(
   text: string,
   cursorInput: number,
   direction: "left" | "right",
+  mentionableAgentNames: ReadonlySet<string> = new Set(),
 ): boolean {
-  const segments = splitPromptIntoComposerSegments(text);
+  const segments = splitPromptIntoComposerSegments(text, [], mentionableAgentNames);
   if (!segments.some(isInlineTokenSegment)) {
     return false;
   }

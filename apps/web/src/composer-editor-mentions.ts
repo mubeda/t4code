@@ -18,6 +18,11 @@ export type ComposerPromptSegment =
       source: string;
     }
   | {
+      type: "agent";
+      name: string;
+      source: string;
+    }
+  | {
       type: "skill";
       name: string;
     }
@@ -124,13 +129,52 @@ function forEachMentionMatch(
   });
 }
 
-function splitPromptTextIntoComposerSegments(text: string): ComposerPromptSegment[] {
+function trailingNativeMentionToken(text: string): ComposerInlineToken | null {
+  const match = /(^|\s)@(?:"((?:\\.|[^"\\])*)"|([^\s@"]+))$/.exec(text);
+  if (!match) {
+    return null;
+  }
+  const prefix = match[1] ?? "";
+  const quotedValue = match[2];
+  const value = quotedValue !== undefined ? quotedValue.replace(/\\(.)/g, "$1") : (match[3] ?? "");
+  if (!value) {
+    return null;
+  }
+  const start = (match.index ?? 0) + prefix.length;
+  return {
+    type: "mention",
+    value,
+    source: text.slice(start),
+    start,
+    end: text.length,
+  };
+}
+
+function splitPromptTextIntoComposerSegments(
+  text: string,
+  mentionableAgentNames: ReadonlySet<string>,
+): ComposerPromptSegment[] {
   const segments: ComposerPromptSegment[] = [];
   if (!text) {
     return segments;
   }
 
-  const tokenMatches = collectComposerInlineTokens(text);
+  const tokenMatches = [...collectComposerInlineTokens(text)];
+  if (mentionableAgentNames.size > 0) {
+    const trailingMention = trailingNativeMentionToken(text);
+    if (
+      trailingMention &&
+      !tokenMatches.some(
+        (token) =>
+          token.type === trailingMention.type &&
+          token.start === trailingMention.start &&
+          token.end === trailingMention.end,
+      )
+    ) {
+      tokenMatches.push(trailingMention);
+      tokenMatches.sort((left, right) => left.start - right.start);
+    }
+  }
   let cursor = 0;
   for (const match of tokenMatches) {
     if (match.start < cursor) {
@@ -142,11 +186,19 @@ function splitPromptTextIntoComposerSegments(text: string): ComposerPromptSegmen
     }
 
     if (match.type === "mention") {
-      segments.push({
-        type: "mention",
-        path: match.value,
-        source: match.source,
-      });
+      if (match.source.startsWith("@") && mentionableAgentNames.has(match.value)) {
+        segments.push({
+          type: "agent",
+          name: match.value,
+          source: match.source,
+        });
+      } else {
+        segments.push({
+          type: "mention",
+          path: match.value,
+          source: match.source,
+        });
+      }
     } else {
       segments.push({ type: "skill", name: match.value });
     }
@@ -198,6 +250,7 @@ export function selectionTouchesMentionBoundary(
 export function splitPromptIntoComposerSegments(
   prompt: string,
   terminalContexts: ReadonlyArray<TerminalContextDraft> = [],
+  mentionableAgentNames: ReadonlySet<string> = new Set(),
 ): ComposerPromptSegment[] {
   if (!prompt) {
     return [];
@@ -207,7 +260,7 @@ export function splitPromptIntoComposerSegments(
   let terminalContextIndex = 0;
   forEachPromptSegmentSlice(prompt, (slice) => {
     if (slice.type === "text") {
-      segments.push(...splitPromptTextIntoComposerSegments(slice.text));
+      segments.push(...splitPromptTextIntoComposerSegments(slice.text, mentionableAgentNames));
       return false;
     }
 

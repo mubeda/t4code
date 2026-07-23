@@ -1,4 +1,5 @@
-import { type ServerProviderSkill, ThreadId } from "@t4code/contracts";
+import { type ServerProviderAgent, type ServerProviderSkill, ThreadId } from "@t4code/contracts";
+import { serializeComposerReference } from "@t4code/shared/composerReferences";
 import { serializeComposerFileLink } from "@t4code/shared/composerTrigger";
 import {
   $createRangeSelection,
@@ -148,7 +149,19 @@ function lastEditor(): LexicalEditor {
 // ---------------------------------------------------------------------------
 
 const MENTION_PATH = "src/app/main.ts";
-const MENTION_SOURCE = serializeComposerFileLink(MENTION_PATH);
+const MENTION_SOURCE = serializeComposerReference(MENTION_PATH);
+
+const agents: ServerProviderAgent[] = [
+  {
+    name: "reviewer",
+    description: "Reviews implementation changes",
+    invocation: "mention",
+  },
+  {
+    name: "background",
+    description: "Not directly mentionable",
+  },
+];
 
 const skills: ServerProviderSkill[] = [
   {
@@ -192,6 +205,7 @@ interface RenderOptions {
   cursor?: number;
   terminalContexts?: ReadonlyArray<TerminalContextDraft>;
   skills?: ReadonlyArray<ServerProviderSkill>;
+  agents?: ReadonlyArray<ServerProviderAgent>;
   disabled?: boolean;
   placeholder?: string;
   className?: string;
@@ -212,6 +226,7 @@ function renderEditor(options: RenderOptions = {}) {
       cursor={options.cursor ?? 0}
       terminalContexts={options.terminalContexts ?? []}
       skills={options.skills ?? []}
+      agents={options.agents ?? []}
       disabled={options.disabled ?? false}
       placeholder={options.placeholder ?? "Ask anything"}
       onRemoveTerminalContext={onRemoveTerminalContext}
@@ -435,15 +450,16 @@ describe("ComposerPromptEditor rendering", () => {
   });
 
   it("initializes the editor state from the collapsed prompt", () => {
-    const value = `Check ${MENTION_SOURCE} then $refactor\nrun ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER} tail ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}`;
+    const value = `Check ${MENTION_SOURCE} then @reviewer and $refactor\nrun ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER} tail ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}`;
     const { editor } = renderEditor({
       value,
       terminalContexts: [terminalContext("ctx-1")],
       skills,
+      agents,
     });
 
     // The orphan (second) terminal placeholder has no draft and is dropped.
-    const expected = `Check ${MENTION_SOURCE} then $refactor\nrun ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER} tail `;
+    const expected = `Check ${MENTION_SOURCE} then @reviewer and $refactor\nrun ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER} tail `;
     expect(readRootText(editor)).toBe(expected);
 
     const types = editor.getEditorState().read(() =>
@@ -452,6 +468,7 @@ describe("ComposerPromptEditor rendering", () => {
         .map((child) => child.getType()),
     );
     expect(types).toContain("composer-mention");
+    expect(types).toContain("composer-agent");
     expect(types).toContain("composer-skill");
     expect(types).toContain("composer-terminal-context");
     expect(types).toContain("linebreak");
@@ -477,6 +494,8 @@ describe("ComposerPromptEditor rendering", () => {
 interface SerializedTokenShape {
   type?: string;
   path?: string;
+  agentName?: string;
+  agentDescription?: string;
   skillName?: string;
   skillLabel?: string;
   skillDescription?: string;
@@ -485,22 +504,26 @@ interface SerializedTokenShape {
 }
 
 describe("ComposerPromptEditor serialization", () => {
-  it("exports mention, skill, and terminal context nodes to JSON and reimports them", () => {
-    const value = `see ${MENTION_SOURCE} and $refactor with $docs at ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}`;
+  it("exports mention, agent, skill, and terminal context nodes to JSON and reimports them", () => {
+    const value = `see ${MENTION_SOURCE} ask @reviewer and $refactor with $docs at ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}`;
     const { editor } = renderEditor({
       value,
       terminalContexts: [terminalContext("ctx-json")],
       skills,
+      agents,
     });
 
     const serialized = editor.getEditorState().toJSON();
     const paragraph = (serialized.root as SerializedTokenShape).children?.[0];
     const children = paragraph?.children ?? [];
     const mention = children.find((child) => child.type === "composer-mention");
+    const agent = children.find((child) => child.type === "composer-agent");
     const skillNodes = children.filter((child) => child.type === "composer-skill");
     const terminal = children.find((child) => child.type === "composer-terminal-context");
 
     expect(mention?.path).toBe(MENTION_PATH);
+    expect(agent?.agentName).toBe("reviewer");
+    expect(agent?.agentDescription).toBe("Reviews implementation changes");
     expect(skillNodes.map((node) => node.skillName)).toEqual(["refactor", "docs"]);
     // Metadata-backed skill keeps its label/description; docs has neither.
     expect(skillNodes[0]?.skillLabel).toBe("Refactor");
@@ -510,6 +533,31 @@ describe("ComposerPromptEditor serialization", () => {
 
     const reparsed = editor.parseEditorState(serialized);
     expect(reparsed.read(() => $getRoot().getTextContent())).toBe(value);
+    expect(
+      reparsed.read(() =>
+        $paragraph()
+          .getChildren()
+          .map((child) => child.getType()),
+      ),
+    ).toEqual(expect.arrayContaining(["composer-mention", "composer-agent", "composer-skill"]));
+  });
+
+  it("serializes native file references and canonicalizes legacy markdown drafts", () => {
+    const quotedPath = "docs/My File.md";
+    const legacyPath = "legacy/file.ts";
+    const value = `${MENTION_SOURCE} ${serializeComposerReference(quotedPath)} ${serializeComposerFileLink(legacyPath)} `;
+    const { editor } = renderEditor({ value });
+
+    expect(readRootText(editor)).toBe(
+      `${MENTION_SOURCE} ${serializeComposerReference(quotedPath)} ${serializeComposerReference(legacyPath)} `,
+    );
+    const fileTexts = editor.getEditorState().read(() =>
+      $paragraph()
+        .getChildren()
+        .filter((child) => child.getType() === "composer-mention")
+        .map((child) => child.getTextContent()),
+    );
+    expect(fileTexts).toEqual(["@src/app/main.ts", '@"docs/My File.md"', "@legacy/file.ts"]);
   });
 
   it("normalizes serialized skill names that still carry the $ sigil", () => {
@@ -551,14 +599,16 @@ describe("ComposerPromptEditor serialization", () => {
 describe("ComposerPromptEditor inline token nodes", () => {
   function renderTokens() {
     return renderEditor({
-      value: `${MENTION_SOURCE} $refactor $docs ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}`,
+      value: `${MENTION_SOURCE} @reviewer $refactor $docs ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}`,
       terminalContexts: [terminalContext("ctx-chip")],
       skills,
+      agents,
     });
   }
 
   function tokenNodes(editor: LexicalEditor): {
     mention: LexicalNode;
+    agent: LexicalNode;
     skillWithDescription: LexicalNode;
     skillWithoutDescription: LexicalNode;
     terminal: LexicalNode;
@@ -566,13 +616,22 @@ describe("ComposerPromptEditor inline token nodes", () => {
     return editor.getEditorState().read(() => {
       const children = $paragraph().getChildren();
       const mention = children.find((child) => child.getType() === "composer-mention");
+      const agent = children.find((child) => child.getType() === "composer-agent");
       const skillNodes = children.filter((child) => child.getType() === "composer-skill");
       const terminal = children.find((child) => child.getType() === "composer-terminal-context");
-      if (!mention || skillNodes.length !== 2 || !skillNodes[0] || !skillNodes[1] || !terminal) {
+      if (
+        !mention ||
+        !agent ||
+        skillNodes.length !== 2 ||
+        !skillNodes[0] ||
+        !skillNodes[1] ||
+        !terminal
+      ) {
         throw new Error("expected inline token fixtures");
       }
       return {
         mention,
+        agent,
         skillWithDescription: skillNodes[0],
         skillWithoutDescription: skillNodes[1],
         terminal,
@@ -588,7 +647,7 @@ describe("ComposerPromptEditor inline token nodes", () => {
     const { editor } = renderTokens();
     const nodes = tokenNodes(editor);
 
-    for (const node of [nodes.mention, nodes.skillWithDescription, nodes.terminal]) {
+    for (const node of [nodes.mention, nodes.agent, nodes.skillWithDescription, nodes.terminal]) {
       const decorator = node as unknown as {
         createDOM: () => { className: string };
         updateDOM: () => boolean;
@@ -600,7 +659,7 @@ describe("ComposerPromptEditor inline token nodes", () => {
     }
   });
 
-  it("decorates tokens with chips for mention, skill, and terminal context", () => {
+  it("decorates tokens with chips for mention, agent, skill, and terminal context", () => {
     vi.stubGlobal("document", {
       documentElement: { classList: { contains: () => true } },
       createElement: () => ({ className: "" }),
@@ -613,6 +672,10 @@ describe("ComposerPromptEditor inline token nodes", () => {
     const mentionMarkup = decorate(nodes.mention);
     expect(mentionMarkup).toContain('data-composer-mention-chip="true"');
     expect(mentionMarkup).toContain("main.ts");
+
+    const agentMarkup = decorate(nodes.agent);
+    expect(agentMarkup).toContain('data-composer-agent-chip="true"');
+    expect(agentMarkup).toContain("reviewer");
 
     const describedSkillMarkup = decorate(nodes.skillWithDescription);
     expect(describedSkillMarkup).toContain('data-composer-skill-chip="true"');
@@ -627,6 +690,24 @@ describe("ComposerPromptEditor inline token nodes", () => {
 
     const terminalMarkup = decorate(nodes.terminal);
     expect(terminalMarkup).toContain("Terminal 1");
+  });
+
+  it("changes exact agent references between file and agent chips without changing source", () => {
+    const source = "ask @reviewer next";
+    const withoutInventory = renderEditor({ value: source });
+    const withInventory = renderEditor({ value: source, agents });
+    const typeForReference = (editor: LexicalEditor) =>
+      editor.getEditorState().read(() =>
+        $paragraph()
+          .getChildren()
+          .find((child) => child.getTextContent() === "@reviewer")
+          ?.getType(),
+      );
+
+    expect(readRootText(withoutInventory.editor)).toBe(source);
+    expect(typeForReference(withoutInventory.editor)).toBe("composer-mention");
+    expect(readRootText(withInventory.editor)).toBe(source);
+    expect(typeForReference(withInventory.editor)).toBe("composer-agent");
   });
 });
 

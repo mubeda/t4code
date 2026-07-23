@@ -274,6 +274,23 @@ describe("expandCollapsedComposerCursor", () => {
     );
   });
 
+  it("maps mentionable agent tokens as one collapsed cursor position", () => {
+    const text = "ask @reviewer next";
+    const mentionableAgentNames = new Set(["reviewer"]);
+    const collapsedCursorAfterAgent = "ask ".length + 2;
+    const expandedCursorAfterAgent = "ask @reviewer ".length;
+
+    expect(
+      expandCollapsedComposerCursor(text, collapsedCursorAfterAgent, mentionableAgentNames),
+    ).toBe(expandedCursorAfterAgent);
+    expect(
+      collapseExpandedComposerCursor(text, expandedCursorAfterAgent, mentionableAgentNames),
+    ).toBe(collapsedCursorAfterAgent);
+    expect(clampCollapsedComposerCursor(text, text.length, mentionableAgentNames)).toBe(
+      "ask ".length + 1 + " next".length,
+    );
+  });
+
   it("maps token boundaries, terminal placeholders, and non-finite cursors", () => {
     const mention = "x @AGENTS.md ";
     const skill = "x $review-follow-up ";
@@ -437,6 +454,20 @@ describe("isCollapsedCursorAdjacentToInlineToken", () => {
 
     expect(isCollapsedCursorAdjacentToInlineToken(text, tokenEnd, "left")).toBe(true);
     expect(isCollapsedCursorAdjacentToInlineToken(text, tokenStart, "right")).toBe(true);
+  });
+
+  it("treats mentionable agent pills as inline tokens for adjacency checks", () => {
+    const text = "ask @reviewer next";
+    const mentionableAgentNames = new Set(["reviewer"]);
+    const tokenStart = "ask ".length;
+    const tokenEnd = tokenStart + 1;
+
+    expect(
+      isCollapsedCursorAdjacentToInlineToken(text, tokenEnd, "left", mentionableAgentNames),
+    ).toBe(true);
+    expect(
+      isCollapsedCursorAdjacentToInlineToken(text, tokenStart, "right", mentionableAgentNames),
+    ).toBe(true);
   });
 });
 

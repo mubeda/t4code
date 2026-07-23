@@ -5,8 +5,8 @@ import { LexicalErrorBoundary } from "@lexical/react/LexicalErrorBoundary";
 import { HistoryPlugin } from "@lexical/react/LexicalHistoryPlugin";
 import { OnChangePlugin } from "@lexical/react/LexicalOnChangePlugin";
 import { PlainTextPlugin } from "@lexical/react/LexicalPlainTextPlugin";
-import { type ServerProviderSkill } from "@t4code/contracts";
-import { serializeComposerFileLink } from "@t4code/shared/composerTrigger";
+import { type ServerProviderAgent, type ServerProviderSkill } from "@t4code/contracts";
+import { serializeComposerReference } from "@t4code/shared/composerReferences";
 import {
   $applyNodeReplacement,
   $createRangeSelection,
@@ -48,6 +48,7 @@ import {
   useMemo,
   useRef,
 } from "react";
+import { BotIcon } from "lucide-react";
 
 import {
   clampCollapsedComposerCursor,
@@ -67,6 +68,7 @@ import { cn } from "~/lib/utils";
 import { basenameOfPath } from "~/pierre-icons";
 import {
   COMPOSER_INLINE_CHIP_ICON_CLASS_NAME,
+  COMPOSER_INLINE_CHIP_CLASS_NAME,
   COMPOSER_INLINE_CHIP_LABEL_CLASS_NAME,
   COMPOSER_INLINE_SKILL_CHIP_CLASS_NAME,
   SKILL_CHIP_ICON_SVG,
@@ -77,6 +79,7 @@ import { formatProviderSkillDisplayName } from "~/providerSkillPresentation";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 const COMPOSER_EDITOR_HMR_KEY = `composer-editor-${Math.random().toString(36).slice(2)}`;
+const EMPTY_PROVIDER_AGENTS: ReadonlyArray<ServerProviderAgent> = [];
 const SURROUND_SYMBOLS: [string, string][] = [
   ["(", ")"],
   ["[", "]"],
@@ -97,6 +100,16 @@ type SerializedComposerMentionNode = Spread<
   {
     path: string;
     type: "composer-mention";
+    version: 1;
+  },
+  SerializedLexicalNode
+>;
+
+type SerializedComposerAgentNode = Spread<
+  {
+    agentName: string;
+    agentDescription?: string;
+    type: "composer-agent";
     version: 1;
   },
   SerializedLexicalNode
@@ -191,7 +204,7 @@ class ComposerMentionNode extends DecoratorNode<React.ReactElement> {
   }
 
   override getTextContent(): string {
-    return serializeComposerFileLink(this.__path);
+    return serializeComposerReference(this.__path);
   }
 
   override isInline(): true {
@@ -205,6 +218,122 @@ class ComposerMentionNode extends DecoratorNode<React.ReactElement> {
 
 function $createComposerMentionNode(path: string): ComposerMentionNode {
   return $applyNodeReplacement(new ComposerMentionNode(path));
+}
+
+function ComposerAgentDecorator(props: { agentName: string; agentDescription: string | null }) {
+  const chip = (
+    <span
+      className={COMPOSER_INLINE_CHIP_CLASS_NAME}
+      contentEditable={false}
+      spellCheck={false}
+      data-composer-agent-chip="true"
+    >
+      <BotIcon aria-hidden="true" className={COMPOSER_INLINE_CHIP_ICON_CLASS_NAME} />
+      <span className={COMPOSER_INLINE_CHIP_LABEL_CLASS_NAME}>{props.agentName}</span>
+    </span>
+  );
+
+  if (!props.agentDescription) {
+    return chip;
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger render={chip} />
+      <TooltipPopup side="top" className="max-w-120 whitespace-normal leading-tight">
+        {props.agentDescription}
+      </TooltipPopup>
+    </Tooltip>
+  );
+}
+
+class ComposerAgentNode extends DecoratorNode<React.ReactElement> {
+  __agentName: string;
+  __agentDescription: string | null;
+
+  static override getType(): string {
+    return "composer-agent";
+  }
+
+  static override clone(node: ComposerAgentNode): ComposerAgentNode {
+    return new ComposerAgentNode(node.__agentName, node.__agentDescription, node.__key);
+  }
+
+  static override importJSON(serializedNode: SerializedComposerAgentNode): ComposerAgentNode {
+    return $createComposerAgentNode(
+      serializedNode.agentName,
+      serializedNode.agentDescription ?? null,
+    ).updateFromJSON(serializedNode);
+  }
+
+  constructor(agentName: string, agentDescription: string | null, key?: NodeKey) {
+    super(key);
+    this.__agentName = agentName.startsWith("@") ? agentName.slice(1) : agentName;
+    this.__agentDescription = agentDescription;
+  }
+
+  override exportJSON(): SerializedComposerAgentNode {
+    return {
+      ...super.exportJSON(),
+      agentName: this.__agentName,
+      ...(this.__agentDescription ? { agentDescription: this.__agentDescription } : {}),
+      type: "composer-agent",
+      version: 1,
+    };
+  }
+
+  override createDOM(): HTMLElement {
+    const dom = document.createElement("span");
+    dom.className = "inline-flex align-middle leading-none";
+    return dom;
+  }
+
+  override updateDOM(): false {
+    return false;
+  }
+
+  override getTextContent(): string {
+    return `@${this.__agentName}`;
+  }
+
+  override isInline(): true {
+    return true;
+  }
+
+  override decorate(): React.ReactElement {
+    return (
+      <ComposerAgentDecorator
+        agentName={this.__agentName}
+        agentDescription={this.__agentDescription}
+      />
+    );
+  }
+}
+
+function $createComposerAgentNode(
+  agentName: string,
+  agentDescription: string | null,
+): ComposerAgentNode {
+  return $applyNodeReplacement(new ComposerAgentNode(agentName, agentDescription));
+}
+
+type ComposerAgentMetadata = {
+  description: string | null;
+};
+
+function agentMetadataByName(
+  agents: ReadonlyArray<ServerProviderAgent>,
+): ReadonlyMap<string, ComposerAgentMetadata> {
+  return new Map(
+    agents
+      .filter((agent) => agent.invocation === "mention")
+      .map((agent) => [
+        agent.name,
+        {
+          description: agent.description?.trim() || null,
+        },
+      ]),
+  );
 }
 
 function resolveSkillDescription(
@@ -420,12 +549,14 @@ function $createComposerTerminalContextNode(
 
 type ComposerInlineTokenNode =
   | ComposerMentionNode
+  | ComposerAgentNode
   | ComposerSkillNode
   | ComposerTerminalContextNode;
 
 function isComposerInlineTokenNode(candidate: unknown): candidate is ComposerInlineTokenNode {
   return (
     candidate instanceof ComposerMentionNode ||
+    candidate instanceof ComposerAgentNode ||
     candidate instanceof ComposerSkillNode ||
     candidate instanceof ComposerTerminalContextNode
   );
@@ -465,6 +596,13 @@ function skillSignature(skills: ReadonlyArray<ServerProviderSkill>): string {
         skill.enabled ? "1" : "0",
       ].join("\u001f"),
     )
+    .join("\u001e");
+}
+
+function agentSignature(agents: ReadonlyArray<ServerProviderAgent>): string {
+  return agents
+    .filter((agent) => agent.invocation === "mention")
+    .map((agent) => [agent.name, agent.description ?? ""].join("\u001f"))
     .join("\u001e");
 }
 
@@ -814,6 +952,7 @@ function $appendTextWithLineBreaks(parent: ElementNode, text: string): void {
 function $setComposerEditorPrompt(
   prompt: string,
   terminalContexts: ReadonlyArray<TerminalContextDraft>,
+  agentMetadata: ReadonlyMap<string, ComposerAgentMetadata>,
   skillMetadata: ReadonlyMap<string, ComposerSkillMetadata>,
 ): void {
   const root = $getRoot();
@@ -821,10 +960,23 @@ function $setComposerEditorPrompt(
   const paragraph = $createParagraphNode();
   root.append(paragraph);
 
-  const segments = splitPromptIntoComposerSegments(prompt, terminalContexts);
+  const segments = splitPromptIntoComposerSegments(
+    prompt,
+    terminalContexts,
+    new Set(agentMetadata.keys()),
+  );
   for (const segment of segments) {
     if (segment.type === "mention") {
       paragraph.append($createComposerMentionNode(segment.path));
+      continue;
+    }
+    if (segment.type === "agent") {
+      paragraph.append(
+        $createComposerAgentNode(
+          segment.name,
+          agentMetadata.get(segment.name)?.description ?? null,
+        ),
+      );
       continue;
     }
     if (segment.type === "skill") {
@@ -875,6 +1027,7 @@ interface ComposerPromptEditorProps {
   cursor: number;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
   skills: ReadonlyArray<ServerProviderSkill>;
+  agents?: ReadonlyArray<ServerProviderAgent>;
   disabled: boolean;
   placeholder: string;
   className?: string;
@@ -956,7 +1109,7 @@ function ComposerCommandKeyPlugin(props: {
   return null;
 }
 
-function ComposerInlineTokenArrowPlugin() {
+function ComposerInlineTokenArrowPlugin(props: { mentionableAgentNames: ReadonlySet<string> }) {
   const [editor] = useLexicalComposerContext();
 
   useEffect(() => {
@@ -970,7 +1123,14 @@ function ComposerInlineTokenArrowPlugin() {
           const currentOffset = $readSelectionOffsetFromEditorState(0);
           if (currentOffset <= 0) return;
           const promptValue = $getRoot().getTextContent();
-          if (!isCollapsedCursorAdjacentToInlineToken(promptValue, currentOffset, "left")) {
+          if (
+            !isCollapsedCursorAdjacentToInlineToken(
+              promptValue,
+              currentOffset,
+              "left",
+              props.mentionableAgentNames,
+            )
+          ) {
             return;
           }
           nextOffset = currentOffset - 1;
@@ -997,7 +1157,14 @@ function ComposerInlineTokenArrowPlugin() {
           const composerLength = $getComposerRootLength();
           if (currentOffset >= composerLength) return;
           const promptValue = $getRoot().getTextContent();
-          if (!isCollapsedCursorAdjacentToInlineToken(promptValue, currentOffset, "right")) {
+          if (
+            !isCollapsedCursorAdjacentToInlineToken(
+              promptValue,
+              currentOffset,
+              "right",
+              props.mentionableAgentNames,
+            )
+          ) {
             return;
           }
           nextOffset = currentOffset + 1;
@@ -1017,7 +1184,7 @@ function ComposerInlineTokenArrowPlugin() {
       unregisterLeft();
       unregisterRight();
     };
-  }, [editor]);
+  }, [editor, props.mentionableAgentNames]);
 
   return null;
 }
@@ -1120,9 +1287,11 @@ function ComposerInlineTokenBackspacePlugin() {
 function ComposerSurroundSelectionPlugin(props: {
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
   skills: ReadonlyArray<ServerProviderSkill>;
+  agents: ReadonlyArray<ServerProviderAgent>;
 }) {
   const [editor] = useLexicalComposerContext();
   const terminalContextsRef = useRef(props.terminalContexts);
+  const agentMetadataRef = useRef(agentMetadataByName(props.agents));
   const skillMetadataRef = useRef(skillMetadataByName(props.skills));
   const pendingSurroundSelectionRef = useRef<{
     value: string;
@@ -1138,6 +1307,10 @@ function ComposerSurroundSelectionPlugin(props: {
   useEffect(() => {
     terminalContextsRef.current = props.terminalContexts;
   }, [props.terminalContexts]);
+
+  useEffect(() => {
+    agentMetadataRef.current = agentMetadataByName(props.agents);
+  }, [props.agents]);
 
   useEffect(() => {
     skillMetadataRef.current = skillMetadataByName(props.skills);
@@ -1187,10 +1360,16 @@ function ComposerSurroundSelectionPlugin(props: {
         selectionSnapshot.expandedEnd,
       );
       const nextValue = `${selectionSnapshot.value.slice(0, selectionSnapshot.expandedStart)}${inputData}${selectedText}${surroundCloseSymbol}${selectionSnapshot.value.slice(selectionSnapshot.expandedEnd)}`;
-      $setComposerEditorPrompt(nextValue, terminalContextsRef.current, skillMetadataRef.current);
+      $setComposerEditorPrompt(
+        nextValue,
+        terminalContextsRef.current,
+        agentMetadataRef.current,
+        skillMetadataRef.current,
+      );
       const selectionStart = collapseExpandedComposerCursor(
         nextValue,
         selectionSnapshot.expandedStart,
+        new Set(agentMetadataRef.current.keys()),
       );
       $setSelectionRangeAtComposerOffsets(
         selectionStart + inputData.length,
@@ -1321,6 +1500,7 @@ function ComposerSurroundSelectionPlugin(props: {
             const replacementStart = collapseExpandedComposerCursor(
               currentValue,
               pendingDeadKeySelection.expandedStart,
+              new Set(agentMetadataRef.current.keys()),
             );
             $setSelectionRangeAtComposerOffsets(replacementStart, replacementStart + 1);
             const replacementSelection = $getSelection();
@@ -1388,6 +1568,7 @@ function ComposerPromptEditorInner({
   cursor,
   terminalContexts,
   skills,
+  agents = EMPTY_PROVIDER_AGENTS,
   disabled,
   placeholder,
   className,
@@ -1399,7 +1580,12 @@ function ComposerPromptEditorInner({
 }: ComposerPromptEditorProps) {
   const [editor] = useLexicalComposerContext();
   const onChangeRef = useRef(onChange);
-  const initialCursor = clampCollapsedComposerCursor(value, cursor);
+  const agentsSignature = agentSignature(agents);
+  const agentsSignatureRef = useRef(agentsSignature);
+  const agentMetadata = useMemo(() => agentMetadataByName(agents), [agentsSignature]);
+  const agentMetadataRef = useRef(agentMetadata);
+  const mentionableAgentNames = useMemo(() => new Set(agentMetadata.keys()), [agentMetadata]);
+  const initialCursor = clampCollapsedComposerCursor(value, cursor, mentionableAgentNames);
   const terminalContextsSignature = terminalContextSignature(terminalContexts);
   const terminalContextsSignatureRef = useRef(terminalContextsSignature);
   const skillsSignature = skillSignature(skills);
@@ -1408,7 +1594,7 @@ function ComposerPromptEditorInner({
   const snapshotRef = useRef({
     value,
     cursor: initialCursor,
-    expandedCursor: expandCollapsedComposerCursor(value, initialCursor),
+    expandedCursor: expandCollapsedComposerCursor(value, initialCursor, mentionableAgentNames),
     terminalContextIds: terminalContexts.map((context) => context.id),
   });
   const isApplyingControlledUpdateRef = useRef(false);
@@ -1422,6 +1608,10 @@ function ComposerPromptEditorInner({
   }, [onChange]);
 
   useLayoutEffect(() => {
+    agentMetadataRef.current = agentMetadata;
+  }, [agentMetadata]);
+
+  useLayoutEffect(() => {
     skillMetadataRef.current = skillMetadataByName(skills);
   }, [skills]);
 
@@ -1430,13 +1620,15 @@ function ComposerPromptEditorInner({
   }, [disabled, editor]);
 
   useLayoutEffect(() => {
-    const normalizedCursor = clampCollapsedComposerCursor(value, cursor);
+    const normalizedCursor = clampCollapsedComposerCursor(value, cursor, mentionableAgentNames);
     const previousSnapshot = snapshotRef.current;
+    const agentsChanged = agentsSignatureRef.current !== agentsSignature;
     const contextsChanged = terminalContextsSignatureRef.current !== terminalContextsSignature;
     const skillsChanged = skillsSignatureRef.current !== skillsSignature;
     if (
       previousSnapshot.value === value &&
       previousSnapshot.cursor === normalizedCursor &&
+      !agentsChanged &&
       !contextsChanged &&
       !skillsChanged
     ) {
@@ -1446,24 +1638,36 @@ function ComposerPromptEditorInner({
     snapshotRef.current = {
       value,
       cursor: normalizedCursor,
-      expandedCursor: expandCollapsedComposerCursor(value, normalizedCursor),
+      expandedCursor: expandCollapsedComposerCursor(value, normalizedCursor, mentionableAgentNames),
       terminalContextIds: terminalContexts.map((context) => context.id),
     };
+    agentsSignatureRef.current = agentsSignature;
     terminalContextsSignatureRef.current = terminalContextsSignature;
     skillsSignatureRef.current = skillsSignature;
 
     const rootElement = editor.getRootElement();
     const isFocused = Boolean(rootElement && document.activeElement === rootElement);
-    if (previousSnapshot.value === value && !contextsChanged && !skillsChanged && !isFocused) {
+    if (
+      previousSnapshot.value === value &&
+      !agentsChanged &&
+      !contextsChanged &&
+      !skillsChanged &&
+      !isFocused
+    ) {
       return;
     }
 
     isApplyingControlledUpdateRef.current = true;
     editor.update(() => {
       const shouldRewriteEditorState =
-        previousSnapshot.value !== value || contextsChanged || skillsChanged;
+        previousSnapshot.value !== value || agentsChanged || contextsChanged || skillsChanged;
       if (shouldRewriteEditorState) {
-        $setComposerEditorPrompt(value, terminalContexts, skillMetadataRef.current);
+        $setComposerEditorPrompt(
+          value,
+          terminalContexts,
+          agentMetadataRef.current,
+          skillMetadataRef.current,
+        );
       }
       if (shouldRewriteEditorState || isFocused) {
         $setSelectionAtComposerOffset(normalizedCursor);
@@ -1472,13 +1676,26 @@ function ComposerPromptEditorInner({
     queueMicrotask(() => {
       isApplyingControlledUpdateRef.current = false;
     });
-  }, [cursor, editor, skillsSignature, terminalContexts, terminalContextsSignature, value]);
+  }, [
+    agentsSignature,
+    cursor,
+    editor,
+    mentionableAgentNames,
+    skillsSignature,
+    terminalContexts,
+    terminalContextsSignature,
+    value,
+  ]);
 
   const focusAt = useCallback(
     (nextCursor: number) => {
       const rootElement = editor.getRootElement();
       if (!rootElement) return;
-      const boundedCursor = clampCollapsedComposerCursor(snapshotRef.current.value, nextCursor);
+      const boundedCursor = clampCollapsedComposerCursor(
+        snapshotRef.current.value,
+        nextCursor,
+        mentionableAgentNames,
+      );
       rootElement.focus({ preventScroll: true });
       editor.update(() => {
         $setSelectionAtComposerOffset(boundedCursor);
@@ -1486,7 +1703,11 @@ function ComposerPromptEditorInner({
       snapshotRef.current = {
         value: snapshotRef.current.value,
         cursor: boundedCursor,
-        expandedCursor: expandCollapsedComposerCursor(snapshotRef.current.value, boundedCursor),
+        expandedCursor: expandCollapsedComposerCursor(
+          snapshotRef.current.value,
+          boundedCursor,
+          mentionableAgentNames,
+        ),
         terminalContextIds: snapshotRef.current.terminalContextIds,
       };
       onChangeRef.current(
@@ -1497,7 +1718,7 @@ function ComposerPromptEditorInner({
         snapshotRef.current.terminalContextIds,
       );
     },
-    [editor],
+    [editor, mentionableAgentNames],
   );
 
   const readSnapshot = useCallback((): {
@@ -1509,10 +1730,15 @@ function ComposerPromptEditorInner({
     let snapshot = snapshotRef.current;
     editor.getEditorState().read(() => {
       const nextValue = $getRoot().getTextContent();
-      const fallbackCursor = clampCollapsedComposerCursor(nextValue, snapshotRef.current.cursor);
+      const fallbackCursor = clampCollapsedComposerCursor(
+        nextValue,
+        snapshotRef.current.cursor,
+        mentionableAgentNames,
+      );
       const nextCursor = clampCollapsedComposerCursor(
         nextValue,
         $readSelectionOffsetFromEditorState(fallbackCursor),
+        mentionableAgentNames,
       );
       const fallbackExpandedCursor = clampExpandedCursor(
         nextValue,
@@ -1532,7 +1758,7 @@ function ComposerPromptEditorInner({
     });
     snapshotRef.current = snapshot;
     return snapshot;
-  }, [editor]);
+  }, [editor, mentionableAgentNames]);
 
   useImperativeHandle(
     editorRef,
@@ -1546,62 +1772,81 @@ function ComposerPromptEditorInner({
           collapseExpandedComposerCursor(
             snapshotRef.current.value,
             snapshotRef.current.value.length,
+            mentionableAgentNames,
           ),
         );
       },
       readSnapshot,
     }),
-    [focusAt, readSnapshot],
+    [focusAt, mentionableAgentNames, readSnapshot],
   );
 
-  const handleEditorChange = useCallback((editorState: EditorState) => {
-    editorState.read(() => {
-      const nextValue = $getRoot().getTextContent();
-      const fallbackCursor = clampCollapsedComposerCursor(nextValue, snapshotRef.current.cursor);
-      const nextCursor = clampCollapsedComposerCursor(
-        nextValue,
-        $readSelectionOffsetFromEditorState(fallbackCursor),
-      );
-      const fallbackExpandedCursor = clampExpandedCursor(
-        nextValue,
-        snapshotRef.current.expandedCursor,
-      );
-      const nextExpandedCursor = clampExpandedCursor(
-        nextValue,
-        $readExpandedSelectionOffsetFromEditorState(fallbackExpandedCursor),
-      );
-      const terminalContextIds = collectTerminalContextIds($getRoot());
-      const previousSnapshot = snapshotRef.current;
-      if (
-        previousSnapshot.value === nextValue &&
-        previousSnapshot.cursor === nextCursor &&
-        previousSnapshot.expandedCursor === nextExpandedCursor &&
-        previousSnapshot.terminalContextIds.length === terminalContextIds.length &&
-        previousSnapshot.terminalContextIds.every((id, index) => id === terminalContextIds[index])
-      ) {
-        return;
-      }
-      if (isApplyingControlledUpdateRef.current) {
-        return;
-      }
-      snapshotRef.current = {
-        value: nextValue,
-        cursor: nextCursor,
-        expandedCursor: nextExpandedCursor,
-        terminalContextIds,
-      };
-      const cursorAdjacentToMention =
-        isCollapsedCursorAdjacentToInlineToken(nextValue, nextCursor, "left") ||
-        isCollapsedCursorAdjacentToInlineToken(nextValue, nextCursor, "right");
-      onChangeRef.current(
-        nextValue,
-        nextCursor,
-        nextExpandedCursor,
-        cursorAdjacentToMention,
-        terminalContextIds,
-      );
-    });
-  }, []);
+  const handleEditorChange = useCallback(
+    (editorState: EditorState) => {
+      editorState.read(() => {
+        const nextValue = $getRoot().getTextContent();
+        const fallbackCursor = clampCollapsedComposerCursor(
+          nextValue,
+          snapshotRef.current.cursor,
+          mentionableAgentNames,
+        );
+        const nextCursor = clampCollapsedComposerCursor(
+          nextValue,
+          $readSelectionOffsetFromEditorState(fallbackCursor),
+          mentionableAgentNames,
+        );
+        const fallbackExpandedCursor = clampExpandedCursor(
+          nextValue,
+          snapshotRef.current.expandedCursor,
+        );
+        const nextExpandedCursor = clampExpandedCursor(
+          nextValue,
+          $readExpandedSelectionOffsetFromEditorState(fallbackExpandedCursor),
+        );
+        const terminalContextIds = collectTerminalContextIds($getRoot());
+        const previousSnapshot = snapshotRef.current;
+        if (
+          previousSnapshot.value === nextValue &&
+          previousSnapshot.cursor === nextCursor &&
+          previousSnapshot.expandedCursor === nextExpandedCursor &&
+          previousSnapshot.terminalContextIds.length === terminalContextIds.length &&
+          previousSnapshot.terminalContextIds.every((id, index) => id === terminalContextIds[index])
+        ) {
+          return;
+        }
+        if (isApplyingControlledUpdateRef.current) {
+          return;
+        }
+        snapshotRef.current = {
+          value: nextValue,
+          cursor: nextCursor,
+          expandedCursor: nextExpandedCursor,
+          terminalContextIds,
+        };
+        const cursorAdjacentToMention =
+          isCollapsedCursorAdjacentToInlineToken(
+            nextValue,
+            nextCursor,
+            "left",
+            mentionableAgentNames,
+          ) ||
+          isCollapsedCursorAdjacentToInlineToken(
+            nextValue,
+            nextCursor,
+            "right",
+            mentionableAgentNames,
+          );
+        onChangeRef.current(
+          nextValue,
+          nextCursor,
+          nextExpandedCursor,
+          cursorAdjacentToMention,
+          terminalContextIds,
+        );
+      });
+    },
+    [mentionableAgentNames],
+  );
 
   return (
     <ComposerTerminalContextActionsContext value={terminalContextActions}>
@@ -1630,8 +1875,12 @@ function ComposerPromptEditorInner({
         />
         <OnChangePlugin onChange={handleEditorChange} />
         <ComposerCommandKeyPlugin {...(onCommandKeyDown ? { onCommandKeyDown } : {})} />
-        <ComposerSurroundSelectionPlugin terminalContexts={terminalContexts} skills={skills} />
-        <ComposerInlineTokenArrowPlugin />
+        <ComposerSurroundSelectionPlugin
+          terminalContexts={terminalContexts}
+          skills={skills}
+          agents={agents}
+        />
+        <ComposerInlineTokenArrowPlugin mentionableAgentNames={mentionableAgentNames} />
         <ComposerInlineTokenSelectionNormalizePlugin />
         <ComposerInlineTokenBackspacePlugin />
         <HistoryPlugin />
@@ -1645,6 +1894,7 @@ export function ComposerPromptEditor({
   cursor,
   terminalContexts,
   skills,
+  agents = EMPTY_PROVIDER_AGENTS,
   disabled,
   placeholder,
   className,
@@ -1656,16 +1906,23 @@ export function ComposerPromptEditor({
 }: ComposerPromptEditorProps) {
   const initialValueRef = useRef(value);
   const initialTerminalContextsRef = useRef(terminalContexts);
+  const initialAgentMetadataRef = useRef(agentMetadataByName(agents));
   const initialSkillMetadataRef = useRef(skillMetadataByName(skills));
   const initialConfig = useMemo<InitialConfigType>(
     () => ({
       namespace: "t4code-composer-editor",
       editable: true,
-      nodes: [ComposerMentionNode, ComposerSkillNode, ComposerTerminalContextNode],
+      nodes: [
+        ComposerMentionNode,
+        ComposerAgentNode,
+        ComposerSkillNode,
+        ComposerTerminalContextNode,
+      ],
       editorState: () => {
         $setComposerEditorPrompt(
           initialValueRef.current,
           initialTerminalContextsRef.current,
+          initialAgentMetadataRef.current,
           initialSkillMetadataRef.current,
         );
       },
@@ -1683,6 +1940,7 @@ export function ComposerPromptEditor({
         cursor={cursor}
         terminalContexts={terminalContexts}
         skills={skills}
+        agents={agents}
         disabled={disabled}
         placeholder={placeholder}
         onRemoveTerminalContext={onRemoveTerminalContext}

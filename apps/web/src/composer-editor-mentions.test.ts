@@ -65,6 +65,41 @@ describe("splitPromptIntoComposerSegments", () => {
     ]);
   });
 
+  it("classifies exact mentionable-agent names before files", () => {
+    const segments = splitPromptIntoComposerSegments(
+      "Ask @reviewer about @src/reviewer",
+      [],
+      new Set(["reviewer"]),
+    );
+
+    expect(segments).toMatchObject([
+      { type: "text", text: "Ask " },
+      { type: "agent", name: "reviewer", source: "@reviewer" },
+      { type: "text", text: " about " },
+      { type: "mention", path: "src/reviewer", source: "@src/reviewer" },
+    ]);
+  });
+
+  it("uses case-sensitive agent names and keeps legacy markdown links as files", () => {
+    expect(
+      splitPromptIntoComposerSegments(
+        "Ask @Reviewer about [reviewer](agents/reviewer) ",
+        [],
+        new Set(["reviewer"]),
+      ),
+    ).toEqual([
+      { type: "text", text: "Ask " },
+      { type: "mention", path: "Reviewer", source: "@Reviewer" },
+      { type: "text", text: " about " },
+      {
+        type: "mention",
+        path: "agents/reviewer",
+        source: "[reviewer](agents/reviewer)",
+      },
+      { type: "text", text: " " },
+    ]);
+  });
+
   it("does not turn normal web links into file mention segments", () => {
     expect(
       splitPromptIntoComposerSegments("Read [the docs](https://example.com/docs) first"),
