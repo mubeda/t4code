@@ -1,4 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
+import type {
+  ComposerTrigger,
+  ComposerTriggerKind,
+  LegacyComposerTrigger,
+  LegacyComposerTriggerKind,
+} from "./composer-logic";
 
 import {
   clampCollapsedComposerCursor,
@@ -21,6 +27,25 @@ function detectComposerTrigger(text: string, cursor: number) {
 }
 
 describe("detectComposerTrigger", () => {
+  it("exports canonical and legacy trigger types as separate discriminated surfaces", () => {
+    const canonicalKind: ComposerTriggerKind = "t4code-action";
+    const legacyKind: LegacyComposerTriggerKind = "slash-command";
+    const canonical = {
+      kind: canonicalKind,
+      query: "plan",
+      rangeStart: 0,
+      rangeEnd: 5,
+    } satisfies ComposerTrigger;
+    const legacy = {
+      kind: legacyKind,
+      query: "plan",
+      rangeStart: 0,
+      rangeEnd: 5,
+    } satisfies LegacyComposerTrigger;
+
+    expect([canonical.kind, legacy.kind]).toEqual(["t4code-action", "slash-command"]);
+  });
+
   it("detects @path trigger at cursor", () => {
     const text = "Please check @src/com";
     const trigger = detectComposerTrigger(text, text.length);
@@ -168,6 +193,16 @@ describe("detectComposerTrigger", () => {
     expect(detectCapabilityComposerTrigger("/review", 7, profile)).toBeNull();
     expect(detectCapabilityComposerTrigger("$review", 7, profile)).toBeNull();
     expect(detectCapabilityComposerTrigger(":plan", 5, profile)?.kind).toBe("t4code-action");
+  });
+
+  it("suppresses T4Code actions for legacy callers until they pass a capability profile", () => {
+    expect(detectCapabilityComposerTrigger(":plan", 5)).toBeNull();
+    expect(
+      detectCapabilityComposerTrigger(":plan", 5, {
+        providerSlash: false,
+        providerDollarSkill: false,
+      })?.kind,
+    ).toBe("t4code-action");
   });
 });
 

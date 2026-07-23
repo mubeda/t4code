@@ -1324,6 +1324,15 @@ describe("ChatComposer command menu", () => {
     expect(menu["emptyStateText"]).toBe("No matching command.");
   });
 
+  it("keeps the legacy command menu closed for colon actions", () => {
+    seedPrompt(":");
+
+    const { markup } = renderComposer();
+
+    expect(markup).not.toContain('data-mock="composer-command-menu"');
+    expect(h.captures.some((capture) => capture.name === "ComposerCommandMenu")).toBe(false);
+  });
+
   it("filters slash commands by query", () => {
     seedPrompt("/mod");
     renderComposer();

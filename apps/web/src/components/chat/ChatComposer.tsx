@@ -36,10 +36,10 @@ import {
 } from "react";
 import {
   clampCollapsedComposerCursor,
-  type ComposerTrigger,
   collapseExpandedComposerCursor,
   detectComposerTrigger,
   expandCollapsedComposerCursor,
+  type LegacyComposerTrigger,
   replaceTextRange,
 } from "../../composer-logic";
 import { deriveComposerSendState, readFileAsDataUrl } from "../ChatView.logic";
@@ -869,7 +869,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [composerCursor, setComposerCursor] = useState(() =>
     collapseExpandedComposerCursor(prompt, prompt.length),
   );
-  const [composerTrigger, setComposerTrigger] = useState<ComposerTrigger | null>(() =>
+  const [composerTrigger, setComposerTrigger] = useState<LegacyComposerTrigger | null>(() =>
     detectComposerTrigger(prompt, prompt.length),
   );
   const [composerHighlightedItemId, setComposerHighlightedItemId] = useState<string | null>(null);
@@ -1548,7 +1548,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   const resolveActiveComposerTrigger = useCallback((): {
     snapshot: { value: string; cursor: number; expandedCursor: number };
-    trigger: ComposerTrigger | null;
+    trigger: LegacyComposerTrigger | null;
   } => {
     const snapshot = readComposerSnapshot();
     return {

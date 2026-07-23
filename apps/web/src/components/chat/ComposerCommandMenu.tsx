@@ -8,7 +8,7 @@ import {
 import { BotIcon } from "lucide-react";
 import { memo, useLayoutEffect, useMemo, useRef } from "react";
 
-import { type ComposerSlashCommand, type ComposerTriggerKind } from "../../composer-logic";
+import { type ComposerSlashCommand, type LegacyComposerTriggerKind } from "../../composer-logic";
 import { formatProviderSkillInstallSource } from "~/providerSkillPresentation";
 import { cn } from "~/lib/utils";
 import {
@@ -89,7 +89,7 @@ function SkillGlyph(props: { className?: string }) {
 
 function groupCommandItems(
   items: ComposerCommandItem[],
-  triggerKind: ComposerTriggerKind | null,
+  triggerKind: LegacyComposerTriggerKind | null,
   groupSlashCommandSections: boolean,
 ): ComposerCommandGroup[] {
   if (triggerKind === "skill") {
@@ -120,7 +120,7 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
   items: ComposerCommandItem[];
   resolvedTheme: "light" | "dark";
   isLoading: boolean;
-  triggerKind: ComposerTriggerKind | null;
+  triggerKind: LegacyComposerTriggerKind | null;
   groupSlashCommandSections?: boolean;
   emptyStateText?: string;
   activeItemId: string | null;
