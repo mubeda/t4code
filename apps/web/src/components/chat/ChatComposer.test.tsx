@@ -927,12 +927,20 @@ describe("ChatComposer rendering", () => {
     expect(select["value"]).toBe("approval-required");
     const picker = findCapture("ProviderModelPicker");
     expect(picker["lockedProvider"]).toBeNull();
-    expect(picker["lockToActiveInstance"]).toBe(true);
+    expect(picker["lockToActiveInstance"]).toBe(false);
 
     // Path search targets nothing while no path trigger is active.
     const pathSearch = findCapture("useComposerPathSearch")["target"] as Record<string, unknown>;
     expect(pathSearch["cwd"]).toBeNull();
     expect(pathSearch["query"]).toBeNull();
+  });
+
+  it("locks the provider picker to the active instance after the provider is fixed", () => {
+    renderComposer({ lockedProvider: ProviderDriverKind.make("codex") });
+
+    const picker = findCapture("ProviderModelPicker");
+    expect(picker["lockedProvider"]).toBe("codex");
+    expect(picker["lockToActiveInstance"]).toBe(true);
   });
 
   it("presents a raw Claude Ultrathink session default before the first send", () => {

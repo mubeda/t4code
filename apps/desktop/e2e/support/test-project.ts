@@ -64,6 +64,7 @@ export interface DesktopUiTestContext {
   readonly projectPath: string;
   readonly shimDirectory: string;
   readonly artifactDirectory: string;
+  readonly fixtureUserHomePath: string;
   readonly providerInputLogPath: string;
 }
 
@@ -723,10 +724,12 @@ export function prepareDesktopUiTestContext(
   const stateRoot = NodePath.join(runRoot, "state");
   const projectPath = NodePath.join(runRoot, "projects with spaces", FIXTURE_PROJECT_NAME);
   const shimDirectory = NodePath.join(runRoot, "provider-shims");
+  const fixtureUserHomePath = NodePath.join(runRoot, "fixture-user-home");
   const providerInputLogPath = NodePath.join(runRoot, "provider-input.jsonl");
 
   NodeFS.mkdirSync(stateRoot, { recursive: true });
   NodeFS.mkdirSync(shimDirectory, { recursive: true });
+  NodeFS.mkdirSync(fixtureUserHomePath, { recursive: true });
   NodeFS.mkdirSync(artifactDirectory, { recursive: true });
   NodeFS.writeFileSync(providerInputLogPath, "");
   initializeGitProject(projectPath);
@@ -740,8 +743,15 @@ export function prepareDesktopUiTestContext(
   environment.T4CODE_E2E_ARTIFACT_DIR = artifactDirectory;
   environment.T4CODE_E2E_PROJECT_PATH = projectPath;
   environment.T4CODE_E2E_SHIM_DIRECTORY = shimDirectory;
+  environment.T4CODE_E2E_USER_HOME = fixtureUserHomePath;
   environment.T4CODE_E2E_PROVIDER_INPUT_LOG = providerInputLogPath;
   environment.T4CODE_HOME = stateRoot;
+  if (isWindows) {
+    environment.USERPROFILE = fixtureUserHomePath;
+    environment.HOME = fixtureUserHomePath;
+  } else {
+    environment.HOME = fixtureUserHomePath;
+  }
   environment.PATH = `${shimDirectory}${NodePath.delimiter}${environment.PATH ?? ""}`;
   environment.RUST_LOG ??= "t4code=debug";
 
@@ -751,6 +761,7 @@ export function prepareDesktopUiTestContext(
     projectPath,
     shimDirectory,
     artifactDirectory,
+    fixtureUserHomePath,
     providerInputLogPath,
   };
 }

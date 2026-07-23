@@ -2534,7 +2534,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   compact={isComposerFooterCompact}
                   activeInstanceId={selectedInstanceId}
                   model={selectedModelForPickerWithCustomFallback}
-                  lockToActiveInstance
+                  lockToActiveInstance={lockedProvider !== null}
                   lockedProvider={lockedProvider}
                   lockedContinuationGroupKey={lockedContinuationGroupKey}
                   instanceEntries={providerInstanceEntries}

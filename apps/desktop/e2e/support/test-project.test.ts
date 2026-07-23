@@ -25,6 +25,7 @@ afterEach(() => {
 
 describe.each([
   { platform: "mac", executableSuffix: "" },
+  { platform: "linux", executableSuffix: "" },
   { platform: "win", executableSuffix: ".cmd" },
 ])("prepareDesktopUiTestContext on $platform", ({ platform, executableSuffix }) => {
   it("pins every provider to an absolute fixture executable", () => {
@@ -56,6 +57,30 @@ describe.each([
       expect(NodePath.isAbsolute(provider.binaryPath)).toBe(true);
     }
     expect(environment.T4CODE_E2E_SHIM_DIRECTORY).toBe(context.shimDirectory);
+  });
+
+  it("isolates provider user inventory inside the disposable run root", () => {
+    const environment: NodeJS.ProcessEnv = {
+      T4CODE_E2E_PLATFORM: platform,
+      HOME: "/host/home-must-not-be-used",
+      USERPROFILE: String.raw`C:\Users\host-must-not-be-used`,
+    };
+    const context = prepareDesktopUiTestContext(environment);
+    contexts.push(context);
+    const expectedFixtureUserHome = NodePath.join(context.runRoot, "fixture-user-home");
+
+    expect(context.fixtureUserHomePath).toBe(expectedFixtureUserHome);
+    expect(NodePath.isAbsolute(context.fixtureUserHomePath)).toBe(true);
+    expect(context.fixtureUserHomePath.startsWith(`${context.runRoot}${NodePath.sep}`)).toBe(true);
+    expect(environment.T4CODE_E2E_USER_HOME).toBe(expectedFixtureUserHome);
+    expect(NodeFS.readdirSync(context.fixtureUserHomePath)).toEqual([]);
+    if (platform === "win") {
+      expect(environment.USERPROFILE).toBe(expectedFixtureUserHome);
+      expect(environment.HOME).toBe(expectedFixtureUserHome);
+    } else {
+      expect(environment.HOME).toBe(expectedFixtureUserHome);
+      expect(environment.USERPROFILE).toBe(String.raw`C:\Users\host-must-not-be-used`);
+    }
   });
 });
 
@@ -173,6 +198,7 @@ describe("archiveAndCleanupDesktopUiTestContext", () => {
       projectPath: NodePath.join(runRoot, "project"),
       shimDirectory: NodePath.join(runRoot, "shims"),
       artifactDirectory,
+      fixtureUserHomePath: NodePath.join(runRoot, "fixture-user-home"),
       providerInputLogPath: NodePath.join(runRoot, "provider-input.jsonl"),
     };
     let removalOptions: Parameters<DesktopUiDirectoryRemover>[1] | undefined;

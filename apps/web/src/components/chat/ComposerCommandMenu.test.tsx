@@ -54,8 +54,10 @@ vi.mock("../ui/command", () => ({
   CommandGroup: ({ children }: { children?: ReactNode }) => (
     <section data-command-group>{children}</section>
   ),
-  CommandGroupLabel: ({ children }: { children?: ReactNode }) => (
-    <h3 data-command-group-label>{children}</h3>
+  CommandGroupLabel: ({ children, ...props }: React.ComponentPropsWithoutRef<"h3">) => (
+    <h3 data-command-group-label {...props}>
+      {children}
+    </h3>
   ),
   CommandSeparator: () => <hr data-command-separator />,
   CommandItem: ({
@@ -232,6 +234,28 @@ describe("ComposerCommandMenu grouping", () => {
     );
     expect(mounted.container.textContent).toContain("source:unknown");
   });
+
+  it("exposes stable selectors for each semantic group and label", async () => {
+    const mounted = await mount(
+      renderMenu({
+        items: [agentItem(), fileItem(), skillItem(), providerCommandItem(), actionItem()],
+      }),
+    );
+
+    for (const [id, label] of [
+      ["t4code", "T4Code"],
+      ["commands", "Commands"],
+      ["skills", "Skills"],
+      ["files", "Files"],
+      ["agents", "Agents"],
+    ] as const) {
+      const group = mounted.container.querySelector(`[data-composer-group="${id}"]`);
+      expect(group).not.toBeNull();
+      expect(group?.querySelector(`[data-composer-group-label="${id}"]`)?.textContent?.trim()).toBe(
+        label,
+      );
+    }
+  });
 });
 
 describe("ComposerCommandMenu item behavior", () => {
@@ -260,6 +284,8 @@ describe("ComposerCommandMenu item behavior", () => {
       '[data-composer-item-id="active"]',
     )!;
 
+    expect(inactiveButton.dataset.composerItemActive).toBe("false");
+    expect(activeButton.dataset.composerItemActive).toBe("true");
     await dispatch(inactiveButton, new MouseEvent("mousemove", { bubbles: true }));
     await dispatch(activeButton, new MouseEvent("mousemove", { bubbles: true }));
     const mouseDown = new MouseEvent("mousedown", { bubbles: true, cancelable: true });

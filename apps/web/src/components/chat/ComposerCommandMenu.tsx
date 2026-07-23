@@ -91,10 +91,13 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
         {props.items.length > 0 ? (
           <CommandList className="max-h-72">
             {groups.map((group, groupIndex) => (
-              <div key={group.id}>
+              <div key={group.id} data-composer-group={group.id}>
                 {groupIndex > 0 ? <CommandSeparator className="my-0.5" /> : null}
                 <CommandGroup>
-                  <CommandGroupLabel className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/55">
+                  <CommandGroupLabel
+                    data-composer-group-label={group.id}
+                    className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/55"
+                  >
                     {group.label}
                   </CommandGroupLabel>
                   {group.items.map((item) => (
@@ -141,6 +144,7 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
     <CommandItem
       value={props.item.id}
       data-composer-item-id={props.item.id}
+      data-composer-item-active={props.isActive ? "true" : "false"}
       className={cn(
         "cursor-pointer select-none gap-2 hover:bg-transparent hover:text-inherit data-highlighted:bg-transparent data-highlighted:text-inherit",
         props.isActive && "bg-accent! text-accent-foreground!",
