@@ -1,6 +1,5 @@
 import type {
   ProjectEntry,
-  ProviderDriverKind,
   ProviderInstanceId,
   ServerProviderAgent,
   ServerProviderSkill,
@@ -9,7 +8,6 @@ import type {
 import { serializeComposerReference } from "@t4code/shared/composerReferences";
 import type { ComposerT4CodeAction, ComposerTrigger } from "@t4code/shared/composerTrigger";
 
-import type { ComposerSlashCommand } from "../../composer-logic";
 import { searchProviderSkills } from "../../providerSkillSearch";
 import type { ComposerCapabilityProfile } from "./composerCapabilities";
 import { searchComposerCommandCandidates } from "./composerCommandSearch";
@@ -351,50 +349,3 @@ export function buildComposerCommandItems(
       : "No matching files or agents.",
   };
 }
-
-/**
- * Transitional adapter used only by the legacy `ChatComposer` integration.
- * Task 6 replaces these shapes with `ComposerCommandItem`.
- */
-export type LegacyComposerCommandItem =
-  | {
-      readonly id: string;
-      readonly type: "path";
-      readonly path: string;
-      readonly pathKind: ProjectEntry["kind"];
-      readonly label: string;
-      readonly description: string;
-    }
-  | {
-      readonly id: string;
-      readonly type: "slash-command";
-      readonly command: ComposerSlashCommand;
-      readonly label: string;
-      readonly description: string;
-    }
-  | {
-      readonly id: string;
-      readonly type: "provider-slash-command";
-      readonly provider: ProviderDriverKind;
-      readonly command: ServerProviderSlashCommand;
-      readonly label: string;
-      readonly description: string;
-    }
-  | {
-      readonly id: string;
-      readonly type: "provider-agent";
-      readonly provider: ProviderDriverKind;
-      readonly agent: ServerProviderAgent;
-      readonly label: string;
-      readonly description: string;
-    }
-  | {
-      readonly id: string;
-      readonly type: "skill";
-      readonly provider: ProviderDriverKind;
-      readonly skill: ServerProviderSkill;
-      readonly label: string;
-      readonly description: string;
-    };
-
-export type RenderableComposerCommandItem = ComposerCommandItem | LegacyComposerCommandItem;

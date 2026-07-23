@@ -1,34 +1,39 @@
 import { describe, expect, it } from "vite-plus/test";
-import { ProviderDriverKind } from "@t4code/contracts";
+import { ProviderInstanceId } from "@t4code/contracts";
 
-import type { LegacyComposerCommandItem } from "./composerCommandItems";
+import type { ComposerCommandItem } from "./composerCommandItems";
 import { searchSlashCommandItems } from "./composerSlashCommandSearch";
 
 describe("searchSlashCommandItems", () => {
-  const claudeDriver = ProviderDriverKind.make("claudeAgent");
+  const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
 
   it("moves exact provider command matches ahead of broader description matches", () => {
     const items = [
       {
         id: "provider-slash-command:claudeAgent:ui",
-        type: "provider-slash-command",
-        provider: claudeDriver,
+        type: "provider-command",
+        group: "commands",
+        providerInstanceId: claudeInstanceId,
         command: { name: "ui" },
         label: "/ui",
         description: "Explore, build, and refine UI.",
+        replacement: "/ui ",
       },
       {
         id: "provider-slash-command:claudeAgent:frontend-design",
-        type: "provider-slash-command",
-        provider: claudeDriver,
+        type: "provider-command",
+        group: "commands",
+        providerInstanceId: claudeInstanceId,
         command: { name: "frontend-design" },
         label: "/frontend-design",
         description: "Create distinctive, production-grade frontend interfaces",
+        replacement: "/frontend-design ",
       },
       {
         id: "slash-skill:claudeAgent:ui-review",
-        type: "skill",
-        provider: claudeDriver,
+        type: "provider-skill",
+        group: "skills",
+        providerInstanceId: claudeInstanceId,
         skill: {
           name: "ui-review",
           path: "/skills/ui-review",
@@ -37,9 +42,10 @@ describe("searchSlashCommandItems", () => {
         },
         label: "/ui-review",
         description: "Review user interfaces",
+        replacement: "/ui-review ",
       },
     ] satisfies Array<
-      Extract<LegacyComposerCommandItem, { type: "provider-slash-command" | "skill" }>
+      Extract<ComposerCommandItem, { type: "provider-command" | "provider-skill" }>
     >;
 
     expect(searchSlashCommandItems(items, "ui").map((item) => item.id)).toEqual([
@@ -52,8 +58,9 @@ describe("searchSlashCommandItems", () => {
     const items = [
       {
         id: "slash-skill:claudeAgent:gh-fix-ci",
-        type: "skill",
-        provider: claudeDriver,
+        type: "provider-skill",
+        group: "skills",
+        providerInstanceId: claudeInstanceId,
         skill: {
           name: "gh-fix-ci",
           path: "/skills/gh-fix-ci",
@@ -62,17 +69,20 @@ describe("searchSlashCommandItems", () => {
         },
         label: "/gh-fix-ci",
         description: "Fix failing GitHub Actions",
+        replacement: "/gh-fix-ci ",
       },
       {
         id: "provider-slash-command:claudeAgent:github",
-        type: "provider-slash-command",
-        provider: claudeDriver,
+        type: "provider-command",
+        group: "commands",
+        providerInstanceId: claudeInstanceId,
         command: { name: "github" },
         label: "/github",
         description: "General GitHub help",
+        replacement: "/github ",
       },
     ] satisfies Array<
-      Extract<LegacyComposerCommandItem, { type: "provider-slash-command" | "skill" }>
+      Extract<ComposerCommandItem, { type: "provider-command" | "provider-skill" }>
     >;
 
     expect(searchSlashCommandItems(items, "gfc").map((item) => item.id)).toEqual([
@@ -84,14 +94,16 @@ describe("searchSlashCommandItems", () => {
     const items = [
       {
         id: "provider-slash-command:claudeAgent:review",
-        type: "provider-slash-command",
-        provider: claudeDriver,
+        type: "provider-command",
+        group: "commands",
+        providerInstanceId: claudeInstanceId,
         command: { name: "review" },
         label: "/review",
         description: "Review staged changes",
+        replacement: "/review ",
       },
     ] satisfies Array<
-      Extract<LegacyComposerCommandItem, { type: "provider-slash-command" | "skill" }>
+      Extract<ComposerCommandItem, { type: "provider-command" | "provider-skill" }>
     >;
 
     expect(searchSlashCommandItems(items, "staged").map((item) => item.id)).toEqual([
@@ -102,19 +114,23 @@ describe("searchSlashCommandItems", () => {
   it("sorts empty-query results deterministically instead of preserving inventory order", () => {
     const alpha = {
       id: "provider-slash-command:claudeAgent:alpha",
-      type: "provider-slash-command",
-      provider: claudeDriver,
+      type: "provider-command",
+      group: "commands",
+      providerInstanceId: claudeInstanceId,
       command: { name: "alpha" },
       label: "/alpha",
       description: "Alpha command",
+      replacement: "/alpha ",
     } as const;
     const zebra = {
       id: "provider-slash-command:claudeAgent:zebra",
-      type: "provider-slash-command",
-      provider: claudeDriver,
+      type: "provider-command",
+      group: "commands",
+      providerInstanceId: claudeInstanceId,
       command: { name: "zebra" },
       label: "/zebra",
       description: "Zebra command",
+      replacement: "/zebra ",
     } as const;
 
     expect(searchSlashCommandItems([zebra, alpha], "").map((item) => item.id)).toEqual([

@@ -66,7 +66,7 @@ import { readLocalApi } from "../localApi";
 import { useDiffPanelStore } from "../diffPanelStore";
 import {
   collapseExpandedComposerCursor,
-  parseStandaloneComposerSlashCommand,
+  parseStandaloneComposerT4CodeAction,
 } from "../composer-logic";
 import {
   derivePendingApprovals,
@@ -4204,16 +4204,16 @@ function ChatViewContent(props: ChatViewProps) {
       });
       return;
     }
-    const standaloneSlashCommand =
+    const standaloneColonAction =
       composerImages.length === 0 &&
       sendableComposerTerminalContexts.length === 0 &&
       composerElementContexts.length === 0 &&
       composerPreviewAnnotations.length === 0 &&
       composerReviewComments.length === 0
-        ? parseStandaloneComposerSlashCommand(trimmed)
+        ? parseStandaloneComposerT4CodeAction(trimmed)
         : null;
-    if (standaloneSlashCommand) {
-      handleInteractionModeChange(standaloneSlashCommand);
+    if (standaloneColonAction === "plan" || standaloneColonAction === "default") {
+      handleInteractionModeChange(standaloneColonAction);
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();

@@ -51,6 +51,9 @@ function inputFor(text: string, overrides: InputOverrides = {}): ComposerCommand
     trigger: overrides.trigger ?? detectComposerTrigger(text, text.length, triggerProfile),
     providerInstanceId: ProviderInstanceId.make(overrides.providerInstanceId ?? "codex_work"),
     capabilities: {
+      signature: `${triggerProfile.providerSlash ? "slash" : ""}:${
+        triggerProfile.providerDollarSkill ? "dollar" : ""
+      }`,
       trigger: triggerProfile,
       slashCommands,
       slashSkills,

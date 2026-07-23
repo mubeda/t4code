@@ -7,6 +7,7 @@ import type {
 import type { ComposerTriggerProfile } from "@t4code/shared/composerTrigger";
 
 export interface ComposerCapabilityProfile {
+  readonly signature: string;
   readonly trigger: ComposerTriggerProfile;
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
   readonly slashSkills: ReadonlyArray<ServerProviderSkill>;
@@ -41,6 +42,9 @@ export function deriveComposerCapabilityProfile(
   );
 
   return {
+    signature: `${slashCommands.length > 0 || slashSkills.length > 0 ? "slash" : ""}:${
+      dollarSkills.length > 0 ? "dollar" : ""
+    }`,
     trigger: {
       providerSlash: slashCommands.length > 0 || slashSkills.length > 0,
       providerDollarSkill: dollarSkills.length > 0,

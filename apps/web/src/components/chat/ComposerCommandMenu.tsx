@@ -1,7 +1,6 @@
 import { BotIcon } from "lucide-react";
 import { memo, useLayoutEffect, useMemo, useRef } from "react";
 
-import type { LegacyComposerTriggerKind } from "../../composer-logic";
 import { formatProviderSkillInstallSource } from "~/providerSkillPresentation";
 import { cn } from "~/lib/utils";
 import {
@@ -12,16 +11,13 @@ import {
   CommandList,
   CommandSeparator,
 } from "../ui/command";
-import {
-  type ComposerCommandGroupId,
-  type RenderableComposerCommandItem,
-} from "./composerCommandItems";
+import { type ComposerCommandItem, type ComposerCommandGroupId } from "./composerCommandItems";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 
 type ComposerCommandGroup = {
   id: ComposerCommandGroupId;
   label: string;
-  items: RenderableComposerCommandItem[];
+  items: ComposerCommandItem[];
 };
 
 const GROUPS = [
@@ -51,48 +47,21 @@ function SkillGlyph(props: { className?: string }) {
   );
 }
 
-function itemGroup(item: RenderableComposerCommandItem): ComposerCommandGroupId {
-  if ("group" in item) {
-    return item.group;
-  }
-  if (item.type === "slash-command") {
-    return "t4code";
-  }
-  if (item.type === "provider-slash-command") {
-    return "commands";
-  }
-  if (item.type === "skill") {
-    return "skills";
-  }
-  if (item.type === "path") {
-    return "files";
-  }
-  return "agents";
-}
-
-function groupCommandItems(
-  items: ReadonlyArray<RenderableComposerCommandItem>,
-): ComposerCommandGroup[] {
+function groupCommandItems(items: ReadonlyArray<ComposerCommandItem>): ComposerCommandGroup[] {
   return GROUPS.flatMap(([id, label]) => {
-    const groupItems = items.filter((item) => itemGroup(item) === id);
+    const groupItems = items.filter((item) => item.group === id);
     return groupItems.length > 0 ? [{ id, label, items: groupItems }] : [];
   });
 }
 
-type ComposerCommandMenuSelectionHandler = {
-  bivarianceHack(item: RenderableComposerCommandItem): void;
-}["bivarianceHack"];
-
 export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
-  items: ReadonlyArray<RenderableComposerCommandItem>;
+  items: ReadonlyArray<ComposerCommandItem>;
   resolvedTheme: "light" | "dark";
   isLoading: boolean;
-  /** @deprecated Legacy `ChatComposer` adapter; semantic items own their group. */
-  triggerKind?: LegacyComposerTriggerKind | null;
   emptyStateText?: string;
   activeItemId: string | null;
   onHighlightedItemChange: (itemId: string | null) => void;
-  onSelect: ComposerCommandMenuSelectionHandler;
+  onSelect: (item: ComposerCommandItem) => void;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   const groups = useMemo(() => groupCommandItems(props.items), [props.items]);
@@ -157,14 +126,14 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
 });
 
 const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
-  item: RenderableComposerCommandItem;
+  item: ComposerCommandItem;
   resolvedTheme: "light" | "dark";
   isActive: boolean;
   onHighlight: (itemId: string | null) => void;
-  onSelect: ComposerCommandMenuSelectionHandler;
+  onSelect: (item: ComposerCommandItem) => void;
 }) {
   const skillSourceLabel =
-    props.item.type === "provider-skill" || props.item.type === "skill"
+    props.item.type === "provider-skill"
       ? formatProviderSkillInstallSource(props.item.skill)
       : null;
 
@@ -186,25 +155,25 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
         props.onSelect(props.item);
       }}
     >
-      {props.item.type === "file-reference" || props.item.type === "path" ? (
+      {props.item.type === "file-reference" ? (
         <PierreEntryIcon
           pathValue={props.item.path}
           kind={props.item.pathKind}
           theme={props.resolvedTheme}
         />
       ) : null}
-      {props.item.type === "t4code-action" || props.item.type === "slash-command" ? (
+      {props.item.type === "t4code-action" ? (
         <BotIcon className="size-4 shrink-0 text-muted-foreground/80" />
       ) : null}
-      {props.item.type === "agent-reference" || props.item.type === "provider-agent" ? (
+      {props.item.type === "agent-reference" ? (
         <BotIcon className="size-4 shrink-0 text-muted-foreground/80" />
       ) : null}
-      {props.item.type === "provider-command" || props.item.type === "provider-slash-command" ? (
+      {props.item.type === "provider-command" ? (
         <span className="inline-flex size-4 shrink-0 items-center justify-center text-muted-foreground/80">
           <SkillGlyph className="size-3.5" />
         </span>
       ) : null}
-      {props.item.type === "provider-skill" || props.item.type === "skill" ? (
+      {props.item.type === "provider-skill" ? (
         <span className="inline-flex size-4 shrink-0 items-center justify-center text-muted-foreground/80">
           <SkillGlyph className="size-3.5" />
         </span>

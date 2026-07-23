@@ -44,6 +44,7 @@ describe("deriveComposerCapabilityProfile", () => {
       providerSlash: true,
       providerDollarSkill: true,
     });
+    expect(profile.signature).toBe("slash:dollar");
     expect(profile.slashCommands.map((command) => command.name)).toEqual(["review"]);
     expect(profile.slashSkills.map((skill) => skill.name)).toEqual(["audit"]);
     expect(profile.dollarSkills.map((skill) => skill.name)).toEqual(["fix"]);
@@ -126,6 +127,7 @@ describe("deriveComposerCapabilityProfile", () => {
         providerSlash: false,
         providerDollarSkill: false,
       });
+      expect(profile.signature).toBe(":");
       expect(profile.slashCommands).toEqual([]);
       expect(profile.slashSkills).toEqual([]);
       expect(profile.dollarSkills).toEqual([]);

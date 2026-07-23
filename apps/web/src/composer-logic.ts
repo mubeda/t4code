@@ -3,12 +3,7 @@ import {
   parseStandaloneComposerT4CodeAction,
   replaceTextRange,
 } from "@t4code/shared/composerTrigger";
-import type {
-  ComposerT4CodeAction,
-  ComposerTrigger as SharedComposerTrigger,
-  ComposerTriggerKind as SharedComposerTriggerKind,
-  ComposerTriggerProfile,
-} from "@t4code/shared/composerTrigger";
+import type { ComposerTrigger, ComposerTriggerProfile } from "@t4code/shared/composerTrigger";
 
 import { splitPromptIntoComposerSegments } from "./composer-editor-mentions";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
@@ -20,39 +15,6 @@ export type {
   ComposerTriggerKind,
   ComposerTriggerProfile,
 } from "@t4code/shared/composerTrigger";
-
-export type LegacyComposerTriggerKind = "path" | "slash-command" | "skill";
-
-export interface LegacyComposerTrigger {
-  readonly kind: LegacyComposerTriggerKind;
-  readonly query: string;
-  readonly rangeStart: number;
-  readonly rangeEnd: number;
-}
-
-/** @deprecated Use ComposerT4CodeAction. */
-export type ComposerSlashCommand = ComposerT4CodeAction;
-/** @deprecated Use parseStandaloneComposerT4CodeAction. */
-export function parseStandaloneComposerSlashCommand(
-  text: string,
-): Exclude<ComposerT4CodeAction, "model"> | null {
-  const action = parseStandaloneComposerT4CodeAction(text);
-  return action === "model" ? null : action;
-}
-
-const DEFAULT_COMPOSER_TRIGGER_PROFILE: ComposerTriggerProfile = {
-  providerSlash: true,
-  providerDollarSkill: true,
-};
-
-const LEGACY_KIND_BY_SHARED_KIND: Record<
-  Exclude<SharedComposerTriggerKind, "t4code-action">,
-  LegacyComposerTriggerKind
-> = {
-  "provider-slash": "slash-command",
-  "provider-dollar-skill": "skill",
-  "provider-reference": "path",
-};
 
 const isInlineTokenSegment = (
   segment:
@@ -291,31 +253,8 @@ export function detectComposerTrigger(
   text: string,
   cursor: number,
   profile: ComposerTriggerProfile,
-): SharedComposerTrigger | null;
-/** @deprecated Pass an explicit ComposerTriggerProfile. */
-export function detectComposerTrigger(text: string, cursor: number): LegacyComposerTrigger | null;
-export function detectComposerTrigger(
-  text: string,
-  cursor: number,
-  profile?: ComposerTriggerProfile,
-): SharedComposerTrigger | LegacyComposerTrigger | null {
-  const trigger = detectSharedComposerTrigger(
-    text,
-    cursor,
-    profile ?? DEFAULT_COMPOSER_TRIGGER_PROFILE,
-    {
-      isWhitespaceChar: isWhitespace,
-    },
-  );
-  if (profile || !trigger) {
-    return trigger;
-  }
-  if (trigger.kind === "t4code-action") {
-    return null;
-  }
-
-  return {
-    ...trigger,
-    kind: LEGACY_KIND_BY_SHARED_KIND[trigger.kind],
-  };
+): ComposerTrigger | null {
+  return detectSharedComposerTrigger(text, cursor, profile, {
+    isWhitespaceChar: isWhitespace,
+  });
 }

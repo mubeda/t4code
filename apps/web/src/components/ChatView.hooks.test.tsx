@@ -3136,11 +3136,11 @@ describe("ChatView send flows", () => {
     expect(commandCallsFor("thread.startTurn")).toHaveLength(0);
   });
 
-  it("treats a standalone /plan message as an interaction mode switch", async () => {
+  it("treats a standalone :plan message as a local interaction mode switch", async () => {
     seedConnectedServerThread();
     renderServerRoute();
     const { promptRef } = installComposerHandle();
-    promptRef.current = "/plan";
+    promptRef.current = ":plan";
 
     const composer = capturedProps("chatComposer");
     await (composer["onSend"] as () => Promise<void>)();
@@ -3148,6 +3148,21 @@ describe("ChatView send flows", () => {
     expect(commandCallsFor("thread.startTurn")).toHaveLength(0);
     expect(useComposerDraftStore.getState().getComposerDraft(threadRef)?.interactionMode).toBe(
       "plan",
+    );
+  });
+
+  it("treats a standalone :default message as a local interaction mode switch", async () => {
+    seedConnectedServerThread(makeThread({ interactionMode: "plan" }));
+    renderServerRoute();
+    const { promptRef } = installComposerHandle();
+    promptRef.current = ":default";
+
+    const composer = capturedProps("chatComposer");
+    await (composer["onSend"] as () => Promise<void>)();
+
+    expect(commandCallsFor("thread.startTurn")).toHaveLength(0);
+    expect(useComposerDraftStore.getState().getComposerDraft(threadRef)?.interactionMode).toBe(
+      "default",
     );
   });
 

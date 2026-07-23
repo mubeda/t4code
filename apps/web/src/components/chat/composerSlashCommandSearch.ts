@@ -1,32 +1,22 @@
-import type { LegacyComposerCommandItem } from "./composerCommandItems";
+import type { ComposerCommandItem } from "./composerCommandItems";
 import { searchComposerCommandCandidates } from "./composerCommandSearch";
 
 type SlashSearchItem = Extract<
-  LegacyComposerCommandItem,
-  { type: "provider-slash-command" | "skill" }
+  ComposerCommandItem,
+  { type: "provider-command" | "provider-skill" }
 >;
 
-type LegacySlashSearchItem = Extract<
-  LegacyComposerCommandItem,
-  { type: "slash-command" | "provider-slash-command" | "provider-agent" }
->;
-
-type SearchItem = SlashSearchItem | LegacySlashSearchItem;
-
-function searchItemName(item: SearchItem): string {
-  if (item.type === "slash-command") {
-    return item.command;
-  }
-  if (item.type === "provider-slash-command") {
+function searchItemName(item: SlashSearchItem): string {
+  if (item.type === "provider-command") {
     return item.command.name;
-  }
-  if (item.type === "provider-agent") {
-    return item.agent.name;
   }
   return item.skill.name;
 }
 
-function searchCommandItems<T extends SearchItem>(items: ReadonlyArray<T>, query: string): T[] {
+function searchCommandItems<T extends SlashSearchItem>(
+  items: ReadonlyArray<T>,
+  query: string,
+): T[] {
   return searchComposerCommandCandidates(
     items.map((item) => ({
       item,
@@ -43,13 +33,5 @@ export function searchSlashCommandItems(
   items: ReadonlyArray<SlashSearchItem>,
   query: string,
 ): SlashSearchItem[] {
-  return searchCommandItems(items, query);
-}
-
-/** @deprecated Use searchSlashCommandItems with provider slash commands and slash skills. */
-export function searchLegacySlashCommandItems(
-  items: ReadonlyArray<LegacySlashSearchItem>,
-  query: string,
-): LegacySlashSearchItem[] {
   return searchCommandItems(items, query);
 }

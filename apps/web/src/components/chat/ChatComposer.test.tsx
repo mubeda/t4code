@@ -26,7 +26,7 @@ import {
 import { DEFAULT_UNIFIED_SETTINGS } from "@t4code/contracts/settings";
 import { scopedThreadKey, scopeThreadRef } from "@t4code/client-runtime/environment";
 import type { EnvironmentConnectionPresentation } from "@t4code/client-runtime/connection";
-import { serializeComposerFileLink } from "@t4code/shared/composerTrigger";
+import { serializeComposerReference } from "@t4code/shared/composerReferences";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -521,6 +521,7 @@ const codexProvider: ServerProvider = {
       path: "/skills/refactor",
       scope: "project",
       enabled: true,
+      invocation: "dollar",
     },
     { name: "docs", path: "/skills/docs", enabled: true, invocation: "slash" },
   ],
@@ -529,6 +530,7 @@ const codexProvider: ServerProvider = {
       name: "code-reviewer",
       description: "Review changes with a dedicated agent",
       model: "gpt-5.4",
+      invocation: "mention",
     },
   ],
 };
@@ -911,7 +913,7 @@ describe("ChatComposer rendering", () => {
 
     expect(markup).toContain('data-chat-composer-form="true"');
     expect(markup).toContain(
-      'data-placeholder="Ask anything, @tag files/folders, $use skills, or / for commands"',
+      'data-placeholder="Ask anything, @ files, : T4Code actions, or a provider-native command"',
     );
     expect(markup).toContain('data-disabled="false"');
     expect(markup).toContain('data-instance="codex"');
@@ -1271,7 +1273,7 @@ describe("ChatComposer attachments", () => {
 // ---------------------------------------------------------------------------
 
 describe("ChatComposer command menu", () => {
-  it("builds path items from workspace entries while a path trigger is active", () => {
+  it("builds native file items from workspace entries while a reference trigger is active", () => {
     seedPrompt("hello @src");
     h.pathSearch = {
       entries: [
@@ -1288,14 +1290,17 @@ describe("ChatComposer command menu", () => {
     const menu = findCapture("ComposerCommandMenu");
     const items = menu["items"] as Array<Record<string, unknown>>;
     expect(items).toHaveLength(2);
-    expect(items[0]).toMatchObject({
-      id: "path:file:src/app/main.ts",
-      type: "path",
+    expect(
+      items.find((item) => item["type"] === "file-reference" && item["pathKind"] === "file"),
+    ).toMatchObject({
+      id: "file-reference:file:src/app/main.ts",
+      type: "file-reference",
       label: "main.ts",
       description: "src/app",
+      replacement: "@src/app/main.ts ",
     });
     expect(menu["isLoading"]).toBe(true);
-    expect(menu["emptyStateText"]).toBe("No matching files or folders.");
+    expect(menu["emptyStateText"]).toBe("No matching files or agents.");
 
     // The path search hook received the trigger query and git cwd.
     const target = findCapture("useComposerPathSearch")["target"] as Record<string, unknown>;
@@ -1303,49 +1308,58 @@ describe("ChatComposer command menu", () => {
     expect(target["query"]).toBe("src");
 
     // The highlight sync effect resolved the first item.
-    expect(setStateValues(STATE.highlightedItemId)).toContain("path:file:src/app/main.ts");
-    expect(setStateValues(STATE.highlightedSearchKey)).toContain("path:src");
+    expect(setStateValues(STATE.highlightedItemId)).toContain("file-reference:directory:src/app");
+    expect(setStateValues(STATE.highlightedSearchKey)).toContain("provider-reference:src");
   });
 
-  it("lists built-in and provider slash commands for a bare slash", () => {
+  it("lists only T4Code actions for colon", () => {
+    seedPrompt(":");
+    renderComposer();
+
+    const menu = findCapture("ComposerCommandMenu");
+    const items = menu["items"] as Array<Record<string, unknown>>;
+    expect(items.map((item) => item["label"])).toEqual([":model", ":plan", ":default"]);
+    expect(items.every((item) => item["type"] === "t4code-action")).toBe(true);
+    expect(menu["emptyStateText"]).toBe("No matching T4Code action.");
+  });
+
+  it("keeps provider commands and slash skills under slash", () => {
     seedPrompt("/");
     renderComposer();
 
     const menu = findCapture("ComposerCommandMenu");
     const items = menu["items"] as Array<Record<string, unknown>>;
-    expect(items.map((item) => item["id"])).toEqual([
-      "slash:model",
-      "slash:plan",
-      "slash:default",
-      "provider-slash-command:codex:review",
-      "provider-agent:codex:code-reviewer",
-    ]);
-    expect(menu).not.toHaveProperty("groupSlashCommandSections");
-    expect(menu["emptyStateText"]).toBe("No matching command.");
+    expect(items.map((item) => item["label"])).toEqual(["/review", "/docs"]);
+    expect(items.map((item) => item["label"])).not.toContain(":plan");
+    expect(items.some((item) => item["type"] === "agent-reference")).toBe(false);
+    expect(menu["emptyStateText"]).toBe("No matching provider command or skill.");
   });
 
-  it("keeps the legacy command menu closed for colon actions", () => {
-    seedPrompt(":");
+  it("keeps unsupported dollar text and opens no menu", () => {
+    const unsupportedProvider = {
+      ...codexProvider,
+      slashCommands: [],
+      skills: [],
+      agents: [],
+    };
+    seedPrompt("$ordinary");
 
-    const { markup } = renderComposer();
+    renderComposer({ providerStatuses: [unsupportedProvider] });
 
-    expect(markup).not.toContain('data-mock="composer-command-menu"');
-    expect(h.captures.some((capture) => capture.name === "ComposerCommandMenu")).toBe(false);
+    expect(filterCaptures("ComposerCommandMenu")).toHaveLength(0);
+    expect(draftOf(threadRef)?.prompt).toBe("$ordinary");
   });
 
-  it("filters slash commands by query", () => {
-    seedPrompt("/mod");
+  it("filters slash skills under slash without leaking dollar skills", () => {
+    seedPrompt("/doc");
     renderComposer();
 
     const items = findCapture("ComposerCommandMenu")["items"] as Array<Record<string, unknown>>;
-    // "mod" matches /model plus descriptions mentioning "mode"; the provider
-    // command does not match and is filtered out.
-    expect(items[0]?.["id"]).toBe("slash:model");
-    expect(items.map((item) => item["id"])).not.toContain("provider-slash-command:codex:review");
-    expect(findCapture("ComposerCommandMenu")).not.toHaveProperty("groupSlashCommandSections");
+    expect(items.map((item) => item["label"])).toEqual(["/docs"]);
+    expect(items.map((item) => item["label"])).not.toContain("$refactor");
   });
 
-  it("lists provider skills for a skill trigger", () => {
+  it("filters dollar skills without leaking slash skills", () => {
     seedPrompt("$ref");
     renderComposer();
 
@@ -1353,12 +1367,53 @@ describe("ChatComposer command menu", () => {
     const items = menu["items"] as Array<Record<string, unknown>>;
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
-      id: "skill:codex:refactor",
-      type: "skill",
-      label: "Refactor",
+      id: "provider-skill:codex:dollar:refactor",
+      type: "provider-skill",
+      label: "$refactor",
       description: "Refactor code safely",
+      replacement: "$refactor ",
     });
-    expect(menu["emptyStateText"]).toBe("No skills found. Try / to browse provider commands.");
+    expect(items.map((item) => item["label"])).not.toContain("/docs");
+    expect(menu["emptyStateText"]).toBe("No matching provider skill.");
+  });
+
+  it("passes only mentionable agents to the prompt editor", () => {
+    renderComposer();
+
+    expect((editorProps()["agents"] as Array<{ name: string }>).map((agent) => agent.name)).toEqual(
+      ["code-reviewer"],
+    );
+  });
+
+  it("closes a stale menu after provider capabilities change without changing draft text", () => {
+    const providerWithoutDollarSkills: ServerProvider = {
+      ...codexProvider,
+      instanceId: ProviderInstanceId.make("claude"),
+      driver: ProviderDriverKind.make("claudeAgent"),
+      slashCommands: [],
+      skills: [],
+      agents: [],
+    };
+    seedPrompt("$ordinary");
+    h.stateSeeds.set(STATE.trigger, {
+      kind: "provider-dollar-skill",
+      query: "ordinary",
+      rangeStart: 0,
+      rangeEnd: 9,
+    });
+
+    renderComposer({
+      providerStatuses: [providerWithoutDollarSkills],
+      activeProjectDefaultModelSelection: {
+        instanceId: providerWithoutDollarSkills.instanceId,
+        model: "gpt-5.4",
+      },
+    });
+
+    expect(setStateValues(STATE.trigger)).toContain(null);
+    expect(setStateValues(STATE.highlightedItemId)).toContain(null);
+    expect(setStateValues(STATE.highlightedSearchKey)).toContain(null);
+    expect(draftOf(threadRef)?.prompt).toBe("$ordinary");
   });
 
   it("hides the menu while an approval is pending", () => {
@@ -1401,13 +1456,13 @@ describe("ChatComposer menu selection", () => {
     return { ...rendered, onSelect, items };
   }
 
-  it("replaces a path trigger with a serialized file link", () => {
+  it("replaces a path trigger with a native file reference", () => {
     const { onSelect, items } = renderPathMenu();
 
     onSelect(items[0]!);
 
     expect(draftOf(threadRef)?.prompt).toBe(
-      `hello ${serializeComposerFileLink("src/app/main.ts")} `,
+      `hello ${serializeComposerReference("src/app/main.ts")} `,
     );
     // Focus is scheduled on the next animation frame.
     runAnimationFrames();
@@ -1434,7 +1489,12 @@ describe("ChatComposer menu selection", () => {
     };
     // The initial cursor sits at the end of the prompt, so the menu only
     // opens through a seeded trigger for the mid-prompt "@src" token.
-    h.stateSeeds.set(STATE.trigger, { kind: "path", query: "src", rangeStart: 4, rangeEnd: 8 });
+    h.stateSeeds.set(STATE.trigger, {
+      kind: "provider-reference",
+      query: "src",
+      rangeStart: 4,
+      rangeEnd: 8,
+    });
     renderComposer();
     // Cursor right after "@src" (before the existing space).
     setEditorSnapshot("see @src x", 8);
@@ -1445,7 +1505,7 @@ describe("ChatComposer menu selection", () => {
 
     onSelect(items[0]!);
 
-    expect(draftOf(threadRef)?.prompt).toBe(`see ${serializeComposerFileLink("src/a.ts")} x`);
+    expect(draftOf(threadRef)?.prompt).toBe(`see ${serializeComposerReference("src/a.ts")} x`);
   });
 
   it("aborts when the prompt changed under the trigger", () => {
@@ -1467,7 +1527,15 @@ describe("ChatComposer menu selection", () => {
     expect(draftOf(threadRef)?.prompt).toBe("hello @src");
   });
 
-  function renderSlashMenu(prompt: string) {
+  it("ignores a stale item that is no longer in the current menu", () => {
+    const { onSelect, items } = renderPathMenu();
+
+    onSelect({ ...items[0]!, id: "stale-provider-item" });
+
+    expect(draftOf(threadRef)?.prompt).toBe("hello @src");
+  });
+
+  function renderCommandMenu(prompt: string) {
     seedPrompt(prompt);
     const rendered = renderComposer();
     setEditorSnapshot(prompt, prompt.length);
@@ -1478,31 +1546,33 @@ describe("ChatComposer menu selection", () => {
     return { ...rendered, onSelect, items };
   }
 
-  it("opens the model picker from /model and clears the prompt", () => {
-    const { onSelect, items } = renderSlashMenu("/mod");
+  it("opens the model picker from :model and clears the prompt", () => {
+    const { onSelect, items } = renderCommandMenu(":mod");
 
-    onSelect(items.find((item) => item["id"] === "slash:model")!);
+    onSelect(items.find((item) => item["id"] === "t4code-action:model")!);
 
     // Clearing the prompt empties the draft entirely, so the store drops it.
     expect(draftOf(threadRef)?.prompt ?? "").toBe("");
     expect(setStateValues(STATE.modelPickerOpen)).toContain(true);
   });
 
-  it("switches interaction mode from /plan and /default", () => {
-    const first = renderSlashMenu("/plan");
-    first.onSelect(first.items.find((item) => item["id"] === "slash:plan")!);
+  it("executes :plan and :default locally", () => {
+    const first = renderCommandMenu(":plan");
+    first.onSelect(first.items.find((item) => item["id"] === "t4code-action:plan")!);
     expect(first.spies.handleInteractionModeChange).toHaveBeenCalledWith("plan");
+    expect(first.spies.onSend).not.toHaveBeenCalled();
     expect(draftOf(threadRef)?.prompt ?? "").toBe("");
 
-    const second = renderSlashMenu("/default");
-    second.onSelect(second.items.find((item) => item["id"] === "slash:default")!);
+    const second = renderCommandMenu(":default");
+    second.onSelect(second.items.find((item) => item["id"] === "t4code-action:default")!);
     expect(second.spies.handleInteractionModeChange).toHaveBeenCalledWith("default");
+    expect(second.spies.onSend).not.toHaveBeenCalled();
   });
 
   it("inserts provider slash commands with a trailing space", () => {
-    const { onSelect, items } = renderSlashMenu("/rev");
+    const { onSelect, items } = renderCommandMenu("/rev");
 
-    onSelect(items.find((item) => item["id"] === "provider-slash-command:codex:review")!);
+    onSelect(items.find((item) => item["id"] === "provider-command:codex:review")!);
 
     expect(draftOf(threadRef)?.prompt).toBe("/review ");
   });
@@ -1522,9 +1592,9 @@ describe("ChatComposer menu selection", () => {
   });
 
   it("uses provider-native slash invocation for slash skills", () => {
-    seedPrompt("$doc");
+    seedPrompt("/doc");
     renderComposer();
-    setEditorSnapshot("$doc", 4);
+    setEditorSnapshot("/doc", 4);
     const menu = findCapture("ComposerCommandMenu");
     const onSelect = menu["onSelect"] as (item: Record<string, unknown>) => void;
     const items = menu["items"] as Array<Record<string, unknown>>;
@@ -1535,11 +1605,11 @@ describe("ChatComposer menu selection", () => {
   });
 
   it("inserts an explicit provider-agent instruction", () => {
-    const { onSelect, items } = renderSlashMenu("/code");
+    const { onSelect, items } = renderCommandMenu("@code");
 
-    onSelect(items.find((item) => item["id"] === "provider-agent:codex:code-reviewer")!);
+    onSelect(items.find((item) => item["id"] === "agent-reference:codex:code-reviewer")!);
 
-    expect(draftOf(threadRef)?.prompt).toBe("Use the code-reviewer agent to ");
+    expect(draftOf(threadRef)?.prompt).toBe("@code-reviewer ");
   });
 
   it("routes custom answers through the pending input callback instead of the store", () => {
@@ -1574,8 +1644,10 @@ describe("ChatComposer menu selection", () => {
 
     onHighlight(String(items[0]!["id"]));
 
-    expect(setStateValues(STATE.highlightedItemId)).toContain("path:file:src/app/main.ts");
-    expect(setStateValues(STATE.highlightedSearchKey)).toContain("path:src");
+    expect(setStateValues(STATE.highlightedItemId)).toContain(
+      "file-reference:file:src/app/main.ts",
+    );
+    expect(setStateValues(STATE.highlightedSearchKey)).toContain("provider-reference:src");
   });
 });
 
@@ -1607,11 +1679,11 @@ describe("ChatComposer command keys", () => {
     const onKey = editorProps()["onCommandKeyDown"] as CommandKey;
 
     expect(onKey("ArrowDown", keyEvent())).toBe(true);
-    expect(setStateValues(STATE.highlightedItemId)).toContain("path:file:src/a.ts");
+    expect(setStateValues(STATE.highlightedItemId)).toContain("file-reference:file:src/a.ts");
     expect(onKey("ArrowUp", keyEvent())).toBe(true);
 
     expect(onKey("Enter", keyEvent())).toBe(true);
-    expect(draftOf(threadRef)?.prompt).toBe(`hello ${serializeComposerFileLink("src/a.ts")} `);
+    expect(draftOf(threadRef)?.prompt).toBe(`hello ${serializeComposerReference("src/a.ts")} `);
   });
 
   it("submits on Enter without an active menu", () => {
@@ -1650,7 +1722,7 @@ describe("ChatComposer prompt changes", () => {
     expect(draftOf(threadRef)?.prompt).toBe("new @q");
     expect(setStateValues(STATE.cursor)).toContain(6);
     const triggers = setStateValues(STATE.trigger) as Array<{ kind?: string } | null>;
-    expect(triggers.at(-1)?.kind).toBe("path");
+    expect(triggers.at(-1)?.kind).toBe("provider-reference");
   });
 
   it("suppresses the trigger when the cursor touches a mention", () => {
@@ -1896,6 +1968,35 @@ describe("ChatComposer submit", () => {
 
     expect(spies.onSend).toHaveBeenCalledWith(event);
   });
+
+  it("executes a submitted :model locally without leaking it to onSend", () => {
+    seedPrompt(":model");
+    const { spies } = renderComposer();
+    const form = findHost((element) => element.type === "form");
+    const event = { preventDefault: vi.fn() };
+
+    (form.props["onSubmit"] as (event: unknown) => void)(event);
+
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    expect(spies.onSend).not.toHaveBeenCalled();
+    expect(draftOf(threadRef)?.prompt ?? "").toBe("");
+    expect(setStateValues(STATE.trigger)).toContain(null);
+    expect(setStateValues(STATE.modelPickerOpen)).toContain(true);
+  });
+
+  it("keeps a pending custom answer named :model in the pending-answer flow", () => {
+    const { spies } = renderComposer({
+      pendingUserInputs: [makePendingUserInput()],
+      activePendingProgress: makePendingProgress({ customAnswer: ":model" }),
+    });
+    const form = findHost((element) => element.type === "form");
+    const event = { preventDefault: vi.fn() };
+
+    (form.props["onSubmit"] as (event: unknown) => void)(event);
+
+    expect(spies.onSend).toHaveBeenCalledWith(event);
+    expect(setStateValues(STATE.modelPickerOpen)).not.toContain(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1992,7 +2093,7 @@ describe("ChatComposer imperative handle", () => {
     handle().resetCursorState({ cursor: 6, detectTrigger: true });
     expect(setStateValues(STATE.cursor)).toContain(6);
     const triggers = setStateValues(STATE.trigger) as Array<{ kind?: string } | null>;
-    expect(triggers.at(-1)?.kind).toBe("path");
+    expect(triggers.at(-1)?.kind).toBe("provider-reference");
 
     handle().resetCursorState({ prompt: "clean", cursor: 2 });
     expect(setStateValues(STATE.trigger).at(-1)).toBeNull();
