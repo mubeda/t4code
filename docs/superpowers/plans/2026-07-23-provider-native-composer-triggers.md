@@ -752,7 +752,7 @@ it("keeps unsupported dollar text and opens no menu", () => {
 });
 ```
 
-Add tests for file insertion as native `@path`, agent insertion as `@name`, slash/dollar skill filtering, local-action execution, direct Enter submission of `:model`, pending custom-answer behavior, provider switching, and stale-menu closure.
+Add tests for file insertion as native `@path`, agent insertion as `@name`, slash/dollar skill filtering, local-action execution, direct Enter submission of `:model`, pending custom-answer behavior, capability refresh, and stale-menu closure. Keep each chat panel provider-locked.
 
 - [ ] **Step 2: Run the ChatComposer suite and confirm it fails**
 
@@ -832,7 +832,7 @@ useLayoutEffect(() => {
 }, [composerCapabilities.signature, selectedProviderStatus?.instanceId]);
 ```
 
-Do not change the prompt text during provider switching.
+Do not change the prompt text during provider capability refresh or session hydration.
 
 - [ ] **Step 8: Update placeholder copy**
 
@@ -1070,9 +1070,11 @@ Do not add a production server environment override for capability snapshots. Th
 
 - [ ] **Step 9: Add the packaged composer E2E spec**
 
-For each profile:
+For each profile, open a separate chat panel created for that provider. Never
+switch the provider of an existing chat through the composer model picker.
 
-1. select the provider;
+1. open the provider's dedicated chat panel and assert its model picker lists
+   only models for that provider, including before the first send;
 2. type `:` and assert only T4Code actions;
 3. choose and verify a local action clears;
 4. type `/` and assert the expected Commands and Skills groups;
@@ -1081,7 +1083,8 @@ For each profile:
 7. select using keyboard and mouse in separate cases;
 8. send one native token;
 9. read the provider input log and assert the exact payload;
-10. switch provider while a menu is open and assert stale menu closure.
+10. move to another provider's dedicated panel and assert menus and
+    capabilities do not leak between panels.
 
 Use stable selectors already present on the composer and add narrowly scoped `data-*` selectors only where accessibility roles and labels are insufficient.
 
@@ -1225,6 +1228,9 @@ List apps, select the locally built T4Code application, and get a fresh app stat
 
 For every deterministic provider profile, visibly confirm:
 
+- the profile is opened in its own provider-locked chat panel;
+- the model picker lists only that panel's provider models, including before
+  the first send;
 - `:` contains only `:model`, `:plan`, and `:default`;
 - `:model` opens the picker and clears its text;
 - `:plan` and `:default` change mode and clear their text;
@@ -1235,7 +1241,8 @@ For every deterministic provider profile, visibly confirm:
 - file selection renders the existing polished chip;
 - agent selection renders the new agent chip;
 - arrow keys, Tab/Enter, mouse selection, scroll, and empty states work;
-- switching provider closes invalid menus without deleting typed text.
+- moving between separate provider chat panels never leaks the previous
+  panel's menu or capabilities.
 
 After every action, fetch a fresh accessibility/UI state instead of relying on stale coordinates.
 

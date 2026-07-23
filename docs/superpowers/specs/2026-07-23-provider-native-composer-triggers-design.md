@@ -361,8 +361,8 @@ invocation value and existing decoding defaults.
 - `/` sends only native provider command or slash-skill text.
 - `$` sends only native dollar-skill text.
 - `@` sends native file or agent mentions.
-- Switching among provider fixtures changes available triggers without stale
-  menus.
+- Opening separate provider chat panels changes available triggers without
+  leaking capabilities or menus between panels.
 - Pending user-input composers use the same trigger and replacement behavior as
   the normal composer.
 
@@ -388,6 +388,9 @@ The acceptance workflow is:
 4. Use Computer Use through the prescribed `node_repl` integration to operate
    the real macOS app.
 5. For each deterministic provider profile, validate:
+   - the profile is opened in its own provider-locked chat panel;
+   - the model picker lists only models for that panel's provider, including
+     before the first message is sent;
    - the `:` menu contains only T4Code actions;
    - each local action executes and clears correctly;
    - `/` contains only native commands and slash skills;
@@ -396,8 +399,8 @@ The acceptance workflow is:
    - file and agent selections render the expected chips;
    - the underlying mock-provider input contains native `@path`, `@agent`,
      `/name`, or `$name` text;
-   - provider switching closes invalid menus and exposes the new native
-     triggers;
+   - moving between separate provider chat panels exposes each panel's native
+     triggers without leaking a stale menu from another panel;
    - filtering, keyboard navigation, mouse selection, scrolling, and empty
      states behave correctly.
 6. Restart the packaged application and confirm native tokens and chips restore
@@ -415,6 +418,7 @@ Use workflow passes.
 - Inventing a universal T4Code agent invocation syntax.
 - Adding new provider commands, skills, or agents.
 - Replacing provider mode or model controls with composer triggers.
+- Switching a chat panel's provider from the model picker.
 - Expanding Cursor's broader context menu beyond workspace files.
 - Changing historical transcript rendering.
 - Changing shell-command conventions such as a provider-native leading `!`.
