@@ -65,7 +65,7 @@ const hooks = vi.hoisted(() => {
 });
 
 interface QueryDescriptor {
-  readonly kind: "fullThreadDiff" | "listRefs" | "searchEntries" | "turnDiff";
+  readonly kind: "fullThreadDiff" | "listEntries" | "listRefs" | "searchEntries" | "turnDiff";
   readonly args: {
     readonly environmentId: string;
     readonly input: Readonly<Record<string, unknown>>;
@@ -191,6 +191,7 @@ vi.mock("./vcs", () => ({
 
 vi.mock("./projects", () => ({
   projectEnvironment: {
+    listEntries: (args: QueryDescriptor["args"]) => descriptor("listEntries", args),
     searchEntries: (args: QueryDescriptor["args"]) => descriptor("searchEntries", args),
   },
 }));
@@ -479,6 +480,33 @@ describe("usePaginatedBranches", () => {
 });
 
 describe("useComposerPathSearch", () => {
+  it("lists a bounded set of workspace entries for an empty reference query", () => {
+    const entries = Array.from({ length: 100 }, (_, index) => ({
+      path: `file-${String(index).padStart(3, "0")}.ts`,
+      kind: "file" as const,
+    }));
+    testState.queryViews.set("listEntries", {
+      data: { entries, truncated: false },
+      error: null,
+      isPending: false,
+      refresh: vi.fn(),
+    });
+
+    const result = renderHook(() => useComposerPathSearch(searchTarget({ query: "   " })));
+
+    expect(testState.queryDescriptors).toEqual([
+      {
+        kind: "listEntries",
+        key: expect.any(String),
+        args: {
+          environmentId: "environment-1",
+          input: { cwd: "/repo" },
+        },
+      },
+    ]);
+    expect(result.entries).toEqual(entries.slice(0, 80));
+  });
+
   it("debounces a trimmed search and exposes the query result", () => {
     vi.useFakeTimers();
     const refresh = vi.fn();
@@ -496,7 +524,10 @@ describe("useComposerPathSearch", () => {
 
     expect(initial.entries).toEqual([]);
     expect(changed.isPending).toBe(true);
-    expect(testState.queryDescriptors.at(-1)).toBeNull();
+    expect(testState.queryDescriptors.at(-1)).toMatchObject({
+      kind: "listEntries",
+      args: { input: { cwd: "/repo" } },
+    });
 
     vi.advanceTimersByTime(120);
     const settled = renderHook(() => useComposerPathSearch(searchTarget({ query: "  src  " })));

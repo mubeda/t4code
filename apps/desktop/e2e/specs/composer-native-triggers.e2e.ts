@@ -38,6 +38,7 @@ type ComposerGroupId = keyof typeof composerGroupLabels;
 interface ProviderScenario {
   readonly provider: ComposerProvider;
   readonly displayName: string;
+  readonly modelName: string;
   readonly keyboardCommand: string;
   readonly nativePrompt: string;
 }
@@ -49,30 +50,35 @@ const scenarios: readonly ProviderScenario[] = [
   {
     provider: "codex",
     displayName: "Codex",
+    modelName: "gpt-5.4",
     keyboardCommand: "goal",
     nativePrompt: "$refactor",
   },
   {
     provider: "claudeAgent",
     displayName: "Claude",
+    modelName: "Claude Fable 5",
     keyboardCommand: "compact",
     nativePrompt: "/compact",
   },
   {
     provider: "cursor",
     displayName: "Cursor",
+    modelName: "Cursor Fixture",
     keyboardCommand: "review",
     nativePrompt: "/review",
   },
   {
     provider: "opencode",
     displayName: "OpenCode",
+    modelName: "GPT-5 Fixture",
     keyboardCommand: "init",
     nativePrompt: "@reviewer",
   },
   {
     provider: "grok",
     displayName: "Grok",
+    modelName: "Grok Build",
     keyboardCommand: "skills",
     nativePrompt: "/skills",
   },
@@ -84,6 +90,13 @@ function composerForm() {
 
 function composerEditor() {
   return composerForm().$('[data-testid="composer-editor"]');
+}
+
+async function waitForComposerDisplayed(): Promise<void> {
+  const form = browser.$(visibleComposerFormSelector);
+  await form.waitForExist();
+  await form.waitForDisplayed();
+  await form.$('[data-testid="composer-editor"]').waitForDisplayed();
 }
 
 async function visibleComposerItemIds(): Promise<string[]> {
@@ -144,16 +157,64 @@ async function waitForComposerItem(id: string): Promise<void> {
   });
 }
 
+async function clickVisibleComposerItem(id: string): Promise<void> {
+  const selector = `[data-composer-item-id="${id}"]`;
+  await waitForComposerItem(id);
+  for (const candidate of await browser.$$(selector)) {
+    if ((await candidate.isDisplayed()) && (await candidate.isEnabled())) {
+      await candidate.click();
+      return;
+    }
+  }
+  throw new Error(`The visible composer item was not clickable: ${id}`);
+}
+
 async function waitForComposerItemsToClose(): Promise<void> {
   await browser.waitUntil(async () => (await visibleComposerItemIds()).length === 0, {
     timeoutMsg: "The stale composer menu remained open.",
   });
 }
 
+async function visibleComposerChipTexts(
+  attribute: "data-composer-mention-chip" | "data-composer-skill-chip" | "data-composer-agent-chip",
+): Promise<string[]> {
+  return browser.execute((chipAttribute) => {
+    return [...document.querySelectorAll<HTMLElement>(`[${chipAttribute}="true"]`)]
+      .filter((element) => {
+        const style = window.getComputedStyle(element);
+        const rectangle = element.getBoundingClientRect();
+        return (
+          !element.closest(".hidden") &&
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rectangle.width > 0 &&
+          rectangle.height > 0
+        );
+      })
+      .map((element) => element.textContent?.trim() ?? "");
+  }, attribute);
+}
+
 async function setComposerValue(value: string): Promise<void> {
   const editor = composerEditor();
   await expect(editor).toBeDisplayed();
-  await editor.setValue(value);
+  await editor.click();
+  await browser.execute(() => {
+    const editor = document.activeElement;
+    if (!(editor instanceof HTMLElement) || editor.dataset.testid !== "composer-editor") {
+      throw new Error("The composer editor did not receive focus.");
+    }
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+  await browser.keys("Backspace");
+  if (value.length > 0) {
+    await editor.addValue(value);
+  }
+  await waitForComposerValue(value);
 }
 
 async function waitForComposerValue(value: string): Promise<void> {
@@ -167,7 +228,10 @@ async function ensureFixtureProjectImported(): Promise<void> {
   const existingProject = browser.$(
     `//button[.//span[normalize-space()="${desktopUiFixture.projectName}"]]`,
   );
-  if (await existingProject.isExisting()) return;
+  if (await existingProject.isExisting()) {
+    await existingProject.waitForDisplayed();
+    return;
+  }
 
   const addProject = browser.$('[data-testid="sidebar-add-project-trigger"]');
   await expect(addProject).toBeDisplayed();
@@ -189,32 +253,162 @@ async function openInitialCodexDraft(): Promise<void> {
   await expect(project).toBeDisplayed();
   await project.click();
   await project.moveTo();
-  const newChat = browser.$(
-    '[data-testid="new-main-chat-button"], [data-testid="sidebar-new-main-chat-trigger"]',
-  );
-  await expect(newChat).toBeEnabled();
-  await newChat.click();
-  await expect(composerEditor()).toBeDisplayed();
+  const newChatClicked = await browser.execute((projectName) => {
+    const expectedLabel = `New main-branch chat in ${projectName}`;
+    const button = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+      (candidate) => candidate.ariaLabel === expectedLabel,
+    );
+    if (!button || button.disabled) return false;
+    button.click();
+    return true;
+  }, desktopUiFixture.projectName);
+  expect(newChatClicked).toBe(true);
+  await waitForComposerDisplayed();
 }
 
 async function openProviderPanel(displayName: string): Promise<void> {
-  const newPanel = browser.$(
-    '//*[@aria-label="New panel" and not(ancestor::*[contains(concat(" ", normalize-space(@class), " "), " hidden ")])]',
-  );
+  const newPanelSelector = '[aria-label="New panel"]';
   await browser.waitUntil(
-    async () =>
-      (await newPanel.isExisting()) &&
-      (await newPanel.isDisplayed()) &&
-      (await newPanel.isEnabled()),
+    async () => {
+      for (const candidate of await browser.$$(newPanelSelector)) {
+        if ((await candidate.isDisplayed()) && (await candidate.isEnabled())) {
+          return true;
+        }
+      }
+      return false;
+    },
     {
       timeoutMsg: "The provider panel menu did not become available.",
     },
   );
-  await newPanel.click();
+  for (const candidate of await browser.$$(newPanelSelector)) {
+    if ((await candidate.isDisplayed()) && (await candidate.isEnabled())) {
+      await candidate.click();
+      break;
+    }
+  }
   const provider = browser.$(`//*[@role="menuitem"][.//span[normalize-space()="${displayName}"]]`);
   await provider.waitForDisplayed();
+  await provider.waitForEnabled();
   await provider.click();
-  await expect(composerEditor()).toBeDisplayed();
+  await browser.waitUntil(
+    async () => {
+      for (const candidate of await browser.$$(
+        `//*[@role="menuitem"][.//span[normalize-space()="${displayName}"]]`,
+      )) {
+        if (await candidate.isDisplayed()) return false;
+      }
+      return true;
+    },
+    {
+      timeoutMsg: `The ${displayName} panel menu did not close.`,
+    },
+  );
+  const activeProviderTab = browser.$(
+    `//*[contains(concat(" ", normalize-space(@class), " "), " bg-accent ") and ` +
+      `.//button[@aria-label="Close ${displayName}"] and ` +
+      `.//span[normalize-space()="${displayName}"]]`,
+  );
+  await activeProviderTab.waitForDisplayed();
+  await waitForComposerDisplayed();
+}
+
+async function activateProviderPanel(displayName: string): Promise<void> {
+  const closeSelector = `button[aria-label="Close ${displayName}"]`;
+  const closeButton = browser.$(closeSelector);
+  await closeButton.waitForExist();
+  const activated = await browser.execute((selector) => {
+    const close = document.querySelector<HTMLButtonElement>(selector);
+    const tab = close?.closest<HTMLElement>("[data-active-tab]");
+    const activate = [...(tab?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
+      (button) => button !== close,
+    );
+    if (!tab || !activate) return false;
+    if (tab.dataset.activeTab !== "true") {
+      activate.click();
+    }
+    return true;
+  }, closeSelector);
+  expect(activated).toBe(true);
+  await browser.waitUntil(
+    () =>
+      browser.execute(
+        (selector) =>
+          document
+            .querySelector(selector)
+            ?.closest<HTMLElement>("[data-active-tab]")
+            ?.getAttribute("data-active-tab") === "true",
+        closeSelector,
+      ),
+    {
+      timeoutMsg: `The ${displayName} provider panel did not become active.`,
+    },
+  );
+  await waitForComposerDisplayed();
+}
+
+async function assertProviderLockedModelPicker(scenario: ProviderScenario): Promise<void> {
+  const pickerTrigger = composerForm().$('[data-chat-provider-model-picker="true"]');
+  await expect(pickerTrigger).toBeEnabled();
+  await pickerTrigger.click();
+
+  const pickerContent = browser.$('[data-model-picker-content="true"]');
+  await pickerContent.waitForDisplayed();
+  expect((await pickerContent.$$("[data-model-picker-provider]")).length).toBe(0);
+  const readVisibleModelRows = () =>
+    browser.execute(() =>
+      [
+        ...document.querySelectorAll<HTMLElement>(
+          '[data-model-picker-content="true"] [data-slot="combobox-item"]',
+        ),
+      ]
+        .filter((element) => {
+          const style = window.getComputedStyle(element);
+          const rectangle = element.getBoundingClientRect();
+          return (
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            rectangle.width > 0 &&
+            rectangle.height > 0
+          );
+        })
+        .map((element) => element.textContent?.trim() ?? ""),
+    );
+  await browser.waitUntil(
+    async () => {
+      return (await readVisibleModelRows()).length > 0;
+    },
+    {
+      timeoutMsg: `The ${scenario.displayName} model picker did not render any models.`,
+    },
+  );
+  const modelRows = await readVisibleModelRows();
+  const activeModelKey = await browser.execute(() => {
+    const content = document.querySelector<HTMLElement>('[data-model-picker-content="true"]');
+    return (
+      [...(content?.querySelectorAll<HTMLInputElement>('input[aria-hidden="true"]') ?? [])].find(
+        (input) => input.value.includes(":"),
+      )?.value ?? null
+    );
+  });
+  expect(activeModelKey?.startsWith(`${scenario.provider}:`)).toBe(true);
+  const normalizedModelRows = modelRows.map((row) => row.toLocaleLowerCase());
+  expect(
+    normalizedModelRows.some((row) => row.includes(scenario.modelName.toLocaleLowerCase())),
+  ).toBe(true);
+  const foreignModels = scenarios
+    .filter((candidate) => candidate.provider !== scenario.provider)
+    .map((candidate) => candidate.modelName.toLocaleLowerCase());
+  expect(
+    normalizedModelRows.some((row) => foreignModels.some((model) => row.includes(model))),
+  ).toBe(false);
+  if (scenario.provider === "codex") {
+    await browser.saveScreenshot(
+      NodePath.join(preparedArtifactDirectory, "composer-provider-locked-model-picker.png"),
+    );
+  }
+  await browser.keys("Escape");
+  await pickerContent.waitForDisplayed({ reverse: true });
 }
 
 async function assertColonMenu(provider: ComposerProvider): Promise<void> {
@@ -229,7 +423,7 @@ async function assertColonMenu(provider: ComposerProvider): Promise<void> {
       NodePath.join(preparedArtifactDirectory, "composer-colon-menu.png"),
     );
   }
-  await browser.$('[data-composer-item-id="t4code-action:default"]').click();
+  await clickVisibleComposerItem("t4code-action:default");
   await waitForComposerValue("");
 }
 
@@ -256,7 +450,13 @@ async function assertSlashMenu(scenario: ProviderScenario): Promise<void> {
   await setComposerValue(`/${scenario.keyboardCommand}`);
   await waitForComposerItem(`provider-command:${scenario.provider}:${scenario.keyboardCommand}`);
   await composerEditor().click();
-  await browser.keys(["ArrowDown", "Enter"]);
+  await browser.keys("ArrowDown");
+  await expect(
+    browser.$(
+      `[data-composer-item-id="provider-command:${scenario.provider}:${scenario.keyboardCommand}"][data-composer-item-active="true"]`,
+    ),
+  ).toBeDisplayed();
+  await browser.keys("Enter");
   await waitForComposerValue(`/${scenario.keyboardCommand} `);
   await setComposerValue("");
 }
@@ -302,7 +502,7 @@ async function assertReferenceMenu(provider: ComposerProvider): Promise<void> {
 
   await setComposerValue("@README");
   await waitForComposerItem("file-reference:file:README.md");
-  await browser.$('[data-composer-item-id="file-reference:file:README.md"]').click();
+  await clickVisibleComposerItem("file-reference:file:README.md");
   await expect(composerForm().$('[data-composer-mention-chip="true"]')).toBeDisplayed();
   await setComposerValue("");
 }
@@ -324,87 +524,113 @@ async function sendAndAssertNativePrompt(scenario: ProviderScenario): Promise<vo
   );
 }
 
-async function selectProviderWithinComposer(
-  provider: ComposerProvider,
-  expectedOpenComposerItemId: string,
+async function openProviderPanelWithStaleMenu(
+  current: ProviderScenario,
+  next: ProviderScenario,
 ): Promise<void> {
-  const pickerTrigger = composerForm().$('[data-chat-provider-model-picker="true"]');
-  await expect(pickerTrigger).toBeEnabled();
-  await pickerTrigger.click();
-
-  const pickerContent = browser.$('[data-model-picker-content="true"]');
-  await pickerContent.waitForDisplayed();
-  await expect(
-    browser.$(`[data-composer-item-id="${expectedOpenComposerItemId}"]`),
-  ).toBeDisplayed();
-  const providerButton = pickerContent.$(`[data-model-picker-provider="${provider}"]`);
-  await providerButton.waitForDisplayed();
-  await providerButton.click();
-
-  const modelOption = pickerContent.$('[data-slot="combobox-item"]:not([data-disabled])');
-  await modelOption.waitForDisplayed();
-  await modelOption.click();
-  await pickerContent.waitForExist({ reverse: true });
-}
-
-async function assertSameComposerProviderSwitch(): Promise<void> {
-  const initialComposerElementId = (await composerForm()).elementId;
-  await setComposerValue("/goal");
-  await waitForComposerItem("provider-command:codex:goal");
+  await setComposerValue(`/${current.keyboardCommand}`);
+  const staleItemId = `provider-command:${current.provider}:${current.keyboardCommand}`;
+  await waitForComposerItem(staleItemId);
   await composerEditor().click();
   await browser.keys("ArrowDown");
-  const activeCodexItem = browser.$(
-    '[data-composer-item-id="provider-command:codex:goal"][data-composer-item-active="true"]',
-  );
-  await activeCodexItem.waitForDisplayed();
+  await expect(
+    browser.$(`[data-composer-item-id="${staleItemId}"][data-composer-item-active="true"]`),
+  ).toBeDisplayed();
 
-  await selectProviderWithinComposer("claudeAgent", "provider-command:codex:goal");
-  await waitForComposerValue("/goal");
-  await waitForComposerItem("provider-command:claudeAgent:goal");
-  await browser.waitUntil(
-    async () =>
-      !(await visibleComposerItemIds()).some((id) => id.includes(":codex:")) &&
-      !(await activeCodexItem.isExisting()),
-    {
-      timeoutMsg: "The Codex composer menu or highlighted item survived the provider switch.",
-    },
+  await openProviderPanel(next.displayName);
+  await waitForComposerValue("");
+  await waitForComposerItemsToClose();
+  await setComposerValue("/");
+  await waitForComposerItem(`provider-command:${next.provider}:${next.keyboardCommand}`);
+  expect((await visibleComposerItemIds()).some((id) => id.includes(`:${current.provider}:`))).toBe(
+    false,
   );
-  await assertComposerGroups(["commands"]);
-  expect(
-    await browser
-      .$(
-        '[data-composer-item-id="provider-command:claudeAgent:goal"][data-composer-item-active="true"]',
-      )
-      .isDisplayed(),
-  ).toBe(true);
-  expect((await composerForm()).elementId).toBe(initialComposerElementId);
-
-  await selectProviderWithinComposer("codex", "provider-command:claudeAgent:goal");
-  await waitForComposerValue("/goal");
-  await waitForComposerItem("provider-command:codex:goal");
-  expect((await composerForm()).elementId).toBe(initialComposerElementId);
   await setComposerValue("");
 }
 
-async function persistDraftAndRestart(
-  provider: "codex" | "opencode",
-  displayName: string,
-): Promise<void> {
-  await openProviderPanel(displayName);
-  await setComposerValue("@README.md @reviewer $refactor");
-  await browser.reloadSession();
-  await expect(composerEditor()).toBeDisplayed();
-  const mentionChip = composerForm().$('[data-composer-mention-chip="true"]');
-  await expect(mentionChip).toBeDisplayed();
-  await expect(mentionChip).toHaveText("README.md");
-  const skillChip = composerForm().$('[data-composer-skill-chip="true"]');
-  await expect(skillChip).toBeDisplayed();
-  await expect(skillChip).toHaveText("Refactor");
-  if (provider === "opencode") {
-    const agentChip = composerForm().$('[data-composer-agent-chip="true"]');
-    await expect(agentChip).toBeDisplayed();
-    await expect(agentChip).toHaveText("reviewer");
+async function persistOpenCodeDraftAndRestart(): Promise<void> {
+  await activateProviderPanel("OpenCode");
+  const persistedThread = browser.$('[data-testid^="thread-row-"][data-active="true"]');
+  await persistedThread.waitForDisplayed();
+  const persistedThreadTestId = await persistedThread.getAttribute("data-testid");
+  const persistedThreadId = persistedThreadTestId?.replace("thread-row-", "") ?? "";
+  expect(persistedThreadId.length).toBeGreaterThan(0);
+  const persistedThreadSelector = `[data-testid="thread-row-${persistedThreadId}"]`;
+  const openCodePanelThreadId = await browser.execute((hostThreadId) => {
+    const rawStore = window.localStorage.getItem("t4code:center-panel-state:v1");
+    if (!rawStore) return null;
+    const parsed = JSON.parse(rawStore) as {
+      state?: {
+        byThreadKey?: Record<
+          string,
+          {
+            surfaces?: Array<{
+              kind?: string;
+              providerLabel?: string;
+              threadId?: string;
+            }>;
+          }
+        >;
+      };
+    };
+    const hostPanels = Object.entries(parsed.state?.byThreadKey ?? {}).find(([threadKey]) =>
+      threadKey.endsWith(`:${hostThreadId}`),
+    )?.[1];
+    return (
+      hostPanels?.surfaces?.find(
+        (surface) => surface.kind === "chat" && surface.providerLabel === "OpenCode",
+      )?.threadId ?? null
+    );
+  }, persistedThreadId);
+  if (!openCodePanelThreadId) {
+    throw new Error("The active host did not retain an OpenCode provider panel.");
   }
+
+  const persistedPrompt = "opencode @README.md @reviewer $refactor ";
+  const persistedPromptIsStored = () =>
+    browser.execute(
+      (expectedPrompt, panelThreadId) => {
+        const rawStore = window.localStorage.getItem("t4code:composer-drafts:v1");
+        if (!rawStore) return false;
+        const parsed = JSON.parse(rawStore) as {
+          state?: {
+            draftsByThreadKey?: Record<string, { prompt?: string }>;
+          };
+        };
+        return Object.entries(parsed.state?.draftsByThreadKey ?? {}).some(
+          ([threadKey, draft]) =>
+            threadKey.endsWith(`:${panelThreadId}`) && draft.prompt === expectedPrompt,
+        );
+      },
+      persistedPrompt,
+      openCodePanelThreadId,
+    );
+  await setComposerValue(persistedPrompt);
+  await browser.waitUntil(persistedPromptIsStored, {
+    timeoutMsg: "The OpenCode panel draft was not flushed to storage.",
+  });
+  await browser.refresh();
+  expect(await persistedPromptIsStored()).toBe(true);
+  const settingsBack = browser.$('//button[.//span[normalize-space()="Back"]]');
+  if ((await settingsBack.isExisting()) && (await settingsBack.isDisplayed())) {
+    await settingsBack.click();
+  }
+  await ensureMainSidebarOpen();
+  const restoredThread = browser.$(persistedThreadSelector);
+  await restoredThread.waitForDisplayed();
+  await restoredThread.click();
+  await waitForComposerDisplayed();
+  await activateProviderPanel("OpenCode");
+  expect(await persistedPromptIsStored()).toBe(true);
+  await browser.waitUntil(
+    async () =>
+      (await visibleComposerChipTexts("data-composer-mention-chip")).includes("README.md") &&
+      (await visibleComposerChipTexts("data-composer-skill-chip")).includes("Refactor") &&
+      (await visibleComposerChipTexts("data-composer-agent-chip")).includes("reviewer"),
+    {
+      timeoutMsg: "The persisted OpenCode draft chips were not restored.",
+    },
+  );
 }
 
 describe("packaged native composer triggers", () => {
@@ -412,9 +638,9 @@ describe("packaged native composer triggers", () => {
     await setDesktopUiWindowSize(1_100, 760);
     await ensureFixtureProjectImported();
     await openInitialCodexDraft();
-    await assertSameComposerProviderSwitch();
 
     for (const [index, scenario] of scenarios.entries()) {
+      await assertProviderLockedModelPicker(scenario);
       await assertColonMenu(scenario.provider);
       await assertSlashMenu(scenario);
       await assertDollarMenu(scenario.provider);
@@ -423,14 +649,13 @@ describe("packaged native composer triggers", () => {
 
       const next = scenarios[index + 1];
       if (next) {
-        await openProviderPanel(next.displayName);
+        await openProviderPanelWithStaleMenu(scenario, next);
       }
     }
 
     await setComposerValue("/");
     await waitForComposerItem("provider-command:grok:skills");
-    await persistDraftAndRestart("codex", "Codex");
-    await persistDraftAndRestart("opencode", "OpenCode");
+    await persistOpenCodeDraftAndRestart();
     await browser.saveScreenshot(
       NodePath.join(preparedArtifactDirectory, "composer-restored-chips.png"),
     );

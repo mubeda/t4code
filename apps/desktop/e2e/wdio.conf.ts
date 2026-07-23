@@ -123,7 +123,7 @@ export const config = {
           display: none !important;
         }`,
         `
-        [data-slot="sidebar-group"]:has([data-testid="sidebar-new-main-chat-trigger"])
+        [data-slot="sidebar-group"]:has([data-testid="new-main-chat-button"])
           ul[data-sidebar="menu"] > li {
           opacity: 1 !important;
           transform: none !important;

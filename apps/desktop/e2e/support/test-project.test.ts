@@ -73,7 +73,15 @@ describe.each([
     expect(NodePath.isAbsolute(context.fixtureUserHomePath)).toBe(true);
     expect(context.fixtureUserHomePath.startsWith(`${context.runRoot}${NodePath.sep}`)).toBe(true);
     expect(environment.T4CODE_E2E_USER_HOME).toBe(expectedFixtureUserHome);
-    expect(NodeFS.readdirSync(context.fixtureUserHomePath)).toEqual([]);
+    for (const relativePath of [
+      ".cursor/commands/review.md",
+      ".cursor/skills/frontend/SKILL.md",
+      ".cursor/agents/cursor-prose-agent.md",
+    ]) {
+      expect(
+        NodeFS.readFileSync(NodePath.join(context.fixtureUserHomePath, relativePath), "utf8"),
+      ).not.toBe("");
+    }
     const settings = JSON.parse(
       NodeFS.readFileSync(NodePath.join(context.stateRoot, "userdata", "settings.json"), "utf8"),
     ) as {

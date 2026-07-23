@@ -52,7 +52,7 @@ describe("desktop UI motion stabilization", () => {
     const configuration = NodeFS.readFileSync(new URL("../wdio.conf.ts", import.meta.url), "utf8");
 
     expect(configuration).toMatch(
-      /\[data-slot="sidebar-group"\]:has\(\[data-testid="sidebar-new-main-chat-trigger"\]\)\s+ul\[data-sidebar="menu"\]\s*>\s*li\s*\{[^}]*opacity:\s*1\s*!important;[^}]*\}/s,
+      /\[data-slot="sidebar-group"\]:has\(\[data-testid="new-main-chat-button"\]\)\s+ul\[data-sidebar="menu"\]\s*>\s*li\s*\{[^}]*opacity:\s*1\s*!important;[^}]*\}/s,
     );
     expect(configuration).not.toMatch(/(?:^|,)\s*li\s*\{[^}]*opacity:/s);
   });

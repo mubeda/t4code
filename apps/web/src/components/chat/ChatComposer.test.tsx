@@ -927,7 +927,7 @@ describe("ChatComposer rendering", () => {
     expect(select["value"]).toBe("approval-required");
     const picker = findCapture("ProviderModelPicker");
     expect(picker["lockedProvider"]).toBeNull();
-    expect(picker["lockToActiveInstance"]).toBe(false);
+    expect(picker["lockToActiveInstance"]).toBe(true);
 
     // Path search targets nothing while no path trigger is active.
     const pathSearch = findCapture("useComposerPathSearch")["target"] as Record<string, unknown>;

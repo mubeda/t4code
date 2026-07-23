@@ -192,22 +192,27 @@ export function useComposerPathSearch(target: ComposerPathSearchTarget) {
   );
   const debouncedTarget = useDebouncedValue(normalizedTarget, COMPOSER_PATH_SEARCH_DEBOUNCE_MS);
   const result = useEnvironmentQuery(
-    debouncedTarget.environmentId !== null &&
-      debouncedTarget.cwd !== null &&
-      debouncedTarget.query.length > 0
-      ? projectEnvironment.searchEntries({
-          environmentId: debouncedTarget.environmentId,
-          input: {
-            cwd: debouncedTarget.cwd,
-            query: debouncedTarget.query,
-            limit: COMPOSER_PATH_SEARCH_LIMIT,
-          },
-        })
+    debouncedTarget.environmentId !== null && debouncedTarget.cwd !== null
+      ? debouncedTarget.query.length > 0
+        ? projectEnvironment.searchEntries({
+            environmentId: debouncedTarget.environmentId,
+            input: {
+              cwd: debouncedTarget.cwd,
+              query: debouncedTarget.query,
+              limit: COMPOSER_PATH_SEARCH_LIMIT,
+            },
+          })
+        : projectEnvironment.listEntries({
+            environmentId: debouncedTarget.environmentId,
+            input: {
+              cwd: debouncedTarget.cwd,
+            },
+          })
       : null,
   );
 
   return {
-    entries: result.data?.entries ?? [],
+    entries: result.data?.entries.slice(0, COMPOSER_PATH_SEARCH_LIMIT) ?? [],
     error: result.error,
     isPending: normalizedTarget.query !== debouncedTarget.query || result.isPending,
     refresh: result.refresh,

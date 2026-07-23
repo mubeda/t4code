@@ -134,7 +134,7 @@ describe("packaged terminal font support", () => {
     await expect(project).toBeDisplayed();
     await project.click();
 
-    const newChat = browser.$('[data-testid="sidebar-new-main-chat-trigger"]');
+    const newChat = browser.$('[data-testid="new-main-chat-button"]');
     await expect(newChat).toBeEnabled();
     await newChat.click();
 

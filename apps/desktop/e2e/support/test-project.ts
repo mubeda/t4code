@@ -687,6 +687,35 @@ function runGit(projectPath: string, args: ReadonlyArray<string>): void {
   }
 }
 
+const cursorInventoryFiles = {
+  ".cursor/commands/review.md": "# Review\n\nReview the deterministic fixture.\n",
+  ".cursor/skills/frontend/SKILL.md": [
+    "---",
+    "name: frontend",
+    "description: Exercise the deterministic frontend fixture.",
+    "---",
+    "",
+    "# Frontend",
+    "",
+    "Exercise the packaged frontend fixture.",
+    "",
+  ].join("\n"),
+  ".cursor/agents/cursor-prose-agent.md": [
+    "# Cursor prose agent",
+    "",
+    "This upstream fixture intentionally has no inline invocation metadata.",
+    "",
+  ].join("\n"),
+} as const;
+
+function writeFixtureFiles(root: string, files: Readonly<Record<string, string>>): void {
+  for (const [relativePath, contents] of Object.entries(files)) {
+    const path = NodePath.join(root, relativePath);
+    NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
+    NodeFS.writeFileSync(path, contents);
+  }
+}
+
 function initializeGitProject(projectPath: string): void {
   NodeFS.mkdirSync(projectPath, { recursive: true });
   NodeFS.writeFileSync(
@@ -705,30 +734,9 @@ function initializeGitProject(projectPath: string): void {
       "Use the packaged fixture documentation.",
       "",
     ].join("\n"),
-    ".cursor/commands/review.md": "# Review\n\nReview the deterministic fixture.\n",
-    ".cursor/skills/frontend/SKILL.md": [
-      "---",
-      "name: frontend",
-      "description: Exercise the deterministic frontend fixture.",
-      "---",
-      "",
-      "# Frontend",
-      "",
-      "Exercise the packaged frontend fixture.",
-      "",
-    ].join("\n"),
-    ".cursor/agents/cursor-prose-agent.md": [
-      "# Cursor prose agent",
-      "",
-      "This upstream fixture intentionally has no inline invocation metadata.",
-      "",
-    ].join("\n"),
+    ...cursorInventoryFiles,
   } as const;
-  for (const [relativePath, contents] of Object.entries(projectFiles)) {
-    const path = NodePath.join(projectPath, relativePath);
-    NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
-    NodeFS.writeFileSync(path, contents);
-  }
+  writeFixtureFiles(projectPath, projectFiles);
   if (NodeFS.existsSync(NodePath.join(projectPath, ".git"))) return;
   runGit(projectPath, ["init", "--initial-branch=main"]);
   runGit(projectPath, ["add", "."]);
@@ -756,6 +764,7 @@ export function prepareDesktopUiTestContext(
   NodeFS.mkdirSync(artifactDirectory, { recursive: true });
   NodeFS.writeFileSync(providerInputLogPath, "");
   initializeGitProject(projectPath);
+  writeFixtureFiles(fixtureUserHomePath, cursorInventoryFiles);
   // oxlint-disable-next-line t4code/no-global-process-runtime -- The standalone WDIO fixture injects the detected host into its adapters.
   const hostPlatform = environment.T4CODE_E2E_PLATFORM ?? process.platform;
   const isWindows = hostPlatform === "win" || hostPlatform === "win32";

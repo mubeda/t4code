@@ -208,49 +208,43 @@
                 "name": ".",
                 "description": "0}!Z\\Q=B#s}",
                 "model": "d<3NdKem6\"9",
-                "mode": "#"
+                "mode": "#",
+                "invocation": "mention"
               },
               {
-                "name": ".0NsQr\"X%",
-                "description": "#[JY%4",
-                "mode": "rV`79:C)FOM("
+                "name": "NsQr\"X%P~V#"
               },
               {
-                "name": "cx6{,~WNX",
-                "description": "ow5vh~,",
-                "mode": "x"
+                "name": "rV`79:C)FOM(",
+                "description": "x6{,~WNX,9\\",
+                "invocation": "mention"
               },
               {
-                "name": "[k"
+                "name": ":",
+                "description": "G[k"
               },
               {
                 "name": "`NX~f",
-                "mode": ";I8F.lzY63}"
+                "mode": ";I8F.lzY63}",
+                "invocation": "mention"
               },
               {
-                "name": "X",
-                "model": "rl=B;>;DK"
+                "name": "L>,rl=B",
+                "description": "DKICiNsjB",
+                "model": "nw,b"
               },
               {
-                "name": "sjBSHRnw,b^A",
-                "description": "r]FkU;rf9)A^"
+                "name": "<r]FkU;rf9)",
+                "description": "cr.F!N:G?^A|",
+                "mode": "'s/c=QL"
               }
             ],
-            "versionAdvisory": {
-              "status": "behind_latest",
-              "currentVersion": "?^A|QN)O",
-              "latestVersion": "s/",
-              "updateCommand": "QLr@Qs%+!DV",
-              "canUpdate": true,
-              "checkedAt": null,
-              "message": "YzS)$o%iC|k"
-            },
             "updateState": {
-              "status": "succeeded",
-              "startedAt": null,
+              "status": "queued",
+              "startedAt": "V",
               "finishedAt": null,
               "message": null,
-              "output": null
+              "output": "YzS)$o"
             }
           }
         ]
