@@ -1,359 +1,226 @@
-# Task 8 Report: Attributed Live Processes and Resource History
+# Task 8 Report
 
 ## Status
 
-Implemented Task 8 on base `e414c2453794478b74520676104f940e92f29efb`.
-
-- Added pure live/history projections with closed sort/metric unions, stable
-  process-key tie breaking, bounded error and coverage presentation, and
-  server-timestamp preservation for stale and unavailable samples.
-- Kept summary totals sourced from server-provided Combined/Core/External
-  values rather than visible process rows.
-- Extracted only Live Processes and Resource History rendering into
-  `ResourceDiagnosticsSections`; trace diagnostics, query orchestration,
-  refresh callbacks, and the signal mutation remain in
-  `DiagnosticsSettings`.
-- Added the approved Combined headline and parallel T4Code Core / External
-  Tooling cards, memory-first attributed live table, Memory/CPU history
-  toggle, stacked average history bars, same-sample peak tooltips, and the
-  complete attributed history table.
-- Limited signal controls to External rows whose complete current PID ancestry
-  reaches the current server. Core rows and reparented External roots and
-  children are never offered controls. The mutation carries
-  `{ pid, processKey, signal }`, and stale identity results refresh live data.
-
-Commit message:
-
-```text
-feat(web): add attributed resource diagnostics
-```
-
-## TDD Evidence
-
-### RED: pure live projection
-
-Command:
-
-```text
-vp test apps/web/src/components/settings/resourceDiagnosticsPresentation.test.ts
-```
-
-Exit: `1`.
-
-The live projection test suite failed for the expected missing production
-module:
-
-```text
-Cannot find module './resourceDiagnosticsPresentation'
-```
-
-The live RED covered server-backed Combined/Core/External summaries, memory
-default sorting, Memory/CPU/Name/Scope toggles, process-key tie breaking,
-attributed columns, timestamp/error states, and current-ancestry signal
-eligibility including a reparented root and child.
-
-### RED: pure history projection
-
-The same focused command remained red for the missing module after adding
-history coverage for Memory default, CPU selection, additive average stacks,
-same-sample split peaks, split CPU-time summaries, full attributed process
-rows, unchanged 5m/15m/30m/1h inputs, and UI coverage semantics.
-
-### RED: extracted resource component
-
-Command:
-
-```text
-vp test apps/web/src/components/settings/ResourceDiagnosticsSections.test.tsx
-```
-
-Exit: `1`.
-
-The component suite failed for the expected missing production module:
-
-```text
-Cannot find module './ResourceDiagnosticsSections'
-```
-
-The component RED covered the card hierarchy, sort and metric interactions,
-stacked Core/External bars, same-sample peak tooltip, coverage banners, full
-columns, and signal-control absence for Core and reparented External rows.
-
-### RED: exact live Label column
-
-The post-extraction requirement audit tightened the live-column assertion to
-the Live Processes section only. It failed because the sortable heading still
-displayed `Name`:
-
-```text
-expected Live Processes markup to contain '>Label<'
-```
-
-The heading now displays `Label` while retaining the accessible
-`Sort by Name` action.
-
-## Focused Verification
-
-```text
-vp test apps/web/src/components/settings/resourceDiagnosticsPresentation.test.ts apps/web/src/components/settings/ResourceDiagnosticsSections.test.tsx apps/web/src/components/settings/DiagnosticsSettings.test.tsx
-
-Test Files 3 passed (3)
-Tests 56 passed (56)
-```
-
-The integration assertions cover the exact
-`{ pid: 100, processKey: "100:100", signal }` mutation payload, refresh after
-stale descendant and stale identity responses, Windows interrupt behavior,
-and unchanged Trace Diagnostics/latest-failure rendering.
-
-The test runner emits its existing Node `ExperimentalWarning` about the
-missing `--localstorage-file`; all focused tests pass.
-
-## Required Gates
-
-```text
-vp check
-pass: All 1543 files are correctly formatted
-pass: Found no warnings or lint errors in 1163 files
-
-vp run typecheck
-exit 0
-
-git diff --check
-exit 0
-```
-
-`vp run typecheck` continues to print repository-wide TS377098 suggestions
-about existing `Schema.Number` declarations. It reports no typecheck failure,
-and Task 8 adds no schema declarations.
-
-## Scope Audit
-
-- Task 8 changes are limited to the six requested web files and this report.
-- `.repos/` and `third_party/` were not modified.
-- The ignored, root-owned `.superpowers/sdd/progress.md` remains untouched and
-  is not included in the commit.
-
-## Reviewer Correction
-
-The reviewer correction adds the omitted history-process sorting contract and
-makes live signal eligibility conservative when a diagnostics sample contains
-duplicate PID identities.
-
-- Added the closed `HistoryProcessSortKey` union for Label, Scope, Kind, CPU
-  time, Current CPU, Average CPU, Peak CPU, and Max memory.
-- History defaults to Max memory descending. Selecting a new text key defaults
-  ascending, selecting a new numeric key defaults descending, selecting the
-  active key toggles direction, and every comparison uses `processKey`
-  ascending as its deterministic final tie break.
-- The history table exposes sortable buttons and `aria-sort` on each supported
-  attribution/metric header. Command and PID remain visible and unsorted.
-- Removed Current Memory from the history table because the approved process
-  table requires CPU time, current/average/peak CPU, maximum memory, command,
-  and PID.
-- Signal eligibility is now represented by `processKey`, not PID. A duplicated
-  target PID, duplicated ancestor PID, duplicated server PID, ancestry cycle,
-  or reparented root makes the affected path unsignalable. The existing server
-  command still receives `{ pid, processKey, signal }` and revalidates the live
-  descendant identity before signaling.
-
-### Correction RED
-
-Focused pure tests failed as expected before implementation:
-
-```text
-duplicate target PID:
-expected signalEligibility["200:1"] false, received true
-
-ambiguous parent PID:
-expected signalEligibility["700:1"] false, received true
-
-history default:
-expected processSort { key: "maxMemory", direction: "desc" }, received undefined
-```
-
-The cycle regression also exposed an existing synchronous loop: `Set.add()`
-returns the Set rather than a membership boolean. The ancestry traversal now
-checks `Set.has()` before adding the PID.
-
-The component interaction RED failed because the history table still rendered
-static headings and had no `aria-sort="descending"` Max Memory control.
-
-### Correction Verification
-
-```text
-vp test apps/web/src/components/settings/resourceDiagnosticsPresentation.test.ts --run
-
-Test Files 1 passed (1)
-Tests 35 passed (35)
-
-vp test apps/web/src/components/settings/resourceDiagnosticsPresentation.test.ts \
-  apps/web/src/components/settings/ResourceDiagnosticsSections.test.tsx \
-  apps/web/src/components/settings/DiagnosticsSettings.test.tsx --run
-
-Test Files 3 passed (3)
-Tests 71 passed (71)
-
-vp test apps/web/src/components/settings --run
-
-Test Files 21 passed (21)
-Tests 317 passed (317)
-```
-
-The 71 focused tests include the original 56 cases plus the new pure and
-interaction regressions. The adjacent settings suite also passes. The test
-runner continues to emit its existing Node `ExperimentalWarning` about the
-missing `--localstorage-file`.
-
-Correction gates:
-
-```text
-vp check
-pass: All 1543 files are correctly formatted
-pass: Found no warnings or lint errors in 1163 files
-
-vp run typecheck
-exit 0
-
-git diff --check
-exit 0
-```
-
-Typecheck continues to emit the same repository-wide TS377098 suggestions
-documented above and reports no typecheck failure.
-
-## Final Numeric Total-Order Correction
-
-The final review identified that subtraction is not a valid comparator for the
-`Schema.Number` CPU fields: `NaN` and equal infinities produce `NaN`, which the
-previous comparator returned instead of reaching the required `processKey`
-tie.
-
-The history comparator now defines this explicit ascending total order:
-
-```text
--Infinity < finite values < +Infinity < NaN
-```
-
-Descending reverses the primary numeric order. Equal finite values, equal
-infinities, and `NaN` pairs always fall through to ascending `processKey`, so
-ties remain deterministic in either direction. Maximum memory uses the same
-comparator even though its server value is an integer.
-
-Non-finite history CPU-time, CPU-percentage, and memory labels render as
-`Unavailable`. Non-finite chart values are represented internally as zero
-while their labels remain `Unavailable`, keeping chart dimensions finite and
-avoiding misleading `NaNh` / `Infinityh` output.
-
-### Final Correction RED
-
-Before the total-order implementation, all four CPU sort regressions failed.
-For example, ascending order retained a leading `nan-b` and did not order
-equal infinities by process key:
-
-```text
-expected:
-negative-infinity-a, negative-infinity-b, finite-a, finite-b,
-positive-infinity-a, positive-infinity-b, nan-a, nan-b
-
-received:
-nan-b, negative-infinity-b, negative-infinity-a, finite-a, finite-b,
-positive-infinity-b, nan-a, positive-infinity-a
-```
-
-The bounded-label regression also failed with:
-
-```text
-NaNh
-Infinityh
--Infinitys
-```
-
-instead of `Unavailable`.
-
-### Final Correction Verification
-
-```text
-vp test apps/web/src/components/settings/resourceDiagnosticsPresentation.test.ts \
-  apps/web/src/components/settings/ResourceDiagnosticsSections.test.tsx \
-  apps/web/src/components/settings/DiagnosticsSettings.test.tsx --run
-
-Test Files 3 passed (3)
-Tests 76 passed (76)
-
-vp test apps/web/src/components/settings --run
-
-Test Files 21 passed (21)
-Tests 322 passed (322)
-```
-
-Final correction gates:
-
-```text
-vp check
-pass: All 1543 files are correctly formatted
-pass: Found no warnings or lint errors in 1163 files
-
-vp run typecheck
-exit 0
-
-git diff --check
-exit 0
-```
-
-Typecheck reports only the pre-existing repository-wide TS377098 suggestions
-described above.
-
-## Final Finite-Value Preservation Correction
-
-The non-finite display safeguard originally used `Math.max(0, value)` for all
-finite bucket values. That changed contract-valid negative diagnostic values
-before the chart or tooltip received them.
-
-Projection now preserves every finite bucket value exactly and maps only
-non-finite values to zero. Negative CPU labels and tooltips retain their sign.
-Nonnegative bounding is local to rendered chart percentages, which are clamped
-to the finite `0–100` range without changing the projected diagnostics.
-
-### Preservation RED
-
-The pure regression expected `average.core: -6`, `peak.core: -5`, and signed
-labels/tooltips, but received zeros. The component regression likewise
-received `Core 0.0%` because projection erased the negative value before
-rendering.
-
-### Preservation Verification
-
-```text
-vp test apps/web/src/components/settings/resourceDiagnosticsPresentation.test.ts \
-  apps/web/src/components/settings/ResourceDiagnosticsSections.test.tsx \
-  apps/web/src/components/settings/DiagnosticsSettings.test.tsx --run
-
-Test Files 3 passed (3)
-Tests 78 passed (78)
-
-vp test apps/web/src/components/settings --run
-
-Test Files 21 passed (21)
-Tests 324 passed (324)
-```
-
-The component regression also parses every rendered chart height and verifies
-that it is finite and nonnegative while the tooltip still exposes the negative
-diagnostic value.
-
-Preservation correction gates:
-
-```text
-vp check
-pass: All 1543 files are correctly formatted
-pass: Found no warnings or lint errors in 1163 files
-
-vp run typecheck
-exit 0
-
-git diff --check
-exit 0
-```
-
-Typecheck reports only the pre-existing repository-wide TS377098 suggestions.
+COMPLETE.
+
+Implemented deterministic packaged-desktop provider fixtures, exact provider-input
+logging, native composer-trigger coverage for all five providers, draft restoration
+coverage, and Codex skill invocation normalization.
+
+## Protocol resolution
+
+The controller confirmed that fixture expectations must follow the production
+native inventory paths:
+
+- Codex exposes the built-in `goal` command and the fixture `refactor` skill.
+  Production inventory now marks Codex skills as `invocation: "dollar"`.
+- Claude exposes native `compact`, built-in `goal`/`loop`, and slash skill `docs`.
+- Cursor exposes project command `review`, its production built-ins, and slash
+  skill `frontend`.
+- OpenCode exposes command `init`, mentionable subagent `reviewer`, mentionable
+  all-mode agent `operator`, prose-only primary agent `writer`, and hidden agent
+  `secret`.
+- Grok exposes its production built-ins `loop`, `agents`, and `skills`.
+
+No test capability environment override was added.
+
+## RED evidence
+
+- Baseline:
+  `vp test run apps/desktop/e2e/support/test-project.test.ts`
+  passed 4 existing tests before Task 8 changes.
+- Fixture RED:
+  `vp test run apps/desktop/e2e/support/test-project.test.ts apps/desktop/e2e/support/provider-input-log.test.ts`
+  failed because the input-log module/profile did not exist, only Codex was
+  enabled, and the native metadata/shims/log export were absent.
+- Production RED:
+  `cargo test -p t4code-server codex_inventory_marks_native_skills_as_dollar_invoked --lib`
+  failed with `E0425` because `codex_skill_inventory` did not exist.
+
+## GREEN and verification evidence
+
+- `vp test run apps/desktop/e2e/support/test-project.test.ts apps/desktop/e2e/support/provider-input-log.test.ts`
+  - PASS: 2 files, 9 tests.
+- `cargo test -p t4code-server production::provider_inventory::tests --lib`
+  - PASS: 20 tests.
+- Direct generated-shim smoke using `vp node --input-type=module`
+  - PASS: all five generated fixtures parsed their real stdin/HTTP protocols
+    and wrote the exact expected JSONL provider/prompt pairs.
+- `vp check`
+  - PASS: all 1607 files formatted; no warnings or lint errors in 1223 files.
+- `vp run typecheck`
+  - PASS: all 11 recursive tasks, including
+    `tsc --noEmit -p apps/desktop/e2e/tsconfig.json` and Rust desktop/server
+    checks.
+- Packaged WDIO runtime:
+  - SKIPPED as required. `T4CODE_E2E_APP_PATH` is unset and no local packaged
+    `.app` bundle exists. Task 9 owns rebuilding a compatible package.
+
+## Files changed
+
+- `apps/desktop/e2e/support/test-project.ts`
+  - Enabled and pinned all five provider shims.
+  - Added deterministic Codex, Claude, Cursor, Grok, and OpenCode protocols.
+  - Added native project metadata, shared JSONL logging, artifact archival, and
+    clean OpenCode SSE shutdown.
+- `apps/desktop/e2e/support/test-project.test.ts`
+  - Covers absolute enabled shims, actual normalized profiles, metadata,
+    protocol fixtures, log export, and inline-inert hidden/prose agents.
+- `apps/desktop/e2e/support/provider-input-log.ts`
+- `apps/desktop/e2e/support/provider-input-log.test.ts`
+  - Adds typed append/read behavior and JSONL ordering coverage.
+- `apps/desktop/e2e/specs/composer-native-triggers.e2e.ts`
+  - Covers `:`, `/`, `$`, and `@` menus; keyboard and mouse selection; exact
+    native sends; stale-menu closure; exact restored README/refactor/reviewer
+    chips; and the four required screenshots.
+- `apps/desktop/e2e/wdio.conf.ts`
+  - Registers the spec in the default packaged suite.
+- `apps/server/src/production/provider_inventory.rs`
+  - Normalizes native Codex skills to dollar invocation with a focused unit
+    test.
+
+## Self-review
+
+- Scoped composer interactions to the displayed form so hidden host composers
+  cannot absorb E2E input after a sibling panel becomes active.
+- Scoped the New panel trigger to a displayed, non-hidden ancestor and asserted
+  restored chip identities, not only generic chip kinds.
+- Closed OpenCode SSE clients before server shutdown to prevent fixture
+  processes from lingering.
+- Kept the profile expectations aligned to actual production normalization,
+  including OpenCode's visible `all` mode and Grok's built-in-only inventory.
+- Did not edit `.repos`, add a capability snapshot override, or stage the
+  existing Task 7 report change.
+
+## Remaining concern
+
+The new WDIO spec has not run against a rebuilt packaged binary because none is
+available in this worktree. Task 9 must build the package containing the Codex
+inventory normalization and run the registered spec; the deterministic fixture
+unit tests, direct protocol smoke, lint, and type checks are green.
+
+## Formal review follow-up
+
+Addressed every finding from the Task 8 formal review:
+
+- The fixture now owns an empty, disposable user home under `runRoot`.
+  macOS/Linux receive `HOME`; Windows receives both `USERPROFILE` and `HOME`.
+  Cleanup still targets only `runRoot`.
+- Slash and dollar menus exact-match the fixture command/skill inventories, so
+  host-derived Cursor or user inventory fails the packaged test.
+- The stale-menu test now opens the provider/model picker while `/goal` and its
+  highlighted Codex item remain visible, changes to Claude in the same mounted
+  composer, and checks the preserved draft, removed Codex menu/highlight,
+  selected Claude inventory, and unchanged composer element. It then switches
+  back to Codex through the same picker.
+- Stable semantic selectors cover the T4Code, Commands, Skills, Files, and
+  Agents containers and labels; the packaged spec asserts the exact applicable
+  groups for each trigger.
+- Provider-send assertions snapshot the JSONL length and accept exactly one new
+  entry with the expected provider and prompt, with explicit malformed,
+  truncation, mismatch, duplicate, and timeout diagnostics.
+- Registered `.test.ts` coverage executes every generated native shim. OpenCode
+  coverage starts the generated HTTP server and exercises health, provider,
+  agent, command, session, prompt, JSONL, and SSE behavior.
+
+### Follow-up RED evidence
+
+- Fixture-home tests failed for macOS, Linux, and Windows because
+  `fixtureUserHomePath` was absent.
+- Provider-log tests failed because `waitForProviderInputLogEntry` was absent.
+- The malformed-log regression then failed because its diagnostic omitted the
+  raw invalid fixture content.
+- Semantic-menu coverage failed because group/label selectors were absent.
+- Draft picker coverage failed because `lockToActiveInstance` was still `true`
+  before provider lock.
+- Active-item coverage failed because `data-composer-item-active` was absent.
+
+### Follow-up GREEN evidence
+
+- `vp test run apps/desktop/e2e/support/test-project.test.ts apps/desktop/e2e/support/provider-input-log.test.ts apps/desktop/e2e/support/provider-shims.test.ts apps/web/src/components/chat/ComposerCommandMenu.test.tsx apps/web/src/components/chat/ChatComposer.test.tsx`
+  - PASS: 5 files, 129 tests.
+- `cargo test -p t4code-server production::provider_inventory::tests --lib`
+  - PASS: 20 tests.
+- `vp exec tsc --noEmit -p apps/desktop/e2e/tsconfig.json`
+  - PASS.
+- `vp check`
+  - PASS: all 1608 files formatted; no warnings or lint errors in 1224 files.
+- `vp run typecheck`
+  - PASS: all 11 recursive tasks.
+- Packaged WDIO remains intentionally deferred to Task 9, which owns rebuilding
+  and running the package.
+
+## Re-review follow-up: configured Cursor home and native launchers
+
+The Cursor capability probe now resolves its user inventory from the selected
+provider instance environment before falling back to the process home. The
+fixture pins that environment to its disposable user home with `HOME` on
+macOS/Linux and `USERPROFILE` on Windows. This is a production seam shared with
+the provider definition rather than a test-only capability override.
+
+The shim integration tests now execute the exact host-native launcher paths
+written to settings: POSIX wrappers on macOS/Linux and `.cmd` launchers through
+`cmd.exe` on Windows. Every launcher lives under a path containing spaces.
+Codex, Claude, Cursor, Grok, and OpenCode are invoked with their production-like
+arguments, and OpenCode shuts down through its fixture HTTP endpoint so the
+wrapper exits naturally.
+
+### Re-review RED evidence
+
+- `vp test run apps/desktop/e2e/support/test-project.test.ts -t "isolates provider user inventory"`
+  - FAILED: all three platform fixtures lacked a Cursor provider-instance
+    environment.
+- `cargo test -p t4code-server cursor_discovers_only_the_configured_environment_home --lib`
+  - FAILED with `E0425`: the environment-aware Cursor discovery seam did not
+    exist.
+- `vp test run apps/desktop/e2e/support/provider-shims.test.ts -t "executes configured host launchers"`
+  - FAILED: the fixture run root did not contain spaces, so launcher quoting was
+    not exercised.
+- `vp test run apps/desktop/e2e/support/provider-shims.test.ts -t "serves OpenCode"`
+  - FAILED: OpenCode lacked a graceful fixture shutdown endpoint.
+
+### Re-review GREEN evidence
+
+- `vp test run apps/desktop/e2e/support/test-project.test.ts apps/desktop/e2e/support/provider-shims.test.ts`
+  - PASS: 2 files, 17 tests.
+- `cargo test -p t4code-server production::provider_inventory::tests --lib`
+  - PASS: 21 tests.
+- `vp exec tsc --noEmit -p apps/desktop/e2e/tsconfig.json`
+  - PASS.
+- `vp check`
+  - PASS: all 1608 files formatted; no warnings or lint errors in 1224 files.
+- `vp run typecheck`
+  - PASS: all 11 recursive tasks.
+- `git diff --check`
+  - PASS.
+
+## Final re-review follow-up: OpenCode failure cleanup
+
+OpenCode shutdown now runs from `finally`, so assertion failures still attempt
+the fixture HTTP shutdown. Both the request and wrapper-exit wait are bounded.
+If either fails, cleanup consumes a PID-specific termination plan derived from
+the spawned, test-owned child: Windows executes the System32 `taskkill.exe`
+with `/PID <pid> /T /F`, while POSIX sends `SIGTERM` and then `SIGKILL` only to
+the spawned child. Exit detection also accounts for signal-terminated children.
+
+### Cleanup RED evidence
+
+- `vp test run apps/desktop/e2e/support/provider-shims.test.ts -t "fixture process cleanup"`
+  - FAILED: 2 tests with `ReferenceError` because the explicit platform
+    termination-plan helper did not exist.
+
+### Cleanup GREEN evidence
+
+- `vp test run apps/desktop/e2e/support/provider-shims.test.ts -t "fixture process cleanup"`
+  - PASS: 2 tests.
+- `vp test run apps/desktop/e2e/support/provider-shims.test.ts apps/desktop/e2e/support/test-project.test.ts`
+  - PASS: 2 files, 19 tests.
+- `vp exec tsc --noEmit -p apps/desktop/e2e/tsconfig.json`
+  - PASS.
+- `vp check`
+  - PASS: all 1608 files formatted; no warnings or lint errors in 1224 files.
+- `vp run typecheck`
+  - PASS: all 11 recursive tasks.
+- `git diff --check`
+  - PASS.
