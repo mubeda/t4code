@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { collectComposerInlineTokens } from "./composerInlineTokens.ts";
+import { canonicalizeLegacyComposerFileReferences } from "./composerReferences.ts";
 
 describe("collectComposerInlineTokens", () => {
   it("collects file links, mentions, and skills with source ranges", () => {
@@ -128,6 +129,38 @@ describe("collectComposerInlineTokens", () => {
       "plain.ts",
     ]);
     expect(collectComposerInlineTokens('Open @"" now')).toEqual([]);
+  });
+
+  it("keeps native and agent-shaped references lossless while migrating only file links", () => {
+    const text = 'Open @src/main.ts @"docs/My File.md" @agent:reviewer now';
+
+    expect(collectComposerInlineTokens(text)).toEqual([
+      {
+        type: "mention",
+        value: "src/main.ts",
+        source: "@src/main.ts",
+        start: 5,
+        end: 17,
+      },
+      {
+        type: "mention",
+        value: "docs/My File.md",
+        source: '@"docs/My File.md"',
+        start: 18,
+        end: 36,
+      },
+      {
+        type: "mention",
+        value: "agent:reviewer",
+        source: "@agent:reviewer",
+        start: 37,
+        end: 52,
+      },
+    ]);
+    expect(canonicalizeLegacyComposerFileReferences(text)).toBe(text);
+    expect(canonicalizeLegacyComposerFileReferences("Open [main.ts](src/main.ts) now")).toBe(
+      "Open @src/main.ts now",
+    );
   });
 
   it("accepts namespaced skills and sorts mixed tokens by source offset", () => {

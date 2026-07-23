@@ -8,7 +8,7 @@ import {
   serializeComposerMentionPath,
 } from "./composerTrigger.ts";
 
-describe("serializeComposerMentionPath", () => {
+describe("serializeComposerMentionPath compatibility re-export", () => {
   it("keeps simple mention paths unquoted", () => {
     expect(serializeComposerMentionPath("src/index.ts")).toBe("src/index.ts");
   });
