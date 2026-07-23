@@ -7,12 +7,64 @@ import * as NodePath from "node:path";
 const FIXTURE_PROJECT_NAME = "T4Code UI Fixture";
 const STREAMED_RESPONSE = "T4Code deterministic streamed fixture response.";
 
+export const composerProviderProfiles = {
+  codex: {
+    commands: ["goal"],
+    slashSkills: [],
+    dollarSkills: ["refactor"],
+    mentionableAgents: [],
+  },
+  claudeAgent: {
+    commands: ["compact", "goal", "loop"],
+    slashSkills: ["docs"],
+    dollarSkills: [],
+    mentionableAgents: [],
+  },
+  cursor: {
+    commands: [
+      "review",
+      "models",
+      "auto-run",
+      "new-chat",
+      "vim",
+      "help",
+      "feedback",
+      "resume",
+      "copy-req-id",
+      "rules",
+      "commands",
+      "mcp",
+      "max-mode",
+      "compress",
+      "add-plugin",
+      "logout",
+      "quit",
+    ],
+    slashSkills: ["frontend"],
+    dollarSkills: [],
+    mentionableAgents: [],
+  },
+  opencode: {
+    commands: ["init"],
+    slashSkills: [],
+    dollarSkills: [],
+    mentionableAgents: ["reviewer", "operator"],
+  },
+  grok: {
+    commands: ["loop", "agents", "skills"],
+    slashSkills: [],
+    dollarSkills: [],
+    mentionableAgents: [],
+  },
+} as const;
+
 export interface DesktopUiTestContext {
   readonly runRoot: string;
   readonly stateRoot: string;
   readonly projectPath: string;
   readonly shimDirectory: string;
   readonly artifactDirectory: string;
+  readonly providerInputLogPath: string;
 }
 
 export type DesktopUiDirectoryRemover = (path: string, options: NodeFS.RmDirOptions) => void;
@@ -25,6 +77,7 @@ export type DesktopUiTestContextCleaner = (context: DesktopUiTestContext) => voi
 
 const codexFixtureSource = String.raw`
 import readline from "node:readline";
+import { appendProviderInput, promptTextFromParts } from "./provider-input-log-fixture.mjs";
 
 if (process.argv.includes("--version")) {
   process.stdout.write("codex-cli 99.0.0-fixture\n");
@@ -65,7 +118,22 @@ reader.on("line", (line) => {
       } });
       break;
     case "skills/list":
-      send({ id, result: { data: [] } });
+      send({ id, result: {
+        data: [{
+          cwd: message.params?.cwds?.[0] ?? process.cwd(),
+          skills: [{
+            name: "refactor",
+            path: "/fixture/.codex/skills/refactor/SKILL.md",
+            enabled: true,
+            description: "Refactor the deterministic fixture.",
+            scope: "project",
+            interface: {
+              displayName: "Refactor",
+              shortDescription: "Refactor the deterministic fixture."
+            }
+          }]
+        }]
+      } });
       break;
     case "thread/start":
     case "thread/resume":
@@ -80,6 +148,7 @@ reader.on("line", (line) => {
       break;
     case "turn/start": {
       const turnId = "t4code-ui-turn";
+      appendProviderInput("codex", promptTextFromParts(message.params?.input));
       send({ id, result: { turn: { id: turnId } } });
       send({ method: "turn/started", params: {
         threadId: "t4code-ui-provider-thread",
@@ -107,6 +176,409 @@ reader.on("line", (line) => {
 });
 `.trimStart();
 
+const providerInputLogFixtureSource = String.raw`
+import * as NodeFS from "node:fs";
+
+export function promptTextFromParts(parts) {
+  return (Array.isArray(parts) ? parts : [])
+    .filter((part) => part?.type === "text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("");
+}
+
+export function appendProviderInput(provider, prompt) {
+  const path = process.env.T4CODE_E2E_PROVIDER_INPUT_LOG;
+  if (!path) {
+    throw new Error("T4CODE_E2E_PROVIDER_INPUT_LOG is required.");
+  }
+  NodeFS.appendFileSync(path, JSON.stringify({
+    provider,
+    prompt,
+    recordedAt: new Date().toISOString()
+  }) + "\n", "utf8");
+}
+`.trimStart();
+
+const claudeFixtureSource = String.raw`
+import readline from "node:readline";
+import { appendProviderInput, promptTextFromParts } from "./provider-input-log-fixture.mjs";
+
+if (process.argv.includes("--version")) {
+  process.stdout.write("2.1.200 (Claude Code)\n");
+  process.exit(0);
+}
+if (process.argv.includes("auth") && process.argv.includes("status")) {
+  process.stdout.write(JSON.stringify({
+    loggedIn: true,
+    email: "fixture@example.test",
+    authMethod: "fixture"
+  }) + "\n");
+  process.exit(0);
+}
+
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\n");
+const streamResponse = ${JSON.stringify(STREAMED_RESPONSE)};
+const reader = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+
+reader.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.type === "control_request") {
+    const request = message.request ?? {};
+    const subtype = request.subtype ?? request.request?.subtype;
+    const requestId = message.request_id ?? request.request_id;
+    if (subtype === "initialize" && requestId) {
+      send({
+        type: "control_response",
+        response: {
+          request_id: requestId,
+          subtype: "success",
+          response: {
+            commands: [{
+              name: "compact",
+              description: "Compact the deterministic fixture context."
+            }],
+            agents: [{
+              name: "claude-prose-agent",
+              description: "Prose-only upstream agent without inline invocation metadata."
+            }]
+          }
+        }
+      });
+    } else if (subtype === "reload_skills" && requestId) {
+      send({
+        type: "control_response",
+        response: {
+          request_id: requestId,
+          subtype: "success",
+          response: {
+            skills: [{
+              name: "docs",
+              description: "Use deterministic fixture documentation."
+            }]
+          }
+        }
+      });
+    }
+    return;
+  }
+  if (message.type !== "user") {
+    return;
+  }
+  const sessionId = message.session_id ?? "t4code-ui-claude-session";
+  appendProviderInput("claudeAgent", promptTextFromParts(message.message?.content));
+  send({
+    type: "stream_event",
+    session_id: sessionId,
+    uuid: "t4code-ui-claude-stream",
+    parent_tool_use_id: null,
+    event: {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "text_delta", text: streamResponse }
+    }
+  });
+  send({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    errors: [],
+    stop_reason: "end_turn",
+    session_id: sessionId,
+    uuid: "t4code-ui-claude-result"
+  });
+});
+`.trimStart();
+
+const cursorFixtureSource = String.raw`
+import readline from "node:readline";
+import { appendProviderInput, promptTextFromParts } from "./provider-input-log-fixture.mjs";
+
+if (process.argv.includes("--version")) {
+  process.stdout.write("cursor-agent 99.0.0-fixture\n");
+  process.exit(0);
+}
+if (process.argv.includes("about")) {
+  process.stdout.write(JSON.stringify({
+    cliVersion: "99.0.0-fixture",
+    userEmail: "fixture@example.test",
+    subscriptionTier: "fixture"
+  }) + "\n");
+  process.exit(0);
+}
+
+const send = (id, result) => process.stdout.write(JSON.stringify({
+  jsonrpc: "2.0",
+  id,
+  result
+}) + "\n");
+const reader = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+
+reader.on("line", (line) => {
+  const message = JSON.parse(line);
+  switch (message.method) {
+    case "initialize":
+    case "authenticate":
+    case "session/set_mode":
+      send(message.id, {});
+      break;
+    case "cursor/list_available_models":
+      send(message.id, {
+        models: [{
+          value: "cursor-fixture",
+          name: "Cursor Fixture",
+          configOptions: []
+        }]
+      });
+      break;
+    case "session/new":
+    case "session/load":
+      send(message.id, {
+        sessionId: message.params?.sessionId ?? "t4code-ui-cursor-session",
+        configOptions: [{
+          id: "model",
+          name: "Model",
+          category: "model",
+          currentValue: "cursor-fixture",
+          options: [{ value: "cursor-fixture", name: "Cursor Fixture" }]
+        }],
+        modes: {
+          currentModeId: "ask",
+          availableModes: [
+            { id: "ask", name: "Ask" },
+            { id: "code", name: "Agent" },
+            { id: "architect", name: "Plan" }
+          ]
+        }
+      });
+      break;
+    case "session/set_config_option":
+      send(message.id, { configOptions: [] });
+      break;
+    case "session/prompt":
+      appendProviderInput("cursor", promptTextFromParts(message.params?.prompt));
+      send(message.id, { stopReason: "end_turn" });
+      break;
+    case "session/cancel":
+      send(message.id, {});
+      break;
+    default:
+      if (message.id !== undefined) {
+        send(message.id, {});
+      }
+  }
+});
+`.trimStart();
+
+const grokFixtureSource = String.raw`
+import readline from "node:readline";
+import { appendProviderInput, promptTextFromParts } from "./provider-input-log-fixture.mjs";
+
+if (process.argv.includes("--version")) {
+  process.stdout.write("grok-cli 99.0.0-fixture\n");
+  process.exit(0);
+}
+
+const send = (id, result) => process.stdout.write(JSON.stringify({
+  jsonrpc: "2.0",
+  id,
+  result
+}) + "\n");
+const reader = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+
+reader.on("line", (line) => {
+  const message = JSON.parse(line);
+  switch (message.method) {
+    case "initialize":
+    case "authenticate":
+    case "session/set_mode":
+    case "session/set_model":
+      send(message.id, {});
+      break;
+    case "session/create":
+    case "session/load":
+      send(message.id, {
+        sessionId: message.params?.sessionId ?? "t4code-ui-grok-session",
+        modes: {
+          currentModeId: "code",
+          availableModes: [
+            { id: "code", name: "Agent" },
+            { id: "ask", name: "Ask" }
+          ]
+        }
+      });
+      break;
+    case "session/prompt":
+      appendProviderInput("grok", promptTextFromParts(message.params?.prompt));
+      send(message.id, { stopReason: "end_turn" });
+      break;
+    case "session/cancel":
+      send(message.id, {});
+      break;
+    default:
+      if (message.id !== undefined) {
+        send(message.id, {});
+      }
+  }
+});
+`.trimStart();
+
+const opencodeFixtureSource = String.raw`
+import * as NodeHTTP from "node:http";
+import { appendProviderInput, promptTextFromParts } from "./provider-input-log-fixture.mjs";
+
+if (process.argv.includes("--version")) {
+  process.stdout.write("opencode 99.0.0-fixture\n");
+  process.exit(0);
+}
+
+const portArgument = process.argv.find((argument) => argument.startsWith("--port="));
+const port = Number(portArgument?.slice("--port=".length));
+if (!Number.isInteger(port) || port <= 0) {
+  throw new Error("OpenCode fixture requires --port=<port>.");
+}
+
+const eventClients = new Set();
+const sendJson = (response, value, status = 200) => {
+  response.writeHead(status, { "content-type": "application/json" });
+  response.end(JSON.stringify(value));
+};
+const readJson = async (request) => {
+  const chunks = [];
+  for await (const chunk of request) {
+    chunks.push(chunk);
+  }
+  return chunks.length === 0
+    ? {}
+    : JSON.parse(Buffer.concat(chunks).toString("utf8"));
+};
+const broadcast = (event) => {
+  const frame = "data: " + JSON.stringify(event) + "\n\n";
+  for (const response of eventClients) {
+    response.write(frame);
+  }
+};
+
+const server = NodeHTTP.createServer(async (request, response) => {
+  const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+  if (request.method === "GET" && pathname === "/global/health") {
+    sendJson(response, { healthy: true });
+    return;
+  }
+  if (request.method === "GET" && pathname === "/provider") {
+    sendJson(response, {
+      connected: ["openai"],
+      all: [{
+        id: "openai",
+        models: {
+          "gpt-5": { name: "GPT-5 Fixture" }
+        }
+      }]
+    });
+    return;
+  }
+  if (request.method === "GET" && pathname === "/agent") {
+    sendJson(response, [
+      { name: "writer", mode: "primary", description: "Prose-only primary agent." },
+      { name: "reviewer", mode: "subagent", description: "Mentionable review agent." },
+      { name: "operator", mode: "all", description: "Mentionable all-mode agent." },
+      { name: "secret", mode: "subagent", hidden: true, description: "Hidden agent." }
+    ]);
+    return;
+  }
+  if (request.method === "GET" && pathname === "/command") {
+    sendJson(response, [{
+      name: "init",
+      description: "Initialize the deterministic fixture."
+    }]);
+    return;
+  }
+  if (request.method === "GET" && pathname === "/event") {
+    response.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive"
+    });
+    response.write(": connected\n\n");
+    eventClients.add(response);
+    request.on("close", () => eventClients.delete(response));
+    return;
+  }
+  if (request.method === "POST" && pathname === "/session") {
+    await readJson(request);
+    sendJson(response, { id: "t4code-ui-opencode-session" });
+    return;
+  }
+  if (request.method === "GET" && pathname === "/session/t4code-ui-opencode-session") {
+    sendJson(response, { id: "t4code-ui-opencode-session" });
+    return;
+  }
+  if (
+    request.method === "POST" &&
+    pathname === "/session/t4code-ui-opencode-session/prompt_async"
+  ) {
+    const body = await readJson(request);
+    appendProviderInput("opencode", promptTextFromParts(body.parts));
+    sendJson(response, {});
+    setTimeout(() => {
+      broadcast({
+        type: "session.status",
+        properties: {
+          sessionID: "t4code-ui-opencode-session",
+          status: { type: "idle" }
+        }
+      });
+    }, 10);
+    return;
+  }
+  if (
+    request.method === "POST" &&
+    pathname === "/session/t4code-ui-opencode-session/command"
+  ) {
+    const body = await readJson(request);
+    appendProviderInput(
+      "opencode",
+      "/" + String(body.command ?? "") +
+        (body.arguments ? " " + String(body.arguments) : "")
+    );
+    sendJson(response, {});
+    setTimeout(() => {
+      broadcast({
+        type: "session.status",
+        properties: {
+          sessionID: "t4code-ui-opencode-session",
+          status: { type: "idle" }
+        }
+      });
+    }, 10);
+    return;
+  }
+  if (request.method === "POST" && pathname.endsWith("/abort")) {
+    sendJson(response, {});
+    return;
+  }
+  if (request.method === "GET" && pathname.endsWith("/message")) {
+    sendJson(response, { data: [] });
+    return;
+  }
+  if (request.method === "POST" && pathname.endsWith("/revert")) {
+    sendJson(response, {});
+    return;
+  }
+  sendJson(response, {});
+});
+
+server.listen(port, "127.0.0.1");
+const close = () => {
+  for (const response of eventClients) {
+    response.end();
+  }
+  eventClients.clear();
+  server.close(() => process.exit(0));
+};
+process.on("SIGINT", close);
+process.on("SIGTERM", close);
+`.trimStart();
+
 function writeExecutable(path: string, contents: string, isWindows: boolean): void {
   NodeFS.writeFileSync(path, contents);
   if (!isWindows) {
@@ -115,31 +587,35 @@ function writeExecutable(path: string, contents: string, isWindows: boolean): vo
 }
 
 function createProviderShims(shimDirectory: string, isWindows: boolean): void {
-  NodeFS.writeFileSync(NodePath.join(shimDirectory, "codex-fixture.mjs"), codexFixtureSource);
+  const fixtureSources = {
+    codex: codexFixtureSource,
+    claude: claudeFixtureSource,
+    "cursor-agent": cursorFixtureSource,
+    grok: grokFixtureSource,
+    opencode: opencodeFixtureSource,
+  } as const;
+  NodeFS.writeFileSync(
+    NodePath.join(shimDirectory, "provider-input-log-fixture.mjs"),
+    providerInputLogFixtureSource,
+  );
+  for (const [provider, source] of Object.entries(fixtureSources)) {
+    NodeFS.writeFileSync(NodePath.join(shimDirectory, `${provider}-fixture.mjs`), source);
+  }
 
   if (isWindows) {
-    NodeFS.writeFileSync(
-      NodePath.join(shimDirectory, "codex.cmd"),
-      '@node "%~dp0\\codex-fixture.mjs" %*\r\n',
-    );
-    for (const provider of ["claude", "cursor-agent", "grok", "opencode"]) {
+    for (const provider of Object.keys(fixtureSources)) {
       NodeFS.writeFileSync(
         NodePath.join(shimDirectory, `${provider}.cmd`),
-        `@echo ${provider} 99.0.0-fixture\r\n`,
+        `@node "%~dp0\\${provider}-fixture.mjs" %*\r\n`,
       );
     }
     return;
   }
 
-  writeExecutable(
-    NodePath.join(shimDirectory, "codex"),
-    '#!/bin/sh\nexec node "$(dirname "$0")/codex-fixture.mjs" "$@"\n',
-    false,
-  );
-  for (const provider of ["claude", "cursor-agent", "grok", "opencode"]) {
+  for (const provider of Object.keys(fixtureSources)) {
     writeExecutable(
       NodePath.join(shimDirectory, provider),
-      `#!/bin/sh\nprintf '%s\\n' '${provider} 99.0.0-fixture'\n`,
+      `#!/bin/sh\nexec node "$(dirname "$0")/${provider}-fixture.mjs" "$@"\n`,
       false,
     );
   }
@@ -156,10 +632,10 @@ function writeProviderSettings(stateRoot: string, shimDirectory: string, isWindo
       {
         providers: {
           codex: { enabled: true, binaryPath: executablePath("codex") },
-          claudeAgent: { enabled: false, binaryPath: executablePath("claude") },
-          cursor: { enabled: false, binaryPath: executablePath("cursor-agent") },
-          grok: { enabled: false, binaryPath: executablePath("grok") },
-          opencode: { enabled: false, binaryPath: executablePath("opencode") },
+          claudeAgent: { enabled: true, binaryPath: executablePath("claude") },
+          cursor: { enabled: true, binaryPath: executablePath("cursor-agent") },
+          grok: { enabled: true, binaryPath: executablePath("grok") },
+          opencode: { enabled: true, binaryPath: executablePath("opencode") },
         },
       },
       null,
@@ -188,12 +664,48 @@ function runGit(projectPath: string, args: ReadonlyArray<string>): void {
 }
 
 function initializeGitProject(projectPath: string): void {
-  if (NodeFS.existsSync(NodePath.join(projectPath, ".git"))) return;
   NodeFS.mkdirSync(projectPath, { recursive: true });
   NodeFS.writeFileSync(
     NodePath.join(projectPath, "README.md"),
     "# T4Code packaged desktop UI fixture\n",
   );
+  const projectFiles = {
+    ".claude/skills/docs/SKILL.md": [
+      "---",
+      "name: docs",
+      "description: Use deterministic fixture documentation.",
+      "---",
+      "",
+      "# Docs",
+      "",
+      "Use the packaged fixture documentation.",
+      "",
+    ].join("\n"),
+    ".cursor/commands/review.md": "# Review\n\nReview the deterministic fixture.\n",
+    ".cursor/skills/frontend/SKILL.md": [
+      "---",
+      "name: frontend",
+      "description: Exercise the deterministic frontend fixture.",
+      "---",
+      "",
+      "# Frontend",
+      "",
+      "Exercise the packaged frontend fixture.",
+      "",
+    ].join("\n"),
+    ".cursor/agents/cursor-prose-agent.md": [
+      "# Cursor prose agent",
+      "",
+      "This upstream fixture intentionally has no inline invocation metadata.",
+      "",
+    ].join("\n"),
+  } as const;
+  for (const [relativePath, contents] of Object.entries(projectFiles)) {
+    const path = NodePath.join(projectPath, relativePath);
+    NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
+    NodeFS.writeFileSync(path, contents);
+  }
+  if (NodeFS.existsSync(NodePath.join(projectPath, ".git"))) return;
   runGit(projectPath, ["init", "--initial-branch=main"]);
   runGit(projectPath, ["add", "."]);
   runGit(projectPath, ["commit", "-m", "fixture"]);
@@ -211,10 +723,12 @@ export function prepareDesktopUiTestContext(
   const stateRoot = NodePath.join(runRoot, "state");
   const projectPath = NodePath.join(runRoot, "projects with spaces", FIXTURE_PROJECT_NAME);
   const shimDirectory = NodePath.join(runRoot, "provider-shims");
+  const providerInputLogPath = NodePath.join(runRoot, "provider-input.jsonl");
 
   NodeFS.mkdirSync(stateRoot, { recursive: true });
   NodeFS.mkdirSync(shimDirectory, { recursive: true });
   NodeFS.mkdirSync(artifactDirectory, { recursive: true });
+  NodeFS.writeFileSync(providerInputLogPath, "");
   initializeGitProject(projectPath);
   // oxlint-disable-next-line t4code/no-global-process-runtime -- The standalone WDIO fixture injects the detected host into its adapters.
   const hostPlatform = environment.T4CODE_E2E_PLATFORM ?? process.platform;
@@ -226,11 +740,19 @@ export function prepareDesktopUiTestContext(
   environment.T4CODE_E2E_ARTIFACT_DIR = artifactDirectory;
   environment.T4CODE_E2E_PROJECT_PATH = projectPath;
   environment.T4CODE_E2E_SHIM_DIRECTORY = shimDirectory;
+  environment.T4CODE_E2E_PROVIDER_INPUT_LOG = providerInputLogPath;
   environment.T4CODE_HOME = stateRoot;
   environment.PATH = `${shimDirectory}${NodePath.delimiter}${environment.PATH ?? ""}`;
   environment.RUST_LOG ??= "t4code=debug";
 
-  return { runRoot, stateRoot, projectPath, shimDirectory, artifactDirectory };
+  return {
+    runRoot,
+    stateRoot,
+    projectPath,
+    shimDirectory,
+    artifactDirectory,
+    providerInputLogPath,
+  };
 }
 
 export function archiveAndCleanupDesktopUiTestContext(
@@ -240,6 +762,12 @@ export function archiveAndCleanupDesktopUiTestContext(
   const archivedState = NodePath.join(context.artifactDirectory, "state");
   if (NodeFS.existsSync(context.stateRoot)) {
     NodeFS.cpSync(context.stateRoot, archivedState, { recursive: true, force: true });
+  }
+  if (NodeFS.existsSync(context.providerInputLogPath)) {
+    NodeFS.copyFileSync(
+      context.providerInputLogPath,
+      NodePath.join(context.artifactDirectory, "provider-input.jsonl"),
+    );
   }
   removeDirectory(context.runRoot, {
     recursive: true,

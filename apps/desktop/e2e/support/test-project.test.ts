@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import {
   archiveAndCleanupDesktopUiTestContext,
+  composerProviderProfiles,
   deferDesktopUiTestContextCleanupUntilExit,
   prepareDesktopUiTestContext,
   type DesktopUiDirectoryRemover,
@@ -47,11 +48,116 @@ describe.each([
     expect(settings.providers.grok?.binaryPath).toBe(expectedExecutable("grok"));
     expect(settings.providers.opencode?.binaryPath).toBe(expectedExecutable("opencode"));
     expect(settings.providers.codex?.enabled).toBe(true);
-    expect(settings.providers.claudeAgent?.enabled).toBe(false);
-    expect(settings.providers.cursor?.enabled).toBe(false);
-    expect(settings.providers.grok?.enabled).toBe(false);
-    expect(settings.providers.opencode?.enabled).toBe(false);
+    expect(settings.providers.claudeAgent?.enabled).toBe(true);
+    expect(settings.providers.cursor?.enabled).toBe(true);
+    expect(settings.providers.grok?.enabled).toBe(true);
+    expect(settings.providers.opencode?.enabled).toBe(true);
+    for (const provider of Object.values(settings.providers)) {
+      expect(NodePath.isAbsolute(provider.binaryPath)).toBe(true);
+    }
     expect(environment.T4CODE_E2E_SHIM_DIRECTORY).toBe(context.shimDirectory);
+  });
+});
+
+describe("packaged provider composer fixture", () => {
+  it("exports the real normalized inline capability profiles", () => {
+    expect(composerProviderProfiles).toEqual({
+      codex: {
+        commands: ["goal"],
+        slashSkills: [],
+        dollarSkills: ["refactor"],
+        mentionableAgents: [],
+      },
+      claudeAgent: {
+        commands: ["compact", "goal", "loop"],
+        slashSkills: ["docs"],
+        dollarSkills: [],
+        mentionableAgents: [],
+      },
+      cursor: {
+        commands: [
+          "review",
+          "models",
+          "auto-run",
+          "new-chat",
+          "vim",
+          "help",
+          "feedback",
+          "resume",
+          "copy-req-id",
+          "rules",
+          "commands",
+          "mcp",
+          "max-mode",
+          "compress",
+          "add-plugin",
+          "logout",
+          "quit",
+        ],
+        slashSkills: ["frontend"],
+        dollarSkills: [],
+        mentionableAgents: [],
+      },
+      opencode: {
+        commands: ["init"],
+        slashSkills: [],
+        dollarSkills: [],
+        mentionableAgents: ["reviewer", "operator"],
+      },
+      grok: {
+        commands: ["loop", "agents", "skills"],
+        slashSkills: [],
+        dollarSkills: [],
+        mentionableAgents: [],
+      },
+    });
+  });
+
+  it("writes provider-native workspace metadata and exports an absolute input log", () => {
+    const environment: NodeJS.ProcessEnv = { T4CODE_E2E_PLATFORM: "mac" };
+    const context = prepareDesktopUiTestContext(environment);
+    contexts.push(context);
+
+    for (const relativePath of [
+      ".claude/skills/docs/SKILL.md",
+      ".cursor/commands/review.md",
+      ".cursor/skills/frontend/SKILL.md",
+      ".cursor/agents/cursor-prose-agent.md",
+    ]) {
+      expect(
+        NodeFS.readFileSync(NodePath.join(context.projectPath, relativePath), "utf8"),
+      ).not.toBe("");
+    }
+    expect(NodePath.isAbsolute(context.providerInputLogPath)).toBe(true);
+    expect(environment.T4CODE_E2E_PROVIDER_INPUT_LOG).toBe(context.providerInputLogPath);
+  });
+
+  it("generates native protocol fixtures while keeping hidden and prose-only agents inline-inert", () => {
+    const environment: NodeJS.ProcessEnv = { T4CODE_E2E_PLATFORM: "mac" };
+    const context = prepareDesktopUiTestContext(environment);
+    contexts.push(context);
+    const fixtureSource = (name: string): string =>
+      NodeFS.readFileSync(NodePath.join(context.shimDirectory, `${name}-fixture.mjs`), "utf8");
+
+    expect(fixtureSource("codex")).toContain('"skills/list"');
+    expect(fixtureSource("codex")).toContain('"refactor"');
+    expect(fixtureSource("claude")).toContain('"compact"');
+    expect(fixtureSource("claude")).toContain('"docs"');
+    expect(fixtureSource("claude")).toContain('"claude-prose-agent"');
+    expect(fixtureSource("cursor-agent")).toContain('"cursor/list_available_models"');
+    expect(fixtureSource("opencode")).toContain('"primary"');
+    expect(fixtureSource("opencode")).toContain('"subagent"');
+    expect(fixtureSource("opencode")).toContain('"all"');
+    expect(fixtureSource("opencode")).toContain('"secret"');
+    expect(fixtureSource("grok")).toContain('"session/create"');
+    expect(fixtureSource("grok")).toContain('"session/prompt"');
+
+    expect(composerProviderProfiles.claudeAgent.mentionableAgents).not.toContain(
+      "claude-prose-agent",
+    );
+    expect(composerProviderProfiles.cursor.mentionableAgents).not.toContain("cursor-prose-agent");
+    expect(composerProviderProfiles.opencode.mentionableAgents).not.toContain("secret");
+    expect(composerProviderProfiles.opencode.mentionableAgents).not.toContain("writer");
   });
 });
 
@@ -67,6 +173,7 @@ describe("archiveAndCleanupDesktopUiTestContext", () => {
       projectPath: NodePath.join(runRoot, "project"),
       shimDirectory: NodePath.join(runRoot, "shims"),
       artifactDirectory,
+      providerInputLogPath: NodePath.join(runRoot, "provider-input.jsonl"),
     };
     let removalOptions: Parameters<DesktopUiDirectoryRemover>[1] | undefined;
     const removeDirectory: DesktopUiDirectoryRemover = (path, options) => {

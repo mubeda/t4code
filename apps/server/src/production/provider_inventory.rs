@@ -502,10 +502,7 @@ async fn probe_one(
                     .ok()
                     .and_then(|value| value.as_array().cloned())
                     .unwrap_or(models);
-                capabilities.skills = serde_json::to_value(inventory.skills)
-                    .ok()
-                    .and_then(|value| value.as_array().cloned())
-                    .unwrap_or_default();
+                capabilities.skills = codex_skill_inventory(&inventory.skills);
             }
         }
         "cursor" => {
@@ -659,6 +656,17 @@ fn provider_models_without_version(definition: &ProviderDefinition) -> Vec<Value
             .unwrap_or_else(|| custom_models(&definition.custom_models)),
         _ => custom_models(&definition.custom_models),
     }
+}
+
+fn codex_skill_inventory(skills: &[codex::CodexProviderSkill]) -> Vec<Value> {
+    skills
+        .iter()
+        .filter_map(|skill| serde_json::to_value(skill).ok())
+        .map(|mut skill| {
+            skill["invocation"] = json!("dollar");
+            skill
+        })
+        .collect()
 }
 
 fn built_in_slash_commands(driver: &str) -> Vec<Value> {
@@ -1519,6 +1527,23 @@ mod tests {
             models[0]["capabilities"]["optionDescriptors"][1]["currentValue"],
             "fast"
         );
+    }
+
+    #[test]
+    fn codex_inventory_marks_native_skills_as_dollar_invoked() {
+        let inventory = codex_skill_inventory(&[codex::CodexProviderSkill {
+            name: "refactor".to_owned(),
+            path: "/fixture/refactor/SKILL.md".to_owned(),
+            enabled: true,
+            description: Some("Refactor fixture code".to_owned()),
+            scope: Some("project".to_owned()),
+            display_name: None,
+            short_description: None,
+        }]);
+
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0]["name"], "refactor");
+        assert_eq!(inventory[0]["invocation"], "dollar");
     }
 
     #[test]

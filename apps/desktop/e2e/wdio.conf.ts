@@ -52,6 +52,7 @@ export const config = {
           "./specs/project-session-terminal.e2e.ts",
           "./specs/platform-capabilities.e2e.ts",
           "./specs/terminal-font.e2e.ts",
+          "./specs/composer-native-triggers.e2e.ts",
         ],
   maxInstances: 1,
   services: [
