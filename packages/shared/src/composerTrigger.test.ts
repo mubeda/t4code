@@ -2,7 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   detectComposerTrigger,
-  parseStandaloneComposerSlashCommand,
+  parseStandaloneComposerT4CodeAction,
   replaceTextRange,
   serializeComposerFileLink,
   serializeComposerMentionPath,
@@ -59,64 +59,84 @@ describe("serializeComposerFileLink", () => {
 });
 
 describe("detectComposerTrigger", () => {
-  it("detects slash commands and the model picker at the start of a line", () => {
-    expect(detectComposerTrigger("/help", 5)).toEqual({
-      kind: "slash-command",
-      query: "help",
+  const allCapabilities = {
+    providerSlash: true,
+    providerDollarSkill: true,
+  };
+
+  it.each([
+    [":mod", "t4code-action"],
+    ["/rev", "provider-slash"],
+    ["use $ref", "provider-dollar-skill"],
+    ["open @src", "provider-reference"],
+  ] as const)("detects %s as %s", (text, kind) => {
+    expect(detectComposerTrigger(text, text.length, allCapabilities)).toMatchObject({ kind });
+  });
+
+  it("leaves unsupported provider triggers as text", () => {
+    const profile = { providerSlash: false, providerDollarSkill: false };
+    expect(detectComposerTrigger("/review", 7, profile)).toBeNull();
+    expect(detectComposerTrigger("$review", 7, profile)).toBeNull();
+    expect(detectComposerTrigger("@src", 4, profile)?.kind).toBe("provider-reference");
+    expect(detectComposerTrigger(":plan", 5, profile)?.kind).toBe("t4code-action");
+  });
+
+  it("detects colon and slash triggers only as the current line's single token", () => {
+    expect(detectComposerTrigger(":plan", 5, allCapabilities)).toEqual({
+      kind: "t4code-action",
+      query: "plan",
       rangeStart: 0,
       rangeEnd: 5,
     });
-    expect(detectComposerTrigger("prefix\n/model", 13)).toEqual({
-      kind: "slash-model",
-      query: "",
+    expect(detectComposerTrigger("/review", 7, allCapabilities)).toEqual({
+      kind: "provider-slash",
+      query: "review",
+      rangeStart: 0,
+      rangeEnd: 7,
+    });
+    expect(detectComposerTrigger("prefix :plan", 12, allCapabilities)).toBeNull();
+    expect(detectComposerTrigger("prefix /review", 14, allCapabilities)).toBeNull();
+    expect(detectComposerTrigger(":plan now", 9, allCapabilities)).toBeNull();
+    expect(detectComposerTrigger("/review now", 11, allCapabilities)).toBeNull();
+  });
+
+  it("supports line-start triggers after newlines", () => {
+    expect(detectComposerTrigger("prefix\n:plan", 12, allCapabilities)).toMatchObject({
+      kind: "t4code-action",
       rangeStart: 7,
-      rangeEnd: 13,
+      rangeEnd: 12,
     });
-    expect(detectComposerTrigger("/model   gpt-5 ", 16)).toEqual({
-      kind: "slash-model",
-      query: "gpt-5",
-      rangeStart: 0,
-      rangeEnd: 15,
+    expect(detectComposerTrigger("prefix\n/review", 14, allCapabilities)).toMatchObject({
+      kind: "provider-slash",
+      rangeStart: 7,
+      rangeEnd: 14,
     });
-    expect(detectComposerTrigger("/model", 6)).toEqual({
-      kind: "slash-model",
-      query: "",
-      rangeStart: 0,
-      rangeEnd: 6,
-    });
-    expect(detectComposerTrigger("/MODEL", 6)).toEqual({
-      kind: "slash-command",
-      query: "MODEL",
-      rangeStart: 0,
-      rangeEnd: 6,
-    });
-    expect(detectComposerTrigger("/MODEL gpt-5", 12)).toBeNull();
   });
 
-  it("falls back to token detection when a slash expression is not a command", () => {
-    expect(detectComposerTrigger("/help argument", 14)).toBeNull();
-  });
-
-  it("detects path and skill tokens after each supported whitespace boundary", () => {
-    expect(detectComposerTrigger("open @src/app", 13)).toEqual({
-      kind: "path",
+  it("detects references and dollar skills after supported whitespace boundaries", () => {
+    expect(detectComposerTrigger("open @src/app", 13, allCapabilities)).toEqual({
+      kind: "provider-reference",
       query: "src/app",
       rangeStart: 5,
       rangeEnd: 13,
     });
-    expect(detectComposerTrigger("use\t$review", 11)).toEqual({
-      kind: "skill",
+    expect(detectComposerTrigger("use\t$review", 11, allCapabilities)).toEqual({
+      kind: "provider-dollar-skill",
       query: "review",
       rangeStart: 4,
       rangeEnd: 11,
     });
-    expect(detectComposerTrigger("use\r@file", 9)?.query).toBe("file");
-    expect(detectComposerTrigger("use\n$", 5)?.query).toBe("");
+    expect(detectComposerTrigger("use\r@file", 9, allCapabilities)?.query).toBe("file");
+    expect(detectComposerTrigger("use\n$", 5, allCapabilities)?.query).toBe("");
   });
 
   it("supports caller-defined token boundaries", () => {
-    expect(detectComposerTrigger("context\u0000@src", 12, (char) => char === "\u0000")).toEqual({
-      kind: "path",
+    expect(
+      detectComposerTrigger("context\u0000@src", 12, allCapabilities, {
+        isWhitespaceChar: (char) => char === "\u0000",
+      }),
+    ).toEqual({
+      kind: "provider-reference",
       query: "src",
       rangeStart: 8,
       rangeEnd: 12,
@@ -124,34 +144,37 @@ describe("detectComposerTrigger", () => {
   });
 
   it("clamps invalid and out-of-range cursor positions", () => {
-    expect(detectComposerTrigger("@file", Number.NaN)?.rangeEnd).toBe(5);
-    expect(detectComposerTrigger("@file", Number.POSITIVE_INFINITY)?.rangeEnd).toBe(5);
-    expect(detectComposerTrigger("@file", 99)?.rangeEnd).toBe(5);
-    expect(detectComposerTrigger("@file", 3.9)).toEqual({
-      kind: "path",
+    expect(detectComposerTrigger("@file", Number.NaN, allCapabilities)?.rangeEnd).toBe(5);
+    expect(
+      detectComposerTrigger("@file", Number.POSITIVE_INFINITY, allCapabilities)?.rangeEnd,
+    ).toBe(5);
+    expect(detectComposerTrigger("@file", 99, allCapabilities)?.rangeEnd).toBe(5);
+    expect(detectComposerTrigger("@file", 3.9, allCapabilities)).toEqual({
+      kind: "provider-reference",
       query: "fi",
       rangeStart: 0,
       rangeEnd: 3,
     });
-    expect(detectComposerTrigger("@file", -2)).toBeNull();
+    expect(detectComposerTrigger("@file", -2, allCapabilities)).toBeNull();
   });
 
   it("returns null for ordinary and empty tokens", () => {
-    expect(detectComposerTrigger("ordinary", 8)).toBeNull();
-    expect(detectComposerTrigger("", 0)).toBeNull();
+    expect(detectComposerTrigger("ordinary", 8, allCapabilities)).toBeNull();
+    expect(detectComposerTrigger("", 0, allCapabilities)).toBeNull();
   });
 });
 
-describe("parseStandaloneComposerSlashCommand", () => {
-  it("parses standalone plan and default commands case-insensitively", () => {
-    expect(parseStandaloneComposerSlashCommand("  /PLAN  ")).toBe("plan");
-    expect(parseStandaloneComposerSlashCommand("/Default\n")).toBe("default");
+describe("parseStandaloneComposerT4CodeAction", () => {
+  it("parses standalone actions case-insensitively", () => {
+    expect(parseStandaloneComposerT4CodeAction("  :MODEL  ")).toBe("model");
+    expect(parseStandaloneComposerT4CodeAction(":PLAN")).toBe("plan");
+    expect(parseStandaloneComposerT4CodeAction(":Default\n")).toBe("default");
   });
 
-  it("rejects model, arguments, and unrelated text", () => {
-    expect(parseStandaloneComposerSlashCommand("/model")).toBeNull();
-    expect(parseStandaloneComposerSlashCommand("/plan now")).toBeNull();
-    expect(parseStandaloneComposerSlashCommand("plan")).toBeNull();
+  it("rejects arguments and unrelated text", () => {
+    expect(parseStandaloneComposerT4CodeAction(":plan now")).toBeNull();
+    expect(parseStandaloneComposerT4CodeAction("/plan")).toBeNull();
+    expect(parseStandaloneComposerT4CodeAction("plan")).toBeNull();
   });
 });
 

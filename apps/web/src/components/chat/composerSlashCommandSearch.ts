@@ -6,18 +6,30 @@ import {
 
 import type { ComposerCommandItem } from "./ComposerCommandMenu";
 
-type SlashSearchItem = Extract<
+type SlashSearchItem = Extract<ComposerCommandItem, { type: "provider-slash-command" | "skill" }>;
+
+type LegacySlashSearchItem = Extract<
   ComposerCommandItem,
   { type: "slash-command" | "provider-slash-command" | "provider-agent" }
 >;
 
-function scoreSlashCommandItem(item: SlashSearchItem, query: string): number | null {
-  const primaryValue =
-    item.type === "slash-command"
-      ? item.command.toLowerCase()
-      : item.type === "provider-slash-command"
-        ? item.command.name.toLowerCase()
-        : item.agent.name.toLowerCase();
+type SearchItem = SlashSearchItem | LegacySlashSearchItem;
+
+function searchItemName(item: SearchItem): string {
+  if (item.type === "slash-command") {
+    return item.command;
+  }
+  if (item.type === "provider-slash-command") {
+    return item.command.name;
+  }
+  if (item.type === "provider-agent") {
+    return item.agent.name;
+  }
+  return item.skill.name;
+}
+
+function scoreSlashCommandItem(item: SearchItem, query: string): number | null {
+  const primaryValue = searchItemName(item).toLowerCase();
   const description = item.description.toLowerCase();
 
   const scores = [
@@ -48,17 +60,14 @@ function scoreSlashCommandItem(item: SlashSearchItem, query: string): number | n
   return Math.min(...scores);
 }
 
-export function searchSlashCommandItems(
-  items: ReadonlyArray<SlashSearchItem>,
-  query: string,
-): SlashSearchItem[] {
+function searchCommandItems<T extends SearchItem>(items: ReadonlyArray<T>, query: string): T[] {
   const normalizedQuery = normalizeSearchQuery(query, { trimLeadingPattern: /^\/+/ });
   if (!normalizedQuery) {
     return [...items];
   }
 
   const ranked: Array<{
-    item: SlashSearchItem;
+    item: T;
     score: number;
     tieBreaker: string;
   }> = [];
@@ -74,16 +83,26 @@ export function searchSlashCommandItems(
       {
         item,
         score,
-        tieBreaker:
-          item.type === "slash-command"
-            ? `0\u0000${item.command}`
-            : item.type === "provider-slash-command"
-              ? `1\u0000${item.command.name}\u0000${item.provider}`
-              : `2\u0000${item.agent.name}\u0000${item.provider}`,
+        tieBreaker: `${item.type}\u0000${searchItemName(item)}\u0000${"provider" in item ? item.provider : ""}`,
       },
       Number.POSITIVE_INFINITY,
     );
   }
 
   return ranked.map((entry) => entry.item);
+}
+
+export function searchSlashCommandItems(
+  items: ReadonlyArray<SlashSearchItem>,
+  query: string,
+): SlashSearchItem[] {
+  return searchCommandItems(items, query);
+}
+
+/** @deprecated Use searchSlashCommandItems with provider slash commands and slash skills. */
+export function searchLegacySlashCommandItems(
+  items: ReadonlyArray<LegacySlashSearchItem>,
+  query: string,
+): LegacySlashSearchItem[] {
+  return searchCommandItems(items, query);
 }

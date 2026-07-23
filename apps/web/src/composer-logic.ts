@@ -1,15 +1,57 @@
+import {
+  detectComposerTrigger as detectSharedComposerTrigger,
+  parseStandaloneComposerT4CodeAction,
+  replaceTextRange,
+} from "@t4code/shared/composerTrigger";
+import type {
+  ComposerT4CodeAction,
+  ComposerTrigger as SharedComposerTrigger,
+  ComposerTriggerKind as SharedComposerTriggerKind,
+  ComposerTriggerProfile,
+} from "@t4code/shared/composerTrigger";
+
 import { splitPromptIntoComposerSegments } from "./composer-editor-mentions";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
 
-export type ComposerTriggerKind = "path" | "slash-command" | "skill";
-export type ComposerSlashCommand = "model" | "plan" | "default";
+export {
+  parseStandaloneComposerT4CodeAction,
+  replaceTextRange,
+  type ComposerT4CodeAction,
+  type ComposerTriggerProfile,
+};
+
+type LegacyComposerTriggerKind = "path" | "slash-command" | "skill";
+
+export type ComposerTriggerKind = SharedComposerTriggerKind | LegacyComposerTriggerKind;
 
 export interface ComposerTrigger {
-  kind: ComposerTriggerKind;
-  query: string;
-  rangeStart: number;
-  rangeEnd: number;
+  readonly kind: ComposerTriggerKind;
+  readonly query: string;
+  readonly rangeStart: number;
+  readonly rangeEnd: number;
 }
+
+/** @deprecated Use ComposerT4CodeAction. */
+export type ComposerSlashCommand = ComposerT4CodeAction;
+/** @deprecated Use parseStandaloneComposerT4CodeAction. */
+export function parseStandaloneComposerSlashCommand(
+  text: string,
+): Exclude<ComposerT4CodeAction, "model"> | null {
+  const action = parseStandaloneComposerT4CodeAction(text);
+  return action === "model" ? null : action;
+}
+
+const DEFAULT_COMPOSER_TRIGGER_PROFILE: ComposerTriggerProfile = {
+  providerSlash: true,
+  providerDollarSkill: true,
+};
+
+const LEGACY_KIND_BY_SHARED_KIND: Record<SharedComposerTriggerKind, LegacyComposerTriggerKind> = {
+  "t4code-action": "slash-command",
+  "provider-slash": "slash-command",
+  "provider-dollar-skill": "skill",
+  "provider-reference": "path",
+};
 
 const isInlineTokenSegment = (
   segment:
@@ -32,14 +74,6 @@ function isWhitespace(char: string): boolean {
     char === "\r" ||
     char === INLINE_TERMINAL_CONTEXT_PLACEHOLDER
   );
-}
-
-function tokenStartForCursor(text: string, cursor: number): number {
-  let index = cursor - 1;
-  while (index >= 0 && !isWhitespace(text[index] ?? "")) {
-    index -= 1;
-  }
-  return index + 1;
 }
 
 export function expandCollapsedComposerCursor(text: string, cursorInput: number): number {
@@ -215,66 +249,32 @@ export function isCollapsedCursorAdjacentToInlineToken(
 
 export const isCollapsedCursorAdjacentToMention = isCollapsedCursorAdjacentToInlineToken;
 
-export function detectComposerTrigger(text: string, cursorInput: number): ComposerTrigger | null {
-  const cursor = clampCursor(text, cursorInput);
-  const lineStart = text.lastIndexOf("\n", Math.max(0, cursor - 1)) + 1;
-  const linePrefix = text.slice(lineStart, cursor);
-
-  if (linePrefix.startsWith("/")) {
-    const commandMatch = /^\/(\S*)$/.exec(linePrefix);
-    if (commandMatch) {
-      const commandQuery = commandMatch[1] ?? "";
-      return {
-        kind: "slash-command",
-        query: commandQuery,
-        rangeStart: lineStart,
-        rangeEnd: cursor,
-      };
-    }
-  }
-
-  const tokenStart = tokenStartForCursor(text, cursor);
-  const token = text.slice(tokenStart, cursor);
-  if (token.startsWith("$")) {
-    return {
-      kind: "skill",
-      query: token.slice(1),
-      rangeStart: tokenStart,
-      rangeEnd: cursor,
-    };
-  }
-  if (!token.startsWith("@")) {
-    return null;
+export function detectComposerTrigger(
+  text: string,
+  cursor: number,
+  profile: ComposerTriggerProfile,
+): SharedComposerTrigger | null;
+/** @deprecated Pass an explicit ComposerTriggerProfile. */
+export function detectComposerTrigger(text: string, cursor: number): ComposerTrigger | null;
+export function detectComposerTrigger(
+  text: string,
+  cursor: number,
+  profile?: ComposerTriggerProfile,
+): ComposerTrigger | null {
+  const trigger = detectSharedComposerTrigger(
+    text,
+    cursor,
+    profile ?? DEFAULT_COMPOSER_TRIGGER_PROFILE,
+    {
+      isWhitespaceChar: isWhitespace,
+    },
+  );
+  if (profile || !trigger) {
+    return trigger;
   }
 
   return {
-    kind: "path",
-    query: token.slice(1),
-    rangeStart: tokenStart,
-    rangeEnd: cursor,
+    ...trigger,
+    kind: LEGACY_KIND_BY_SHARED_KIND[trigger.kind],
   };
-}
-
-export function parseStandaloneComposerSlashCommand(
-  text: string,
-): Exclude<ComposerSlashCommand, "model"> | null {
-  const match = /^\/(plan|default)\s*$/i.exec(text.trim());
-  if (!match) {
-    return null;
-  }
-  const command = match[1]?.toLowerCase();
-  if (command === "plan") return "plan";
-  return "default";
-}
-
-export function replaceTextRange(
-  text: string,
-  rangeStart: number,
-  rangeEnd: number,
-  replacement: string,
-): { text: string; cursor: number } {
-  const safeStart = Math.max(0, Math.min(text.length, rangeStart));
-  const safeEnd = Math.max(safeStart, Math.min(text.length, rangeEnd));
-  const nextText = `${text.slice(0, safeStart)}${replacement}${text.slice(safeEnd)}`;
-  return { text: nextText, cursor: safeStart + replacement.length };
 }

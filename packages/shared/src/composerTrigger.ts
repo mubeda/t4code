@@ -1,7 +1,17 @@
 export { serializeComposerMentionPath } from "./composerReferences.ts";
 
-export type ComposerTriggerKind = "path" | "slash-command" | "slash-model" | "skill";
-export type ComposerSlashCommand = "model" | "plan" | "default";
+export type ComposerTriggerKind =
+  | "t4code-action"
+  | "provider-slash"
+  | "provider-dollar-skill"
+  | "provider-reference";
+
+export interface ComposerTriggerProfile {
+  readonly providerSlash: boolean;
+  readonly providerDollarSkill: boolean;
+}
+
+export type ComposerT4CodeAction = "model" | "plan" | "default";
 
 export interface ComposerTrigger {
   kind: ComposerTriggerKind;
@@ -44,7 +54,7 @@ function isWhitespace(char: string): boolean {
 }
 
 /**
- * Detect an active trigger (@path, $skill, /command) at the cursor position.
+ * Detect an active composer action or provider trigger at the cursor position.
  *
  * Accepts an optional `isWhitespaceChar` override so callers with inline
  * placeholder characters (e.g. terminal context chips on web) can treat
@@ -53,44 +63,44 @@ function isWhitespace(char: string): boolean {
 export function detectComposerTrigger(
   text: string,
   cursorInput: number,
-  isWhitespaceChar?: (char: string) => boolean,
+  profile: ComposerTriggerProfile,
+  options?: {
+    readonly isWhitespaceChar?: (char: string) => boolean;
+  },
 ): ComposerTrigger | null {
   const cursor = clampCursor(text, cursorInput);
   const lineStart = text.lastIndexOf("\n", Math.max(0, cursor - 1)) + 1;
   const linePrefix = text.slice(lineStart, cursor);
+  const wsCheck = options?.isWhitespaceChar ?? isWhitespace;
 
-  if (linePrefix.startsWith("/")) {
-    const commandMatch = /^\/(\S*)$/.exec(linePrefix);
-    if (commandMatch) {
-      const commandQuery = commandMatch[1] as string;
-      if (commandQuery === "model") {
-        return {
-          kind: "slash-model",
-          query: "",
-          rangeStart: lineStart,
-          rangeEnd: cursor,
-        };
-      }
+  let linePrefixHasWhitespace = false;
+  for (let index = 0; index < linePrefix.length; index += 1) {
+    if (wsCheck(linePrefix[index] as string)) {
+      linePrefixHasWhitespace = true;
+      break;
+    }
+  }
+
+  if (linePrefix.length > 0 && !linePrefixHasWhitespace) {
+    const triggerChar = linePrefix[0];
+    if (triggerChar === ":") {
       return {
-        kind: "slash-command",
-        query: commandQuery,
+        kind: "t4code-action",
+        query: linePrefix.slice(1),
         rangeStart: lineStart,
         rangeEnd: cursor,
       };
     }
-
-    const modelMatch = /^\/model\s+(.*)$/.exec(linePrefix);
-    if (modelMatch) {
+    if (triggerChar === "/" && profile.providerSlash) {
       return {
-        kind: "slash-model",
-        query: (modelMatch[1] as string).trim(),
+        kind: "provider-slash",
+        query: linePrefix.slice(1),
         rangeStart: lineStart,
         rangeEnd: cursor,
       };
     }
   }
 
-  const wsCheck = isWhitespaceChar ?? isWhitespace;
   let tokenIdx = cursor - 1;
   while (tokenIdx >= 0 && !wsCheck(text[tokenIdx] as string)) {
     tokenIdx -= 1;
@@ -98,9 +108,9 @@ export function detectComposerTrigger(
   const tokenStart = tokenIdx + 1;
 
   const token = text.slice(tokenStart, cursor);
-  if (token.startsWith("$")) {
+  if (token.startsWith("$") && profile.providerDollarSkill) {
     return {
-      kind: "skill",
+      kind: "provider-dollar-skill",
       query: token.slice(1),
       rangeStart: tokenStart,
       rangeEnd: cursor,
@@ -111,21 +121,20 @@ export function detectComposerTrigger(
   }
 
   return {
-    kind: "path",
+    kind: "provider-reference",
     query: token.slice(1),
     rangeStart: tokenStart,
     rangeEnd: cursor,
   };
 }
 
-export function parseStandaloneComposerSlashCommand(
-  text: string,
-): Exclude<ComposerSlashCommand, "model"> | null {
-  const match = /^\/(plan|default)\s*$/i.exec(text.trim());
+export function parseStandaloneComposerT4CodeAction(text: string): ComposerT4CodeAction | null {
+  const match = /^:(model|plan|default)\s*$/i.exec(text.trim());
   if (!match) {
     return null;
   }
   const command = match[1]?.toLowerCase();
+  if (command === "model") return "model";
   if (command === "plan") return "plan";
   return "default";
 }

@@ -10,13 +10,6 @@ describe("searchSlashCommandItems", () => {
   it("moves exact provider command matches ahead of broader description matches", () => {
     const items = [
       {
-        id: "slash:default",
-        type: "slash-command",
-        command: "default",
-        label: "/default",
-        description: "Switch this thread back to normal build mode",
-      },
-      {
         id: "provider-slash-command:claudeAgent:ui",
         type: "provider-slash-command",
         provider: claudeDriver,
@@ -32,23 +25,39 @@ describe("searchSlashCommandItems", () => {
         label: "/frontend-design",
         description: "Create distinctive, production-grade frontend interfaces",
       },
-    ] satisfies Array<
-      Extract<ComposerCommandItem, { type: "slash-command" | "provider-slash-command" }>
-    >;
+      {
+        id: "slash-skill:claudeAgent:ui-review",
+        type: "skill",
+        provider: claudeDriver,
+        skill: {
+          name: "ui-review",
+          path: "/skills/ui-review",
+          enabled: true,
+          invocation: "slash",
+        },
+        label: "/ui-review",
+        description: "Review user interfaces",
+      },
+    ] satisfies Array<Extract<ComposerCommandItem, { type: "provider-slash-command" | "skill" }>>;
 
     expect(searchSlashCommandItems(items, "ui").map((item) => item.id)).toEqual([
       "provider-slash-command:claudeAgent:ui",
-      "slash:default",
+      "slash-skill:claudeAgent:ui-review",
     ]);
   });
 
-  it("supports fuzzy provider command matches", () => {
+  it("supports fuzzy provider command and slash-skill matches", () => {
     const items = [
       {
-        id: "provider-slash-command:claudeAgent:gh-fix-ci",
-        type: "provider-slash-command",
+        id: "slash-skill:claudeAgent:gh-fix-ci",
+        type: "skill",
         provider: claudeDriver,
-        command: { name: "gh-fix-ci" },
+        skill: {
+          name: "gh-fix-ci",
+          path: "/skills/gh-fix-ci",
+          enabled: true,
+          invocation: "slash",
+        },
         label: "/gh-fix-ci",
         description: "Fix failing GitHub Actions",
       },
@@ -60,12 +69,10 @@ describe("searchSlashCommandItems", () => {
         label: "/github",
         description: "General GitHub help",
       },
-    ] satisfies Array<
-      Extract<ComposerCommandItem, { type: "slash-command" | "provider-slash-command" }>
-    >;
+    ] satisfies Array<Extract<ComposerCommandItem, { type: "provider-slash-command" | "skill" }>>;
 
     expect(searchSlashCommandItems(items, "gfc").map((item) => item.id)).toEqual([
-      "provider-slash-command:claudeAgent:gh-fix-ci",
+      "slash-skill:claudeAgent:gh-fix-ci",
     ]);
   });
 });

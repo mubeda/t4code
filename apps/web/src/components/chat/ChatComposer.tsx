@@ -76,7 +76,7 @@ import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
-import { searchSlashCommandItems } from "./composerSlashCommandSearch";
+import { searchLegacySlashCommandItems } from "./composerSlashCommandSearch";
 import {
   getComposerPromptInjectionState,
   getComposerProviderState,
@@ -999,7 +999,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       if (!query) {
         return slashCommandItems;
       }
-      return searchSlashCommandItems(slashCommandItems, query);
+      return searchLegacySlashCommandItems(slashCommandItems, query);
     }
     if (composerTrigger.kind === "skill") {
       return searchProviderSkills(selectedProviderStatus?.skills ?? [], composerTrigger.query).map(

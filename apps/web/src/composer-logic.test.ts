@@ -3,13 +3,22 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   clampCollapsedComposerCursor,
   collapseExpandedComposerCursor,
-  detectComposerTrigger,
+  detectComposerTrigger as detectCapabilityComposerTrigger,
   expandCollapsedComposerCursor,
   isCollapsedCursorAdjacentToInlineToken,
-  parseStandaloneComposerSlashCommand,
+  parseStandaloneComposerT4CodeAction,
   replaceTextRange,
 } from "./composer-logic";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
+
+const allCapabilities = {
+  providerSlash: true,
+  providerDollarSkill: true,
+};
+
+function detectComposerTrigger(text: string, cursor: number) {
+  return detectCapabilityComposerTrigger(text, cursor, allCapabilities);
+}
 
 describe("detectComposerTrigger", () => {
   it("detects @path trigger at cursor", () => {
@@ -17,7 +26,7 @@ describe("detectComposerTrigger", () => {
     const trigger = detectComposerTrigger(text, text.length);
 
     expect(trigger).toEqual({
-      kind: "path",
+      kind: "provider-reference",
       query: "src/com",
       rangeStart: "Please check ".length,
       rangeEnd: text.length,
@@ -29,7 +38,7 @@ describe("detectComposerTrigger", () => {
     const trigger = detectComposerTrigger(text, text.length);
 
     expect(trigger).toEqual({
-      kind: "slash-command",
+      kind: "provider-slash",
       query: "mo",
       rangeStart: 0,
       rangeEnd: text.length,
@@ -41,7 +50,7 @@ describe("detectComposerTrigger", () => {
     const trigger = detectComposerTrigger(text, text.length);
 
     expect(trigger).toEqual({
-      kind: "slash-command",
+      kind: "provider-slash",
       query: "model",
       rangeStart: 0,
       rangeEnd: text.length,
@@ -60,7 +69,7 @@ describe("detectComposerTrigger", () => {
     const trigger = detectComposerTrigger(text, text.length);
 
     expect(trigger).toEqual({
-      kind: "slash-command",
+      kind: "provider-slash",
       query: "pl",
       rangeStart: 0,
       rangeEnd: text.length,
@@ -72,7 +81,7 @@ describe("detectComposerTrigger", () => {
     const trigger = detectComposerTrigger(text, text.length);
 
     expect(trigger).toEqual({
-      kind: "slash-command",
+      kind: "provider-slash",
       query: "rev",
       rangeStart: 0,
       rangeEnd: text.length,
@@ -84,7 +93,7 @@ describe("detectComposerTrigger", () => {
     const trigger = detectComposerTrigger(text, text.length);
 
     expect(trigger).toEqual({
-      kind: "skill",
+      kind: "provider-dollar-skill",
       query: "gh-fi",
       rangeStart: "Use ".length,
       rangeEnd: text.length,
@@ -98,7 +107,7 @@ describe("detectComposerTrigger", () => {
 
     const trigger = detectComposerTrigger(text, cursorAfterAt);
     expect(trigger).toEqual({
-      kind: "path",
+      kind: "provider-reference",
       query: "",
       rangeStart: "Please inspect ".length,
       rangeEnd: cursorAfterAt,
@@ -112,7 +121,7 @@ describe("detectComposerTrigger", () => {
 
     const trigger = detectComposerTrigger(text, cursorAfterQuery);
     expect(trigger).toEqual({
-      kind: "path",
+      kind: "provider-reference",
       query: "sr",
       rangeStart: "Please inspect ".length,
       rangeEnd: cursorAfterQuery,
@@ -127,24 +136,38 @@ describe("detectComposerTrigger", () => {
 
     const trigger = detectComposerTrigger(text, cursorAfterAt);
     expect(trigger).not.toBeNull();
-    expect(trigger?.kind).toBe("path");
+    expect(trigger?.kind).toBe("provider-reference");
     expect(trigger?.query).toBe("");
   });
 
   it("clamps invalid cursors and treats every supported separator as a token boundary", () => {
     expect(detectComposerTrigger("prefix\n/value", Number.POSITIVE_INFINITY)).toMatchObject({
-      kind: "slash-command",
+      kind: "provider-slash",
       rangeStart: "prefix\n".length,
     });
     for (const separator of ["\t", "\r", INLINE_TERMINAL_CONTEXT_PLACEHOLDER]) {
       const text = `before${separator}@path`;
       expect(detectComposerTrigger(text, text.length)).toMatchObject({
-        kind: "path",
+        kind: "provider-reference",
         query: "path",
         rangeStart: `before${separator}`.length,
       });
     }
     expect(detectComposerTrigger("@path", -10)).toBeNull();
+  });
+
+  it("keeps terminal placeholders as web token boundaries when provider triggers are gated", () => {
+    const profile = { providerSlash: false, providerDollarSkill: false };
+    const text = `before${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}@path`;
+
+    expect(detectCapabilityComposerTrigger(text, text.length, profile)).toMatchObject({
+      kind: "provider-reference",
+      query: "path",
+      rangeStart: `before${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}`.length,
+    });
+    expect(detectCapabilityComposerTrigger("/review", 7, profile)).toBeNull();
+    expect(detectCapabilityComposerTrigger("$review", 7, profile)).toBeNull();
+    expect(detectCapabilityComposerTrigger(":plan", 5, profile)?.kind).toBe("t4code-action");
   });
 });
 
@@ -382,16 +405,16 @@ describe("isCollapsedCursorAdjacentToInlineToken", () => {
   });
 });
 
-describe("parseStandaloneComposerSlashCommand", () => {
-  it("parses standalone /plan command", () => {
-    expect(parseStandaloneComposerSlashCommand(" /plan ")).toBe("plan");
+describe("parseStandaloneComposerT4CodeAction", () => {
+  it("parses standalone :plan action", () => {
+    expect(parseStandaloneComposerT4CodeAction(" :plan ")).toBe("plan");
   });
 
-  it("parses standalone /default command", () => {
-    expect(parseStandaloneComposerSlashCommand("/default")).toBe("default");
+  it("parses standalone :default action", () => {
+    expect(parseStandaloneComposerT4CodeAction(":default")).toBe("default");
   });
 
-  it("ignores slash commands with extra message text", () => {
-    expect(parseStandaloneComposerSlashCommand("/plan explain this")).toBeNull();
+  it("ignores actions with extra message text", () => {
+    expect(parseStandaloneComposerT4CodeAction(":plan explain this")).toBeNull();
   });
 });
