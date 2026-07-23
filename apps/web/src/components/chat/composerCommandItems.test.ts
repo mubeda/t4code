@@ -90,6 +90,52 @@ describe("buildComposerCommandItems", () => {
     expect(result.items.map((item) => item.group)).toEqual(["commands", "skills"]);
   });
 
+  it("ranks provider commands by exact, fuzzy, and description matches", () => {
+    const slashCommands = [
+      { name: "frontend", description: "Build and refine UI" },
+      { name: "ui", description: "Open the UI workflow" },
+      { name: "gh-fix-ci", description: "Fix failing checks" },
+      { name: "review", description: "Review staged changes" },
+    ] as const;
+
+    expect(
+      buildComposerCommandItems(inputFor("/ui", { slashCommands })).items.map((item) => item.label),
+    ).toEqual(["/ui", "/frontend"]);
+    expect(
+      buildComposerCommandItems(inputFor("/gfc", { slashCommands })).items.map(
+        (item) => item.label,
+      ),
+    ).toEqual(["/gh-fix-ci"]);
+    expect(
+      buildComposerCommandItems(inputFor("/staged", { slashCommands })).items.map(
+        (item) => item.label,
+      ),
+    ).toEqual(["/review"]);
+  });
+
+  it("sorts shuffled provider inventories deterministically within semantic groups", () => {
+    const first = buildComposerCommandItems(
+      inputFor("/", {
+        slashCommands: [{ name: "zebra" }, { name: "alpha" }],
+        slashSkills: [makeSkill("zeta-skill", "slash"), makeSkill("beta-skill", "slash")],
+      }),
+    );
+    const shuffled = buildComposerCommandItems(
+      inputFor("/", {
+        slashCommands: [{ name: "alpha" }, { name: "zebra" }],
+        slashSkills: [makeSkill("beta-skill", "slash"), makeSkill("zeta-skill", "slash")],
+      }),
+    );
+
+    expect(first.items.map((item) => item.label)).toEqual([
+      "/alpha",
+      "/zebra",
+      "/beta-skill",
+      "/zeta-skill",
+    ]);
+    expect(shuffled.items.map((item) => item.id)).toEqual(first.items.map((item) => item.id));
+  });
+
   it("keeps dollar menus limited to dollar skills", () => {
     const result = buildComposerCommandItems(
       inputFor("$", {
@@ -116,10 +162,45 @@ describe("buildComposerCommandItems", () => {
     );
 
     expect(result.items.map(({ type, label }) => ({ type, label }))).toEqual([
-      { type: "file-reference", label: "main.ts" },
       { type: "file-reference", label: "components" },
+      { type: "file-reference", label: "main.ts" },
       { type: "agent-reference", label: "@planner" },
     ]);
+  });
+
+  it("sorts shuffled paths and agents deterministically while keeping files first", () => {
+    const first = buildComposerCommandItems(
+      inputFor("@", {
+        pathEntries: [
+          { path: "src/zeta.ts", kind: "file" },
+          { path: "src/alpha.ts", kind: "file" },
+        ],
+        agents: [
+          { name: "zebra", invocation: "mention" },
+          { name: "alpha", invocation: "mention" },
+        ],
+      }),
+    );
+    const shuffled = buildComposerCommandItems(
+      inputFor("@", {
+        pathEntries: [
+          { path: "src/alpha.ts", kind: "file" },
+          { path: "src/zeta.ts", kind: "file" },
+        ],
+        agents: [
+          { name: "alpha", invocation: "mention" },
+          { name: "zebra", invocation: "mention" },
+        ],
+      }),
+    );
+
+    expect(first.items.map((item) => item.label)).toEqual([
+      "alpha.ts",
+      "zeta.ts",
+      "@alpha",
+      "@zebra",
+    ]);
+    expect(shuffled.items.map((item) => item.id)).toEqual(first.items.map((item) => item.id));
   });
 
   it("prefers an exact agent match without removing file results", () => {

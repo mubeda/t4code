@@ -12,6 +12,7 @@ import type { ComposerT4CodeAction, ComposerTrigger } from "@t4code/shared/compo
 import type { ComposerSlashCommand } from "../../composer-logic";
 import { searchProviderSkills } from "../../providerSkillSearch";
 import type { ComposerCapabilityProfile } from "./composerCapabilities";
+import { searchComposerCommandCandidates } from "./composerCommandSearch";
 
 export type ComposerCommandGroupId = "t4code" | "commands" | "skills" | "files" | "agents";
 
@@ -116,6 +117,18 @@ function providerItemId(
   return `${type}:${providerInstanceId}:${name}`;
 }
 
+function compareText(left: string, right: string): number {
+  return left.toLowerCase().localeCompare(right.toLowerCase()) || left.localeCompare(right);
+}
+
+function compareSkills(left: ServerProviderSkill, right: ServerProviderSkill): number {
+  return (
+    compareText(left.name, right.name) ||
+    compareText(left.path, right.path) ||
+    compareText(left.description ?? "", right.description ?? "")
+  );
+}
+
 function buildT4CodeActionItems(query: string): T4CodeActionItem[] {
   const normalized = normalizedQuery(query);
   return T4CODE_ACTIONS.filter(({ action }) => !normalized || action.includes(normalized)).map(
@@ -139,19 +152,20 @@ function buildSlashItems(
     return [];
   }
 
-  const normalized = normalizedQuery(query);
   const seenNames = new Set<string>();
   const commands: ProviderCommandItem[] = [];
-  for (const command of input.capabilities.slashCommands) {
+  const orderedCommands = [...input.capabilities.slashCommands].sort(
+    (left, right) =>
+      compareText(left.name, right.name) ||
+      compareText(left.description ?? "", right.description ?? ""),
+  );
+  for (const command of orderedCommands) {
     const name = command.name.trim();
     const comparableName = name.toLowerCase();
     if (seenNames.has(comparableName)) {
       continue;
     }
     seenNames.add(comparableName);
-    if (normalized && !comparableName.includes(normalized)) {
-      continue;
-    }
     commands.push({
       id: providerItemId("provider-command", input.providerInstanceId, name),
       type: "provider-command",
@@ -164,7 +178,20 @@ function buildSlashItems(
     });
   }
 
-  const skills = searchProviderSkills(input.capabilities.slashSkills, normalized)
+  const rankedCommands = searchComposerCommandCandidates(
+    commands.map((item) => ({
+      item,
+      name: item.command.name,
+      description: item.description,
+      tieBreaker: item.id,
+    })),
+    query,
+    { trimLeadingPattern: /^\/+/ },
+  );
+  const skills = searchProviderSkills(
+    [...input.capabilities.slashSkills].sort(compareSkills),
+    query,
+  )
     .filter((skill) => {
       const comparableName = skill.name.trim().toLowerCase();
       if (seenNames.has(comparableName)) {
@@ -189,7 +216,7 @@ function buildSlashItems(
       }),
     );
 
-  return [...commands, ...skills];
+  return [...rankedCommands, ...skills];
 }
 
 function buildDollarSkillItems(
@@ -200,19 +227,21 @@ function buildDollarSkillItems(
     return [];
   }
 
-  return searchProviderSkills(input.capabilities.dollarSkills, query).map((skill) => ({
-    id: providerItemId("provider-skill", input.providerInstanceId, `dollar:${skill.name}`),
-    type: "provider-skill",
-    group: "skills",
-    providerInstanceId: input.providerInstanceId,
-    skill,
-    label: `$${skill.name}`,
-    description:
-      skill.shortDescription ??
-      skill.description ??
-      (skill.scope ? `${skill.scope} skill` : "Run provider skill"),
-    replacement: `$${skill.name} `,
-  }));
+  return searchProviderSkills([...input.capabilities.dollarSkills].sort(compareSkills), query).map(
+    (skill) => ({
+      id: providerItemId("provider-skill", input.providerInstanceId, `dollar:${skill.name}`),
+      type: "provider-skill",
+      group: "skills",
+      providerInstanceId: input.providerInstanceId,
+      skill,
+      label: `$${skill.name}`,
+      description:
+        skill.shortDescription ??
+        skill.description ??
+        (skill.scope ? `${skill.scope} skill` : "Run provider skill"),
+      replacement: `$${skill.name} `,
+    }),
+  );
 }
 
 function buildReferenceItems(
@@ -222,35 +251,37 @@ function buildReferenceItems(
   readonly items: Array<FileReferenceItem | AgentReferenceItem>;
   readonly preferredItemId: string | null;
 } {
-  const files = input.pathSearch.entries.map(
-    (entry): FileReferenceItem => ({
-      id: `file-reference:${entry.kind}:${entry.path}`,
-      type: "file-reference",
-      group: "files",
-      path: entry.path,
-      pathKind: entry.kind,
-      label: basenameOfPath(entry.path),
-      description: parentOfPath(entry.path),
-      replacement: `${serializeComposerReference(entry.path)} `,
-    }),
-  );
+  const files = [...input.pathSearch.entries]
+    .sort((left, right) => compareText(left.path, right.path) || compareText(left.kind, right.kind))
+    .map(
+      (entry): FileReferenceItem => ({
+        id: `file-reference:${entry.kind}:${entry.path}`,
+        type: "file-reference",
+        group: "files",
+        path: entry.path,
+        pathKind: entry.kind,
+        label: basenameOfPath(entry.path),
+        description: parentOfPath(entry.path),
+        replacement: `${serializeComposerReference(entry.path)} `,
+      }),
+    );
 
   const normalized = normalizedQuery(query);
   const seenNames = new Set<string>();
-  const agents = input.capabilities.mentionableAgents
+  const agentItems = [...input.capabilities.mentionableAgents]
+    .sort(
+      (left, right) =>
+        compareText(left.name, right.name) ||
+        compareText(left.description ?? "", right.description ?? "") ||
+        compareText(left.model ?? "", right.model ?? ""),
+    )
     .filter((agent) => {
       const comparableName = agent.name.trim().toLowerCase();
       if (seenNames.has(comparableName)) {
         return false;
       }
       seenNames.add(comparableName);
-      if (!normalized) {
-        return true;
-      }
-      return (
-        comparableName.includes(normalized) ||
-        agent.description?.toLowerCase().includes(normalized) === true
-      );
+      return true;
     })
     .map(
       (agent): AgentReferenceItem => ({
@@ -264,6 +295,15 @@ function buildReferenceItems(
         replacement: `@${agent.name} `,
       }),
     );
+  const agents = searchComposerCommandCandidates(
+    agentItems.map((item) => ({
+      item,
+      name: item.agent.name,
+      description: item.description,
+      tieBreaker: item.id,
+    })),
+    query,
+  );
 
   const preferredItemId =
     agents.find((item) => item.agent.name.trim().toLowerCase() === normalized)?.id ?? null;

@@ -79,4 +79,51 @@ describe("searchSlashCommandItems", () => {
       "slash-skill:claudeAgent:gh-fix-ci",
     ]);
   });
+
+  it("matches provider commands through their descriptions", () => {
+    const items = [
+      {
+        id: "provider-slash-command:claudeAgent:review",
+        type: "provider-slash-command",
+        provider: claudeDriver,
+        command: { name: "review" },
+        label: "/review",
+        description: "Review staged changes",
+      },
+    ] satisfies Array<
+      Extract<LegacyComposerCommandItem, { type: "provider-slash-command" | "skill" }>
+    >;
+
+    expect(searchSlashCommandItems(items, "staged").map((item) => item.id)).toEqual([
+      "provider-slash-command:claudeAgent:review",
+    ]);
+  });
+
+  it("sorts empty-query results deterministically instead of preserving inventory order", () => {
+    const alpha = {
+      id: "provider-slash-command:claudeAgent:alpha",
+      type: "provider-slash-command",
+      provider: claudeDriver,
+      command: { name: "alpha" },
+      label: "/alpha",
+      description: "Alpha command",
+    } as const;
+    const zebra = {
+      id: "provider-slash-command:claudeAgent:zebra",
+      type: "provider-slash-command",
+      provider: claudeDriver,
+      command: { name: "zebra" },
+      label: "/zebra",
+      description: "Zebra command",
+    } as const;
+
+    expect(searchSlashCommandItems([zebra, alpha], "").map((item) => item.id)).toEqual([
+      alpha.id,
+      zebra.id,
+    ]);
+    expect(searchSlashCommandItems([alpha, zebra], "").map((item) => item.id)).toEqual([
+      alpha.id,
+      zebra.id,
+    ]);
+  });
 });
