@@ -1,6 +1,6 @@
 [package]
 name = "t4code-server"
-version = "0.2.8"
+version = "0.2.9"
 description = "T4Code Rust server runtime"
 edition.workspace = true
 rust-version.workspace = true
