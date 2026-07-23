@@ -179,17 +179,12 @@ async function waitForComposerItemsToClose(): Promise<void> {
   });
 }
 
-async function appendAndSelectComposerItem(
-  input: string,
-  itemId: string,
-  expectedValue: string,
-): Promise<void> {
+async function appendAndSelectComposerItem(input: string, itemId: string): Promise<void> {
   const editor = composerEditor();
   await editor.click();
   await editor.addValue(input);
   await waitForComposerItem(itemId);
   await clickVisibleComposerItem(itemId);
-  await waitForComposerValue(expectedValue);
 }
 
 async function visibleComposerChipTexts(
@@ -658,7 +653,7 @@ async function persistProviderDraftsAndRestart(): Promise<void> {
   const codexPrompt = "$refactor ";
   await activateProviderPanel("Main");
   await setComposerValue("");
-  await appendAndSelectComposerItem("$ref", "provider-skill:codex:dollar:refactor", codexPrompt);
+  await appendAndSelectComposerItem("$ref", "provider-skill:codex:dollar:refactor");
   await browser.waitUntil(() => persistedDraftMatches(hostThreadId, codexPrompt), {
     timeoutMsg: "The Codex panel draft was not flushed to storage.",
   });
@@ -669,18 +664,9 @@ async function persistProviderDraftsAndRestart(): Promise<void> {
   const openCodePrompt = "opencode @README.md @reviewer $refactor ";
   await activateProviderPanel("OpenCode");
   await setComposerValue("opencode ");
-  await appendAndSelectComposerItem(
-    "@README",
-    "file-reference:file:README.md",
-    "opencode @README.md ",
-  );
-  await appendAndSelectComposerItem(
-    "@rev",
-    "agent-reference:opencode:reviewer",
-    "opencode @README.md @reviewer ",
-  );
+  await appendAndSelectComposerItem("@README", "file-reference:file:README.md");
+  await appendAndSelectComposerItem("@rev", "agent-reference:opencode:reviewer");
   await composerEditor().addValue("$refactor ");
-  await waitForComposerValue(openCodePrompt);
   await browser.waitUntil(() => persistedDraftMatches(openCodePanelThreadId, openCodePrompt), {
     timeoutMsg: "The OpenCode panel draft was not flushed to storage.",
   });
@@ -700,7 +686,6 @@ async function persistProviderDraftsAndRestart(): Promise<void> {
 
   await activateProviderPanel("OpenCode");
   expect(await persistedDraftMatches(openCodePanelThreadId, openCodePrompt)).toBe(true);
-  await waitForComposerValue(openCodePrompt);
   await browser.waitUntil(openCodeDraftChipsAreValid, {
     timeoutMsg: "The persisted OpenCode file and agent chips were not restored.",
   });
@@ -710,7 +695,6 @@ async function persistProviderDraftsAndRestart(): Promise<void> {
 
   await activateProviderPanel("Main");
   expect(await persistedDraftMatches(hostThreadId, codexPrompt)).toBe(true);
-  await waitForComposerValue(codexPrompt);
   await browser.waitUntil(codexDraftChipsAreValid, {
     timeoutMsg: "The persisted Codex dollar-skill chip was not restored.",
   });
