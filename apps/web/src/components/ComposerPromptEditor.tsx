@@ -563,6 +563,14 @@ function isComposerInlineTokenNode(candidate: unknown): candidate is ComposerInl
   );
 }
 
+function $composerEditorEndsWithConfirmedReferenceNode(): boolean {
+  let candidate = $getRoot().getLastChild();
+  while (candidate && $isElementNode(candidate)) {
+    candidate = candidate.getLastChild();
+  }
+  return candidate instanceof ComposerMentionNode || candidate instanceof ComposerAgentNode;
+}
+
 function resolvedThemeFromDocument(): "light" | "dark" {
   return document.documentElement.classList.contains("dark") ? "dark" : "light";
 }
@@ -1650,7 +1658,7 @@ function ComposerPromptEditorInner({
 
     const rootElement = editor.getRootElement();
     const isFocused = Boolean(rootElement && document.activeElement === rootElement);
-    const reconstructTrailingReferences = previousSnapshot.value !== value || !isFocused;
+    const reconstructControlledValue = previousSnapshot.value !== value || !isFocused;
     if (
       previousSnapshot.value === value &&
       !agentsChanged &&
@@ -1666,6 +1674,8 @@ function ComposerPromptEditorInner({
       const shouldRewriteEditorState =
         previousSnapshot.value !== value || agentsChanged || contextsChanged || skillsChanged;
       if (shouldRewriteEditorState) {
+        const reconstructTrailingReferences =
+          reconstructControlledValue || $composerEditorEndsWithConfirmedReferenceNode();
         $setComposerEditorPrompt(
           value,
           terminalContexts,

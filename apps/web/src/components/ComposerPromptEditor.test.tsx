@@ -816,6 +816,74 @@ describe("ComposerPromptEditor inline token nodes", () => {
     }
   });
 
+  it("preserves a focused confirmed EOF reference across file and agent refreshes", async () => {
+    harness.useRealEffects = true;
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const editorRef = createRef<ComposerPromptEditorHandle>();
+    const onChange = vi.fn();
+    const source = "ask @reviewer";
+    const cursor = "ask ".length + 1;
+    const renderWithAgents = (nextAgents: ReadonlyArray<ServerProviderAgent>) => (
+      <ComposerPromptEditor
+        value={source}
+        cursor={cursor}
+        terminalContexts={[]}
+        skills={[]}
+        agents={nextAgents}
+        disabled={false}
+        placeholder="Ask anything"
+        onRemoveTerminalContext={vi.fn()}
+        onChange={onChange}
+        onPaste={vi.fn()}
+        editorRef={editorRef}
+      />
+    );
+
+    try {
+      await act(async () => root.render(renderWithAgents([])));
+      const editor = lastEditor();
+      await act(async () => editorRef.current?.focusAt(cursor));
+      onChange.mockClear();
+      expect(container.querySelector('[data-composer-mention-chip="true"]')).not.toBeNull();
+      expect(editorRef.current?.readSnapshot()).toMatchObject({
+        value: source,
+        cursor,
+      });
+
+      harness.observedOnChangeUpdates = 0;
+      await act(async () => root.render(renderWithAgents(agents)));
+      expect(lastEditor()).toBe(editor);
+      expect(harness.observedOnChangeUpdates).toBeGreaterThan(0);
+      expect(container.querySelector('[data-composer-agent-chip="true"]')).not.toBeNull();
+      expect(container.querySelector('[data-composer-mention-chip="true"]')).toBeNull();
+      expect(editorRef.current?.readSnapshot()).toMatchObject({
+        value: source,
+        cursor,
+      });
+      expect(onChange).not.toHaveBeenCalled();
+
+      harness.observedOnChangeUpdates = 0;
+      await act(async () => root.render(renderWithAgents([])));
+      expect(lastEditor()).toBe(editor);
+      expect(harness.observedOnChangeUpdates).toBeGreaterThan(0);
+      expect(container.querySelector('[data-composer-mention-chip="true"]')).not.toBeNull();
+      expect(container.querySelector('[data-composer-agent-chip="true"]')).toBeNull();
+      expect(editorRef.current?.readSnapshot()).toMatchObject({
+        value: source,
+        cursor,
+      });
+      expect(onChange).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      harness.useRealEffects = false;
+      (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
+    }
+  });
+
   it("keeps a focused incomplete EOF query as text during metadata refresh", async () => {
     harness.useRealEffects = true;
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
