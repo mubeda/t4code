@@ -1215,6 +1215,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       highlightedItemId: composerHighlightedItemId,
       currentSearchKey: composerMenuSearchKey,
       highlightedSearchKey: composerHighlightedSearchKey,
+      preferredItemId: composerMenuResult.preferredItemId,
     });
     setComposerHighlightedItemId((existing) =>
       existing === nextActiveItemId ? existing : nextActiveItemId,
@@ -1227,6 +1228,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerHighlightedSearchKey,
     composerMenuItems,
     composerMenuOpen,
+    composerMenuResult.preferredItemId,
     composerMenuSearchKey,
   ]);
 
@@ -1713,22 +1715,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   const submitComposer = useCallback(
     (event?: { preventDefault: () => void }) => {
-      const t4codeAction =
-        activePendingProgress === null
-          ? parseStandaloneComposerT4CodeAction(promptRef.current)
-          : null;
+      const currentPrompt = promptRef.current;
+      const t4codeAction = parseStandaloneComposerT4CodeAction(currentPrompt);
       if (t4codeAction) {
         event?.preventDefault();
-        promptRef.current = "";
-        setPrompt("");
-        setComposerCursor(0);
-        setComposerTrigger(null);
+        const applied = applyPromptReplacement(0, currentPrompt.length, "", {
+          expectedText: currentPrompt,
+        });
+        if (!applied) {
+          return;
+        }
         setComposerHighlightedItemId(null);
         setComposerHighlightedSearchKey(null);
         executeT4CodeAction(t4codeAction);
-        window.requestAnimationFrame(() => {
-          composerEditorRef.current?.focusAt(0);
-        });
         return;
       }
       onSend(event);
@@ -1737,12 +1736,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       }
     },
     [
-      activePendingProgress,
+      applyPromptReplacement,
       blurMobileComposerAfterSend,
       executeT4CodeAction,
       onSend,
       promptRef,
-      setPrompt,
       shouldBlurMobileComposerOnSubmit,
     ],
   );

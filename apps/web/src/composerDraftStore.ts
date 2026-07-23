@@ -485,7 +485,16 @@ interface ComposerDraftStoreState {
     threadRef: ComposerThreadTarget,
     attachments: PersistedComposerImageAttachment[],
   ) => void;
+  /**
+   * Clears content after ownership of image preview URLs has transferred to
+   * the optimistic message created by a normal send.
+   */
   clearComposerContent: (threadRef: ComposerThreadTarget) => void;
+  /**
+   * Discards content without transferring image ownership and revokes every
+   * blob preview URL held by the draft.
+   */
+  discardComposerContent: (threadRef: ComposerThreadTarget) => void;
 }
 
 export interface EffectiveComposerModelState {
@@ -680,6 +689,38 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     draft.runtimeMode === null &&
     draft.interactionMode === null
   );
+}
+
+function clearComposerDraftContent(draft: ComposerThreadDraftState): ComposerThreadDraftState {
+  return {
+    ...draft,
+    prompt: "",
+    images: [],
+    nonPersistedImageIds: [],
+    persistedAttachments: [],
+    terminalContexts: [],
+    elementContexts: [],
+    previewAnnotations: [],
+    reviewComments: [],
+  };
+}
+
+function clearComposerContentFromDrafts(
+  draftsByThreadKey: Record<string, ComposerThreadDraftState>,
+  threadKey: string,
+): Record<string, ComposerThreadDraftState> {
+  const current = draftsByThreadKey[threadKey];
+  if (!current) {
+    return draftsByThreadKey;
+  }
+  const nextDraft = clearComposerDraftContent(current);
+  const nextDraftsByThreadKey = { ...draftsByThreadKey };
+  if (shouldRemoveDraft(nextDraft)) {
+    delete nextDraftsByThreadKey[threadKey];
+  } else {
+    nextDraftsByThreadKey[threadKey] = nextDraft;
+  }
+  return nextDraftsByThreadKey;
 }
 
 function normalizeProviderDriverKind(value: unknown): ProviderDriverKind | null {
@@ -2170,6 +2211,27 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
   persist(
     (setBase, get) => {
       const set = setBase;
+      const clearComposerContent = (
+        threadRef: ComposerThreadTarget,
+        revokePreviewUrls: boolean,
+      ): void => {
+        const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
+        if (threadKey.length === 0) {
+          return;
+        }
+        if (revokePreviewUrls) {
+          revokeDraftThreadPreviewUrls(get().draftsByThreadKey[threadKey]);
+        }
+        set((state) => {
+          const nextDraftsByThreadKey = clearComposerContentFromDrafts(
+            state.draftsByThreadKey,
+            threadKey,
+          );
+          return nextDraftsByThreadKey === state.draftsByThreadKey
+            ? state
+            : { draftsByThreadKey: nextDraftsByThreadKey };
+        });
+      };
 
       return {
         draftsByThreadKey: {},
@@ -3306,36 +3368,8 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             verifyPersistedAttachments(threadKey, attachments, set);
           });
         },
-        clearComposerContent: (threadRef) => {
-          const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
-          if (threadKey.length === 0) {
-            return;
-          }
-          set((state) => {
-            const current = state.draftsByThreadKey[threadKey];
-            if (!current) {
-              return state;
-            }
-            const nextDraft: ComposerThreadDraftState = {
-              ...current,
-              prompt: "",
-              images: [],
-              nonPersistedImageIds: [],
-              persistedAttachments: [],
-              terminalContexts: [],
-              elementContexts: [],
-              previewAnnotations: [],
-              reviewComments: [],
-            };
-            const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
-            if (shouldRemoveDraft(nextDraft)) {
-              delete nextDraftsByThreadKey[threadKey];
-            } else {
-              nextDraftsByThreadKey[threadKey] = nextDraft;
-            }
-            return { draftsByThreadKey: nextDraftsByThreadKey };
-          });
-        },
+        clearComposerContent: (threadRef) => clearComposerContent(threadRef, false),
+        discardComposerContent: (threadRef) => clearComposerContent(threadRef, true),
       };
     },
     {

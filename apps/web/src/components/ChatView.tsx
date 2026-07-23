@@ -1124,6 +1124,9 @@ function ChatViewContent(props: ChatViewProps) {
     (store) => store.setInteractionMode,
   );
   const clearComposerDraftContent = useComposerDraftStore((store) => store.clearComposerContent);
+  const discardComposerDraftContent = useComposerDraftStore(
+    (store) => store.discardComposerContent,
+  );
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   const getDraftSessionByLogicalProjectKey = useComposerDraftStore(
     (store) => store.getDraftSessionByLogicalProjectKey,
@@ -4204,18 +4207,11 @@ function ChatViewContent(props: ChatViewProps) {
       });
       return;
     }
-    const standaloneColonAction =
-      composerImages.length === 0 &&
-      sendableComposerTerminalContexts.length === 0 &&
-      composerElementContexts.length === 0 &&
-      composerPreviewAnnotations.length === 0 &&
-      composerReviewComments.length === 0
-        ? parseStandaloneComposerT4CodeAction(trimmed)
-        : null;
+    const standaloneColonAction = parseStandaloneComposerT4CodeAction(trimmed);
     if (standaloneColonAction === "plan" || standaloneColonAction === "default") {
       handleInteractionModeChange(standaloneColonAction);
       promptRef.current = "";
-      clearComposerDraftContent(composerDraftTarget);
+      discardComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
       return;
     }

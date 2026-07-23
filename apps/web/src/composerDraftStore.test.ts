@@ -300,6 +300,20 @@ describe("composerDraftStore clearComposerContent", () => {
     expect(draft).toBeUndefined();
     expect(revokeSpy).not.toHaveBeenCalledWith("blob:optimistic");
   });
+
+  it("revokes blob preview URLs when discarding composer content", () => {
+    const image = makeImage({
+      id: "img-discarded",
+      previewUrl: "blob:discarded",
+    });
+    useComposerDraftStore.getState().addImage(threadRef, image);
+
+    useComposerDraftStore.getState().discardComposerContent(threadRef);
+
+    const draft = draftFor(threadId, TEST_ENVIRONMENT_ID);
+    expect(draft).toBeUndefined();
+    expect(revokeSpy).toHaveBeenCalledWith("blob:discarded");
+  });
 });
 
 describe("composerDraftStore syncPersistedAttachments", () => {

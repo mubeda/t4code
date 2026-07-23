@@ -1686,6 +1686,81 @@ describe("ChatComposer command keys", () => {
     expect(draftOf(threadRef)?.prompt).toBe(`hello ${serializeComposerReference("src/a.ts")} `);
   });
 
+  it("preserves the exact-agent preference through highlight sync and rerender before Enter", () => {
+    seedPrompt("@code-reviewer");
+    h.pathSearch = {
+      entries: [{ path: "code-reviewer.ts", kind: "file" }],
+      error: null,
+      isPending: false,
+    };
+    renderComposer();
+
+    const preferredAgentId = "agent-reference:codex:code-reviewer";
+    const syncedHighlight = setStateValues(STATE.highlightedItemId).findLast(
+      (value) => value !== null,
+    );
+    const syncedSearchKey = setStateValues(STATE.highlightedSearchKey).findLast(
+      (value) => value !== null,
+    );
+    expect(syncedHighlight).toBe(preferredAgentId);
+
+    h.stateSeeds.set(STATE.highlightedItemId, syncedHighlight);
+    h.stateSeeds.set(STATE.highlightedSearchKey, syncedSearchKey);
+    renderComposer();
+    setEditorSnapshot("@code-reviewer", 14);
+
+    const onKey = editorProps()["onCommandKeyDown"] as CommandKey;
+    expect(onKey("Enter", keyEvent())).toBe(true);
+    expect(draftOf(threadRef)?.prompt).toBe("@code-reviewer ");
+  });
+
+  it("executes a standalone :model through the keyboard Enter path", () => {
+    seedPrompt(":model");
+    const { spies } = renderComposer();
+    setEditorSnapshot(":model", 6);
+    const onKey = editorProps()["onCommandKeyDown"] as CommandKey;
+
+    expect(onKey("Enter", keyEvent())).toBe(true);
+    expect(spies.onSend).not.toHaveBeenCalled();
+    expect(draftOf(threadRef)?.prompt ?? "").toBe("");
+    expect(setStateValues(STATE.trigger)).toContain(null);
+    expect(setStateValues(STATE.modelPickerOpen)).toContain(true);
+  });
+
+  it.each([
+    [":model", null],
+    [":plan", "plan"],
+    [":default", "default"],
+  ] as const)(
+    "executes a pending standalone %s through Enter without advancing the answer",
+    (actionText, expectedInteractionMode) => {
+      seedPrompt(actionText);
+      const { spies } = renderComposer({
+        pendingUserInputs: [makePendingUserInput()],
+        activePendingProgress: makePendingProgress({ customAnswer: actionText }),
+      });
+      setEditorSnapshot(actionText, actionText.length);
+      const onKey = editorProps()["onCommandKeyDown"] as CommandKey;
+
+      expect(onKey("Enter", keyEvent())).toBe(true);
+      expect(spies.onSend).not.toHaveBeenCalled();
+      expect(spies.onChangeActivePendingUserInputCustomAnswer).toHaveBeenCalledWith(
+        "q1",
+        "",
+        0,
+        0,
+        false,
+      );
+      if (expectedInteractionMode === null) {
+        expect(setStateValues(STATE.modelPickerOpen)).toContain(true);
+        expect(spies.handleInteractionModeChange).not.toHaveBeenCalled();
+      } else {
+        expect(setStateValues(STATE.modelPickerOpen)).not.toContain(true);
+        expect(spies.handleInteractionModeChange).toHaveBeenCalledWith(expectedInteractionMode);
+      }
+    },
+  );
+
   it("submits on Enter without an active menu", () => {
     seedPrompt("send me");
     const { spies } = renderComposer();
@@ -1969,25 +2044,47 @@ describe("ChatComposer submit", () => {
     expect(spies.onSend).toHaveBeenCalledWith(event);
   });
 
-  it("executes a submitted :model locally without leaking it to onSend", () => {
-    seedPrompt(":model");
-    const { spies } = renderComposer();
-    const form = findHost((element) => element.type === "form");
-    const event = { preventDefault: vi.fn() };
+  it.each([
+    [":model", null],
+    [":plan", "plan"],
+    [":default", "default"],
+  ] as const)(
+    "executes a pending standalone %s from the submit button without advancing",
+    (actionText, expectedInteractionMode) => {
+      seedPrompt(actionText);
+      const { spies } = renderComposer({
+        pendingUserInputs: [makePendingUserInput()],
+        activePendingProgress: makePendingProgress({ customAnswer: actionText }),
+      });
+      const form = findHost((element) => element.type === "form");
+      const event = { preventDefault: vi.fn() };
 
-    (form.props["onSubmit"] as (event: unknown) => void)(event);
+      (form.props["onSubmit"] as (event: unknown) => void)(event);
 
-    expect(event.preventDefault).toHaveBeenCalledTimes(1);
-    expect(spies.onSend).not.toHaveBeenCalled();
-    expect(draftOf(threadRef)?.prompt ?? "").toBe("");
-    expect(setStateValues(STATE.trigger)).toContain(null);
-    expect(setStateValues(STATE.modelPickerOpen)).toContain(true);
-  });
+      expect(event.preventDefault).toHaveBeenCalledTimes(1);
+      expect(spies.onSend).not.toHaveBeenCalled();
+      expect(spies.onChangeActivePendingUserInputCustomAnswer).toHaveBeenCalledWith(
+        "q1",
+        "",
+        0,
+        0,
+        false,
+      );
+      if (expectedInteractionMode === null) {
+        expect(setStateValues(STATE.modelPickerOpen)).toContain(true);
+        expect(spies.handleInteractionModeChange).not.toHaveBeenCalled();
+      } else {
+        expect(setStateValues(STATE.modelPickerOpen)).not.toContain(true);
+        expect(spies.handleInteractionModeChange).toHaveBeenCalledWith(expectedInteractionMode);
+      }
+    },
+  );
 
-  it("keeps a pending custom answer named :model in the pending-answer flow", () => {
+  it("keeps an ordinary pending custom answer in the pending-answer flow", () => {
+    seedPrompt("ordinary answer");
     const { spies } = renderComposer({
       pendingUserInputs: [makePendingUserInput()],
-      activePendingProgress: makePendingProgress({ customAnswer: ":model" }),
+      activePendingProgress: makePendingProgress({ customAnswer: "ordinary answer" }),
     });
     const form = findHost((element) => element.type === "form");
     const event = { preventDefault: vi.fn() };
@@ -1995,6 +2092,7 @@ describe("ChatComposer submit", () => {
     (form.props["onSubmit"] as (event: unknown) => void)(event);
 
     expect(spies.onSend).toHaveBeenCalledWith(event);
+    expect(spies.onChangeActivePendingUserInputCustomAnswer).not.toHaveBeenCalled();
     expect(setStateValues(STATE.modelPickerOpen)).not.toContain(true);
   });
 });

@@ -3166,6 +3166,129 @@ describe("ChatView send flows", () => {
     );
   });
 
+  it.each([
+    [":plan", "plan"],
+    [":default", "default"],
+  ] as const)(
+    "keeps attachment-bearing standalone %s local and clears the complete composer draft",
+    async (actionText, expectedMode) => {
+      class FakeFileReader {
+        result: string | null = null;
+        private listeners: Array<{ type: string; handler: () => void }> = [];
+        addEventListener(type: string, handler: () => void) {
+          this.listeners.push({ type, handler });
+        }
+        readAsDataURL(_file: unknown) {
+          this.result = "data:image/png;base64,ZmFrZQ==";
+          for (const listener of this.listeners) {
+            if (listener.type === "load") listener.handler();
+          }
+        }
+      }
+      vi.stubGlobal("FileReader", FakeFileReader);
+      const revokeObjectUrl = vi.spyOn(URL, "revokeObjectURL");
+
+      seedConnectedServerThread(
+        makeThread({ interactionMode: expectedMode === "default" ? "plan" : "default" }),
+      );
+      renderServerRoute();
+
+      const image = {
+        type: "image" as const,
+        id: `image-${expectedMode}` as ChatAttachmentId,
+        name: "shot.png",
+        mimeType: "image/png",
+        sizeBytes: 4,
+        previewUrl: "blob:colon-action",
+        file: new File(["fake"], "shot.png", { type: "image/png" }),
+      };
+      const terminalContext: TerminalContextDraft = {
+        id: `terminal-${expectedMode}`,
+        threadId,
+        createdAt: now,
+        terminalId: "terminal-1",
+        terminalLabel: "Shell",
+        lineStart: 1,
+        lineEnd: 2,
+        text: "build output",
+      };
+      const elementContext = {
+        id: `element-${expectedMode}`,
+        threadId,
+        pageUrl: "http://localhost:3000",
+        pageTitle: "Demo",
+        tagName: "button",
+        selector: ".save",
+        htmlPreview: "<button>Save</button>",
+        componentName: "SaveButton",
+        source: null,
+        styles: "",
+        pickedAt: now,
+      };
+      const previewAnnotation = {
+        id: `annotation-${expectedMode}`,
+        pageUrl: "http://localhost:3000",
+        pageTitle: "Demo",
+        comment: "Fix this",
+        elements: [],
+        regions: [],
+        strokes: [],
+        styleChanges: [],
+        screenshot: null,
+        createdAt: now,
+      };
+      const reviewComment = {
+        id: `comment-${expectedMode}`,
+        sectionId: "file:src/app.ts",
+        sectionTitle: "src/app.ts",
+        filePath: "src/app.ts",
+        startIndex: 0,
+        endIndex: 1,
+        rangeLabel: "L1",
+        text: "Tighten this",
+        diff: "+const value = 1;",
+      };
+
+      const store = useComposerDraftStore.getState();
+      store.setPrompt(threadRef, actionText);
+      store.addImages(threadRef, [image]);
+      store.setTerminalContexts(threadRef, [terminalContext]);
+      store.setElementContexts(threadRef, [elementContext]);
+      store.setPreviewAnnotations(threadRef, [previewAnnotation]);
+      store.setReviewComments(threadRef, [reviewComment]);
+
+      const resetCursorState = vi.fn();
+      const { promptRef } = installComposerHandle({
+        resetCursorState,
+        getSendContext: () => ({
+          ...composerHandle().getSendContext(),
+          images: [image],
+          terminalContexts: [terminalContext],
+          elementContexts: [elementContext],
+          previewAnnotations: [previewAnnotation],
+          reviewComments: [reviewComment],
+        }),
+      });
+      promptRef.current = actionText;
+
+      await (capturedProps("chatComposer")["onSend"] as () => Promise<void>)();
+
+      expect(commandCallsFor("thread.startTurn")).toHaveLength(0);
+      expect(promptRef.current).toBe("");
+      expect(resetCursorState).toHaveBeenCalledTimes(1);
+      expect(revokeObjectUrl).toHaveBeenCalledWith("blob:colon-action");
+      expect(useComposerDraftStore.getState().getComposerDraft(threadRef)).toMatchObject({
+        prompt: "",
+        images: [],
+        terminalContexts: [],
+        elementContexts: [],
+        previewAnnotations: [],
+        reviewComments: [],
+        interactionMode: expectedMode,
+      });
+    },
+  );
+
   it("warns when only expired terminal contexts remain", async () => {
     seedConnectedServerThread();
     renderServerRoute();
