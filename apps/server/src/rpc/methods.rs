@@ -61,6 +61,7 @@ pub const ACTIVE_RPC_METHODS: &[RpcMethodSpec] = &[
     unary("projects.searchEntries"),
     unary("projects.writeFile"),
     unary("review.getDiffPreview"),
+    unary("server.consumeCodexRateLimitReset"),
     unary("server.discoverSourceControl"),
     unary("server.getConfig"),
     unary("server.getProcessDiagnostics"),

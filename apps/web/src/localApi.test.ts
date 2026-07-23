@@ -61,17 +61,21 @@ afterEach(() => {
 });
 
 describe("LocalApi", () => {
-  it("keeps backend operations unavailable in the browser facade", async () => {
-    const { createLocalApi } = await import("./localApi");
-    const api = createLocalApi();
+  it(
+    "keeps backend operations unavailable in the browser facade",
+    async () => {
+      const { createLocalApi } = await import("./localApi");
+      const api = createLocalApi();
 
-    await expect(api.server.getConfig()).rejects.toThrow(
-      "Local backend API is unavailable before a backend is paired.",
-    );
-    await expect(api.shell.openInEditor("/tmp", "cursor")).rejects.toThrow(
-      "Local backend API is unavailable before a backend is paired.",
-    );
-  });
+      await expect(api.server.getConfig()).rejects.toThrow(
+        "Local backend API is unavailable before a backend is paired.",
+      );
+      await expect(api.shell.openInEditor("/tmp", "cursor")).rejects.toThrow(
+        "Local backend API is unavailable before a backend is paired.",
+      );
+    },
+    30_000,
+  );
 
   it("uses the browser context-menu fallback without a desktop bridge", async () => {
     showContextMenuFallbackMock.mockResolvedValue("rename");

@@ -349,6 +349,7 @@ mod tests {
 
     #[tokio::test]
     async fn runner_covers_unit_build_success_spawn_timeout_and_cancellation() {
+        let _process_guard = crate::process::EXTERNAL_PROCESS_TEST_LOCK.lock().await;
         let runner = ProcessRunner;
         let output = runner
             .run(

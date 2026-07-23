@@ -99,6 +99,7 @@ import {
 } from "./settingsLayout";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { StatusBarSettingsSection } from "./StatusBarSettingsSection";
 
 const THEME_OPTIONS = [
   {
@@ -467,6 +468,15 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.enableAssistantStreaming !== DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming
         ? ["Assistant output"]
         : []),
+      ...(settings.usagePercentageDisplay !== DEFAULT_UNIFIED_SETTINGS.usagePercentageDisplay
+        ? ["Usage percentage"]
+        : []),
+      ...(settings.statusBarUsageMode !== DEFAULT_UNIFIED_SETTINGS.statusBarUsageMode
+        ? ["Footer detail"]
+        : []),
+      ...(!Equal.equals(settings.statusBarItems, DEFAULT_UNIFIED_SETTINGS.statusBarItems)
+        ? ["Status bar indicators"]
+        : []),
       ...(!terminalFontPreferencesEqual(
         settings.terminalFontPreference,
         DEFAULT_UNIFIED_SETTINGS.terminalFontPreference,
@@ -513,6 +523,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.diffIgnoreWhitespace,
       settings.automaticGitFetchInterval,
       settings.enableAssistantStreaming,
+      settings.statusBarItems,
+      settings.statusBarUsageMode,
+      settings.usagePercentageDisplay,
       settings.sidebarThreadPreviewCount,
       settings.terminalFontPreference,
       settings.terminal.webglEnabled,
@@ -540,6 +553,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
       autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
       enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
+      usagePercentageDisplay: DEFAULT_UNIFIED_SETTINGS.usagePercentageDisplay,
+      statusBarUsageMode: DEFAULT_UNIFIED_SETTINGS.statusBarUsageMode,
+      statusBarItems: DEFAULT_UNIFIED_SETTINGS.statusBarItems,
       automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
       newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
@@ -1044,6 +1060,8 @@ export function GeneralSettingsPanel() {
           }
         />
       </SettingsSection>
+
+      <StatusBarSettingsSection />
 
       <SettingsSection title="Terminal">
         <SettingsRow

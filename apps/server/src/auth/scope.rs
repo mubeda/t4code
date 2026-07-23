@@ -54,6 +54,7 @@ pub(crate) fn required_scope(method: &str) -> Option<&'static str> {
         | "projects.duplicateEntry"
         | "projects.renameEntry"
         | "projects.writeFile"
+        | "server.consumeCodexRateLimitReset"
         | "server.refreshProviders"
         | "server.refreshProviderUsage"
         | "server.removeKeybinding"
@@ -122,6 +123,10 @@ mod tests {
         );
         assert_eq!(
             required_scope("server.updateSettings"),
+            Some(SCOPE_ORCHESTRATION_OPERATE)
+        );
+        assert_eq!(
+            required_scope("server.consumeCodexRateLimitReset"),
             Some(SCOPE_ORCHESTRATION_OPERATE)
         );
         assert_eq!(

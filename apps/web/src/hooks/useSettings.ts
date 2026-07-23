@@ -217,9 +217,32 @@ function useMergedSettings<T>(
 
 export function useClientSettings<T = ClientSettings>(
   selector?: (settings: ClientSettings) => T,
+  isEqual: (previous: T, next: T) => boolean = Object.is,
 ): T {
-  const settings = useClientSettingsValue();
-  return useMemo(() => (selector ? selector(settings) : (settings as T)), [selector, settings]);
+  const getSelectedSnapshot = useMemo(() => {
+    let previousSettings: ClientSettings | null = null;
+    let previousSelection: T;
+    let hasSelection = false;
+
+    return () => {
+      const settings = getClientSettingsSnapshot();
+      if (hasSelection && settings === previousSettings) return previousSelection;
+
+      const nextSelection = selector ? selector(settings) : (settings as T);
+      previousSettings = settings;
+      if (hasSelection && isEqual(previousSelection, nextSelection)) return previousSelection;
+
+      hasSelection = true;
+      previousSelection = nextSelection;
+      return nextSelection;
+    };
+  }, [isEqual, selector]);
+  const getServerSnapshot = useMemo(() => {
+    const selection = selector ? selector(DEFAULT_CLIENT_SETTINGS) : (DEFAULT_CLIENT_SETTINGS as T);
+    return () => selection;
+  }, [selector]);
+
+  return useSyncExternalStore(subscribeClientSettings, getSelectedSnapshot, getServerSnapshot);
 }
 
 /** Read current settings for one environment, merged with client-local preferences. */

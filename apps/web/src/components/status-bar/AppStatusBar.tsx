@@ -1,7 +1,18 @@
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, ServerProviderUsageResult } from "@t4code/contracts";
+import type {
+  ClientSettings,
+  StatusBarUsageMode,
+  UsagePercentageDisplay,
+} from "@t4code/contracts/settings";
+import { useNavigate } from "@tanstack/react-router";
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
+import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { RefreshCwIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 
+import { useClientSettings } from "../../hooks/useSettings";
 import {
   usePrimaryEnvironment,
   usePrimaryLocalEnvironmentForSelected,
@@ -10,20 +21,82 @@ import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useKnownTerminalSessions } from "../../state/terminalSessions";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { cn } from "../../lib/utils";
-import { Button } from "../ui/button";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { ProviderUsageSegment } from "./ProviderUsageSegment";
+import { ProviderUsageControl } from "./ProviderUsageControl";
 import { ResourceUsageSegment } from "./ResourceUsageSegment";
+import { type ResourceDiagnosticsQueryState } from "./statusBarPresentation";
 import {
-  buildProviderUsageViewModel,
-  type ResourceDiagnosticsQueryState,
-} from "./statusBarPresentation";
+  buildProviderUsageViewModels,
+  providerUsageRelativeLabelKey,
+  type ProviderUsageViewModel,
+} from "./providerUsagePresentation";
 
 export const STATUS_BAR_USAGE_REFRESH_INTERVAL_MS = 30_000;
 export const STATUS_BAR_RESOURCE_REFRESH_INTERVAL_MS = 2_000;
+export const STATUS_BAR_USAGE_ICON_ONLY_BREAKPOINT_PX = 820;
 
 type StatusBarUsageRefresh = () => void | Promise<unknown>;
+type ProviderUsageQueryEmission = AsyncResult.AsyncResult<ServerProviderUsageResult, unknown>;
+
+interface ProviderUsageResetOverlay {
+  readonly usage: ServerProviderUsageResult;
+  readonly queryEmission: ProviderUsageQueryEmission;
+}
+
+interface StatusBarClientSettings {
+  readonly showClaudeUsage: boolean;
+  readonly showCodexUsage: boolean;
+  readonly showResourceUsage: boolean;
+  readonly statusBarUsageMode: StatusBarUsageMode;
+  readonly usagePercentageDisplay: UsagePercentageDisplay;
+}
+
+const EMPTY_PROVIDER_USAGE_CACHE_ATOM = Atom.make<ProviderUsageResetOverlay | null>(null);
+const providerUsageResetCacheAtom = Atom.family((_environmentId: EnvironmentId) =>
+  Atom.make<ProviderUsageResetOverlay | null>(null),
+);
+
+const selectStatusBarClientSettings = (settings: ClientSettings): StatusBarClientSettings => ({
+  showClaudeUsage: settings.statusBarItems.includes("claude"),
+  showCodexUsage: settings.statusBarItems.includes("codex"),
+  showResourceUsage: settings.statusBarItems.includes("resource-usage"),
+  statusBarUsageMode: settings.statusBarUsageMode,
+  usagePercentageDisplay: settings.usagePercentageDisplay,
+});
+const equalStatusBarClientSettings = (
+  previous: StatusBarClientSettings,
+  next: StatusBarClientSettings,
+): boolean =>
+  previous.showClaudeUsage === next.showClaudeUsage &&
+  previous.showCodexUsage === next.showCodexUsage &&
+  previous.showResourceUsage === next.showResourceUsage &&
+  previous.statusBarUsageMode === next.statusBarUsageMode &&
+  previous.usagePercentageDisplay === next.usagePercentageDisplay;
+const NOOP_OPEN_PROVIDER_SETTINGS = (): void => {};
+const EMPTY_PROVIDER_USAGE_SNAPSHOTS: ServerProviderUsageResult["providers"] = [];
+
+function visibleProviderUsage(
+  queried: ServerProviderUsageResult | null,
+  queryEmission: ProviderUsageQueryEmission,
+  reset: ProviderUsageResetOverlay | null,
+): ServerProviderUsageResult | null {
+  return reset !== null && isProviderUsageResetCurrent(reset, queryEmission)
+    ? reset.usage
+    : queried;
+}
+
+function isProviderUsageResetCurrent(
+  reset: ProviderUsageResetOverlay,
+  emission: ProviderUsageQueryEmission,
+): boolean {
+  if (reset.queryEmission === emission) return true;
+  // SWR waiting and failure-with-previous emissions are transitional: neither
+  // is an authoritative replacement for the command result. A settled success
+  // supersedes the overlay, while Initial/failure-without-previous invalidate it.
+  return (
+    (emission._tag === "Success" && emission.waiting) ||
+    (emission._tag === "Failure" && Option.isSome(emission.previousSuccess))
+  );
+}
 
 function runStatusBarUsageRefresh(refresh: StatusBarUsageRefresh): void {
   void Promise.resolve(refresh()).catch(() => {
@@ -93,7 +166,16 @@ export function AppStatusBarView({
   terminalCount,
   isRefreshing = false,
   iconOnly = false,
+  showClaudeUsage = true,
+  showCodexUsage = true,
+  showResourceUsage = true,
+  statusBarUsageMode = "detailed",
+  usagePercentageDisplay = "remaining",
+  presentationNow,
+  providerStateKey,
   onRefresh,
+  onOpenProviderSettings = NOOP_OPEN_PROVIDER_SETTINGS,
+  onConsumeCodexRateLimitReset,
 }: {
   readonly usage: ServerProviderUsageResult | null;
   readonly diagnostics: ResourceDiagnosticsQueryState;
@@ -101,49 +183,106 @@ export function AppStatusBarView({
   readonly terminalCount: number;
   readonly isRefreshing?: boolean;
   readonly iconOnly?: boolean;
+  readonly showClaudeUsage?: boolean;
+  readonly showCodexUsage?: boolean;
+  readonly showResourceUsage?: boolean;
+  readonly statusBarUsageMode?: StatusBarUsageMode;
+  readonly usagePercentageDisplay?: UsagePercentageDisplay;
+  readonly presentationNow?: DateTime.Utc;
+  readonly providerStateKey?: string;
   readonly onRefresh: () => void;
+  readonly onOpenProviderSettings?: () => void;
+  readonly onConsumeCodexRateLimitReset?: React.ComponentProps<
+    typeof ProviderUsageControl
+  >["onConsumeCodexRateLimitReset"];
 }) {
-  const providers = usage?.providers.map(buildProviderUsageViewModel) ?? [];
+  const snapshots = usage?.providers ?? EMPTY_PROVIDER_USAGE_SNAPSHOTS;
+  const now = presentationNow ?? DateTime.nowUnsafe();
+  const relativeLabelKey = providerUsageRelativeLabelKey(snapshots, now);
+  const presentationCache = useRef<{
+    readonly snapshots: ServerProviderUsageResult["providers"];
+    readonly percentageDisplay: UsagePercentageDisplay;
+    readonly showClaudeUsage: boolean;
+    readonly showCodexUsage: boolean;
+    readonly relativeLabelKey: string;
+    readonly providers: ReadonlyArray<ProviderUsageViewModel>;
+  } | null>(null);
+  if (
+    presentationCache.current === null ||
+    presentationCache.current.snapshots !== snapshots ||
+    presentationCache.current.percentageDisplay !== usagePercentageDisplay ||
+    presentationCache.current.showClaudeUsage !== showClaudeUsage ||
+    presentationCache.current.showCodexUsage !== showCodexUsage ||
+    presentationCache.current.relativeLabelKey !== relativeLabelKey
+  ) {
+    presentationCache.current = {
+      snapshots,
+      percentageDisplay: usagePercentageDisplay,
+      showClaudeUsage,
+      showCodexUsage,
+      relativeLabelKey,
+      providers: (() => {
+        const derived = buildProviderUsageViewModels(snapshots, {
+          now,
+          percentageDisplay: usagePercentageDisplay,
+        });
+        const byProvider = new Map(derived.map((provider) => [provider.provider, provider]));
+        return (["claude", "codex"] as const).flatMap((provider) => {
+          const viewModel = byProvider.get(provider);
+          const visible = provider === "claude" ? showClaudeUsage : showCodexUsage;
+          return visible && viewModel !== undefined ? [viewModel] : [];
+        });
+      })(),
+    };
+  }
+  const providers = presentationCache.current.providers;
   return (
     <div
       className="relative z-20 flex h-6 min-h-6 shrink-0 items-center justify-between gap-3 border-t border-border bg-background px-3 text-xs"
       data-testid="app-status-bar"
     >
-      <div className="flex min-w-0 items-center gap-2">
-        {providers.map((provider) => (
-          <ProviderUsageSegment key={provider.provider} viewModel={provider} iconOnly={iconOnly} />
-        ))}
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                className="size-5 rounded-sm p-0 text-muted-foreground"
-                aria-label="Refresh status bar usage"
-                onClick={onRefresh}
-              >
-                <RefreshCwIcon className={cn("size-3", isRefreshing && "animate-spin")} />
-              </Button>
-            }
+      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+        {providers.map((viewModel) => (
+          <ProviderUsageControl
+            iconOnly={iconOnly}
+            key={`${providerStateKey ?? "provider-usage"}:${viewModel.provider}`}
+            statusBarUsageMode={statusBarUsageMode}
+            viewModel={viewModel}
+            onConsumeCodexRateLimitReset={onConsumeCodexRateLimitReset}
+            onOpenProviderSettings={onOpenProviderSettings}
           />
-          <TooltipPopup>Refresh usage</TooltipPopup>
-        </Tooltip>
+        ))}
+        {providers.length > 0 ? (
+          <button
+            aria-busy={isRefreshing}
+            aria-label="Refresh provider usage"
+            className="inline-flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-accent/70 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-60"
+            disabled={isRefreshing}
+            title={isRefreshing ? "Refreshing provider usage" : "Refresh provider usage"}
+            type="button"
+            onClick={onRefresh}
+          >
+            <RefreshCwIcon aria-hidden className={`size-3 ${isRefreshing ? "animate-spin" : ""}`} />
+          </button>
+        ) : null}
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        <ResourceUsageSegment
-          diagnostics={diagnostics}
-          localDiagnostics={localDiagnostics}
-          terminalCount={terminalCount}
-          iconOnly={iconOnly}
-        />
+        {showResourceUsage ? (
+          <ResourceUsageSegment
+            diagnostics={diagnostics}
+            localDiagnostics={localDiagnostics}
+            terminalCount={terminalCount}
+            iconOnly={iconOnly}
+          />
+        ) : null}
       </div>
     </div>
   );
 }
 
 export function AppStatusBar() {
+  const atomRegistry = useContext(RegistryContext);
+  const navigate = useNavigate();
   const primaryEnvironment = usePrimaryEnvironment();
   const environmentId = primaryEnvironment?.environmentId ?? null;
   const primaryLocalEnvironment = usePrimaryLocalEnvironmentForSelected(environmentId);
@@ -155,10 +294,25 @@ export function AppStatusBar() {
   const autoRefreshEnvironmentRef = useRef<EnvironmentId | null>(null);
   const resourceAutoRefreshCleanupRef = useRef<(() => void) | null>(null);
   const resourceAutoRefreshEnvironmentRef = useRef<EnvironmentId | null>(null);
+  const refreshFlightsRef = useRef(new Map<EnvironmentId, Promise<void>>());
+  const manualRefreshPendingRef = useRef(new Set<EnvironmentId>());
   const [iconOnly, setIconOnly] = useState(false);
-  const usage = useEnvironmentQuery(
-    environmentId === null ? null : serverEnvironment.providerUsage({ environmentId, input: {} }),
-  );
+  const [, setManualRefreshVersion] = useState(0);
+  const {
+    showClaudeUsage,
+    showCodexUsage,
+    showResourceUsage,
+    statusBarUsageMode,
+    usagePercentageDisplay,
+  } = useClientSettings(selectStatusBarClientSettings, equalStatusBarClientSettings);
+  const usageAtom =
+    environmentId === null ? null : serverEnvironment.providerUsage({ environmentId, input: {} });
+  const usage = useEnvironmentQuery(usageAtom);
+  const resetUsageAtom =
+    environmentId === null
+      ? EMPTY_PROVIDER_USAGE_CACHE_ATOM
+      : providerUsageResetCacheAtom(environmentId);
+  const resetUsage = useAtomValue(resetUsageAtom);
   const diagnostics = useEnvironmentQuery(
     environmentId === null
       ? null
@@ -176,7 +330,10 @@ export function AppStatusBar() {
   const refreshProviderUsage = useAtomCommand(serverEnvironment.refreshProviderUsage, {
     reportFailure: false,
   });
-  const refresh = useCallback(
+  const consumeCodexRateLimitReset = useAtomCommand(serverEnvironment.consumeCodexRateLimitReset, {
+    reportFailure: false,
+  });
+  const performRefresh = useCallback(
     createStatusBarRefreshHandler({
       environmentId,
       refreshProviderUsage,
@@ -194,6 +351,33 @@ export function AppStatusBar() {
       usage.refresh,
     ],
   );
+  const refresh = useCallback((): Promise<void> => {
+    if (environmentId === null) return Promise.resolve();
+    const existing = refreshFlightsRef.current.get(environmentId);
+    if (existing !== undefined) return existing;
+
+    const flight = performRefresh();
+    refreshFlightsRef.current.set(environmentId, flight);
+    const finish = () => {
+      if (refreshFlightsRef.current.get(environmentId) === flight) {
+        refreshFlightsRef.current.delete(environmentId);
+      }
+    };
+    void flight.then(finish, finish);
+    return flight;
+  }, [environmentId, performRefresh]);
+  const handleRefresh = useCallback(() => {
+    if (environmentId === null || manualRefreshPendingRef.current.has(environmentId)) return;
+
+    manualRefreshPendingRef.current.add(environmentId);
+    setManualRefreshVersion((current) => current + 1);
+    const flight = refresh();
+    const finish = () => {
+      if (!manualRefreshPendingRef.current.delete(environmentId)) return;
+      setManualRefreshVersion((current) => current + 1);
+    };
+    void flight.then(finish, finish);
+  }, [environmentId, refresh]);
   const resourceRefresh = useCallback(
     createStatusBarResourceRefreshHandler({
       environmentId,
@@ -202,6 +386,32 @@ export function AppStatusBar() {
         primaryLocalEnvironmentId === null ? null : localDiagnostics.refresh,
     }),
     [diagnostics.refresh, environmentId, localDiagnostics.refresh, primaryLocalEnvironmentId],
+  );
+  const handleOpenProviderSettings = useCallback(() => {
+    void navigate({ to: "/settings/providers" });
+  }, [navigate]);
+  const handleConsumeCodexRateLimitReset = useCallback(
+    async (requestId: string) => {
+      if (environmentId === null) {
+        throw new Error("No environment is selected.");
+      }
+      const result = await consumeCodexRateLimitReset({
+        environmentId,
+        input: { requestId },
+      });
+      if (result._tag === "Success") {
+        // Bind the response to the exact query emission current when the
+        // command completed. Any emission observed during redemption is older
+        // than this result; only a subsequent emission may supersede it.
+        const queryEmission = usageAtom === null ? usage.emission : atomRegistry.get(usageAtom);
+        atomRegistry.set(providerUsageResetCacheAtom(environmentId), {
+          usage: result.value.usage,
+          queryEmission,
+        });
+      }
+      return result;
+    },
+    [atomRegistry, consumeCodexRateLimitReset, environmentId, usage.emission, usageAtom],
   );
 
   useEffect(() => {
@@ -220,6 +430,8 @@ export function AppStatusBar() {
       resourceAutoRefreshCleanupRef.current?.();
       resourceAutoRefreshCleanupRef.current = null;
       resourceAutoRefreshEnvironmentRef.current = null;
+      refreshFlightsRef.current.clear();
+      manualRefreshPendingRef.current.clear();
     },
     [],
   );
@@ -259,16 +471,32 @@ export function AppStatusBar() {
     const element = containerRef.current;
     if (!element) return;
     const observer = new ResizeObserver(([entry]) => {
-      setIconOnly((entry?.contentRect.width ?? element.clientWidth) < 500);
+      setIconOnly(
+        (entry?.contentRect.width ?? element.clientWidth) <
+          STATUS_BAR_USAGE_ICON_ONLY_BREAKPOINT_PX,
+      );
     });
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
 
+  useEffect(() => {
+    if (
+      environmentId === null ||
+      resetUsage === null ||
+      isProviderUsageResetCurrent(resetUsage, usage.emission)
+    ) {
+      return;
+    }
+    if (atomRegistry.get(resetUsageAtom) === resetUsage) {
+      atomRegistry.set(resetUsageAtom, null);
+    }
+  }, [atomRegistry, environmentId, resetUsage, resetUsageAtom, usage.emission]);
+
   return (
     <div ref={containerRef}>
       <AppStatusBarView
-        usage={usage.data}
+        usage={visibleProviderUsage(usage.data, usage.emission, resetUsage)}
         diagnostics={{ diagnostics: diagnostics.data, queryError: diagnostics.error }}
         localDiagnostics={
           primaryLocalEnvironmentId === null
@@ -279,9 +507,22 @@ export function AppStatusBar() {
               }
         }
         terminalCount={terminalSessions.length}
-        isRefreshing={usage.isPending}
+        isRefreshing={
+          usage.isPending ||
+          (environmentId !== null && manualRefreshPendingRef.current.has(environmentId))
+        }
         iconOnly={iconOnly}
-        onRefresh={refresh}
+        showClaudeUsage={showClaudeUsage}
+        showCodexUsage={showCodexUsage}
+        showResourceUsage={showResourceUsage}
+        providerStateKey={environmentId ?? "no-environment"}
+        statusBarUsageMode={statusBarUsageMode}
+        usagePercentageDisplay={usagePercentageDisplay}
+        onConsumeCodexRateLimitReset={
+          environmentId === null ? undefined : handleConsumeCodexRateLimitReset
+        }
+        onOpenProviderSettings={handleOpenProviderSettings}
+        onRefresh={handleRefresh}
       />
     </div>
   );

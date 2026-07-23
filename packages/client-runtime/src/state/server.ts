@@ -198,5 +198,13 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:refresh-provider-usage",
       tag: WS_METHODS.serverRefreshProviderUsage,
     }),
+    consumeCodexRateLimitReset: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:consume-codex-rate-limit-reset",
+      tag: WS_METHODS.serverConsumeCodexRateLimitReset,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId }) => environmentId,
+      },
+    }),
   };
 }

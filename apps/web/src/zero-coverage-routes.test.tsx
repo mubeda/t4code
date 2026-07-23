@@ -4,7 +4,6 @@ import { EnvironmentId, ThreadId } from "@t4code/contracts";
 import { act, type ComponentPropsWithoutRef, type ReactElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import * as DateTime from "effect/DateTime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const h = vi.hoisted(() => ({
@@ -156,7 +155,6 @@ import {
 import { PreviewPanel } from "./components/preview/PreviewPanel";
 import { PreviewUnreachable } from "./components/preview/PreviewUnreachable";
 import { useLoadingProgress } from "./components/preview/useLoadingProgress";
-import { ProviderUsagePopover } from "./components/status-bar/ProviderUsagePopover";
 import { BrowserSurfaceSlot } from "./browser/BrowserSurfaceSlot";
 import {
   isCommandPaletteOpen,
@@ -551,7 +549,7 @@ describe("browser surface and progress lifecycles", () => {
   });
 });
 
-describe("command palette and provider usage presentation", () => {
+describe("command palette presentation", () => {
   it("provides command-palette actions and reads live DOM state", async () => {
     const open = vi.fn();
     const captured: { current?: () => void } = {};
@@ -577,59 +575,5 @@ describe("command palette and provider usage presentation", () => {
     expect(() => renderToStaticMarkup(<Consumer />)).toThrow(
       "Command palette actions must be used inside CommandPalette",
     );
-  });
-
-  it("renders provider errors, empty states, and clamped usage bars", async () => {
-    const mounted = await mount(
-      <ProviderUsagePopover
-        viewModel={{
-          provider: "codex",
-          status: "idle",
-          compactLabel: "--",
-          error: null,
-          updatedAt: DateTime.makeUnsafe("2026-07-16T00:00:00.000Z"),
-          windows: [],
-        }}
-      />,
-    );
-    expect(mounted.container.textContent).toContain("Usage windows are unavailable");
-    await rerender(
-      mounted,
-      <ProviderUsagePopover
-        viewModel={{
-          provider: "claude",
-          status: "error",
-          compactLabel: "--",
-          updatedAt: DateTime.makeUnsafe("2026-07-16T00:00:00.000Z"),
-          error: "Usage unavailable",
-          windows: [
-            {
-              key: "session",
-              label: "5 hours",
-              remainingLabel: "0%",
-              usedPercent: 150,
-              barColorClass: "bar",
-              resetsAt: null,
-              resetDescription: null,
-            },
-            {
-              key: "weekly",
-              label: "7 days",
-              remainingLabel: "100%",
-              usedPercent: -20,
-              barColorClass: "bar",
-              resetsAt: null,
-              resetDescription: null,
-            },
-          ],
-        }}
-      />,
-    );
-    expect(mounted.container.textContent).toContain("Usage unavailable");
-    expect(
-      Array.from(mounted.container.querySelectorAll<HTMLElement>(".bar")).map(
-        (bar) => bar.style.width,
-      ),
-    ).toEqual(["0%", "100%"]);
   });
 });

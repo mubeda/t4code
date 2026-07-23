@@ -1,9 +1,10 @@
+use serde_json::json;
 use t4code_server::provider_usage;
 
 use provider_usage::{
     MIN_MANUAL_REFRESH_MS, ProviderUsageFetchError, ProviderUsageFetcher, ProviderUsageProvider,
     ProviderUsageService, ProviderUsageSnapshot, ProviderUsageStatus, ProviderUsageWindow,
-    STALE_THRESHOLD_MS, production_fetchers,
+    RateLimitResetCredits, STALE_THRESHOLD_MS, production_fetchers,
 };
 use std::{
     ffi::{OsStr, OsString},
@@ -118,10 +119,181 @@ fn snapshot(provider: ProviderUsageProvider, updated_at: OffsetDateTime) -> Prov
         status: ProviderUsageStatus::Ok,
         session: None,
         weekly: None,
+        fable_weekly: None,
+        plan_type: None,
+        rate_limit_reset_credits: None,
         updated_at,
         error: None,
         metadata: Default::default(),
     }
+}
+
+#[tokio::test]
+async fn preserves_last_successful_usage_after_refresh_failure() {
+    let first = fixed_time();
+    let second = first + Duration::milliseconds(MIN_MANUAL_REFRESH_MS);
+    let now = Arc::new(Mutex::new(first));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let service = ProviderUsageService::new(
+        vec![fetcher(ProviderUsageProvider::Claude, {
+            let calls = calls.clone();
+            move || {
+                let call = calls.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if call == 0 {
+                        let mut snapshot = snapshot(ProviderUsageProvider::Claude, first);
+                        snapshot.session = Some(ProviderUsageWindow {
+                            used_percent: 25,
+                            window_minutes: 300,
+                            resets_at: None,
+                            reset_description: None,
+                        });
+                        snapshot.weekly = Some(ProviderUsageWindow {
+                            used_percent: 50,
+                            window_minutes: 10_080,
+                            resets_at: None,
+                            reset_description: None,
+                        });
+                        snapshot.fable_weekly = Some(ProviderUsageWindow {
+                            used_percent: 75,
+                            window_minutes: 10_080,
+                            resets_at: None,
+                            reset_description: None,
+                        });
+                        snapshot.plan_type = Some("max".to_owned());
+                        snapshot.rate_limit_reset_credits = Some(RateLimitResetCredits {
+                            available_count: 3,
+                            total_earned_count: Some(5),
+                            next_expires_at: None,
+                        });
+                        Ok(snapshot)
+                    } else {
+                        Err(ProviderUsageFetchError::new("Claude unavailable"))
+                    }
+                }
+            }
+        })],
+        Arc::new({
+            let now = now.clone();
+            move || *now.lock().expect("now")
+        }),
+    );
+
+    service
+        .refresh(Some(vec![ProviderUsageProvider::Claude]))
+        .await;
+    *now.lock().expect("now") = second;
+    let result = service
+        .refresh(Some(vec![ProviderUsageProvider::Claude]))
+        .await;
+    let claude = result
+        .providers
+        .iter()
+        .find(|provider| provider.provider == ProviderUsageProvider::Claude)
+        .expect("claude snapshot");
+
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(claude.status, ProviderUsageStatus::Error);
+    assert_eq!(claude.error.as_deref(), Some("Claude unavailable"));
+    assert_eq!(claude.updated_at, first);
+    assert_eq!(claude.session.as_ref().expect("session").used_percent, 25);
+    assert_eq!(claude.weekly.as_ref().expect("weekly").used_percent, 50);
+    assert_eq!(
+        claude.fable_weekly.as_ref().expect("fable").used_percent,
+        75
+    );
+    assert_eq!(claude.plan_type.as_deref(), Some("max"));
+    assert_eq!(
+        claude
+            .rate_limit_reset_credits
+            .as_ref()
+            .expect("credits")
+            .available_count,
+        3
+    );
+}
+
+#[test]
+fn claude_fable_prefers_a_structured_weekly_scoped_limit() {
+    let snapshot = provider_usage::map_claude_usage(
+        &json!({
+            "five_hour": {"utilization": 20},
+            "limits": [{
+                "kind": "weekly_scoped",
+                "scope": {
+                    "model": {
+                        "display_name": "fAbLe"
+                    }
+                },
+                "percent": 80.4,
+                "resets_at": "1900000000",
+                "is_active": false
+            }],
+            "fable_weekly": {"utilization": 10}
+        }),
+        fixed_time(),
+    );
+
+    let fable = snapshot.fable_weekly.expect("structured Fable limit");
+    assert_eq!(fable.used_percent, 80);
+    assert_eq!(fable.window_minutes, 10_080);
+    assert_eq!(
+        fable.resets_at.expect("reset").unix_timestamp(),
+        1_900_000_000
+    );
+}
+
+#[test]
+fn claude_fable_uses_each_legacy_weekly_field_when_structured_data_is_missing() {
+    for legacy_key in ["fable_weekly", "fable_seven_day", "seven_day_fable"] {
+        let mut payload = json!({"five_hour": {"utilization": 20}});
+        payload[legacy_key] = json!({"used_percentage": 42});
+
+        let snapshot = provider_usage::map_claude_usage(&payload, fixed_time());
+        assert_eq!(
+            snapshot
+                .fable_weekly
+                .as_ref()
+                .expect("legacy Fable limit")
+                .used_percent,
+            42,
+            "{legacy_key}"
+        );
+    }
+}
+
+#[test]
+fn claude_fable_ignores_malformed_or_non_matching_structured_limits() {
+    let snapshot = provider_usage::map_claude_usage(
+        &json!({
+            "five_hour": {"utilization": 20},
+            "limits": [
+                {
+                    "kind": "weekly_scoped",
+                    "scope": {"model": {"display_name": "Fable"}},
+                    "percent": "NaN"
+                },
+                {
+                    "kind": "weekly_scoped",
+                    "scope": {"model": {"display_name": "Other"}},
+                    "percent": 60
+                },
+                {
+                    "kind": "weekly_scoped",
+                    "scope": {"model": {"display_name": "Fable"}},
+                    "percent": null
+                },
+                {
+                    "kind": "weekly_scoped",
+                    "model_display_name": "Fable",
+                    "percent": 70
+                }
+            ]
+        }),
+        fixed_time(),
+    );
+
+    assert!(snapshot.fable_weekly.is_none());
 }
 
 fn fetcher<F, Fut>(provider: ProviderUsageProvider, func: F) -> ProviderUsageFetcher
@@ -171,6 +343,11 @@ async fn normalizes_fetch_failures_into_error_snapshots() {
         .expect("codex snapshot");
     assert_eq!(codex.status, ProviderUsageStatus::Error);
     assert_eq!(codex.error.as_deref(), Some("codex auth missing"));
+    assert!(codex.session.is_none());
+    assert!(codex.weekly.is_none());
+    assert!(codex.fable_weekly.is_none());
+    assert!(codex.plan_type.is_none());
+    assert!(codex.rate_limit_reset_credits.is_none());
 }
 
 #[tokio::test]
@@ -183,7 +360,26 @@ async fn marks_stale_successful_snapshots_unavailable_on_read() {
             let now = now.clone();
             move || {
                 let now = *now.lock().expect("now");
-                async move { Ok(snapshot(ProviderUsageProvider::Claude, now)) }
+                let mut snapshot = snapshot(ProviderUsageProvider::Claude, now);
+                snapshot.session = Some(ProviderUsageWindow {
+                    used_percent: 25,
+                    window_minutes: 300,
+                    resets_at: None,
+                    reset_description: None,
+                });
+                snapshot.fable_weekly = Some(ProviderUsageWindow {
+                    used_percent: 75,
+                    window_minutes: 10_080,
+                    resets_at: None,
+                    reset_description: None,
+                });
+                snapshot.plan_type = Some("max".to_owned());
+                snapshot.rate_limit_reset_credits = Some(RateLimitResetCredits {
+                    available_count: 3,
+                    total_earned_count: None,
+                    next_expires_at: None,
+                });
+                async move { Ok(snapshot) }
             }
         })],
         Arc::new({
@@ -206,6 +402,20 @@ async fn marks_stale_successful_snapshots_unavailable_on_read() {
     assert_eq!(
         claude.error.as_deref(),
         Some("Provider usage snapshot is stale.")
+    );
+    assert_eq!(claude.session.as_ref().expect("session").used_percent, 25);
+    assert_eq!(
+        claude.fable_weekly.as_ref().expect("fable").used_percent,
+        75
+    );
+    assert_eq!(claude.plan_type.as_deref(), Some("max"));
+    assert_eq!(
+        claude
+            .rate_limit_reset_credits
+            .as_ref()
+            .expect("credits")
+            .available_count,
+        3
     );
 }
 
@@ -469,15 +679,34 @@ async fn production_fetchers_handle_local_credentials_and_codex_rpc_responses() 
     let initialize_error = codex_fetch().await.expect_err("initialize error");
     assert_eq!(initialize_error.message, "Codex initialize failed.");
 
+    const SENTINEL_SECRET: &str = "sentinel-private-rate-limit-detail";
+    let rate_limit_error_payload = format!(
+        "{{\"id\":2,\"error\":{{\"message\":\"{SENTINEL_SECRET}\"}}}}"
+    );
     let rate_limit_error = write_codex_fixture(
         temporary.path(),
         "rate-limit-error",
         &["{\"id\":1,\"result\":{}}"],
-        Some("{\"id\":2,\"error\":{\"message\":\"fixture rate limit denied\"}}"),
+        Some(&rate_limit_error_payload),
     );
     EnvGuard::set("CODEX_BIN", &rate_limit_error);
     let rate_limit_error = codex_fetch().await.expect_err("rate-limit error");
-    assert_eq!(rate_limit_error.message, "fixture rate limit denied");
+    assert_eq!(rate_limit_error.message, "Codex rate-limit read failed.");
+    assert!(!rate_limit_error.message.contains(SENTINEL_SECRET));
+
+    let service = ProviderUsageService::new(vec![fetchers[1].clone()], Arc::new(fixed_time));
+    let result = service
+        .refresh(Some(vec![ProviderUsageProvider::Codex]))
+        .await;
+    let codex_error = result
+        .providers
+        .iter()
+        .find(|provider| provider.provider == ProviderUsageProvider::Codex)
+        .and_then(|provider| provider.error.as_deref())
+        .expect("Codex error snapshot");
+    assert_eq!(codex_error, "Codex rate-limit read failed.");
+    let serialized_error = serde_json::to_string(codex_error).expect("serialized provider error");
+    assert!(!serialized_error.contains(SENTINEL_SECRET));
 
     let early_exit = write_codex_fixture(temporary.path(), "early-exit", &[], None);
     EnvGuard::set("CODEX_BIN", &early_exit);
@@ -512,7 +741,7 @@ async fn production_fetchers_handle_local_credentials_and_codex_rpc_responses() 
             "{\"id\":1,\"result\":{}}",
         ],
         Some(
-            "{\"id\":2,\"result\":{\"rateLimits\":{\"primary\":{\"usedPercent\":7.4,\"resetsAt\":\"1900000000\"},\"secondary\":{\"utilization\":101.2,\"resets_at\":1900000000000}}}}",
+            "{\"id\":2,\"result\":{\"rateLimits\":{\"primary\":{\"usedPercent\":7.4,\"resetsAt\":\"1900000000\"},\"secondary\":{\"utilization\":101.2,\"resets_at\":1900000000000}},\"rateLimitResetCredits\":{\"availableCount\":2,\"totalEarnedCount\":5,\"nextExpiresAt\":1900000100,\"credits\":[{\"status\":\"available\",\"expiresAt\":1900000200}]}}}",
         ),
     );
     EnvGuard::set("CODEX_BIN", &successful);
@@ -521,6 +750,20 @@ async fn production_fetchers_handle_local_credentials_and_codex_rpc_responses() 
     assert_eq!(
         successful.metadata.get("source").map(String::as_str),
         Some("app-server")
+    );
+    assert!(successful.plan_type.is_none());
+    let credits = successful
+        .rate_limit_reset_credits
+        .as_ref()
+        .expect("app-server reset credits");
+    assert_eq!(credits.available_count, 2);
+    assert_eq!(credits.total_earned_count, Some(5));
+    assert_eq!(
+        credits
+            .next_expires_at
+            .expect("direct credit expiry")
+            .unix_timestamp(),
+        1_900_000_100
     );
     let session = successful.session.expect("primary window");
     assert_eq!(session.used_percent, 7);
@@ -538,5 +781,28 @@ async fn production_fetchers_handle_local_credentials_and_codex_rpc_responses() 
             .expect("milliseconds reset")
             .unix_timestamp(),
         1_900_000_000
+    );
+
+    let derived_expiry = write_codex_fixture(
+        temporary.path(),
+        "rate-limit-credits-derived-expiry",
+        &["{\"id\":1,\"result\":{}}"],
+        Some(
+            "{\"id\":2,\"result\":{\"rateLimits\":{\"primary\":{\"usedPercent\":8}},\"rateLimitResetCredits\":{\"availableCount\":3,\"credits\":[{\"status\":\"available\",\"expiresAt\":1900000300},{\"status\":\"consumed\",\"expiresAt\":1800000000},{\"status\":\"AVAILABLE\",\"expiresAt\":\"1900000200\"}]}}}",
+        ),
+    );
+    EnvGuard::set("CODEX_BIN", &derived_expiry);
+    let derived_expiry = codex_fetch().await.expect("derived credit expiry");
+    let credits = derived_expiry
+        .rate_limit_reset_credits
+        .expect("derived app-server reset credits");
+    assert_eq!(credits.available_count, 3);
+    assert_eq!(credits.total_earned_count, None);
+    assert_eq!(
+        credits
+            .next_expires_at
+            .expect("earliest available credit expiry")
+            .unix_timestamp(),
+        1_900_000_200
     );
 }

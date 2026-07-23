@@ -134,6 +134,10 @@
       "mode": "unary"
     },
     {
+      "name": "server.consumeCodexRateLimitReset",
+      "mode": "unary"
+    },
+    {
       "name": "server.discoverSourceControl",
       "mode": "unary"
     },
@@ -435,6 +439,8 @@
     "typed-failures/projects__writeFile-01.json",
     "typed-failures/review__getDiffPreview-00.json",
     "typed-failures/review__getDiffPreview-01.json",
+    "typed-failures/server__consumeCodexRateLimitReset-00.json",
+    "typed-failures/server__consumeCodexRateLimitReset-01.json",
     "typed-failures/server__discoverSourceControl-00.json",
     "typed-failures/server__getConfig-00.json",
     "typed-failures/server__getConfig-01.json",
@@ -575,6 +581,8 @@
     "typed-failures/projects__writeFile-01.json": "5da6c3eeca5fc91f0c33b9483d2ae9e1c2f7bb4c5fdc51a31dd5cbb22745e720",
     "typed-failures/review__getDiffPreview-00.json": "cae1d264a279c8de4c90e7f7cdfcf60024d39376011985273540b11f57623317",
     "typed-failures/review__getDiffPreview-01.json": "5da6c3eeca5fc91f0c33b9483d2ae9e1c2f7bb4c5fdc51a31dd5cbb22745e720",
+    "typed-failures/server__consumeCodexRateLimitReset-00.json": "87f58bf89ed130b3dc8d8e312eb4d9bdefdcc0ba53eda93adc5620c15823022d",
+    "typed-failures/server__consumeCodexRateLimitReset-01.json": "5da6c3eeca5fc91f0c33b9483d2ae9e1c2f7bb4c5fdc51a31dd5cbb22745e720",
     "typed-failures/server__discoverSourceControl-00.json": "5da6c3eeca5fc91f0c33b9483d2ae9e1c2f7bb4c5fdc51a31dd5cbb22745e720",
     "typed-failures/server__getConfig-00.json": "cc0120d566fe3d5b0a35a6a0d815fb8374ff1ac452ddaa4597b749658cb0c559",
     "typed-failures/server__getConfig-01.json": "5f48d9e21c2f55c18dd56adce5d48cfbaa6a60565203f4f7876d45f2085df3b0",
@@ -811,6 +819,8 @@
     "typed-failures/projects__writeFile-01.json",
     "typed-failures/review__getDiffPreview-00.json",
     "typed-failures/review__getDiffPreview-01.json",
+    "typed-failures/server__consumeCodexRateLimitReset-00.json",
+    "typed-failures/server__consumeCodexRateLimitReset-01.json",
     "typed-failures/server__discoverSourceControl-00.json",
     "typed-failures/server__getConfig-00.json",
     "typed-failures/server__getConfig-01.json",

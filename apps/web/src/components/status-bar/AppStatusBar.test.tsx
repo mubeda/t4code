@@ -25,7 +25,16 @@ vi.mock("../ui/popover", () => ({
       {children}
     </button>
   ),
-  PopoverContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  PopoverPopup: ({
+    children,
+    viewportClassName: _viewportClassName,
+    ...props
+  }: React.ComponentProps<"div"> & { viewportClassName?: string }) => (
+    <div {...props}>{children}</div>
+  ),
+  PopoverContent: ({ children, ...props }: React.ComponentProps<"div">) => (
+    <div {...props}>{children}</div>
+  ),
 }));
 
 const readAt = DateTime.makeUnsafe("2026-07-07T18:00:00.000Z");
@@ -49,6 +58,9 @@ const usage: ServerProviderUsageResult = {
         resetsAt: null,
         resetDescription: null,
       },
+      fableWeekly: null,
+      planType: null,
+      rateLimitResetCredits: null,
       updatedAt: readAt,
       error: null,
       metadata: {},
@@ -68,6 +80,9 @@ const usage: ServerProviderUsageResult = {
         resetsAt: null,
         resetDescription: null,
       },
+      fableWeekly: null,
+      planType: null,
+      rateLimitResetCredits: null,
       updatedAt: readAt,
       error: null,
       metadata: {},
@@ -150,11 +165,11 @@ describe("AppStatusBarView", () => {
     );
 
     expect(markup).toContain("Claude");
-    expect(markup).toContain("100% 5h");
-    expect(markup).toContain("44% wk");
+    expect(markup).toContain("Session: 100% remaining");
+    expect(markup).toContain("Weekly: 44% remaining");
     expect(markup).toContain("Codex");
-    expect(markup).toContain("89% 5h");
-    expect(markup).toContain("17% wk");
+    expect(markup).toContain("Session: 89% remaining");
+    expect(markup).toContain("Weekly: 17% remaining");
     expect(markup).toContain("702.2 MB");
     expect(markup).toContain("11");
     expect(markup).toContain('aria-label="Combined monitored resources');

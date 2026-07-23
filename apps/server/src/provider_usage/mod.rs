@@ -19,6 +19,8 @@ use crate::{
     },
 };
 
+mod codex_backend;
+
 pub const MIN_MANUAL_REFRESH_MS: i64 = 30_000;
 pub const STALE_THRESHOLD_MS: i64 = 30 * 60_000;
 const USAGE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -52,11 +54,21 @@ pub struct ProviderUsageWindow {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RateLimitResetCredits {
+    pub available_count: u32,
+    pub total_earned_count: Option<u32>,
+    pub next_expires_at: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderUsageSnapshot {
     pub provider: ProviderUsageProvider,
     pub status: ProviderUsageStatus,
     pub session: Option<ProviderUsageWindow>,
     pub weekly: Option<ProviderUsageWindow>,
+    pub fable_weekly: Option<ProviderUsageWindow>,
+    pub plan_type: Option<String>,
+    pub rate_limit_reset_credits: Option<RateLimitResetCredits>,
     pub updated_at: OffsetDateTime,
     pub error: Option<String>,
     pub metadata: BTreeMap<String, String>,
@@ -67,6 +79,34 @@ pub struct ProviderUsageResult {
     pub read_at: OffsetDateTime,
     pub is_fetching: bool,
     pub providers: Vec<ProviderUsageSnapshot>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CodexRateLimitResetOutcome {
+    Reset,
+    NothingToReset,
+    NoCredit,
+    AlreadyRedeemed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConsumeCodexRateLimitResetResult {
+    pub outcome: CodexRateLimitResetOutcome,
+    pub usage: ProviderUsageResult,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderUsageCommandError {
+    pub message: String,
+}
+
+impl ProviderUsageCommandError {
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -94,6 +134,11 @@ enum ClaudeCredentialStore {
 
 type FetchFuture =
     Pin<Box<dyn Future<Output = Result<ProviderUsageSnapshot, ProviderUsageFetchError>> + Send>>;
+type ConsumeCodexResetFuture = Pin<
+    Box<dyn Future<Output = Result<CodexRateLimitResetOutcome, ProviderUsageCommandError>> + Send>,
+>;
+type ConsumeCodexReset =
+    Arc<dyn Fn(String) -> ConsumeCodexResetFuture + Send + Sync>;
 
 #[derive(Clone)]
 pub struct ProviderUsageFetcher {
@@ -104,8 +149,10 @@ pub struct ProviderUsageFetcher {
 #[derive(Default)]
 struct ProviderUsageState {
     snapshots: BTreeMap<ProviderUsageProvider, ProviderUsageSnapshot>,
-    is_fetching: bool,
-    last_refresh_started_at_ms: Option<i64>,
+    active_refreshes: usize,
+    next_refresh_generation: u128,
+    provider_refresh_generations: BTreeMap<ProviderUsageProvider, u128>,
+    refresh_started_at_ms: BTreeMap<u128, i64>,
 }
 
 #[derive(Clone)]
@@ -113,6 +160,14 @@ pub struct ProviderUsageService {
     fetchers: Arc<BTreeMap<ProviderUsageProvider, ProviderUsageFetcher>>,
     now: Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
     state: Arc<Mutex<ProviderUsageState>>,
+    consume_codex_reset: ConsumeCodexReset,
+    codex_reset_lock: Arc<Mutex<()>>,
+}
+
+#[derive(Clone, Copy)]
+enum RefreshPolicy {
+    Throttled,
+    Forced,
 }
 
 impl ProviderUsageService {
@@ -130,7 +185,22 @@ impl ProviderUsageService {
             ),
             now,
             state: Arc::new(Mutex::new(ProviderUsageState::default())),
+            consume_codex_reset: production_codex_rate_limit_reset_consumer(),
+            codex_reset_lock: Arc::new(Mutex::new(())),
         }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    fn with_codex_rate_limit_reset_consumer<F, Fut>(mut self, consume: F) -> Self
+    where
+        F: Fn(String) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<CodexRateLimitResetOutcome, ProviderUsageCommandError>>
+            + Send
+            + 'static,
+    {
+        self.consume_codex_reset = Arc::new(move |request_id| Box::pin(consume(request_id)));
+        self
     }
 
     pub async fn read(&self) -> ProviderUsageResult {
@@ -138,7 +208,7 @@ impl ProviderUsageService {
         let state = self.state.lock().await;
         ProviderUsageResult {
             read_at,
-            is_fetching: state.is_fetching,
+            is_fetching: state.active_refreshes > 0,
             providers: providers()
                 .into_iter()
                 .map(|provider| {
@@ -159,23 +229,119 @@ impl ProviderUsageService {
         &self,
         selected_providers: Option<Vec<ProviderUsageProvider>>,
     ) -> ProviderUsageResult {
+        self.refresh_with_policy(selected_providers, RefreshPolicy::Throttled)
+            .await
+    }
+
+    pub async fn consume_codex_rate_limit_reset(
+        &self,
+        request_id: &str,
+    ) -> Result<ConsumeCodexRateLimitResetResult, ProviderUsageCommandError> {
+        let request_id = request_id.trim();
+        if request_id.is_empty() {
+            return Err(ProviderUsageCommandError::new(
+                "Codex reset request ID is required.",
+            ));
+        }
+        let _redemption = self.codex_reset_lock.lock().await;
+        let outcome = (self.consume_codex_reset)(request_id.to_owned()).await?;
+        let usage = self
+            .refresh_with_policy(
+                Some(vec![ProviderUsageProvider::Codex]),
+                RefreshPolicy::Forced,
+            )
+            .await;
+        Ok(ConsumeCodexRateLimitResetResult { outcome, usage })
+    }
+
+    async fn refresh_with_policy(
+        &self,
+        selected_providers: Option<Vec<ProviderUsageProvider>>,
+        policy: RefreshPolicy,
+    ) -> ProviderUsageResult {
+        let (caller_lifetime, caller_dropped) = tokio::sync::oneshot::channel();
+        let service = self.clone();
+        let operation = tokio::spawn(async move {
+            service
+                .run_refresh_operation(selected_providers, policy, caller_dropped)
+                .await
+        });
+        let result = operation
+            .await
+            .expect("provider usage refresh supervisor panicked");
+        drop(caller_lifetime);
+        result
+    }
+
+    async fn run_refresh_operation(
+        &self,
+        selected_providers: Option<Vec<ProviderUsageProvider>>,
+        policy: RefreshPolicy,
+        mut caller_dropped: tokio::sync::oneshot::Receiver<()>,
+    ) -> ProviderUsageResult {
         let read_at = (self.now)();
         let now_ms = unix_timestamp_ms(read_at);
-        {
+        let selected = selected_providers.unwrap_or_else(providers);
+        let refresh_generation = {
             let mut state = self.state.lock().await;
-            if state
-                .last_refresh_started_at_ms
-                .is_some_and(|last| now_ms - last < MIN_MANUAL_REFRESH_MS)
+            state.refresh_started_at_ms.retain(|_, started_at_ms| {
+                now_ms.saturating_sub(*started_at_ms) < MIN_MANUAL_REFRESH_MS
+            });
+            if matches!(policy, RefreshPolicy::Throttled)
+                && state
+                    .refresh_started_at_ms
+                    .last_key_value()
+                    .is_some()
             {
                 return drop_and_read(state, self).await;
             }
-            state.is_fetching = true;
-            state.last_refresh_started_at_ms = Some(now_ms);
-        }
+            state.active_refreshes = state.active_refreshes.saturating_add(1);
+            state.next_refresh_generation = state.next_refresh_generation.saturating_add(1);
+            let refresh_generation = state.next_refresh_generation;
+            for provider in &selected {
+                state
+                    .provider_refresh_generations
+                    .insert(*provider, refresh_generation);
+            }
+            state
+                .refresh_started_at_ms
+                .insert(refresh_generation, now_ms);
+            refresh_generation
+        };
 
-        let selected = selected_providers.unwrap_or_else(providers);
+        let mut worker = tokio::spawn({
+            let service = self.clone();
+            let selected = selected.clone();
+            async move { service.fetch_refresh_snapshots(&selected, read_at).await }
+        });
+        tokio::select! {
+            biased;
+            _ = &mut caller_dropped => {
+                worker.abort();
+                let _ = worker.await;
+                self.cancel_refresh(refresh_generation, &selected).await
+            }
+            worker_result = &mut worker => {
+                match worker_result {
+                    Ok(next_snapshots) => {
+                        self.commit_refresh(refresh_generation, next_snapshots).await
+                    }
+                    Err(error) => {
+                        self.cancel_refresh(refresh_generation, &selected).await;
+                        panic!("provider usage refresh worker failed: {error}");
+                    }
+                }
+            }
+        }
+    }
+
+    async fn fetch_refresh_snapshots(
+        &self,
+        selected: &[ProviderUsageProvider],
+        read_at: OffsetDateTime,
+    ) -> Vec<(ProviderUsageProvider, ProviderUsageSnapshot)> {
         let mut next_snapshots = Vec::with_capacity(selected.len());
-        for provider in selected {
+        for &provider in selected {
             let snapshot = match self.fetchers.get(&provider) {
                 Some(fetcher) => match (fetcher.fetch)().await {
                     Ok(snapshot) => snapshot,
@@ -187,16 +353,67 @@ impl ProviderUsageService {
                     "Provider usage fetcher is unavailable.",
                 ),
             };
-            next_snapshots.push(snapshot);
+            next_snapshots.push((provider, snapshot));
         }
+        next_snapshots
+    }
 
+    async fn commit_refresh(
+        &self,
+        refresh_generation: u128,
+        next_snapshots: Vec<(ProviderUsageProvider, ProviderUsageSnapshot)>,
+    ) -> ProviderUsageResult {
         let mut state = self.state.lock().await;
-        for snapshot in next_snapshots {
-            state.snapshots.insert(snapshot.provider, snapshot);
+        for (requested_provider, snapshot) in next_snapshots {
+            if snapshot.provider != requested_provider
+                || state.provider_refresh_generations.get(&requested_provider)
+                    != Some(&refresh_generation)
+            {
+                continue;
+            }
+            let prior = state.snapshots.get(&requested_provider);
+            let snapshot = retain_last_good_usage(prior, snapshot);
+            state.snapshots.insert(requested_provider, snapshot);
         }
-        state.is_fetching = false;
+        state.active_refreshes = state.active_refreshes.saturating_sub(1);
         drop_and_read(state, self).await
     }
+
+    async fn cancel_refresh(
+        &self,
+        refresh_generation: u128,
+        selected: &[ProviderUsageProvider],
+    ) -> ProviderUsageResult {
+        let mut state = self.state.lock().await;
+        state.active_refreshes = state.active_refreshes.saturating_sub(1);
+        state.refresh_started_at_ms.remove(&refresh_generation);
+        for provider in selected {
+            if state.provider_refresh_generations.get(provider) == Some(&refresh_generation) {
+                state.provider_refresh_generations.remove(provider);
+            }
+        }
+        drop_and_read(state, self).await
+    }
+}
+
+fn production_codex_rate_limit_reset_consumer() -> ConsumeCodexReset {
+    Arc::new(|request_id| {
+        Box::pin(async move {
+            let codex_home = std::env::var_os("CODEX_HOME")
+                .map(PathBuf::from)
+                .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
+                .ok_or_else(|| {
+                    ProviderUsageCommandError::new("Codex backend credentials are unavailable.")
+                })?;
+            codex_backend::consume_codex_rate_limit_reset_credit(
+                &codex_home,
+                &codex_backend::CodexBackendEndpoints::production(),
+                USAGE_TIMEOUT,
+                &request_id,
+            )
+            .await
+        })
+    })
 }
 
 #[must_use]
@@ -225,12 +442,16 @@ async fn fetch_claude_usage() -> Result<ProviderUsageSnapshot, ProviderUsageFetc
     let credentials_path = configured_directory
         .or_else(|| dirs::home_dir().map(|home| home.join(".claude")))
         .map(|directory| directory.join(".credentials.json"));
+    #[cfg(target_os = "macos")]
+    let mut stores = credentials_path
+        .into_iter()
+        .map(ClaudeCredentialStore::File)
+        .collect::<Vec<_>>();
+    #[cfg(not(target_os = "macos"))]
     let stores = credentials_path
         .into_iter()
         .map(ClaudeCredentialStore::File)
         .collect::<Vec<_>>();
-    #[cfg(target_os = "macos")]
-    let mut stores = stores;
     #[cfg(target_os = "macos")]
     if uses_default_config {
         if let Some(account) = claude_keychain_account() {
@@ -589,6 +810,38 @@ async fn fetch_codex_usage() -> Result<ProviderUsageSnapshot, ProviderUsageFetch
             "Codex not signed in.",
         ));
     }
+    let codex_home = codex_home.expect("Codex home exists when auth.json is present");
+    match codex_backend::fetch_codex_backend_usage(
+        &codex_home,
+        &codex_backend::CodexBackendEndpoints::production(),
+        USAGE_TIMEOUT,
+    )
+    .await
+    {
+        codex_backend::CodexBackendFetch::Success(usage) => {
+            return Ok(ProviderUsageSnapshot {
+                provider: ProviderUsageProvider::Codex,
+                status: ProviderUsageStatus::Ok,
+                session: usage.session,
+                weekly: usage.weekly,
+                fable_weekly: None,
+                plan_type: Some(usage.plan_type),
+                rate_limit_reset_credits: usage.rate_limit_reset_credits,
+                updated_at: now,
+                error: None,
+                metadata: [("source".to_owned(), "backend".to_owned())]
+                    .into_iter()
+                    .collect(),
+            });
+        }
+        codex_backend::CodexBackendFetch::Fallback(_) => {}
+    }
+    fetch_codex_usage_via_app_server(now).await
+}
+
+async fn fetch_codex_usage_via_app_server(
+    now: OffsetDateTime,
+) -> Result<ProviderUsageSnapshot, ProviderUsageFetchError> {
     let binary = match std::env::var("CODEX_BIN") {
         Ok(binary) => binary,
         Err(_) => "codex".to_owned(),
@@ -722,19 +975,17 @@ async fn read_rpc_result<R: tokio::io::AsyncBufRead + Unpin>(
     ))
 }
 
-fn rpc_error(value: &Value, fallback: &str) -> String {
-    value
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or(fallback)
-        .to_owned()
+fn rpc_error(_value: &Value, fallback: &str) -> String {
+    fallback.to_owned()
 }
 
-fn map_claude_usage(payload: &Value, now: OffsetDateTime) -> ProviderUsageSnapshot {
+#[must_use]
+pub fn map_claude_usage(payload: &Value, now: OffsetDateTime) -> ProviderUsageSnapshot {
     usage_snapshot(
         ProviderUsageProvider::Claude,
         map_window(payload.get("five_hour"), 300),
         map_window(payload.get("seven_day"), 10_080),
+        extract_claude_fable_weekly(payload),
         now,
         [
             ("source", "oauth"),
@@ -745,25 +996,67 @@ fn map_claude_usage(payload: &Value, now: OffsetDateTime) -> ProviderUsageSnapsh
 }
 
 fn map_codex_usage(payload: &Value, now: OffsetDateTime) -> ProviderUsageSnapshot {
-    usage_snapshot(
+    let mut snapshot = usage_snapshot(
         ProviderUsageProvider::Codex,
         map_window(payload.pointer("/rateLimits/primary"), 300),
         map_window(payload.pointer("/rateLimits/secondary"), 10_080),
+        None,
         now,
         [("source", "app-server")],
         "Codex did not report rate-limit windows.",
-    )
+    );
+    snapshot.rate_limit_reset_credits = map_codex_app_server_reset_credits(payload);
+    snapshot
+}
+
+fn map_codex_app_server_reset_credits(payload: &Value) -> Option<RateLimitResetCredits> {
+    let raw = payload.get("rateLimitResetCredits")?.as_object()?;
+    let available_count = raw
+        .get("availableCount")
+        .and_then(nonnegative_count)?;
+    let total_earned_count = raw.get("totalEarnedCount").and_then(nonnegative_count);
+    let next_expires_at = raw
+        .get("nextExpiresAt")
+        .and_then(parse_reset)
+        .or_else(|| {
+            raw.get("credits")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|credit| {
+                    credit
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .is_some_and(|status| status.eq_ignore_ascii_case("available"))
+                })
+                .filter_map(|credit| credit.get("expiresAt").and_then(parse_reset))
+                .min()
+        });
+    Some(RateLimitResetCredits {
+        available_count,
+        total_earned_count,
+        next_expires_at,
+    })
+}
+
+fn nonnegative_count(value: &Value) -> Option<u32> {
+    let number = value.as_f64()?;
+    if !number.is_finite() {
+        return None;
+    }
+    Some(number.clamp(0.0, f64::from(u32::MAX)).floor() as u32)
 }
 
 fn usage_snapshot<const N: usize>(
     provider: ProviderUsageProvider,
     session: Option<ProviderUsageWindow>,
     weekly: Option<ProviderUsageWindow>,
+    fable_weekly: Option<ProviderUsageWindow>,
     now: OffsetDateTime,
     metadata: [(&str, &str); N],
     unavailable_message: &str,
 ) -> ProviderUsageSnapshot {
-    if session.is_none() && weekly.is_none() {
+    if session.is_none() && weekly.is_none() && fable_weekly.is_none() {
         return unavailable_snapshot(provider, now, unavailable_message);
     }
     ProviderUsageSnapshot {
@@ -771,6 +1064,9 @@ fn usage_snapshot<const N: usize>(
         status: ProviderUsageStatus::Ok,
         session,
         weekly,
+        fable_weekly,
+        plan_type: None,
+        rate_limit_reset_credits: None,
         updated_at: now,
         error: None,
         metadata: metadata
@@ -783,10 +1079,12 @@ fn usage_snapshot<const N: usize>(
 fn map_window(value: Option<&Value>, window_minutes: u32) -> Option<ProviderUsageWindow> {
     let value = value?;
     let used_percent = value
-        .get("utilization")
+        .get("percent")
+        .or_else(|| value.get("utilization"))
         .or_else(|| value.get("used_percentage"))
         .or_else(|| value.get("usedPercent"))
-        .and_then(Value::as_f64)?
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())?
         .clamp(0.0, 100.0)
         .round() as u32;
     Some(ProviderUsageWindow {
@@ -800,8 +1098,43 @@ fn map_window(value: Option<&Value>, window_minutes: u32) -> Option<ProviderUsag
     })
 }
 
+fn extract_claude_fable_weekly(payload: &Value) -> Option<ProviderUsageWindow> {
+    payload
+        .get("limits")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|limit| is_fable_weekly_limit(limit))
+        .find_map(|limit| map_window(Some(limit), 10_080))
+        .or_else(|| {
+            ["fable_weekly", "fable_seven_day", "seven_day_fable"]
+                .into_iter()
+                .find_map(|key| map_window(payload.get(key), 10_080))
+        })
+}
+
+fn is_fable_weekly_limit(limit: &Value) -> bool {
+    if limit.get("kind").and_then(Value::as_str) != Some("weekly_scoped") {
+        return false;
+    }
+    if !limit
+        .get("percent")
+        .and_then(Value::as_f64)
+        .is_some_and(f64::is_finite)
+    {
+        return false;
+    }
+    limit
+        .pointer("/scope/model/display_name")
+        .and_then(Value::as_str)
+        .is_some_and(|name| name.trim().eq_ignore_ascii_case("fable"))
+}
+
 fn parse_reset(value: &Value) -> Option<OffsetDateTime> {
     if let Some(number) = value.as_f64() {
+        if !number.is_finite() {
+            return None;
+        }
         let seconds = if number < 10_000_000_000.0 {
             number
         } else {
@@ -838,6 +1171,9 @@ fn unavailable_snapshot(
         status: ProviderUsageStatus::Unavailable,
         session: None,
         weekly: None,
+        fable_weekly: None,
+        plan_type: None,
+        rate_limit_reset_credits: None,
         updated_at: now,
         error: Some(error.into()),
         metadata: BTreeMap::new(),
@@ -854,6 +1190,9 @@ fn error_snapshot(
         status: ProviderUsageStatus::Error,
         session: None,
         weekly: None,
+        fable_weekly: None,
+        plan_type: None,
+        rate_limit_reset_credits: None,
         updated_at: now,
         error: Some(error.into()),
         metadata: BTreeMap::new(),
@@ -866,14 +1205,39 @@ fn apply_staleness(snapshot: ProviderUsageSnapshot, now: OffsetDateTime) -> Prov
     }
     let age_ms = (now - snapshot.updated_at).whole_milliseconds();
     if age_ms <= i128::from(STALE_THRESHOLD_MS) {
-        snapshot
-    } else {
-        unavailable_snapshot(
-            snapshot.provider,
-            snapshot.updated_at,
-            "Provider usage snapshot is stale.",
-        )
+        return snapshot;
     }
+    ProviderUsageSnapshot {
+        status: ProviderUsageStatus::Unavailable,
+        error: Some("Provider usage snapshot is stale.".to_owned()),
+        ..snapshot
+    }
+}
+
+fn retain_last_good_usage(
+    prior: Option<&ProviderUsageSnapshot>,
+    failed: ProviderUsageSnapshot,
+) -> ProviderUsageSnapshot {
+    if failed.status != ProviderUsageStatus::Error {
+        return failed;
+    }
+    let Some(prior) = prior.filter(|snapshot| has_usable_usage(snapshot)) else {
+        return failed;
+    };
+    ProviderUsageSnapshot {
+        provider: failed.provider,
+        status: failed.status,
+        error: failed.error,
+        ..prior.clone()
+    }
+}
+
+fn has_usable_usage(snapshot: &ProviderUsageSnapshot) -> bool {
+    snapshot.session.is_some()
+        || snapshot.weekly.is_some()
+        || snapshot.fable_weekly.is_some()
+        || snapshot.plan_type.is_some()
+        || snapshot.rate_limit_reset_credits.is_some()
 }
 
 fn unix_timestamp_ms(value: OffsetDateTime) -> i64 {
@@ -889,8 +1253,631 @@ fn unix_timestamp_ms(value: OffsetDateTime) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    struct ActiveFetchGuard(Arc<AtomicUsize>);
+
+    impl ActiveFetchGuard {
+        fn enter(active: Arc<AtomicUsize>) -> Self {
+            active.fetch_add(1, Ordering::SeqCst);
+            Self(active)
+        }
+    }
+
+    impl Drop for ActiveFetchGuard {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    fn codex_snapshot_with_credits(
+        updated_at: OffsetDateTime,
+        available_count: u32,
+    ) -> ProviderUsageSnapshot {
+        ProviderUsageSnapshot {
+            provider: ProviderUsageProvider::Codex,
+            status: ProviderUsageStatus::Ok,
+            session: None,
+            weekly: None,
+            fable_weekly: None,
+            plan_type: None,
+            rate_limit_reset_credits: Some(RateLimitResetCredits {
+                available_count,
+                total_earned_count: Some(4),
+                next_expires_at: None,
+            }),
+            updated_at,
+            error: None,
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    fn snapshot_with_session(
+        provider: ProviderUsageProvider,
+        updated_at: OffsetDateTime,
+        used_percent: u32,
+    ) -> ProviderUsageSnapshot {
+        ProviderUsageSnapshot {
+            provider,
+            status: ProviderUsageStatus::Ok,
+            session: Some(ProviderUsageWindow {
+                used_percent,
+                window_minutes: 300,
+                resets_at: None,
+                reset_description: None,
+            }),
+            weekly: None,
+            fable_weekly: None,
+            plan_type: None,
+            rate_limit_reset_credits: None,
+            updated_at,
+            error: None,
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    fn test_fetcher<F, Fut>(func: F) -> ProviderUsageFetcher
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<ProviderUsageSnapshot, ProviderUsageFetchError>>
+            + Send
+            + 'static,
+    {
+        ProviderUsageFetcher {
+            provider: ProviderUsageProvider::Codex,
+            fetch: Arc::new(move || Box::pin(func())),
+        }
+    }
+
+    #[tokio::test]
+    async fn consume_codex_rate_limit_reset_forces_refresh_for_every_known_outcome() {
+        let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
+        let outcomes = [
+            CodexRateLimitResetOutcome::Reset,
+            CodexRateLimitResetOutcome::NothingToReset,
+            CodexRateLimitResetOutcome::NoCredit,
+            CodexRateLimitResetOutcome::AlreadyRedeemed,
+        ];
+
+        for outcome in outcomes {
+            let fetch_calls = Arc::new(AtomicUsize::new(0));
+            let request_ids = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let service = ProviderUsageService::new(
+                vec![test_fetcher({
+                    let fetch_calls = fetch_calls.clone();
+                    move || {
+                        let call = fetch_calls.fetch_add(1, Ordering::SeqCst);
+                        async move { Ok(codex_snapshot_with_credits(now, 3 - call as u32)) }
+                    }
+                })],
+                Arc::new(move || now),
+            )
+            .with_codex_rate_limit_reset_consumer({
+                let request_ids = request_ids.clone();
+                move |request_id| {
+                    request_ids.lock().expect("request IDs").push(request_id);
+                    async move { Ok(outcome) }
+                }
+            });
+
+            service
+                .refresh(Some(vec![ProviderUsageProvider::Codex]))
+                .await;
+            let result = service
+                .consume_codex_rate_limit_reset("  request-123  ")
+                .await
+                .expect("known outcome");
+
+            assert_eq!(result.outcome, outcome);
+            assert_eq!(fetch_calls.load(Ordering::SeqCst), 2, "{outcome:?}");
+            assert_eq!(
+                request_ids.lock().expect("request IDs").as_slice(),
+                ["request-123"]
+            );
+            assert_eq!(
+                result
+                    .usage
+                    .providers
+                    .iter()
+                    .find(|provider| provider.provider == ProviderUsageProvider::Codex)
+                    .and_then(|provider| provider.rate_limit_reset_credits.as_ref())
+                    .map(|credits| credits.available_count),
+                Some(2)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn consume_codex_rate_limit_reset_rejects_blank_ids_before_consuming() {
+        let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
+        let consume_calls = Arc::new(AtomicUsize::new(0));
+        let service = ProviderUsageService::new(Vec::new(), Arc::new(move || now))
+            .with_codex_rate_limit_reset_consumer({
+                let consume_calls = consume_calls.clone();
+                move |_| {
+                    consume_calls.fetch_add(1, Ordering::SeqCst);
+                    async { Ok(CodexRateLimitResetOutcome::Reset) }
+                }
+            });
+
+        let error = service
+            .consume_codex_rate_limit_reset(" \t\r\n ")
+            .await
+            .expect_err("blank request ID");
+
+        assert_eq!(error.message, "Codex reset request ID is required.");
+        assert_eq!(consume_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn consume_codex_rate_limit_reset_failures_preserve_cached_credits() {
+        let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
+        for message in [
+            "Codex reset response had an unknown outcome.",
+            "Codex reset request failed with HTTP 503.",
+        ] {
+            let fetch_calls = Arc::new(AtomicUsize::new(0));
+            let service = ProviderUsageService::new(
+                vec![test_fetcher({
+                    let fetch_calls = fetch_calls.clone();
+                    move || {
+                        fetch_calls.fetch_add(1, Ordering::SeqCst);
+                        async move { Ok(codex_snapshot_with_credits(now, 3)) }
+                    }
+                })],
+                Arc::new(move || now),
+            )
+            .with_codex_rate_limit_reset_consumer(move |_| async move {
+                Err(ProviderUsageCommandError::new(message))
+            });
+
+            service
+                .refresh(Some(vec![ProviderUsageProvider::Codex]))
+                .await;
+            let error = service
+                .consume_codex_rate_limit_reset("request-123")
+                .await
+                .expect_err("consume failure");
+            let cached = service.read().await;
+
+            assert_eq!(error.message, message);
+            assert_eq!(fetch_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                cached
+                    .providers
+                    .iter()
+                    .find(|provider| provider.provider == ProviderUsageProvider::Codex)
+                    .and_then(|provider| provider.rate_limit_reset_credits.as_ref())
+                    .map(|credits| credits.available_count),
+                Some(3)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn consume_codex_rate_limit_reset_calls_do_not_overlap() {
+        let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum_active = Arc::new(AtomicUsize::new(0));
+        let service = ProviderUsageService::new(
+            vec![test_fetcher(move || async move {
+                Ok(codex_snapshot_with_credits(now, 1))
+            })],
+            Arc::new(move || now),
+        )
+        .with_codex_rate_limit_reset_consumer({
+            let active = active.clone();
+            let maximum_active = maximum_active.clone();
+            move |_| {
+                let active = active.clone();
+                let maximum_active = maximum_active.clone();
+                async move {
+                    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    maximum_active.fetch_max(current, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    Ok(CodexRateLimitResetOutcome::Reset)
+                }
+            }
+        });
+
+        let (first, second) = tokio::join!(
+            service.consume_codex_rate_limit_reset("request-1"),
+            service.consume_codex_rate_limit_reset("request-2")
+        );
+
+        first.expect("first reset");
+        second.expect("second reset");
+        assert_eq!(maximum_active.load(Ordering::SeqCst), 1);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn forced_reset_refresh_supersedes_older_refresh_and_tracks_active_work() {
+        let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
+        let fetch_calls = Arc::new(AtomicUsize::new(0));
+        let (ordinary_started_tx, ordinary_started_rx) = tokio::sync::oneshot::channel();
+        let (ordinary_release_tx, ordinary_release_rx) = tokio::sync::oneshot::channel();
+        let ordinary_started_tx = Arc::new(std::sync::Mutex::new(Some(ordinary_started_tx)));
+        let ordinary_release_rx = Arc::new(std::sync::Mutex::new(Some(ordinary_release_rx)));
+        let (forced_started_tx, forced_started_rx) = tokio::sync::oneshot::channel();
+        let (forced_release_tx, forced_release_rx) = tokio::sync::oneshot::channel();
+        let forced_started_tx = Arc::new(std::sync::Mutex::new(Some(forced_started_tx)));
+        let forced_release_rx = Arc::new(std::sync::Mutex::new(Some(forced_release_rx)));
+        let service = ProviderUsageService::new(
+            vec![test_fetcher({
+                let fetch_calls = fetch_calls.clone();
+                let ordinary_started_tx = ordinary_started_tx.clone();
+                let ordinary_release_rx = ordinary_release_rx.clone();
+                let forced_started_tx = forced_started_tx.clone();
+                let forced_release_rx = forced_release_rx.clone();
+                move || {
+                    let call = fetch_calls.fetch_add(1, Ordering::SeqCst);
+                    let ordinary_started_tx = ordinary_started_tx.clone();
+                    let ordinary_release_rx = ordinary_release_rx.clone();
+                    let forced_started_tx = forced_started_tx.clone();
+                    let forced_release_rx = forced_release_rx.clone();
+                    async move {
+                        match call {
+                            0 => {
+                                ordinary_started_tx
+                                    .lock()
+                                    .expect("ordinary started sender")
+                                    .take()
+                                    .expect("first ordinary fetch")
+                                    .send(())
+                                    .expect("signal ordinary start");
+                                let release = ordinary_release_rx
+                                    .lock()
+                                    .expect("ordinary release receiver")
+                                    .take()
+                                    .expect("first ordinary fetch");
+                                release.await.expect("release ordinary fetch");
+                                Ok(codex_snapshot_with_credits(now, 3))
+                            }
+                            1 => {
+                                forced_started_tx
+                                    .lock()
+                                    .expect("forced started sender")
+                                    .take()
+                                    .expect("forced fetch")
+                                    .send(())
+                                    .expect("signal forced start");
+                                let release = forced_release_rx
+                                    .lock()
+                                    .expect("forced release receiver")
+                                    .take()
+                                    .expect("forced fetch");
+                                release.await.expect("release forced fetch");
+                                Ok(codex_snapshot_with_credits(now, 2))
+                            }
+                            _ => panic!("unexpected fetch call {call}"),
+                        }
+                    }
+                }
+            })],
+            Arc::new(move || now),
+        )
+        .with_codex_rate_limit_reset_consumer(|_| async {
+            Ok(CodexRateLimitResetOutcome::Reset)
+        });
+
+        let ordinary = tokio::spawn({
+            let service = service.clone();
+            async move {
+                service
+                    .refresh(Some(vec![ProviderUsageProvider::Codex]))
+                    .await
+            }
+        });
+        ordinary_started_rx.await.expect("ordinary fetch started");
+        let reset = tokio::spawn({
+            let service = service.clone();
+            async move {
+                service
+                    .consume_codex_rate_limit_reset("request-123")
+                    .await
+                    .expect("reset result")
+            }
+        });
+        forced_started_rx.await.expect("forced fetch started");
+        forced_release_tx.send(()).expect("release forced fetch");
+        let reset_result = reset.await.expect("reset task");
+        let during_ordinary_fetch = service.read().await;
+        ordinary_release_tx
+            .send(())
+            .expect("release ordinary fetch");
+        ordinary.await.expect("ordinary task");
+        let completed = service.read().await;
+
+        let available_count = |usage: &ProviderUsageResult| {
+            usage
+                .providers
+                .iter()
+                .find(|provider| provider.provider == ProviderUsageProvider::Codex)
+                .and_then(|provider| provider.rate_limit_reset_credits.as_ref())
+                .map(|credits| credits.available_count)
+        };
+        assert!(during_ordinary_fetch.is_fetching);
+        assert_eq!(available_count(&reset_result.usage), Some(2));
+        assert_eq!(available_count(&during_ordinary_fetch), Some(2));
+        assert!(!completed.is_fetching);
+        assert_eq!(available_count(&completed), Some(2));
+    }
+
+    #[tokio::test]
+    async fn cancelled_refresh_reconciles_fetching_and_does_not_throttle_an_immediate_retry() {
+        let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
+        let fetch_calls = Arc::new(AtomicUsize::new(0));
+        let active_fetches = Arc::new(AtomicUsize::new(0));
+        let (first_started_tx, first_started_rx) = tokio::sync::oneshot::channel();
+        let first_started_tx = Arc::new(std::sync::Mutex::new(Some(first_started_tx)));
+        let service = ProviderUsageService::new(
+            vec![test_fetcher({
+                let fetch_calls = fetch_calls.clone();
+                let active_fetches = active_fetches.clone();
+                let first_started_tx = first_started_tx.clone();
+                move || {
+                    let call = fetch_calls.fetch_add(1, Ordering::SeqCst);
+                    let active_fetches = active_fetches.clone();
+                    let first_started_tx = first_started_tx.clone();
+                    async move {
+                        if call == 0 {
+                            let _active = ActiveFetchGuard::enter(active_fetches);
+                            first_started_tx
+                                .lock()
+                                .expect("first fetch sender")
+                                .take()
+                                .expect("first fetch")
+                                .send(())
+                                .expect("signal first fetch start");
+                            return std::future::pending().await;
+                        }
+                        Ok(codex_snapshot_with_credits(now, 2))
+                    }
+                }
+            })],
+            Arc::new(move || now),
+        );
+
+        let caller = tokio::spawn({
+            let service = service.clone();
+            async move {
+                service
+                    .refresh(Some(vec![ProviderUsageProvider::Codex]))
+                    .await
+            }
+        });
+        first_started_rx.await.expect("first fetch started");
+        assert!(service.read().await.is_fetching);
+        assert_eq!(active_fetches.load(Ordering::SeqCst), 1);
+
+        caller.abort();
+        assert!(caller.await.expect_err("caller cancellation").is_cancelled());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !service.read().await.is_fetching
+                    && active_fetches.load(Ordering::SeqCst) == 0
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled refresh reconciled");
+
+        let retry = service
+            .refresh(Some(vec![ProviderUsageProvider::Codex]))
+            .await;
+        assert_eq!(fetch_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            retry
+                .providers
+                .iter()
+                .find(|provider| provider.provider == ProviderUsageProvider::Codex)
+                .and_then(|provider| provider.rate_limit_reset_credits.as_ref())
+                .map(|credits| credits.available_count),
+            Some(2)
+        );
+
+        let state = Arc::downgrade(&service.state);
+        drop(service);
+        tokio::task::yield_now().await;
+        assert!(state.upgrade().is_none(), "refresh task retained service state");
+    }
+
+    #[tokio::test]
+    async fn cancelled_newest_refresh_does_not_reauthorize_an_older_generation() {
+        let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
+        let fetch_calls = Arc::new(AtomicUsize::new(0));
+        let (older_started_tx, older_started_rx) = tokio::sync::oneshot::channel();
+        let (older_release_tx, older_release_rx) = tokio::sync::oneshot::channel();
+        let older_started_tx = Arc::new(std::sync::Mutex::new(Some(older_started_tx)));
+        let older_release_rx = Arc::new(std::sync::Mutex::new(Some(older_release_rx)));
+        let (newer_started_tx, newer_started_rx) = tokio::sync::oneshot::channel();
+        let newer_started_tx = Arc::new(std::sync::Mutex::new(Some(newer_started_tx)));
+        let service = ProviderUsageService::new(
+            vec![test_fetcher({
+                let fetch_calls = fetch_calls.clone();
+                let older_started_tx = older_started_tx.clone();
+                let older_release_rx = older_release_rx.clone();
+                let newer_started_tx = newer_started_tx.clone();
+                move || {
+                    let call = fetch_calls.fetch_add(1, Ordering::SeqCst);
+                    let older_started_tx = older_started_tx.clone();
+                    let older_release_rx = older_release_rx.clone();
+                    let newer_started_tx = newer_started_tx.clone();
+                    async move {
+                        match call {
+                            0 => {
+                                older_started_tx
+                                    .lock()
+                                    .expect("older started sender")
+                                    .take()
+                                    .expect("older fetch")
+                                    .send(())
+                                    .expect("signal older fetch start");
+                                let release = older_release_rx
+                                    .lock()
+                                    .expect("older release receiver")
+                                    .take()
+                                    .expect("older fetch");
+                                release.await.expect("release older fetch");
+                                Ok(codex_snapshot_with_credits(now, 1))
+                            }
+                            1 => {
+                                newer_started_tx
+                                    .lock()
+                                    .expect("newer started sender")
+                                    .take()
+                                    .expect("newer fetch")
+                                    .send(())
+                                    .expect("signal newer fetch start");
+                                std::future::pending().await
+                            }
+                            2 => Ok(codex_snapshot_with_credits(now, 3)),
+                            _ => panic!("unexpected fetch call {call}"),
+                        }
+                    }
+                }
+            })],
+            Arc::new(move || now),
+        );
+
+        let older = tokio::spawn({
+            let service = service.clone();
+            async move {
+                service
+                    .refresh_with_policy(
+                        Some(vec![ProviderUsageProvider::Codex]),
+                        RefreshPolicy::Forced,
+                    )
+                    .await
+            }
+        });
+        older_started_rx.await.expect("older fetch started");
+        let newer = tokio::spawn({
+            let service = service.clone();
+            async move {
+                service
+                    .refresh_with_policy(
+                        Some(vec![ProviderUsageProvider::Codex]),
+                        RefreshPolicy::Forced,
+                    )
+                    .await
+            }
+        });
+        newer_started_rx.await.expect("newer fetch started");
+        newer.abort();
+        assert!(newer.await.expect_err("newer cancellation").is_cancelled());
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let state = service.state.lock().await;
+                let newer_reconciled = state.active_refreshes == 1
+                    && !state
+                        .provider_refresh_generations
+                        .contains_key(&ProviderUsageProvider::Codex);
+                drop(state);
+                if newer_reconciled {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("newer cancellation reconciled");
+
+        older_release_tx.send(()).expect("release older fetch");
+        older.await.expect("older refresh task");
+        let after_older = service.read().await;
+        assert_eq!(
+            after_older
+                .providers
+                .iter()
+                .find(|provider| provider.provider == ProviderUsageProvider::Codex)
+                .and_then(|provider| provider.rate_limit_reset_credits.as_ref()),
+            None,
+            "an absent owner must not authorize the older generation"
+        );
+
+        let successor = service
+            .refresh_with_policy(
+                Some(vec![ProviderUsageProvider::Codex]),
+                RefreshPolicy::Forced,
+            )
+            .await;
+        assert_eq!(fetch_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            successor
+                .providers
+                .iter()
+                .find(|provider| provider.provider == ProviderUsageProvider::Codex)
+                .and_then(|provider| provider.rate_limit_reset_credits.as_ref())
+                .map(|credits| credits.available_count),
+            Some(3)
+        );
+        assert!(!successor.is_fetching);
+    }
+
+    #[tokio::test]
+    async fn mismatched_fetcher_snapshot_cannot_overwrite_the_requested_provider() {
+        let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("timestamp");
+        let legitimate_claude = snapshot_with_session(ProviderUsageProvider::Claude, now, 10);
+        let codex_mislabeled_as_claude =
+            snapshot_with_session(ProviderUsageProvider::Claude, now, 90);
+        let service = ProviderUsageService::new(
+            vec![
+                ProviderUsageFetcher {
+                    provider: ProviderUsageProvider::Claude,
+                    fetch: Arc::new(move || {
+                        let snapshot = legitimate_claude.clone();
+                        Box::pin(async move { Ok(snapshot) })
+                    }),
+                },
+                ProviderUsageFetcher {
+                    provider: ProviderUsageProvider::Codex,
+                    fetch: Arc::new(move || {
+                        let snapshot = codex_mislabeled_as_claude.clone();
+                        Box::pin(async move { Ok(snapshot) })
+                    }),
+                },
+            ],
+            Arc::new(move || now),
+        );
+
+        let usage = service
+            .refresh_with_policy(
+                Some(vec![
+                    ProviderUsageProvider::Claude,
+                    ProviderUsageProvider::Codex,
+                ]),
+                RefreshPolicy::Forced,
+            )
+            .await;
+        let claude = usage
+            .providers
+            .iter()
+            .find(|snapshot| snapshot.provider == ProviderUsageProvider::Claude)
+            .expect("Claude snapshot");
+        let codex = usage
+            .providers
+            .iter()
+            .find(|snapshot| snapshot.provider == ProviderUsageProvider::Codex)
+            .expect("Codex snapshot");
+
+        assert_eq!(
+            claude.session.as_ref().map(|window| window.used_percent),
+            Some(10),
+            "Codex fetch output must not overwrite the requested Claude result"
+        );
+        assert_eq!(codex.session, None);
+        assert_eq!(codex.status, ProviderUsageStatus::Unavailable);
+    }
 
     async fn claude_usage_fixture(
         status: &str,
@@ -1345,6 +2332,9 @@ printf '%s' '{"claudeAiOauth":{"accessToken":"keychain-oauth-token","refreshToke
                             reset_description: Some("soon".to_owned()),
                         }),
                         weekly: None,
+                        fable_weekly: None,
+                        plan_type: None,
+                        rate_limit_reset_credits: None,
                         updated_at: now,
                         error: None,
                         metadata: BTreeMap::new(),
@@ -1400,6 +2390,9 @@ printf '%s' '{"claudeAiOauth":{"accessToken":"keychain-oauth-token","refreshToke
             status: ProviderUsageStatus::Ok,
             session: None,
             weekly: None,
+            fable_weekly: None,
+            plan_type: None,
+            rate_limit_reset_credits: None,
             updated_at: now,
             error: None,
             metadata: BTreeMap::new(),
@@ -1429,14 +2422,14 @@ printf '%s' '{"claudeAiOauth":{"accessToken":"keychain-oauth-token","refreshToke
     }
 
     #[tokio::test]
-    async fn rpc_reader_ignores_noise_and_reports_remote_messages() {
+    async fn rpc_reader_ignores_noise_and_sanitizes_remote_messages() {
         let input =
             b"not-json\n{\"id\":1,\"result\":{}}\n{\"id\":2,\"error\":{\"message\":\"denied\"}}\n";
         let mut lines = BufReader::new(&input[..]).lines();
         let first = read_rpc_result(&mut lines, 1).await.unwrap();
         assert!(first.get("result").is_some());
         let second = read_rpc_result(&mut lines, 2).await.unwrap();
-        assert_eq!(rpc_error(&second["error"], "fallback"), "denied");
+        assert_eq!(rpc_error(&second["error"], "fallback"), "fallback");
 
         let mut empty = BufReader::new(&b""[..]).lines();
         assert_eq!(

@@ -6,6 +6,7 @@ import {
   WS_METHODS,
   WsRpcGroup,
   WsServerGetConfigRpc,
+  WsServerConsumeCodexRateLimitResetRpc,
   WsServerRefreshProvidersRpc,
   WsVcsPullRpc,
   WsVcsRemoveWorktreeRpc,
@@ -32,6 +33,9 @@ describe("WS_METHODS", () => {
 
   it("uses stable wire names for representative methods", () => {
     expect(WS_METHODS.serverGetConfig).toBe("server.getConfig");
+    expect((WS_METHODS as Record<string, string>).serverConsumeCodexRateLimitReset).toBe(
+      "server.consumeCodexRateLimitReset",
+    );
     expect(WS_METHODS.vcsPull).toBe("vcs.pull");
     expect(WS_METHODS.terminalOpen).toBe("terminal.open");
     expect(WS_METHODS.subscribeVcsStatus).toBe("subscribeVcsStatus");
@@ -43,6 +47,9 @@ describe("WS_METHODS", () => {
 describe("individual RPC definitions", () => {
   it("tags each RPC with its wire method name", () => {
     expect(WsServerGetConfigRpc._tag).toBe(WS_METHODS.serverGetConfig);
+    expect(WsServerConsumeCodexRateLimitResetRpc._tag).toBe(
+      WS_METHODS.serverConsumeCodexRateLimitReset,
+    );
     expect(WsServerRefreshProvidersRpc._tag).toBe(WS_METHODS.serverRefreshProviders);
     expect(WsVcsPullRpc._tag).toBe(WS_METHODS.vcsPull);
     expect(WsVcsRemoveWorktreeRpc._tag).toBe(WS_METHODS.vcsRemoveWorktree);
@@ -97,6 +104,7 @@ describe("WsRpcGroup", () => {
   it("registers the individually exported RPCs under their tags", () => {
     const members = [
       WsServerGetConfigRpc,
+      WsServerConsumeCodexRateLimitResetRpc,
       WsVcsPullRpc,
       WsVcsInitRpc,
       WsShellOpenInEditorRpc,

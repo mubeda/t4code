@@ -152,7 +152,13 @@ import {
   ServerUpsertKeybindingInput,
   ServerUpsertKeybindingResult,
 } from "./server.ts";
-import { ServerProviderUsageRefreshInput, ServerProviderUsageResult } from "./providerUsage.ts";
+import {
+  ConsumeCodexRateLimitResetInput,
+  ConsumeCodexRateLimitResetResult,
+  ServerProviderUsageRefreshInput,
+  ServerProviderUsageResetError,
+  ServerProviderUsageResult,
+} from "./providerUsage.ts";
 import {
   ServerSettings,
   ServerSettingsError,
@@ -252,6 +258,7 @@ export const WS_METHODS = {
   serverSignalProcess: "server.signalProcess",
   serverGetProviderUsage: "server.getProviderUsage",
   serverRefreshProviderUsage: "server.refreshProviderUsage",
+  serverConsumeCodexRateLimitReset: "server.consumeCodexRateLimitReset",
 
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
@@ -367,6 +374,15 @@ export const WsServerRefreshProviderUsageRpc = Rpc.make(WS_METHODS.serverRefresh
   success: ServerProviderUsageResult,
   error: EnvironmentAuthorizationError,
 });
+
+export const WsServerConsumeCodexRateLimitResetRpc = Rpc.make(
+  WS_METHODS.serverConsumeCodexRateLimitReset,
+  {
+    payload: ConsumeCodexRateLimitResetInput,
+    success: ConsumeCodexRateLimitResetResult,
+    error: Schema.Union([ServerProviderUsageResetError, EnvironmentAuthorizationError]),
+  },
+);
 
 export const WsCloudGetRelayClientStatusRpc = Rpc.make(WS_METHODS.cloudGetRelayClientStatus, {
   payload: Schema.Struct({}),
@@ -804,6 +820,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerSignalProcessRpc,
   WsServerGetProviderUsageRpc,
   WsServerRefreshProviderUsageRpc,
+  WsServerConsumeCodexRateLimitResetRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,
   WsSourceControlLookupRepositoryRpc,

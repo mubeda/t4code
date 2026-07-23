@@ -447,6 +447,7 @@ vi.mock("./files/FilePreviewPanel", () => {
     },
   };
 });
+vi.mock("./files/ProjectFilesPreloader", () => ({ ProjectFilesPreloader: () => null }));
 
 import ChatView from "./ChatView";
 import type { Project, Thread } from "../types";

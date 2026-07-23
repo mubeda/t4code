@@ -140,6 +140,66 @@ describe("ClientSettings word wrap", () => {
   });
 });
 
+describe("ClientSettings usage status bar", () => {
+  it("defaults the usage display and status bar items", () => {
+    const settings = decodeClientSettings({});
+
+    expect({
+      usagePercentageDisplay: settings.usagePercentageDisplay,
+      statusBarUsageMode: settings.statusBarUsageMode,
+      statusBarItems: settings.statusBarItems,
+    }).toEqual({
+      usagePercentageDisplay: "remaining",
+      statusBarUsageMode: "detailed",
+      statusBarItems: ["claude", "codex", "resource-usage"],
+    });
+  });
+
+  it("decodes valid usage status bar overrides", () => {
+    expect(
+      decodeClientSettings({
+        usagePercentageDisplay: "used",
+        statusBarUsageMode: "compact",
+        statusBarItems: ["resource-usage", "codex"],
+      }),
+    ).toMatchObject({
+      usagePercentageDisplay: "used",
+      statusBarUsageMode: "compact",
+      statusBarItems: ["resource-usage", "codex"],
+    });
+  });
+
+  it("individually recovers invalid usage status bar fields", () => {
+    expect(
+      decodeClientSettings({
+        wordWrap: false,
+        usagePercentageDisplay: "invalid",
+        statusBarUsageMode: "invalid",
+        statusBarItems: ["invalid"],
+      }),
+    ).toMatchObject({
+      wordWrap: false,
+      usagePercentageDisplay: "remaining",
+      statusBarUsageMode: "detailed",
+      statusBarItems: ["claude", "codex", "resource-usage"],
+    });
+  });
+
+  it("preserves valid usage status bar fields beside an invalid field", () => {
+    expect(
+      decodeClientSettings({
+        usagePercentageDisplay: "invalid",
+        statusBarUsageMode: "compact",
+        statusBarItems: ["codex"],
+      }),
+    ).toMatchObject({
+      usagePercentageDisplay: "remaining",
+      statusBarUsageMode: "compact",
+      statusBarItems: ["codex"],
+    });
+  });
+});
+
 describe("ServerSettings.providerSessionDefaults", () => {
   it("defaults legacy settings and the shared default settings object to an empty map", () => {
     expect(decodeServerSettings({}).providerSessionDefaults).toEqual({});

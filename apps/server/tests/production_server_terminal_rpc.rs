@@ -118,6 +118,42 @@ async fn registrar_serves_concrete_server_and_terminal_metadata_rpcs() {
 }
 
 #[tokio::test]
+async fn provider_usage_reset_rpc_rejects_blank_request_ids_with_typed_error() {
+    let temp = TempDir::new().expect("temporary directory");
+    let mut registry = RpcRegistry::empty();
+    register_server_terminal_rpc(&mut registry, fixture_services());
+    let handle = ServerRuntime::start_with_registry(test_config(&temp), registry)
+        .await
+        .expect("Rust server starts");
+    let mut socket = Some(open_socket(handle.local_addr()).await);
+
+    let result = request(
+        socket.as_mut().expect("socket"),
+        "1",
+        "server.consumeCodexRateLimitReset",
+        json!({ "requestId": " \t\r\n " }),
+    )
+    .await;
+    match result {
+        ServerMessage::Exit {
+            exit: RpcExit::Failure { cause: ref items },
+            ..
+        } => {
+            let [CauseItem::Fail { error }] = items.as_slice() else {
+                panic!("expected a single failure cause, got {items:?}");
+            };
+            assert_eq!(error["_tag"], "ServerProviderUsageResetError");
+            assert_eq!(error["message"], "Codex reset request ID is required.");
+        }
+        other => panic!("expected typed reset failure, got {other:?}"),
+    }
+
+    close_socket(&mut socket).await;
+    handle.shutdown();
+    handle.join().await.expect("server joins");
+}
+
+#[tokio::test]
 async fn terminal_rpc_attach_tracks_activity_and_cleans_up_running_child_processes() {
     let temp = TempDir::new().expect("temporary directory");
     let services = fixture_services();
@@ -883,6 +919,7 @@ fn registrar_source_contains_every_owned_rpc_name() {
         "server.getProcessDiagnostics",
         "server.getProcessResourceHistory",
         "server.getProviderUsage",
+        "server.consumeCodexRateLimitReset",
         "server.getSettings",
         "server.getTraceDiagnostics",
         "server.refreshProviders",
@@ -903,6 +940,10 @@ fn registrar_source_contains_every_owned_rpc_name() {
 }
 
 fn fixture_services() -> ServerTerminalServices {
+    let usage = provider_usage::ProviderUsageService::new(
+        Vec::new(),
+        Arc::new(time::OffsetDateTime::now_utc),
+    );
     let sampler = Arc::new(diagnostics::NativeProcessSampler::default());
     let resource_sampler = Arc::new(diagnostics::NativeResourceSampler::new(
         sampler.clone(),
@@ -913,10 +954,6 @@ fn fixture_services() -> ServerTerminalServices {
         resource_sampler.clone(),
         Duration::from_secs(60),
     ));
-    let usage = provider_usage::ProviderUsageService::new(
-        Vec::new(),
-        Arc::new(time::OffsetDateTime::now_utc),
-    );
     let relay = cloud::RelayClientService::new(
         || async {
             cloud::RelayClientStatus::Missing {
@@ -1231,7 +1268,7 @@ fn shell_echo_command(token: &str) -> String {
 
 fn long_running_command() -> &'static str {
     if cfg!(windows) {
-        "ping 127.0.0.1 -n 4\r\n"
+        "echo T4CODE_RPC_LONG_RUNNING_READY & ping 127.0.0.1 -n 4\r\n"
     } else {
         "printf 'T4CODE_RPC_%s\\n' 'LONG_RUNNING_READY'; sleep 3\n"
     }
@@ -1239,7 +1276,7 @@ fn long_running_command() -> &'static str {
 
 fn long_running_output_marker() -> &'static str {
     if cfg!(windows) {
-        "Pinging"
+        "T4CODE_RPC_LONG_RUNNING_READY"
     } else {
         "T4CODE_RPC_LONG_RUNNING_READY"
     }

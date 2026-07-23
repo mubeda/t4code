@@ -9,6 +9,7 @@ const harness = vi.hoisted(() => ({
   refSeeds: {} as Record<number, unknown>,
   refs: [] as Array<{ current: unknown }>,
   refIndex: 0,
+  stateIndex: 0,
   iconOnly: false,
   setIconOnly: vi.fn(),
   effects: [] as Array<() => void | (() => void)>,
@@ -25,8 +26,16 @@ const harness = vi.hoisted(() => ({
   terminalSessions: [] as unknown[],
   terminalInput: null as unknown,
   refreshProviderUsage: vi.fn(),
+  consumeCodexRateLimitReset: vi.fn(),
+  navigate: vi.fn(),
+  clientSettings: {
+    statusBarItems: ["claude", "codex", "resource-usage"],
+    statusBarUsageMode: "detailed",
+    usagePercentageDisplay: "remaining",
+  },
+  presentationOptions: [] as unknown[],
+  providerControls: [] as Array<Record<string, unknown>>,
   buttons: [] as Array<Record<string, unknown>>,
-  providerSegments: [] as Array<Record<string, unknown>>,
   resourceSegments: [] as Array<Record<string, unknown>>,
   resizeCallback: null as ResizeObserverCallback | null,
   observe: vi.fn(),
@@ -44,7 +53,12 @@ vi.mock("react", async (importOriginal) => ({
     harness.refs[index] = ref;
     return ref;
   },
-  useState: () => [harness.iconOnly, harness.setIconOnly],
+  useState: (initial: unknown) => {
+    const index = harness.stateIndex++;
+    return index === 0
+      ? [harness.iconOnly, harness.setIconOnly]
+      : [typeof initial === "function" ? (initial as () => unknown)() : initial, vi.fn()];
+  },
 }));
 vi.mock("../../state/environments", () => ({
   usePrimaryEnvironment: () => harness.primaryEnvironment,
@@ -66,6 +80,7 @@ vi.mock("../../state/server", () => ({
     processDiagnostics: (input: unknown) => harness.diagnostics(input),
     processResourceHistory: (input: unknown) => harness.history(input),
     refreshProviderUsage: { label: "refresh" },
+    consumeCodexRateLimitReset: { label: "reset" },
   },
 }));
 vi.mock("../../state/terminalSessions", () => ({
@@ -75,7 +90,15 @@ vi.mock("../../state/terminalSessions", () => ({
   },
 }));
 vi.mock("../../state/use-atom-command", () => ({
-  useAtomCommand: () => harness.refreshProviderUsage,
+  useAtomCommand: (command: { label: string }) =>
+    command.label === "reset" ? harness.consumeCodexRateLimitReset : harness.refreshProviderUsage,
+}));
+vi.mock("../../hooks/useSettings", () => ({
+  useClientSettings: (selector: (settings: typeof harness.clientSettings) => unknown) =>
+    selector(harness.clientSettings),
+}));
+vi.mock("@tanstack/react-router", () => ({
+  useNavigate: () => harness.navigate,
 }));
 vi.mock("../ui/button", () => ({
   Button: (props: Record<string, unknown>) => {
@@ -88,10 +111,10 @@ vi.mock("../ui/tooltip", () => ({
   TooltipTrigger: ({ render }: { render: React.ReactNode }) => <>{render}</>,
   TooltipPopup: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
 }));
-vi.mock("./ProviderUsageSegment", () => ({
-  ProviderUsageSegment: (props: Record<string, unknown>) => {
-    harness.providerSegments.push(props);
-    return <span data-provider-segment />;
+vi.mock("./ProviderUsageControl", () => ({
+  ProviderUsageControl: (props: Record<string, unknown>) => {
+    harness.providerControls.push(props);
+    return <span data-provider-control />;
   },
 }));
 vi.mock("./ResourceUsageSegment", () => ({
@@ -100,8 +123,15 @@ vi.mock("./ResourceUsageSegment", () => ({
     return <span data-resource-segment />;
   },
 }));
-vi.mock("./statusBarPresentation", () => ({
-  buildProviderUsageViewModel: (provider: Record<string, unknown>) => provider,
+vi.mock("./providerUsagePresentation", () => ({
+  buildProviderUsageViewModels: (
+    providers: ReadonlyArray<Record<string, unknown>>,
+    options: unknown,
+  ) => {
+    harness.presentationOptions.push(options);
+    return providers;
+  },
+  providerUsageRelativeLabelKey: () => "stable-label-bucket",
 }));
 
 import {
@@ -118,11 +148,12 @@ function query(data: unknown = null, isPending = false, error: string | null = n
 
 function renderStatusBar(): string {
   harness.refIndex = 0;
+  harness.stateIndex = 0;
   harness.refs.length = 0;
   harness.effects.length = 0;
   harness.queryInputs.length = 0;
   harness.buttons.length = 0;
-  harness.providerSegments.length = 0;
+  harness.providerControls.length = 0;
   harness.resourceSegments.length = 0;
   return renderToStaticMarkup(<AppStatusBar />);
 }
@@ -131,6 +162,12 @@ function invokeRef(index: number): void {
   const callback = harness.refs[index]?.current;
   if (typeof callback !== "function") throw new Error(`Missing callback ref ${index}`);
   callback();
+}
+
+function latestProviderControl(): Record<string, unknown> {
+  const control = harness.providerControls.at(-1);
+  if (control === undefined) throw new Error("ProviderUsageControl was not rendered.");
+  return control;
 }
 
 beforeEach(() => {
@@ -148,6 +185,16 @@ beforeEach(() => {
   harness.terminalInput = null;
   harness.refreshProviderUsage.mockReset();
   harness.refreshProviderUsage.mockResolvedValue({ _tag: "Success" });
+  harness.consumeCodexRateLimitReset.mockReset();
+  harness.navigate.mockReset().mockResolvedValue(undefined);
+  harness.clientSettings = {
+    statusBarItems: ["claude", "codex", "resource-usage"],
+    statusBarUsageMode: "detailed",
+    usagePercentageDisplay: "remaining",
+  };
+  harness.presentationOptions.length = 0;
+  harness.providerControls.length = 0;
+  harness.resourceSegments.length = 0;
   harness.resizeCallback = null;
   harness.observe.mockReset();
   harness.disconnect.mockReset();
@@ -208,6 +255,47 @@ describe("status bar refresh guards", () => {
 });
 
 describe("AppStatusBar", () => {
+  it("keeps the provider query warm while hidden and re-enables from cached data", () => {
+    const environmentId = EnvironmentId.make("environment-warm");
+    const cachedUsage = { providers: [{ provider: "claude" }, { provider: "codex" }] };
+    harness.primaryEnvironment = { environmentId };
+    harness.clientSettings.statusBarItems = ["resource-usage"];
+    harness.queries = [query(cachedUsage), query(), query()];
+
+    renderStatusBar();
+    expect(harness.providerUsage).toHaveBeenCalledWith({ environmentId, input: {} });
+    expect(harness.providerControls).toHaveLength(0);
+    expect(harness.refreshProviderUsage).not.toHaveBeenCalled();
+
+    harness.clientSettings.statusBarItems = ["claude", "codex", "resource-usage"];
+    renderStatusBar();
+    expect(harness.providerControls).toHaveLength(2);
+    expect(harness.providerControls.map((control) => control.viewModel)).toEqual(
+      cachedUsage.providers,
+    );
+    expect(harness.refreshProviderUsage).not.toHaveBeenCalled();
+  });
+
+  it("propagates percentage, detail, breakpoint, and settings navigation", () => {
+    const environmentId = EnvironmentId.make("environment-settings");
+    harness.primaryEnvironment = { environmentId };
+    harness.clientSettings.statusBarUsageMode = "compact";
+    harness.clientSettings.usagePercentageDisplay = "used";
+    harness.iconOnly = true;
+    harness.queries = [query({ providers: [{ provider: "codex" }] }, true), query(), query()];
+
+    renderStatusBar();
+    expect(harness.presentationOptions.at(-1)).toMatchObject({ percentageDisplay: "used" });
+    expect(harness.providerControls[0]).toMatchObject({
+      statusBarUsageMode: "compact",
+      iconOnly: true,
+      viewModel: { provider: "codex" },
+    });
+
+    (latestProviderControl().onOpenProviderSettings as () => void)();
+    expect(harness.navigate).toHaveBeenCalledWith({ to: "/settings/providers" });
+  });
+
   it("uses null queries and tears down refreshers without an environment", () => {
     const usageCleanup = vi.fn();
     const resourceCleanup = vi.fn();
@@ -349,10 +437,20 @@ describe("AppStatusBar", () => {
     const cleanup = harness.effects[5]?.();
     expect(harness.observe).toHaveBeenCalledWith(element);
     harness.resizeCallback?.(
-      [{ contentRect: { width: 600 } } as ResizeObserverEntry],
+      [{ contentRect: { width: 900 } } as ResizeObserverEntry],
       {} as ResizeObserver,
     );
     expect(harness.setIconOnly).toHaveBeenCalledWith(false);
+    harness.resizeCallback?.(
+      [{ contentRect: { width: 800 } } as ResizeObserverEntry],
+      {} as ResizeObserver,
+    );
+    expect(harness.setIconOnly).toHaveBeenCalledWith(true);
+    harness.resizeCallback?.(
+      [{ contentRect: { width: 600 } } as ResizeObserverEntry],
+      {} as ResizeObserver,
+    );
+    expect(harness.setIconOnly).toHaveBeenCalledWith(true);
     harness.resizeCallback?.([] as unknown as ResizeObserverEntry[], {} as ResizeObserver);
     expect(harness.setIconOnly).toHaveBeenCalledWith(true);
     if (typeof cleanup === "function") cleanup();
@@ -361,7 +459,7 @@ describe("AppStatusBar", () => {
 });
 
 describe("AppStatusBarView defaults", () => {
-  it("renders no providers and exposes refresh state", () => {
+  it("renders no provider control or refresh affordance without provider snapshots", () => {
     renderToStaticMarkup(
       <AppStatusBarView
         usage={null}
@@ -373,7 +471,109 @@ describe("AppStatusBarView defaults", () => {
         onRefresh={vi.fn()}
       />,
     );
-    expect(harness.providerSegments).toHaveLength(0);
-    expect(String(harness.buttons[0]?.children)).toContain("object");
+    expect(harness.providerControls).toHaveLength(0);
+    expect(harness.buttons).toHaveLength(0);
+  });
+
+  it("filters provider snapshots for display and controls Resource Manager independently", () => {
+    const usage = {
+      providers: [{ provider: "claude" }, { provider: "codex" }],
+    } as never;
+
+    renderToStaticMarkup(
+      <AppStatusBarView
+        usage={usage}
+        diagnostics={{ diagnostics: null, queryError: null }}
+        localDiagnostics={null}
+        terminalCount={0}
+        showClaudeUsage={false}
+        showCodexUsage
+        showResourceUsage={false}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    expect(harness.providerControls).toHaveLength(1);
+    expect(harness.providerControls[0]?.viewModel).toEqual({ provider: "codex" });
+    expect(harness.resourceSegments).toHaveLength(0);
+
+    harness.providerControls.length = 0;
+    harness.resourceSegments.length = 0;
+    renderToStaticMarkup(
+      <AppStatusBarView
+        usage={usage}
+        diagnostics={{ diagnostics: null, queryError: null }}
+        localDiagnostics={null}
+        terminalCount={0}
+        showClaudeUsage
+        showCodexUsage={false}
+        showResourceUsage
+        onRefresh={vi.fn()}
+      />,
+    );
+    expect(harness.providerControls[0]?.viewModel).toEqual({ provider: "claude" });
+    expect(harness.resourceSegments).toHaveLength(1);
+  });
+
+  it("renders Claude then Codex as independent triggers followed by one shared refresh", () => {
+    const onRefresh = vi.fn();
+    const markup = renderToStaticMarkup(
+      <AppStatusBarView
+        usage={{ providers: [{ provider: "codex" }, { provider: "claude" }] } as never}
+        diagnostics={{ diagnostics: null, queryError: null }}
+        localDiagnostics={null}
+        terminalCount={0}
+        onRefresh={onRefresh}
+      />,
+    );
+
+    expect(harness.providerControls.map((control) => control.viewModel)).toEqual([
+      { provider: "claude" },
+      { provider: "codex" },
+    ]);
+    expect(markup.match(/aria-label="Refresh provider usage"/g)).toHaveLength(1);
+    expect(markup.indexOf("data-provider-control")).toBeLessThan(
+      markup.indexOf('aria-label="Refresh provider usage"'),
+    );
+  });
+
+  it("removes provider controls and their refresh affordance when both are hidden", () => {
+    const markup = renderToStaticMarkup(
+      <AppStatusBarView
+        usage={{ providers: [{ provider: "claude" }, { provider: "codex" }] } as never}
+        diagnostics={{ diagnostics: null, queryError: null }}
+        localDiagnostics={null}
+        terminalCount={0}
+        showClaudeUsage={false}
+        showCodexUsage={false}
+        showResourceUsage
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    expect(harness.providerControls).toHaveLength(0);
+    expect(harness.buttons).toHaveLength(0);
+    expect(markup).not.toContain("Refresh status bar usage");
+    expect(harness.resourceSegments).toHaveLength(1);
+  });
+
+  it("renders no status indicators when every status bar item is hidden", () => {
+    const markup = renderToStaticMarkup(
+      <AppStatusBarView
+        usage={{ providers: [{ provider: "claude" }, { provider: "codex" }] } as never}
+        diagnostics={{ diagnostics: null, queryError: null }}
+        localDiagnostics={null}
+        terminalCount={0}
+        showClaudeUsage={false}
+        showCodexUsage={false}
+        showResourceUsage={false}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    expect(harness.providerControls).toHaveLength(0);
+    expect(harness.resourceSegments).toHaveLength(0);
+    expect(harness.buttons).toHaveLength(0);
+    expect(markup).not.toContain("Refresh status bar usage");
   });
 });

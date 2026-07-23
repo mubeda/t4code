@@ -17,6 +17,22 @@ export const TimestampFormat = Schema.Literals(["locale", "12-hour", "24-hour"])
 export type TimestampFormat = typeof TimestampFormat.Type;
 export const DEFAULT_TIMESTAMP_FORMAT: TimestampFormat = "locale";
 
+export const UsagePercentageDisplay = Schema.Literals(["used", "remaining"]);
+export type UsagePercentageDisplay = typeof UsagePercentageDisplay.Type;
+export const DEFAULT_USAGE_PERCENTAGE_DISPLAY: UsagePercentageDisplay = "remaining";
+
+export const StatusBarUsageMode = Schema.Literals(["detailed", "compact"]);
+export type StatusBarUsageMode = typeof StatusBarUsageMode.Type;
+export const DEFAULT_STATUS_BAR_USAGE_MODE: StatusBarUsageMode = "detailed";
+
+export const StatusBarItem = Schema.Literals(["claude", "codex", "resource-usage"]);
+export type StatusBarItem = typeof StatusBarItem.Type;
+export const DEFAULT_STATUS_BAR_ITEMS: readonly StatusBarItem[] = [
+  "claude",
+  "codex",
+  "resource-usage",
+];
+
 export const SidebarProjectSortOrder = Schema.Literals(["updated_at", "created_at", "manual"]);
 export type SidebarProjectSortOrder = typeof SidebarProjectSortOrder.Type;
 export const DEFAULT_SIDEBAR_PROJECT_SORT_ORDER: SidebarProjectSortOrder = "updated_at";
@@ -119,10 +135,22 @@ export const ClientSettingsSchema = Schema.Struct({
   sidebarThreadPreviewCount: SidebarThreadPreviewCount.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_THREAD_PREVIEW_COUNT)),
   ),
+  statusBarItems: Schema.Array(StatusBarItem).pipe(
+    Schema.catchDecoding(() => Effect.succeedSome(DEFAULT_STATUS_BAR_ITEMS)),
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_STATUS_BAR_ITEMS)),
+  ),
+  statusBarUsageMode: StatusBarUsageMode.pipe(
+    Schema.catchDecoding(() => Effect.succeedSome(DEFAULT_STATUS_BAR_USAGE_MODE)),
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_STATUS_BAR_USAGE_MODE)),
+  ),
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
   ),
   terminalFontPreference: TerminalFontPreference,
+  usagePercentageDisplay: UsagePercentageDisplay.pipe(
+    Schema.catchDecoding(() => Effect.succeedSome(DEFAULT_USAGE_PERCENTAGE_DISPLAY)),
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_USAGE_PERCENTAGE_DISPLAY)),
+  ),
   wordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
 export type ClientSettings = typeof ClientSettingsSchema.Type;
@@ -641,8 +669,11 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarProjectSortOrder: Schema.optionalKey(SidebarProjectSortOrder),
   sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),
+  statusBarItems: Schema.optionalKey(Schema.Array(StatusBarItem)),
+  statusBarUsageMode: Schema.optionalKey(StatusBarUsageMode),
   timestampFormat: Schema.optionalKey(TimestampFormat),
   terminalFontPreference: Schema.optionalKey(TerminalFontPreference),
+  usagePercentageDisplay: Schema.optionalKey(UsagePercentageDisplay),
   wordWrap: Schema.optionalKey(Schema.Boolean),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;

@@ -588,6 +588,79 @@ async fn websocket_authorizes_rpc_scopes_and_streams_auth_access_changes() {
         "access:read"
     );
 
+    send_ws_json(
+        &mut restricted_socket,
+        json!({
+            "_tag": "Request",
+            "id": "103",
+            "tag": "server.consumeCodexRateLimitReset",
+            "payload": { "requestId": "request-123" },
+            "headers": []
+        }),
+    )
+    .await;
+    let reset_denied = next_ws_json(&mut restricted_socket).await;
+    assert_eq!(reset_denied["_tag"], "Exit");
+    assert_eq!(reset_denied["exit"]["_tag"], "Failure");
+    assert_eq!(
+        reset_denied["exit"]["cause"][0]["error"]["_tag"],
+        "EnvironmentAuthorizationError"
+    );
+    assert_eq!(
+        reset_denied["exit"]["cause"][0]["error"]["requiredScope"],
+        "orchestration:operate"
+    );
+
+    let operate_pairing = get_json(
+        client
+            .post(http_url(&handle, "/api/auth/pairing-token"))
+            .bearer_auth(administrator_token)
+            .json(&json!({ "scopes": ["orchestration:operate"] }))
+            .send()
+            .await
+            .expect("operate pairing request"),
+        StatusCode::OK,
+    )
+    .await;
+    let operate = exchange_token(
+        &client,
+        &handle,
+        operate_pairing["credential"]
+            .as_str()
+            .expect("operate credential"),
+        None,
+    )
+    .await;
+    let operate_ticket = websocket_ticket(&client, &handle, access_token(&operate)).await;
+    let (mut operate_socket, _) = connect_async(format!(
+        "ws://{}/ws?wsTicket={operate_ticket}",
+        handle.local_addr()
+    ))
+    .await
+    .expect("operate WebSocket");
+    send_ws_json(
+        &mut operate_socket,
+        json!({
+            "_tag": "Request",
+            "id": "104",
+            "tag": "server.consumeCodexRateLimitReset",
+            "payload": { "requestId": "  " },
+            "headers": []
+        }),
+    )
+    .await;
+    let reset_authorized = next_ws_json(&mut operate_socket).await;
+    assert_eq!(reset_authorized["_tag"], "Exit");
+    assert_eq!(reset_authorized["exit"]["_tag"], "Failure");
+    assert_eq!(
+        reset_authorized["exit"]["cause"][0]["error"]["_tag"],
+        "ServerProviderUsageResetError"
+    );
+    operate_socket
+        .close(None)
+        .await
+        .expect("close operate WebSocket");
+
     let clients = get_json(
         client
             .get(http_url(&handle, "/api/auth/clients"))
@@ -1216,6 +1289,15 @@ async fn start_desktop_server(temp: &TempDir) -> ServerHandle {
     registry.register_unary("server.getConfig", |_request, _cancellation| async {
         Ok(json!({}))
     });
+    registry.register_unary(
+        "server.consumeCodexRateLimitReset",
+        |_request, _cancellation| async {
+            Err(json!({
+                "_tag": "ServerProviderUsageResetError",
+                "message": "Codex reset request ID is required.",
+            }))
+        },
+    );
     ServerRuntime::start_with_registry(config, registry)
         .await
         .expect("server starts")

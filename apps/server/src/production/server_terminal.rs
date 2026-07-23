@@ -17,8 +17,9 @@ use crate::{
     },
     production::orchestration_effects::SetupScriptLaunch,
     provider_usage::{
-        ProviderUsageProvider, ProviderUsageResult, ProviderUsageService, ProviderUsageSnapshot,
-        ProviderUsageStatus, ProviderUsageWindow,
+        CodexRateLimitResetOutcome, ConsumeCodexRateLimitResetResult, ProviderUsageProvider,
+        ProviderUsageCommandError, ProviderUsageResult, ProviderUsageService,
+        ProviderUsageSnapshot, ProviderUsageStatus, ProviderUsageWindow, RateLimitResetCredits,
     },
     rpc::{RpcRegistry, RpcResult, RpcStreamChunk},
     terminal::{
@@ -267,6 +268,22 @@ fn register_provider_usage_rpcs(registry: &mut RpcRegistry, services: &ServerTer
                     })
                     .transpose()?;
                 Ok(provider_usage_to_wire(usage.refresh(providers).await))
+            }
+        },
+    );
+
+    let usage = services.provider_usage.clone();
+    registry.register_unary(
+        "server.consumeCodexRateLimitReset",
+        move |request, _cancellation| {
+            let usage = usage.clone();
+            async move {
+                let input: ConsumeCodexRateLimitResetInput = decode_payload(&request.payload)?;
+                usage
+                    .consume_codex_rate_limit_reset(&input.request_id)
+                    .await
+                    .map(consume_codex_rate_limit_reset_to_wire)
+                    .map_err(provider_usage_reset_error_to_wire)
             }
         },
     );
@@ -686,6 +703,12 @@ struct RefreshProviderUsageInput {
     providers: Option<Vec<String>>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConsumeCodexRateLimitResetInput {
+    request_id: String,
+}
+
 fn decode_payload<T: for<'de> Deserialize<'de>>(payload: &Value) -> Result<T, Value> {
     serde_json::from_value(payload.clone()).map_err(|error| invalid_request(&error.to_string()))
 }
@@ -732,9 +755,39 @@ fn provider_usage_snapshot_to_wire(snapshot: ProviderUsageSnapshot) -> Value {
         },
         "session": snapshot.session.map(provider_usage_window_to_wire),
         "weekly": snapshot.weekly.map(provider_usage_window_to_wire),
+        "fableWeekly": snapshot.fable_weekly.map(provider_usage_window_to_wire),
+        "planType": snapshot.plan_type,
+        "rateLimitResetCredits": snapshot.rate_limit_reset_credits.map(rate_limit_reset_credits_to_wire),
         "updatedAt": format_time(snapshot.updated_at),
         "error": snapshot.error,
         "metadata": snapshot.metadata,
+    })
+}
+
+fn rate_limit_reset_credits_to_wire(credits: RateLimitResetCredits) -> Value {
+    json!({
+        "availableCount": credits.available_count,
+        "totalEarnedCount": credits.total_earned_count,
+        "nextExpiresAt": credits.next_expires_at.map(format_time),
+    })
+}
+
+fn consume_codex_rate_limit_reset_to_wire(result: ConsumeCodexRateLimitResetResult) -> Value {
+    json!({
+        "outcome": match result.outcome {
+            CodexRateLimitResetOutcome::Reset => "reset",
+            CodexRateLimitResetOutcome::NothingToReset => "nothingToReset",
+            CodexRateLimitResetOutcome::NoCredit => "noCredit",
+            CodexRateLimitResetOutcome::AlreadyRedeemed => "alreadyRedeemed",
+        },
+        "usage": provider_usage_to_wire(result.usage),
+    })
+}
+
+fn provider_usage_reset_error_to_wire(error: ProviderUsageCommandError) -> Value {
+    json!({
+        "_tag": "ServerProviderUsageResetError",
+        "message": error.message,
     })
 }
 
@@ -2038,6 +2091,9 @@ mod tests {
                         reset_description: Some("soon".to_owned()),
                     }),
                     weekly: None,
+                    fable_weekly: None,
+                    plan_type: None,
+                    rate_limit_reset_credits: None,
                     updated_at: now,
                     error: None,
                     metadata: BTreeMap::new(),
@@ -2047,6 +2103,9 @@ mod tests {
                     status: ProviderUsageStatus::Error,
                     session: None,
                     weekly: None,
+                    fable_weekly: None,
+                    plan_type: None,
+                    rate_limit_reset_credits: None,
                     updated_at: now,
                     error: Some("unavailable".to_owned()),
                     metadata: BTreeMap::from([("source".to_owned(), "test".to_owned())]),
@@ -2185,5 +2244,96 @@ mod tests {
                 .is_empty()
         );
         services.shutdown().await;
+    }
+
+    #[test]
+    fn codex_reset_wire_serializes_outcomes_complete_snapshots_and_typed_errors() {
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let usage = ProviderUsageResult {
+            read_at: now,
+            is_fetching: false,
+            providers: vec![
+                ProviderUsageSnapshot {
+                    provider: ProviderUsageProvider::Claude,
+                    status: ProviderUsageStatus::Unavailable,
+                    session: None,
+                    weekly: None,
+                    fable_weekly: None,
+                    plan_type: None,
+                    rate_limit_reset_credits: None,
+                    updated_at: now,
+                    error: None,
+                    metadata: BTreeMap::new(),
+                },
+                ProviderUsageSnapshot {
+                    provider: ProviderUsageProvider::Codex,
+                    status: ProviderUsageStatus::Ok,
+                    session: None,
+                    weekly: None,
+                    fable_weekly: Some(ProviderUsageWindow {
+                        used_percent: 40,
+                        window_minutes: 10_080,
+                        resets_at: None,
+                        reset_description: None,
+                    }),
+                    plan_type: Some("pro".to_owned()),
+                    rate_limit_reset_credits: Some(RateLimitResetCredits {
+                        available_count: 2,
+                        total_earned_count: None,
+                        next_expires_at: None,
+                    }),
+                    updated_at: now,
+                    error: None,
+                    metadata: BTreeMap::new(),
+                },
+            ],
+        };
+
+        for (outcome, expected) in [
+            (CodexRateLimitResetOutcome::Reset, "reset"),
+            (
+                CodexRateLimitResetOutcome::NothingToReset,
+                "nothingToReset",
+            ),
+            (CodexRateLimitResetOutcome::NoCredit, "noCredit"),
+            (
+                CodexRateLimitResetOutcome::AlreadyRedeemed,
+                "alreadyRedeemed",
+            ),
+        ] {
+            let wire = consume_codex_rate_limit_reset_to_wire(
+                ConsumeCodexRateLimitResetResult {
+                    outcome,
+                    usage: usage.clone(),
+                },
+            );
+            assert_eq!(wire["outcome"], expected);
+            let absent = &wire["usage"]["providers"][0];
+            assert_eq!(absent["fableWeekly"], Value::Null);
+            assert_eq!(absent["planType"], Value::Null);
+            assert_eq!(absent["rateLimitResetCredits"], Value::Null);
+            let codex = &wire["usage"]["providers"][1];
+            assert_eq!(codex["fableWeekly"]["usedPercent"], 40);
+            assert_eq!(codex["planType"], "pro");
+            assert_eq!(codex["rateLimitResetCredits"]["availableCount"], 2);
+            assert_eq!(
+                codex["rateLimitResetCredits"]["totalEarnedCount"],
+                Value::Null
+            );
+            assert_eq!(
+                codex["rateLimitResetCredits"]["nextExpiresAt"],
+                Value::Null
+            );
+        }
+
+        assert_eq!(
+            provider_usage_reset_error_to_wire(ProviderUsageCommandError::new(
+                "Codex reset request failed."
+            )),
+            json!({
+                "_tag": "ServerProviderUsageResetError",
+                "message": "Codex reset request failed.",
+            })
+        );
     }
 }

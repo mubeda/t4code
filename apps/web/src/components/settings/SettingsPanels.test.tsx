@@ -334,6 +334,18 @@ vi.mock("../ui/switch", () => ({
   },
 }));
 
+vi.mock("../ui/toggle-group", () => ({
+  ToggleGroup: (props: AnyProps) => {
+    h.controls.push({
+      kind: "toggle-group",
+      label: (props["aria-label"] as string | undefined) ?? "",
+      props,
+    });
+    return <div data-testid="toggle-group">{props.children as ReactNode}</div>;
+  },
+  Toggle: (props: AnyProps) => <button type="button">{props.children as ReactNode}</button>,
+}));
+
 vi.mock("../ui/toast", () => ({
   toastManager: { add: h.toastAdd },
   stackedThreadToast: (options: unknown) => options,
@@ -531,6 +543,9 @@ function changedSettings(): UnifiedSettings {
       webglEnabled: !DEFAULT_UNIFIED_SETTINGS.terminal.webglEnabled,
     },
     textGenerationModelSelection: { instanceId: CODEX_INSTANCE_ID, model: "model-beta" },
+    usagePercentageDisplay: "used",
+    statusBarUsageMode: "compact",
+    statusBarItems: ["codex"],
   };
 }
 
@@ -576,6 +591,17 @@ describe("GeneralSettingsPanel", () => {
     expect(startFromOrigin).toBeGreaterThanOrEqual(0);
     expect(workspace).toBeGreaterThan(startFromOrigin);
     expect(addProject).toBeGreaterThan(workspace);
+  });
+
+  it("places Status bar between General and Terminal", () => {
+    const markup = render(<GeneralSettingsPanel />);
+
+    expect(markup.indexOf('data-section-title="General"')).toBeLessThan(
+      markup.indexOf('data-section-title="Status bar"'),
+    );
+    expect(markup.indexOf('data-section-title="Status bar"')).toBeLessThan(
+      markup.indexOf('data-section-title="Terminal"'),
+    );
   });
 
   it("changes the device-local terminal font preset", () => {
@@ -993,6 +1019,9 @@ describe("useSettingsRestore", () => {
       "Diff whitespace changes",
       "Auto-open task panel",
       "Assistant output",
+      "Usage percentage",
+      "Footer detail",
+      "Status bar indicators",
       "Terminal font",
       "WebGL renderer",
       "Automatic Git fetch interval",
@@ -1026,6 +1055,9 @@ describe("useSettingsRestore", () => {
         confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
         worktreeBaseDirectory: "",
         terminalFontPreference: DEFAULT_UNIFIED_SETTINGS.terminalFontPreference,
+        usagePercentageDisplay: DEFAULT_UNIFIED_SETTINGS.usagePercentageDisplay,
+        statusBarUsageMode: DEFAULT_UNIFIED_SETTINGS.statusBarUsageMode,
+        statusBarItems: DEFAULT_UNIFIED_SETTINGS.statusBarItems,
         terminal: {
           webglEnabled: DEFAULT_UNIFIED_SETTINGS.terminal.webglEnabled,
         },

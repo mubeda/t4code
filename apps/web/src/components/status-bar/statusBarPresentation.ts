@@ -3,74 +3,10 @@ import type {
   ServerProcessDiagnosticsResult,
   ServerProcessResourceTotals,
   ServerProcessUiCoverage,
-  ServerProviderUsageSnapshot,
-  ServerProviderUsageWindow,
 } from "@t4code/contracts";
 import * as Option from "effect/Option";
 
-import {
-  formatCpuPercent,
-  formatMemoryBytes,
-  formatProviderWindowLabel,
-  formatRemainingPercent,
-  providerUsageBarColorClass,
-} from "./statusBarFormat";
-
-export interface ProviderUsageWindowViewModel {
-  readonly key: "session" | "weekly";
-  readonly label: string;
-  readonly usedPercent: number;
-  readonly remainingLabel: string;
-  readonly barColorClass: string;
-  readonly resetsAt: ServerProviderUsageWindow["resetsAt"];
-  readonly resetDescription: string | null;
-}
-
-export interface ProviderUsageViewModel {
-  readonly provider: ServerProviderUsageSnapshot["provider"];
-  readonly status: ServerProviderUsageSnapshot["status"];
-  readonly compactLabel: string;
-  readonly windows: ReadonlyArray<ProviderUsageWindowViewModel>;
-  readonly error: string | null;
-  readonly updatedAt: ServerProviderUsageSnapshot["updatedAt"];
-}
-
-function buildWindowViewModel(
-  key: "session" | "weekly",
-  window: ServerProviderUsageWindow | null,
-): ProviderUsageWindowViewModel | null {
-  if (!window) return null;
-  return {
-    key,
-    label: formatProviderWindowLabel(window),
-    usedPercent: window.usedPercent,
-    remainingLabel: formatRemainingPercent(window.usedPercent),
-    barColorClass: providerUsageBarColorClass(window.usedPercent),
-    resetsAt: window.resetsAt,
-    resetDescription: window.resetDescription,
-  };
-}
-
-export function buildProviderUsageViewModel(
-  snapshot: ServerProviderUsageSnapshot,
-): ProviderUsageViewModel {
-  const windows = [
-    buildWindowViewModel("session", snapshot.session),
-    buildWindowViewModel("weekly", snapshot.weekly),
-  ].filter((window): window is ProviderUsageWindowViewModel => window !== null);
-
-  return {
-    provider: snapshot.provider,
-    status: snapshot.status,
-    compactLabel:
-      windows.length === 0
-        ? "--"
-        : windows.map((window) => `${window.remainingLabel} ${window.label}`).join(" · "),
-    windows,
-    error: snapshot.error,
-    updatedAt: snapshot.updatedAt,
-  };
-}
+import { formatCpuPercent, formatMemoryBytes } from "./statusBarFormat";
 
 export interface ResourceTotalsPresentation {
   readonly memoryLabel: string;

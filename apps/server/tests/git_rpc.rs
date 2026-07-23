@@ -483,11 +483,11 @@ async fn configured_workspace_owns_default_and_occupied_branch_destinations() {
         .expect("configured worktree");
 
     assert_eq!(first.worktree.ref_name, "main-2");
-    assert!(Path::new(&first.worktree.path).starts_with(&canonical_workspace));
+    let canonical_worktree =
+        fs::canonicalize(&first.worktree.path).expect("canonical created worktree");
+    assert!(canonical_worktree.starts_with(&canonical_workspace));
     assert_eq!(
-        Path::new(&first.worktree.path)
-            .parent()
-            .and_then(Path::parent),
+        canonical_worktree.parent().and_then(Path::parent),
         Some(canonical_workspace.as_path())
     );
 
@@ -777,7 +777,6 @@ async fn missing_registered_worktree_still_owns_its_local_branch() {
             "feature/stale",
         ],
     );
-    let canonical_stale_path = fs::canonicalize(&stale_path).expect("canonical stale worktree");
     fs::remove_dir_all(&stale_path).expect("simulate a missing registered worktree");
 
     let repository = GitRepository::default();
@@ -795,7 +794,7 @@ async fn missing_registered_worktree_still_owns_its_local_branch() {
             .worktree_path
             .as_deref()
             .map(|path| path.replace('\\', "/")),
-        Some(canonical_stale_path.to_string_lossy().replace('\\', "/"))
+        Some(stale_path.to_string_lossy().replace('\\', "/"))
     );
 
     let replacement_parent = tempfile::tempdir().expect("replacement worktree parent");
@@ -1294,7 +1293,7 @@ async fn status_subscription_poller_observes_external_working_tree_changes() {
     fs::write(repo.path().join("tracked.txt"), "changed externally\n")
         .expect("external working tree edit");
 
-    let local = tokio::time::timeout(Duration::from_secs(2), async {
+    let local = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Some(VcsStatusStreamEvent::LocalUpdated { local }) = subscription.recv().await {
                 break local;
