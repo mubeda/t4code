@@ -64,3 +64,39 @@ describe("desktop UI motion stabilization", () => {
     }
   });
 });
+
+describe("packaged composer acceptance contract", () => {
+  const readComposerSpec = (): string =>
+    NodeFS.readFileSync(
+      new URL("../specs/composer-native-triggers.e2e.ts", import.meta.url),
+      "utf8",
+    );
+
+  it("checks every visible model row through semantic provider and model attributes", () => {
+    const source = readComposerSpec();
+
+    expect(source).toContain("[data-model-picker-instance-id][data-model-picker-model-slug]");
+    expect(source).toContain("row.instanceId === scenario.provider");
+    expect(source).toContain("row.modelSlug.length > 0");
+    expect(source).not.toContain("foreignModels");
+  });
+
+  it("restarts the packaged session and compares the complete native provider payload sequence", () => {
+    const source = readComposerSpec();
+
+    expect(source).toContain("await browser.reloadSession()");
+    expect(source).not.toContain("await browser.refresh()");
+    expect(source).toContain("expect(actualProviderInputs).toEqual(expectedProviderInputs)");
+    for (const prompt of [
+      '"$refactor"',
+      '"@README.md"',
+      '"/compact"',
+      '"/docs"',
+      '"/review"',
+      '"@reviewer"',
+      '"/skills"',
+    ]) {
+      expect(source).toContain(prompt);
+    }
+  });
+});

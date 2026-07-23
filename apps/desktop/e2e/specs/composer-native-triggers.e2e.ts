@@ -38,7 +38,6 @@ type ComposerGroupId = keyof typeof composerGroupLabels;
 interface ProviderScenario {
   readonly provider: ComposerProvider;
   readonly displayName: string;
-  readonly modelName: string;
   readonly keyboardCommand: string;
   readonly nativePrompt: string;
 }
@@ -50,38 +49,43 @@ const scenarios: readonly ProviderScenario[] = [
   {
     provider: "codex",
     displayName: "Codex",
-    modelName: "gpt-5.4",
     keyboardCommand: "goal",
     nativePrompt: "$refactor",
   },
   {
     provider: "claudeAgent",
     displayName: "Claude",
-    modelName: "Claude Fable 5",
     keyboardCommand: "compact",
     nativePrompt: "/compact",
   },
   {
     provider: "cursor",
     displayName: "Cursor",
-    modelName: "Cursor Fixture",
     keyboardCommand: "review",
     nativePrompt: "/review",
   },
   {
     provider: "opencode",
     displayName: "OpenCode",
-    modelName: "GPT-5 Fixture",
     keyboardCommand: "init",
     nativePrompt: "@reviewer",
   },
   {
     provider: "grok",
     displayName: "Grok",
-    modelName: "Grok Build",
     keyboardCommand: "skills",
     nativePrompt: "/skills",
   },
+] as const;
+
+const expectedProviderInputs = [
+  { provider: "codex", prompt: "$refactor" },
+  { provider: "codex", prompt: "@README.md" },
+  { provider: "claudeAgent", prompt: "/compact" },
+  { provider: "claudeAgent", prompt: "/docs" },
+  { provider: "cursor", prompt: "/review" },
+  { provider: "opencode", prompt: "@reviewer" },
+  { provider: "grok", prompt: "/skills" },
 ] as const;
 
 function composerForm() {
@@ -355,6 +359,7 @@ async function assertProviderLockedModelPicker(scenario: ProviderScenario): Prom
   const pickerContent = browser.$('[data-model-picker-content="true"]');
   await pickerContent.waitForDisplayed();
   expect((await pickerContent.$$("[data-model-picker-provider]")).length).toBe(0);
+  const semanticModelRowSelector = "[data-model-picker-instance-id][data-model-picker-model-slug]";
   const readVisibleModelRows = () =>
     browser.execute(() =>
       [
@@ -372,7 +377,10 @@ async function assertProviderLockedModelPicker(scenario: ProviderScenario): Prom
             rectangle.height > 0
           );
         })
-        .map((element) => element.textContent?.trim() ?? ""),
+        .map((element) => ({
+          instanceId: element.dataset.modelPickerInstanceId ?? "",
+          modelSlug: element.dataset.modelPickerModelSlug ?? "",
+        })),
     );
   await browser.waitUntil(
     async () => {
@@ -383,25 +391,13 @@ async function assertProviderLockedModelPicker(scenario: ProviderScenario): Prom
     },
   );
   const modelRows = await readVisibleModelRows();
-  const activeModelKey = await browser.execute(() => {
-    const content = document.querySelector<HTMLElement>('[data-model-picker-content="true"]');
-    return (
-      [...(content?.querySelectorAll<HTMLInputElement>('input[aria-hidden="true"]') ?? [])].find(
-        (input) => input.value.includes(":"),
-      )?.value ?? null
-    );
-  });
-  expect(activeModelKey?.startsWith(`${scenario.provider}:`)).toBe(true);
-  const normalizedModelRows = modelRows.map((row) => row.toLocaleLowerCase());
+  expect((await pickerContent.$$(semanticModelRowSelector)).length).toBe(modelRows.length);
   expect(
-    normalizedModelRows.some((row) => row.includes(scenario.modelName.toLocaleLowerCase())),
+    modelRows.every((row) => row.instanceId === scenario.provider && row.modelSlug.length > 0),
   ).toBe(true);
-  const foreignModels = scenarios
-    .filter((candidate) => candidate.provider !== scenario.provider)
-    .map((candidate) => candidate.modelName.toLocaleLowerCase());
-  expect(
-    normalizedModelRows.some((row) => foreignModels.some((model) => row.includes(model))),
-  ).toBe(false);
+  expect(new Set(modelRows.map((row) => `${row.instanceId}:${row.modelSlug}`)).size).toBe(
+    modelRows.length,
+  );
   if (scenario.provider === "codex") {
     await browser.saveScreenshot(
       NodePath.join(preparedArtifactDirectory, "composer-provider-locked-model-picker.png"),
@@ -507,21 +503,45 @@ async function assertReferenceMenu(provider: ComposerProvider): Promise<void> {
   await setComposerValue("");
 }
 
-async function sendAndAssertNativePrompt(scenario: ProviderScenario): Promise<void> {
-  const initialLogLength = readProviderInputLog(preparedProviderInputLogPath).length;
-  await setComposerValue(scenario.nativePrompt);
+async function sendCurrentComposerPrompt(
+  provider: ComposerProvider,
+  prompt: string,
+  initialLogLength: number,
+): Promise<void> {
   const send = composerForm().$('button[aria-label="Send message"]');
   await expect(send).toBeEnabled();
   await send.click();
   await waitForProviderInputLogEntry(
     preparedProviderInputLogPath,
     initialLogLength,
-    {
-      provider: scenario.provider,
-      prompt: scenario.nativePrompt,
-    },
+    { provider, prompt },
     { timeoutMs: 20_000 },
   );
+}
+
+async function sendAndAssertNativePrompt(scenario: ProviderScenario): Promise<void> {
+  const initialLogLength = readProviderInputLog(preparedProviderInputLogPath).length;
+  await setComposerValue(scenario.nativePrompt);
+  await sendCurrentComposerPrompt(scenario.provider, scenario.nativePrompt, initialLogLength);
+}
+
+async function selectAndSendReadmeReference(): Promise<void> {
+  const initialLogLength = readProviderInputLog(preparedProviderInputLogPath).length;
+  await setComposerValue("@README");
+  await waitForComposerItem("file-reference:file:README.md");
+  await clickVisibleComposerItem("file-reference:file:README.md");
+  await waitForComposerValue("@README.md ");
+  await expect(composerForm().$('[data-composer-mention-chip="true"]')).toBeDisplayed();
+  await sendCurrentComposerPrompt("codex", "@README.md", initialLogLength);
+}
+
+async function selectAndSendClaudeDocsSkill(): Promise<void> {
+  const initialLogLength = readProviderInputLog(preparedProviderInputLogPath).length;
+  await setComposerValue("/doc");
+  await waitForComposerItem("provider-skill:claudeAgent:slash:docs");
+  await clickVisibleComposerItem("provider-skill:claudeAgent:slash:docs");
+  await waitForComposerValue("/docs ");
+  await sendCurrentComposerPrompt("claudeAgent", "/docs", initialLogLength);
 }
 
 async function openProviderPanelWithStaleMenu(
@@ -548,14 +568,51 @@ async function openProviderPanelWithStaleMenu(
   await setComposerValue("");
 }
 
-async function persistOpenCodeDraftAndRestart(): Promise<void> {
-  await activateProviderPanel("OpenCode");
+async function persistedDraftMatches(
+  panelThreadId: string,
+  expectedPrompt: string,
+): Promise<boolean> {
+  return browser.execute(
+    (threadId, prompt) => {
+      const rawStore = window.localStorage.getItem("t4code:composer-drafts:v1");
+      if (!rawStore) return false;
+      const parsed = JSON.parse(rawStore) as {
+        state?: {
+          draftsByThreadKey?: Record<string, { prompt?: string }>;
+        };
+      };
+      return Object.entries(parsed.state?.draftsByThreadKey ?? {}).some(
+        ([threadKey, draft]) => threadKey.endsWith(`:${threadId}`) && draft.prompt === prompt,
+      );
+    },
+    panelThreadId,
+    expectedPrompt,
+  );
+}
+
+async function openCodeDraftChipsAreValid(): Promise<boolean> {
+  const mentionChips = await visibleComposerChipTexts("data-composer-mention-chip");
+  const skillChips = await visibleComposerChipTexts("data-composer-skill-chip");
+  const agentChips = await visibleComposerChipTexts("data-composer-agent-chip");
+  return (
+    mentionChips.includes("README.md") && agentChips.includes("reviewer") && skillChips.length === 0
+  );
+}
+
+async function codexDraftChipsAreValid(): Promise<boolean> {
+  const mentionChips = await visibleComposerChipTexts("data-composer-mention-chip");
+  const skillChips = await visibleComposerChipTexts("data-composer-skill-chip");
+  const agentChips = await visibleComposerChipTexts("data-composer-agent-chip");
+  return mentionChips.length === 0 && agentChips.length === 0 && skillChips.includes("Refactor");
+}
+
+async function persistProviderDraftsAndRestart(): Promise<void> {
   const persistedThread = browser.$('[data-testid^="thread-row-"][data-active="true"]');
   await persistedThread.waitForDisplayed();
   const persistedThreadTestId = await persistedThread.getAttribute("data-testid");
-  const persistedThreadId = persistedThreadTestId?.replace("thread-row-", "") ?? "";
-  expect(persistedThreadId.length).toBeGreaterThan(0);
-  const persistedThreadSelector = `[data-testid="thread-row-${persistedThreadId}"]`;
+  const hostThreadId = persistedThreadTestId?.replace("thread-row-", "") ?? "";
+  expect(hostThreadId.length).toBeGreaterThan(0);
+  const persistedThreadSelector = `[data-testid="thread-row-${hostThreadId}"]`;
   const openCodePanelThreadId = await browser.execute((hostThreadId) => {
     const rawStore = window.localStorage.getItem("t4code:center-panel-state:v1");
     if (!rawStore) return null;
@@ -581,56 +638,68 @@ async function persistOpenCodeDraftAndRestart(): Promise<void> {
         (surface) => surface.kind === "chat" && surface.providerLabel === "OpenCode",
       )?.threadId ?? null
     );
-  }, persistedThreadId);
+  }, hostThreadId);
   if (!openCodePanelThreadId) {
     throw new Error("The active host did not retain an OpenCode provider panel.");
   }
 
-  const persistedPrompt = "opencode @README.md @reviewer $refactor ";
-  const persistedPromptIsStored = () =>
-    browser.execute(
-      (expectedPrompt, panelThreadId) => {
-        const rawStore = window.localStorage.getItem("t4code:composer-drafts:v1");
-        if (!rawStore) return false;
-        const parsed = JSON.parse(rawStore) as {
-          state?: {
-            draftsByThreadKey?: Record<string, { prompt?: string }>;
-          };
-        };
-        return Object.entries(parsed.state?.draftsByThreadKey ?? {}).some(
-          ([threadKey, draft]) =>
-            threadKey.endsWith(`:${panelThreadId}`) && draft.prompt === expectedPrompt,
-        );
-      },
-      persistedPrompt,
-      openCodePanelThreadId,
-    );
-  await setComposerValue(persistedPrompt);
-  await browser.waitUntil(persistedPromptIsStored, {
+  const codexPrompt = "$refactor ";
+  await activateProviderPanel("Codex");
+  await setComposerValue(codexPrompt);
+  await browser.waitUntil(() => persistedDraftMatches(hostThreadId, codexPrompt), {
+    timeoutMsg: "The Codex panel draft was not flushed to storage.",
+  });
+  await browser.waitUntil(codexDraftChipsAreValid, {
+    timeoutMsg: "The Codex dollar skill did not render as a skill chip.",
+  });
+
+  const openCodePrompt = "opencode @README.md @reviewer $refactor ";
+  await activateProviderPanel("OpenCode");
+  await setComposerValue(openCodePrompt);
+  await browser.waitUntil(() => persistedDraftMatches(openCodePanelThreadId, openCodePrompt), {
     timeoutMsg: "The OpenCode panel draft was not flushed to storage.",
   });
-  await browser.refresh();
-  expect(await persistedPromptIsStored()).toBe(true);
-  const settingsBack = browser.$('//button[.//span[normalize-space()="Back"]]');
-  if ((await settingsBack.isExisting()) && (await settingsBack.isDisplayed())) {
-    await settingsBack.click();
-  }
+  await browser.waitUntil(openCodeDraftChipsAreValid, {
+    timeoutMsg:
+      "The OpenCode draft did not render file and agent chips while leaving $refactor plain.",
+  });
+
+  await browser.reloadSession();
+  await setDesktopUiWindowSize(1_100, 760);
+  await expect(browser.$("#root")).toBeDisplayed();
   await ensureMainSidebarOpen();
   const restoredThread = browser.$(persistedThreadSelector);
   await restoredThread.waitForDisplayed();
   await restoredThread.click();
   await waitForComposerDisplayed();
+
   await activateProviderPanel("OpenCode");
-  expect(await persistedPromptIsStored()).toBe(true);
-  await browser.waitUntil(
-    async () =>
-      (await visibleComposerChipTexts("data-composer-mention-chip")).includes("README.md") &&
-      (await visibleComposerChipTexts("data-composer-skill-chip")).includes("Refactor") &&
-      (await visibleComposerChipTexts("data-composer-agent-chip")).includes("reviewer"),
-    {
-      timeoutMsg: "The persisted OpenCode draft chips were not restored.",
-    },
+  expect(await persistedDraftMatches(openCodePanelThreadId, openCodePrompt)).toBe(true);
+  await waitForComposerValue(openCodePrompt);
+  await browser.waitUntil(openCodeDraftChipsAreValid, {
+    timeoutMsg: "The persisted OpenCode file and agent chips were not restored.",
+  });
+  await browser.saveScreenshot(
+    NodePath.join(preparedArtifactDirectory, "composer-restored-chips.png"),
   );
+
+  await activateProviderPanel("Codex");
+  expect(await persistedDraftMatches(hostThreadId, codexPrompt)).toBe(true);
+  await waitForComposerValue(codexPrompt);
+  await browser.waitUntil(codexDraftChipsAreValid, {
+    timeoutMsg: "The persisted Codex dollar-skill chip was not restored.",
+  });
+  await browser.saveScreenshot(
+    NodePath.join(preparedArtifactDirectory, "composer-restored-codex-skill-chip.png"),
+  );
+}
+
+function assertCompleteProviderInputLog(): void {
+  const actualProviderInputs = readProviderInputLog(preparedProviderInputLogPath).map(
+    ({ provider, prompt }) => ({ provider, prompt }),
+  );
+  expect(actualProviderInputs).toEqual(expectedProviderInputs);
+  expect(actualProviderInputs.some(({ prompt }) => prompt.startsWith(":"))).toBe(false);
 }
 
 describe("packaged native composer triggers", () => {
@@ -646,6 +715,12 @@ describe("packaged native composer triggers", () => {
       await assertDollarMenu(scenario.provider);
       await assertReferenceMenu(scenario.provider);
       await sendAndAssertNativePrompt(scenario);
+      if (scenario.provider === "codex") {
+        await selectAndSendReadmeReference();
+      }
+      if (scenario.provider === "claudeAgent") {
+        await selectAndSendClaudeDocsSkill();
+      }
 
       const next = scenarios[index + 1];
       if (next) {
@@ -653,11 +728,9 @@ describe("packaged native composer triggers", () => {
       }
     }
 
+    assertCompleteProviderInputLog();
     await setComposerValue("/");
     await waitForComposerItem("provider-command:grok:skills");
-    await persistOpenCodeDraftAndRestart();
-    await browser.saveScreenshot(
-      NodePath.join(preparedArtifactDirectory, "composer-restored-chips.png"),
-    );
+    await persistProviderDraftsAndRestart();
   });
 });

@@ -1090,18 +1090,23 @@ Use stable selectors already present on the composer and add narrowly scoped `da
 
 - [ ] **Step 10: Add persistence coverage**
 
-Leave a draft containing:
+Leave separate capability-valid drafts:
 
 ```text
-@README.md @reviewer $refactor
+OpenCode: @README.md @reviewer
+Codex:    $refactor
 ```
 
-Restart the packaged session, reselect the matching profile, and assert the correct file, agent, and skill chip selectors. Capture:
+Restart the packaged session with `browser.reloadSession()`, reselect the exact
+host and provider panels, and assert the OpenCode file/agent chips and Codex
+dollar-skill chip independently. Unsupported OpenCode dollar-skill text must
+remain plain text. Capture:
 
 - `composer-colon-menu.png`;
 - `composer-slash-groups.png`;
 - `composer-reference-groups.png`;
-- `composer-restored-chips.png`.
+- `composer-restored-chips.png`;
+- `composer-restored-codex-skill-chip.png`.
 
 - [ ] **Step 11: Register the E2E spec**
 
@@ -1241,26 +1246,37 @@ For every deterministic provider profile, visibly confirm:
 - file selection renders the existing polished chip;
 - agent selection renders the new agent chip;
 - arrow keys, Tab/Enter, mouse selection, scroll, and empty states work;
-- moving between separate provider chat panels never leaks the previous
-  panel's menu or capabilities.
+- activating another provider-locked chat panel closes the previous panel's
+  invalid menu and exposes the activated panel's refreshed capabilities;
+  current-panel provider switching remains a non-goal.
 
 After every action, fetch a fresh accessibility/UI state instead of relying on stale coordinates.
 
 - [ ] **Step 9: Validate provider payloads and restart persistence**
 
-Send one example of each native syntax and inspect the deterministic JSONL input log:
+Select and send the file reference and Claude slash skill through their menus,
+retain the five profile payloads, and assert that the complete deterministic
+JSONL input log exactly equals this ordered sequence:
 
 ```text
-/review
-/docs
 $refactor
 @README.md
+/compact
+/docs
+/review
 @reviewer
+/skills
 ```
 
-Confirm no `:model`, `:plan`, or `:default` entry exists.
+Confirm no extra entry exists and no `:model`, `:plan`, or `:default` action
+reaches any provider.
 
-Leave a draft with file, agent, and dollar-skill tokens, quit the packaged app, relaunch it with the same fixture home, and confirm the chips restore while their source text remains native.
+Persist an OpenCode draft with valid file and mentionable-agent chips and a
+separate Codex draft with its valid `$refactor` skill chip. Confirm unsupported
+OpenCode `$refactor` remains plain text. Restart the real packaged session with
+`browser.reloadSession()` using the same fixture home, reselect the exact host
+and both provider panels, and confirm both drafts and their capability-valid
+chips restore while their source text remains native.
 
 - [ ] **Step 10: Capture visual and accessibility evidence**
 
@@ -1269,8 +1285,8 @@ Save screenshots and accessibility state for:
 - T4Code action menu;
 - provider slash Commands/Skills groups;
 - file/agent reference groups;
-- restored file, agent, and skill chips;
-- a provider-switch stale-menu case.
+- restored OpenCode file/agent chips and Codex skill chip;
+- a cross-panel activation stale-menu case.
 
 Compare observations with the approved design and fix every discrepancy before continuing.
 
@@ -1315,7 +1331,8 @@ temporary homes, or generated state.
 - [ ] File chips serialize as native `@path` or quoted native references.
 - [ ] Agent chips serialize as native `@name`.
 - [ ] Legacy Markdown file links migrate at edit/send boundaries only.
-- [ ] Provider switching closes stale menus without changing the draft.
+- [ ] Separate provider-panel activation closes stale menus without changing
+      either panel's draft; current-panel provider switching remains a non-goal.
 - [ ] `vp check`, `vp run typecheck`, and `vp test` pass.
 - [ ] Packaged desktop E2E passes.
 - [ ] A local macOS `.app` and `.dmg` are built.

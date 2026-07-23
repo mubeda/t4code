@@ -248,11 +248,15 @@ polished file chip. Selecting an agent inserts `@name` and renders an agent
 chip. Keyboard navigation, filtering, trailing-space handling, and re-entrant
 selection protection remain consistent across item types.
 
-### Provider switching
+### Provider-panel activation and capability refresh
 
-Changing the selected provider recomputes the trigger profile immediately. Any
-open menu that is no longer valid closes, its highlight is cleared, and the
-typed text remains untouched. A capability refresh preserves the highlighted
+Activating a different provider-locked chat panel recomputes the visible trigger
+profile immediately. Any open menu from the previously active panel that is no
+longer valid closes, its highlight is cleared, and each panel's typed text
+remains untouched. The composer and model picker do not switch the current
+panel's provider.
+
+A capability refresh within the active provider panel preserves the highlighted
 item only when its stable ID remains in the refreshed result set.
 
 ## Data Flow
