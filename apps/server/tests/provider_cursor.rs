@@ -352,6 +352,38 @@ async fn cursor_runtime_applies_the_selected_model_after_session_creation() {
 }
 
 #[tokio::test]
+async fn cursor_runtime_leaves_the_default_model_to_cursor() {
+    let (connection, incoming, mut peer) = scripted_peer();
+    let runtime = CursorSessionRuntime::new(
+        CursorSessionOptions {
+            thread_id: "cursor-default-model-thread".to_owned(),
+            cwd: "/tmp/project".to_owned(),
+            runtime_mode: "full-access".to_owned(),
+            interaction_mode: "default".to_owned(),
+            model: "default".to_owned(),
+            resume_session_id: None,
+            mcp_servers: Vec::new(),
+        },
+        connection,
+        incoming,
+    );
+    peer.expect_request("initialize").respond(json!({}));
+    peer.expect_request("authenticate").respond(json!({}));
+    peer.expect_request("session/new").respond(json!({
+        "sessionId": "cursor-default-model-session",
+        "configOptions": [{ "id": "model", "category": "model" }],
+        "modes": { "currentModeId": "ask", "availableModes": [{ "id": "ask", "name": "Ask" }, { "id": "code", "name": "Agent" }] }
+    }));
+    peer.expect_request("session/set_mode")
+        .expect_params(json!({ "sessionId": "cursor-default-model-session", "modeId": "code" }))
+        .respond(json!({}));
+    let peer_task = tokio::spawn(peer.run());
+
+    runtime.start().await.expect("start");
+    peer_task.await.expect("peer");
+}
+
+#[tokio::test]
 async fn cursor_full_access_auto_approves_permissions() {
     let (connection, incoming, mut peer) = scripted_peer();
     let runtime = CursorSessionRuntime::new(

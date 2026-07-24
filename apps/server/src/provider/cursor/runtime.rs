@@ -201,6 +201,9 @@ impl CursorSessionRuntime {
     }
 
     pub async fn set_model(&self, model: &str) -> Result<(), CursorRuntimeError> {
+        if model.trim().eq_ignore_ascii_case("default") {
+            return Ok(());
+        }
         let config_id = self
             .inner
             .config_options
