@@ -69,6 +69,7 @@ beforeEach(() => {
   harness.query = {};
   harness.descriptors.length = 0;
   harness.refreshStatus.mockReset();
+  harness.refreshStatus.mockResolvedValue(undefined);
   harness.intervals.length = 0;
   harness.clears.length = 0;
   vi.stubGlobal("document", { visibilityState: "visible" });
@@ -146,5 +147,27 @@ describe("useProjectBranchPolling", () => {
     if (typeof activeCleanup === "function") activeCleanup();
     if (typeof backgroundCleanup === "function") backgroundCleanup();
     expect(harness.clears).toEqual([1, 2]);
+  });
+
+  it("does not enqueue another active refresh while the previous refresh is pending", async () => {
+    let completeRefresh!: () => void;
+    harness.refreshStatus.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          completeRefresh = resolve;
+        }),
+    );
+
+    useProjectBranchPolling({ projects, activeProjectKey: "active" });
+    runEffect(1);
+
+    harness.intervals[0]!.callback();
+    harness.intervals[0]!.callback();
+    expect(harness.refreshStatus).toHaveBeenCalledTimes(1);
+
+    completeRefresh();
+    await Promise.resolve();
+    harness.intervals[0]!.callback();
+    expect(harness.refreshStatus).toHaveBeenCalledTimes(2);
   });
 });

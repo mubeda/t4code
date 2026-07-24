@@ -8,12 +8,17 @@ function normalizeWorktreePath(path: string | null): string | null {
   return trimmed;
 }
 
-export function getOrphanedWorktreePathForThread(
-  threads: ReadonlyArray<Pick<ThreadShell, "id" | "worktreePath">>,
+export interface WorktreeDeletionPlan {
+  readonly worktreePath: string;
+  readonly dependentPanelThreadIds: ReadonlyArray<ThreadShell["id"]>;
+}
+
+export function getWorktreeDeletionPlanForThread(
+  threads: ReadonlyArray<Pick<ThreadShell, "id" | "kind" | "worktreePath">>,
   threadId: ThreadShell["id"],
-): string | null {
+): WorktreeDeletionPlan | null {
   const targetThread = threads.find((thread) => thread.id === threadId);
-  if (!targetThread) {
+  if (!targetThread || targetThread.kind === "panel") {
     return null;
   }
 
@@ -22,14 +27,25 @@ export function getOrphanedWorktreePathForThread(
     return null;
   }
 
-  const isShared = threads.some((thread) => {
-    if (thread.id === threadId) {
-      return false;
-    }
-    return normalizeWorktreePath(thread.worktreePath) === targetWorktreePath;
-  });
+  const linkedThreads = threads.filter(
+    (thread) =>
+      thread.id !== threadId && normalizeWorktreePath(thread.worktreePath) === targetWorktreePath,
+  );
+  if (linkedThreads.some((thread) => thread.kind !== "panel")) {
+    return null;
+  }
 
-  return isShared ? null : targetWorktreePath;
+  return {
+    worktreePath: targetWorktreePath,
+    dependentPanelThreadIds: linkedThreads.map((thread) => thread.id),
+  };
+}
+
+export function getOrphanedWorktreePathForThread(
+  threads: ReadonlyArray<Pick<ThreadShell, "id" | "kind" | "worktreePath">>,
+  threadId: ThreadShell["id"],
+): string | null {
+  return getWorktreeDeletionPlanForThread(threads, threadId)?.worktreePath ?? null;
 }
 
 export function formatWorktreePathForDisplay(worktreePath: string): string {

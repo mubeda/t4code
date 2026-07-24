@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc},
     thread,
+    time::Duration,
 };
 
 #[cfg(windows)]
@@ -150,6 +151,9 @@ pub trait PtyProcess: fmt::Debug + Send + Sync {
     fn write(&self, data: &str) -> Result<(), String>;
     fn resize(&self, cols: u16, rows: u16) -> Result<(), String>;
     fn kill(&self) -> Result<(), String>;
+    fn wait_for_process_tree_exit(&self, _timeout: Duration) -> Result<Option<bool>, String> {
+        Ok(None)
+    }
     fn subscribe_output(&self) -> broadcast::Receiver<String>;
     fn subscribe_exit(&self) -> watch::Receiver<Option<PtyExit>>;
 }
@@ -805,6 +809,14 @@ impl PtyProcess for PortablePtyProcess {
                 .kill()
                 .map_err(|error| error.to_string())
         }
+    }
+
+    #[cfg(windows)]
+    fn wait_for_process_tree_exit(&self, timeout: Duration) -> Result<Option<bool>, String> {
+        self.job
+            .wait_for_exit(timeout)
+            .map(Some)
+            .map_err(|error| error.to_string())
     }
 
     fn subscribe_output(&self) -> broadcast::Receiver<String> {
@@ -1970,6 +1982,14 @@ mod tests {
         let mut exit = process.subscribe_exit();
 
         process.kill().unwrap();
+        let tree_exited = process
+            .wait_for_process_tree_exit(Duration::from_secs(3))
+            .expect("process-tree wait");
+        if cfg!(windows) {
+            assert_eq!(tree_exited, Some(true));
+        } else {
+            assert_eq!(tree_exited, None);
+        }
         tokio::time::timeout(Duration::from_secs(3), exit.changed())
             .await
             .unwrap()

@@ -114,7 +114,7 @@ impl ServerTerminalServices {
     }
 
     pub async fn close_thread_terminals(&self, thread_id: &str) {
-        self.terminal.close(thread_id, None).await;
+        let _ = self.terminal.close(thread_id, None).await;
     }
 
     pub async fn launch_setup_script(&self, input: SetupScriptLaunch) -> Result<(), String> {
@@ -140,7 +140,8 @@ impl ServerTerminalServices {
             )
             .await
         {
-            self.terminal
+            let _ = self
+                .terminal
                 .close(&input.thread_id, Some(&input.terminal_id))
                 .await;
             return Err(error.to_string());
@@ -454,7 +455,8 @@ fn register_terminal_rpcs(registry: &mut RpcRegistry, services: &ServerTerminalS
                 let input: TerminalClosePayload = decode_payload(&payload)?;
                 terminal
                     .close(&input.thread_id, input.terminal_id.as_deref())
-                    .await;
+                    .await
+                    .map_err(terminal_error)?;
                 Ok(Value::Null)
             })
         },
@@ -1081,6 +1083,10 @@ fn terminal_error(error: TerminalError) -> Value {
             "cwd": "",
             "cause": message,
         }),
+        TerminalError::Close => json!({
+            "_tag": "TerminalCloseError",
+            "reason": "Terminal processes did not exit before cleanup timed out.",
+        }),
     }
 }
 
@@ -1183,6 +1189,17 @@ mod tests {
         assert!(!encoded.contains("/secret/provider"));
         assert!(!encoded.contains("token=secret"));
         assert!(error["reason"].as_str().unwrap().encode_utf16().count() <= 512);
+    }
+
+    #[test]
+    fn terminal_close_errors_are_explicit() {
+        assert_eq!(
+            terminal_error(TerminalError::Close),
+            json!({
+                "_tag": "TerminalCloseError",
+                "reason": "Terminal processes did not exit before cleanup timed out.",
+            })
+        );
     }
 
     #[test]

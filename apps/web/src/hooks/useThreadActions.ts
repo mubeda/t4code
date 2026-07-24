@@ -22,7 +22,7 @@ import { readLocalApi } from "../localApi";
 import { readEnvironmentThreadRefs, readProject, readThreadShell } from "../state/entities";
 import { useTerminalUiStateStore } from "../terminalUiStateStore";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
-import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../worktreeCleanup";
+import { formatWorktreePathForDisplay, getWorktreeDeletionPlanForThread } from "../worktreeCleanup";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import { useClientSettings } from "./useSettings";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -183,22 +183,28 @@ export function useThreadActions() {
         deletedIds && deletedIds.size > 0
           ? threads.filter((entry) => entry.id === threadRef.threadId || !deletedIds.has(entry.id))
           : threads;
-      const orphanedWorktreePath = getOrphanedWorktreePathForThread(
+      const worktreeDeletionPlan = getWorktreeDeletionPlanForThread(
         survivingThreads,
         threadRef.threadId,
       );
+      const orphanedWorktreePath = worktreeDeletionPlan?.worktreePath ?? null;
       const displayWorktreePath = orphanedWorktreePath
         ? formatWorktreePathForDisplay(orphanedWorktreePath)
         : null;
-      const canDeleteWorktree = orphanedWorktreePath !== null && threadProject !== null;
       const localApi = readLocalApi();
       let shouldDeleteWorktree = false;
-      if (canDeleteWorktree && localApi) {
+      if (worktreeDeletionPlan && threadProject && localApi) {
         const confirmationResult = await settlePromise(() =>
           localApi.dialogs.confirm(
             [
               "This thread is the only one linked to this worktree:",
               displayWorktreePath ?? orphanedWorktreePath,
+              ...(worktreeDeletionPlan.dependentPanelThreadIds.length > 0
+                ? [
+                    "",
+                    `This also closes and deletes ${worktreeDeletionPlan.dependentPanelThreadIds.length} linked panel thread${worktreeDeletionPlan.dependentPanelThreadIds.length === 1 ? "" : "s"}.`,
+                  ]
+                : []),
               "",
               "Delete the worktree too?",
             ].join("\n"),
@@ -210,29 +216,95 @@ export function useThreadActions() {
         shouldDeleteWorktree = confirmationResult.value;
       }
 
-      if (thread.session && thread.session.status !== "stopped") {
-        await stopThreadSession({
+      const dependentPanelThreads =
+        shouldDeleteWorktree && worktreeDeletionPlan
+          ? worktreeDeletionPlan.dependentPanelThreadIds.flatMap((threadId) => {
+              const dependent = threads.find((candidate) => candidate.id === threadId);
+              return dependent ? [dependent] : [];
+            })
+          : [];
+      const threadsToTeardown = [thread, ...dependentPanelThreads];
+      for (const threadToTeardown of threadsToTeardown) {
+        if (threadToTeardown.session && threadToTeardown.session.status !== "stopped") {
+          const stopResult = await stopThreadSession({
+            environmentId: threadRef.environmentId,
+            input: { threadId: threadToTeardown.id },
+          });
+          if (stopResult._tag === "Failure") {
+            return stopResult;
+          }
+        }
+
+        const closeResult = await closeTerminal({
           environmentId: threadRef.environmentId,
-          input: { threadId: threadRef.threadId },
+          input: { threadId: threadToTeardown.id, deleteHistory: true },
         });
+        if (closeResult._tag === "Failure") {
+          return closeResult;
+        }
       }
 
-      await closeTerminal({
-        environmentId: threadRef.environmentId,
-        input: { threadId: threadRef.threadId, deleteHistory: true },
-      });
+      if (shouldDeleteWorktree && orphanedWorktreePath && threadProject) {
+        const removeResult = await removeWorktree({
+          environmentId: threadRef.environmentId,
+          input: {
+            cwd: threadProject.workspaceRoot,
+            path: orphanedWorktreePath,
+            force: true,
+          },
+        });
+        if (removeResult._tag === "Failure") {
+          const error = squashAtomCommandFailure(removeResult);
+          const message =
+            error instanceof Error ? error.message : "Unknown error removing worktree.";
+          console.error("Failed to remove orphaned worktree before thread deletion", {
+            threadId: threadRef.threadId,
+            projectCwd: threadProject.workspaceRoot,
+            worktreePath: orphanedWorktreePath,
+            error,
+          });
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Worktree removal failed",
+              description: `The thread was kept so you can retry. Could not remove ${displayWorktreePath ?? orphanedWorktreePath}. ${message}`,
+            }),
+          );
+          return removeResult;
+        }
+      }
 
-      const deletedThreadIds = deletedIds ?? new Set<ThreadId>();
+      const deletedThreadIds = new Set(deletedIds ?? []);
+      for (const dependentPanelThread of dependentPanelThreads) {
+        deletedThreadIds.add(dependentPanelThread.id);
+      }
       const currentRouteThreadRef = getCurrentRouteThreadRef();
       const shouldNavigateToFallback =
-        currentRouteThreadRef?.threadId === threadRef.threadId &&
-        currentRouteThreadRef.environmentId === threadRef.environmentId;
+        currentRouteThreadRef?.environmentId === threadRef.environmentId &&
+        (currentRouteThreadRef.threadId === threadRef.threadId ||
+          deletedThreadIds.has(currentRouteThreadRef.threadId));
       const fallbackThreadId = getFallbackThreadIdAfterDelete({
         threads,
         deletedThreadId: threadRef.threadId,
         deletedThreadIds,
         sortOrder: sidebarThreadSortOrder,
       });
+      for (const dependentPanelThread of dependentPanelThreads) {
+        const dependentPanelRef = scopeThreadRef(threadRef.environmentId, dependentPanelThread.id);
+        const dependentDeleteResult = await deleteThreadMutation({
+          environmentId: threadRef.environmentId,
+          input: { threadId: dependentPanelThread.id },
+        });
+        if (dependentDeleteResult._tag === "Failure") {
+          return dependentDeleteResult;
+        }
+        clearComposerDraftForThread(dependentPanelRef);
+        clearProjectDraftThreadById(
+          scopeProjectRef(threadRef.environmentId, dependentPanelThread.projectId),
+          dependentPanelRef,
+        );
+        clearTerminalUiState(dependentPanelRef);
+      }
       const deleteResult = await deleteThreadMutation({
         environmentId: threadRef.environmentId,
         input: { threadId: threadRef.threadId },
@@ -288,31 +360,15 @@ export function useThreadActions() {
         return deleteResult;
       }
 
-      const removeResult = await removeWorktree({
+      const refreshResult = await refreshVcsStatus({
         environmentId: threadRef.environmentId,
-        input: {
-          cwd: threadProject.workspaceRoot,
-          path: orphanedWorktreePath,
-          force: true,
-        },
+        input: { cwd: threadProject.workspaceRoot },
       });
-      const refreshResult =
-        removeResult._tag === "Success"
-          ? await refreshVcsStatus({
-              environmentId: threadRef.environmentId,
-              input: { cwd: threadProject.workspaceRoot },
-            })
-          : null;
-      const cleanupFailure =
-        removeResult._tag === "Failure"
-          ? removeResult
-          : refreshResult?._tag === "Failure"
-            ? refreshResult
-            : null;
-      if (cleanupFailure) {
-        const error = squashAtomCommandFailure(cleanupFailure);
-        const message = error instanceof Error ? error.message : "Unknown error removing worktree.";
-        console.error("Failed to remove orphaned worktree after thread deletion", {
+      if (refreshResult._tag === "Failure") {
+        const error = squashAtomCommandFailure(refreshResult);
+        const message =
+          error instanceof Error ? error.message : "Unknown error refreshing VCS status.";
+        console.error("Failed to refresh VCS status after thread and worktree deletion", {
           threadId: threadRef.threadId,
           projectCwd: threadProject.workspaceRoot,
           worktreePath: orphanedWorktreePath,
@@ -321,11 +377,11 @@ export function useThreadActions() {
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Thread deleted, but worktree removal failed",
-            description: `Could not remove ${displayWorktreePath ?? orphanedWorktreePath}. ${message}`,
+            title: "Thread deleted, but VCS refresh failed",
+            description: `Removed ${displayWorktreePath ?? orphanedWorktreePath}, but could not refresh repository status. ${message}`,
           }),
         );
-        return cleanupFailure;
+        return refreshResult;
       }
       return deleteResult;
     },

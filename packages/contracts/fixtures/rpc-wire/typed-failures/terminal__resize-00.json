@@ -7,8 +7,10 @@
       {
         "_tag": "Fail",
         "error": {
-          "_tag": "TerminalCwdNotDirectoryError",
-          "cwd": "@m]"
+          "_tag": "TerminalHistoryError",
+          "operation": "truncate",
+          "threadId": "@m]",
+          "terminalId": ""
         }
       }
     ]

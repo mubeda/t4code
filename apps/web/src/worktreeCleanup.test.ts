@@ -67,6 +67,24 @@ describe("getOrphanedWorktreePathForThread", () => {
     expect(result).toBeNull();
   });
 
+  it("treats panel threads on the same worktree as dependents, not owners", () => {
+    const threads = [
+      makeThread({
+        id: ThreadId.make("thread-1"),
+        kind: "workspace",
+        worktreePath: "/tmp/repo/worktrees/feature-a",
+      }),
+      makeThread({
+        id: ThreadId.make("panel-1"),
+        kind: "panel",
+        worktreePath: "/tmp/repo/worktrees/feature-a",
+      }),
+    ];
+
+    const result = getOrphanedWorktreePathForThread(threads, ThreadId.make("thread-1"));
+    expect(result).toBe("/tmp/repo/worktrees/feature-a");
+  });
+
   it("ignores threads linked to different worktrees", () => {
     const threads = [
       makeThread({

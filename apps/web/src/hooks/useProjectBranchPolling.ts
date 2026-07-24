@@ -77,6 +77,17 @@ export function useProjectBranchPolling(input: {
   projectsRef.current = projects;
   const activeProjectRef = useRef(activeProject);
   activeProjectRef.current = activeProject;
+  const pendingRefreshKeysRef = useRef(new Set<string>());
+  const refreshProject = (project: ProjectBranchPollingProject) => {
+    if (pendingRefreshKeysRef.current.has(project.key)) return;
+    pendingRefreshKeysRef.current.add(project.key);
+    void refreshStatus({
+      environmentId: project.environmentId,
+      input: { cwd: project.workspaceRoot },
+    }).finally(() => {
+      pendingRefreshKeysRef.current.delete(project.key);
+    });
+  };
 
   useEffect(() => {
     if (!activeProject) return;
@@ -84,10 +95,7 @@ export function useProjectBranchPolling(input: {
       if (document.visibilityState !== "visible") return;
       const current = activeProjectRef.current;
       if (!current) return;
-      void refreshStatus({
-        environmentId: current.environmentId,
-        input: { cwd: current.workspaceRoot },
-      });
+      refreshProject(current);
     };
     const interval = window.setInterval(tick, ACTIVE_PROJECT_POLL_INTERVAL_MS);
     return () => window.clearInterval(interval);
@@ -98,10 +106,7 @@ export function useProjectBranchPolling(input: {
       if (document.visibilityState !== "visible") return;
       for (const project of projectsRef.current) {
         if (project.key === activeProjectRef.current?.key) continue; // already polled above
-        void refreshStatus({
-          environmentId: project.environmentId,
-          input: { cwd: project.workspaceRoot },
-        });
+        refreshProject(project);
       }
     };
     const interval = window.setInterval(tick, BACKGROUND_PROJECT_POLL_INTERVAL_MS);

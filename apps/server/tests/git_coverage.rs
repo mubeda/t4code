@@ -964,6 +964,10 @@ async fn existing_branch_worktree_can_be_force_removed_when_dirty() {
         .await
         .expect("force-remove dirty worktree");
     assert!(!worktree_path.exists());
+    repository
+        .remove_worktree(repo.path(), &worktree_path, true, &cancellation())
+        .await
+        .expect("worktree removal is retryable after a later thread-delete failure");
     assert_eq!(
         repository
             .switch_ref(repo.path(), "feature/existing", &cancellation())

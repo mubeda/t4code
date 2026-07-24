@@ -1899,6 +1899,10 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         if (!api) return;
 
         const actionHandlers = new Map<string, () => Promise<void> | void>();
+        actionHandlers.set("archive", () => {
+          setOpenMobile(false);
+          return router.navigate({ to: "/settings/archived" });
+        });
         const makeLeaf = (
           action: "rename" | "grouping" | "copy-path" | "delete",
           member: SidebarProjectGroupMember,
@@ -1970,6 +1974,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
             buildTargetedItem("rename", "Rename"),
             buildTargetedItem("grouping", "Group into..."),
             buildTargetedItem("copy-path", "Copy Path"),
+            { id: "archive", label: "Archived threads" },
             buildTargetedItem("delete", "Remove", {
               destructive: true,
             }),
@@ -1994,6 +1999,8 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       openProjectRenameDialog,
       project.groupedProjectCount,
       project.memberProjects,
+      router,
+      setOpenMobile,
       suppressProjectClickForContextMenuRef,
     ],
   );

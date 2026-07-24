@@ -1181,9 +1181,26 @@ impl GitRepository {
             args.push("--force".into());
         }
         args.push(display_path(path));
-        self.run("GitVcsDriver.removeWorktree", cwd, &args, cancellation)
-            .await?;
-        Ok(())
+        let error = match self
+            .run("GitVcsDriver.removeWorktree", cwd, &args, cancellation)
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(error) => error,
+        };
+        if path.exists() {
+            return Err(error);
+        }
+        match self.worktree_paths(cwd, cancellation).await {
+            Ok(paths)
+                if !paths
+                    .iter()
+                    .any(|registered| same_worktree_path(registered, path)) =>
+            {
+                Ok(())
+            }
+            _ => Err(error),
+        }
     }
 
     pub async fn create_ref(

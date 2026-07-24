@@ -1,11 +1,12 @@
-use std::{fmt, io};
+use std::{fmt, io, time::Duration};
 
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, GetLastError, HANDLE},
+    Foundation::{CloseHandle, GetLastError, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
     System::JobObjects::{
         CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
     },
+    System::Threading::WaitForSingleObject,
 };
 
 pub(crate) struct WindowsJob(HANDLE);
@@ -58,6 +59,16 @@ impl WindowsJob {
             Ok(())
         }
     }
+
+    pub(crate) fn wait_for_exit(&self, timeout: Duration) -> io::Result<bool> {
+        let timeout_ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX - 1);
+        // SAFETY: `self.0` remains a live job handle for this object's lifetime.
+        match unsafe { WaitForSingleObject(self.0, timeout_ms) } {
+            WAIT_OBJECT_0 => Ok(true),
+            WAIT_TIMEOUT => Ok(false),
+            _ => Err(last_os_error()),
+        }
+    }
 }
 
 impl Drop for WindowsJob {
@@ -88,6 +99,10 @@ mod tests {
         assert!(format!("{job:?}").starts_with("WindowsJob("));
         assert!(!job.raw_handle().is_null());
         job.terminate().expect("job should terminate");
+        assert!(
+            job.wait_for_exit(Duration::ZERO)
+                .expect("empty job should be waitable")
+        );
 
         let _ = last_os_error();
     }

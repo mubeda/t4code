@@ -48,6 +48,7 @@ const h = vi.hoisted(() => {
     routerMatches: [] as Array<{ params: Record<string, string> }>,
     fallbackThreadId: null as unknown,
     orphanedWorktreePath: null as string | null,
+    dependentPanelThreadIds: [] as ThreadId[],
     // spies
     navigate: vi.fn((_options: unknown) => Promise.resolve()),
     refreshArchived: vi.fn(),
@@ -144,6 +145,13 @@ vi.mock("../components/Sidebar.logic", () => ({
 vi.mock("../worktreeCleanup", () => ({
   getOrphanedWorktreePathForThread: (_threads: unknown, _threadId: unknown) =>
     h.orphanedWorktreePath,
+  getWorktreeDeletionPlanForThread: (_threads: unknown, _threadId: unknown) =>
+    h.orphanedWorktreePath === null
+      ? null
+      : {
+          worktreePath: h.orphanedWorktreePath,
+          dependentPanelThreadIds: h.dependentPanelThreadIds,
+        },
   formatWorktreePathForDisplay: (path: string) => `display:${path}`,
 }));
 
@@ -268,6 +276,7 @@ beforeEach(() => {
   h.routerMatches = [];
   h.fallbackThreadId = null;
   h.orphanedWorktreePath = null;
+  h.dependentPanelThreadIds = [];
   h.navigate.mockReset().mockImplementation(() => Promise.resolve());
   h.refreshArchived.mockReset();
   h.clearDraftThread.mockReset();
@@ -435,6 +444,24 @@ describe("deleteThread", () => {
     expect(commandKeys()).toContain("terminal.close");
   });
 
+  it("does not delete the thread or worktree when session teardown fails", async () => {
+    const shell = makeShell("t-del", {
+      session: makeSession({ status: "running" }),
+      worktreePath: "C:/wt/x",
+    });
+    const ref = registerShell(shell);
+    h.orphanedWorktreePath = "C:/wt/x";
+    h.localApi = { dialogs: { confirm: vi.fn(() => Promise.resolve(true)) } };
+    h.commandResults["thread.stopSession"] = () => failure("session still stopping");
+    const actions = renderActions();
+
+    const result = await actions.deleteThread(ref);
+    expect(result._tag).toBe("Failure");
+    expect(commandKeys()).not.toContain("terminal.close");
+    expect(commandKeys()).not.toContain("thread.delete");
+    expect(commandKeys()).not.toContain("vcs.removeWorktree");
+  });
+
   it("returns the delete failure after teardown", async () => {
     const ref = registerShell(makeShell("t-del"));
     h.commandResults["thread.delete"] = () => failure("cannot delete");
@@ -443,6 +470,20 @@ describe("deleteThread", () => {
     const result = await actions.deleteThread(ref);
     expect(result._tag).toBe("Failure");
     expect(h.refreshArchived).not.toHaveBeenCalled();
+  });
+
+  it("does not delete the thread or worktree when terminal teardown fails", async () => {
+    const shell = makeShell("t-del", { worktreePath: "C:/wt/x" });
+    const ref = registerShell(shell);
+    h.orphanedWorktreePath = "C:/wt/x";
+    h.localApi = { dialogs: { confirm: vi.fn(() => Promise.resolve(true)) } };
+    h.commandResults["terminal.close"] = () => failure("terminal still stopping");
+    const actions = renderActions();
+
+    const result = await actions.deleteThread(ref);
+    expect(result._tag).toBe("Failure");
+    expect(commandKeys()).not.toContain("thread.delete");
+    expect(commandKeys()).not.toContain("vcs.removeWorktree");
   });
 
   it("navigates to the fallback thread when deleting the current-route thread", async () => {
@@ -532,9 +573,45 @@ describe("deleteThread", () => {
     expect(result._tag).toBe("Success");
     expect(commandKeys()).toContain("vcs.removeWorktree");
     expect(commandKeys()).toContain("vcs.refreshStatus");
+    expect(commandKeys().indexOf("vcs.removeWorktree")).toBeLessThan(
+      commandKeys().indexOf("thread.delete"),
+    );
     const removeCall = h.commandCalls.find((call) => call.key === "vcs.removeWorktree");
     expect((removeCall!.input as { input: { path: string; force: boolean } }).input.path).toBe(
       "C:/wt/x",
+    );
+  });
+
+  it("tears down dependent panel threads before removing their workspace", async () => {
+    const workspace = makeShell("t-workspace", {
+      kind: "workspace",
+      worktreePath: "C:/wt/x",
+    });
+    const workspaceRef = registerShell(workspace);
+    const panel = makeShell("t-panel", {
+      kind: "panel",
+      worktreePath: "C:/wt/x",
+      session: makeSession({ threadId: ThreadId.make("t-panel"), status: "running" }),
+    });
+    registerShell(panel);
+    h.orphanedWorktreePath = "C:/wt/x";
+    h.dependentPanelThreadIds = [panel.id];
+    h.localApi = { dialogs: { confirm: vi.fn(() => Promise.resolve(true)) } };
+    const actions = renderActions();
+
+    const result = await actions.deleteThread(workspaceRef);
+
+    expect(result._tag).toBe("Success");
+    const closeThreadIds = h.commandCalls
+      .filter((call) => call.key === "terminal.close")
+      .map((call) => (call.input as { input: { threadId: ThreadId } }).input.threadId);
+    expect(closeThreadIds).toEqual([workspace.id, panel.id]);
+    const deletedThreadIds = h.commandCalls
+      .filter((call) => call.key === "thread.delete")
+      .map((call) => (call.input as { input: { threadId: ThreadId } }).input.threadId);
+    expect(deletedThreadIds).toEqual([panel.id, workspace.id]);
+    expect(commandKeys().indexOf("vcs.removeWorktree")).toBeLessThan(
+      commandKeys().indexOf("thread.delete"),
     );
   });
 
@@ -573,11 +650,12 @@ describe("deleteThread", () => {
 
     const result = await actions.deleteThread(ref);
     expect(result._tag).toBe("Failure");
+    expect(commandKeys()).not.toContain("thread.delete");
     expect(commandKeys()).not.toContain("vcs.refreshStatus");
     expect(h.toastAdd).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "error",
-        title: "Thread deleted, but worktree removal failed",
+        title: "Worktree removal failed",
       }),
     );
     errorSpy.mockRestore();

@@ -1676,6 +1676,19 @@ staticDescribe("project header context menu", () => {
     );
   });
 
+  it("opens archived threads from the project menu", async () => {
+    const header = projectHeaderProps();
+    fakeLocalApi();
+    h.spies.contextMenuShow.mockImplementation(async (items: Array<{ id: string }>) => {
+      return items.find((item) => item.id === "archive")!.id;
+    });
+
+    invoke(header, "onContextMenu", mouseEvent());
+    await flush();
+
+    expect(h.spies.routerNavigate).toHaveBeenCalledWith({ to: "/settings/archived" });
+  });
+
   it("opens the rename and grouping dialogs from the menu", async () => {
     const header = projectHeaderProps();
     fakeLocalApi();

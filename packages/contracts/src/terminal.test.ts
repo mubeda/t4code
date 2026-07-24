@@ -613,6 +613,18 @@ describe("terminal boundary schemas", () => {
 });
 
 describe("terminal errors", () => {
+  it("decodes a terminal close failure", () => {
+    expect(
+      decodeTerminalError({
+        _tag: "TerminalCloseError",
+        reason: "Terminal processes did not exit before cleanup timed out.",
+      }),
+    ).toMatchObject({
+      _tag: "TerminalCloseError",
+      reason: "Terminal processes did not exit before cleanup timed out.",
+    });
+  });
+
   it("decodes a bounded terminal spawn failure without exposing process details", () => {
     expect(
       decodeTerminalError({

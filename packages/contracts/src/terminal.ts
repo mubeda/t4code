@@ -303,6 +303,21 @@ export const TerminalCwdError = Schema.Union([
 ]);
 export type TerminalCwdError = typeof TerminalCwdError.Type;
 
+export const TERMINAL_CLOSE_ERROR_REASON_MAX_LENGTH = 512;
+
+export class TerminalCloseError extends Schema.TaggedErrorClass<TerminalCloseError>()(
+  "TerminalCloseError",
+  {
+    reason: Schema.String.check(Schema.isNonEmpty()).check(
+      Schema.isMaxLength(TERMINAL_CLOSE_ERROR_REASON_MAX_LENGTH),
+    ),
+  },
+) {
+  override get message() {
+    return this.reason;
+  }
+}
+
 export const TERMINAL_SPAWN_ERROR_REASON_MAX_LENGTH = 512;
 
 export class TerminalSpawnError extends Schema.TaggedErrorClass<TerminalSpawnError>()(
@@ -388,6 +403,7 @@ export class TerminalResizeError extends Schema.TaggedErrorClass<TerminalResizeE
 
 export const TerminalError = Schema.Union([
   TerminalCwdError,
+  TerminalCloseError,
   TerminalSpawnError,
   TerminalHistoryError,
   TerminalSessionLookupError,

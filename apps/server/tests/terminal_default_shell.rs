@@ -185,7 +185,10 @@ async fn closing_a_terminal_does_not_resurrect_its_metadata() {
         .expect("terminal opens");
     let mut metadata = manager.subscribe_metadata().await;
 
-    manager.close("thread-close", Some("terminal-close")).await;
+    manager
+        .close("thread-close", Some("terminal-close"))
+        .await
+        .expect("close terminal");
     let removed = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if matches!(

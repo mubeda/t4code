@@ -21,6 +21,7 @@ use crate::{
 };
 
 const DEFAULT_SUBPROCESS_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const TERMINAL_CLOSE_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_TERMINAL_LABEL_LENGTH: usize = 128;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -122,6 +123,8 @@ pub enum TerminalError {
     },
     #[error("terminal I/O failed: {0}")]
     Io(String),
+    #[error("terminal processes did not exit before cleanup timed out")]
+    Close,
 }
 
 #[derive(Debug)]
@@ -1039,7 +1042,11 @@ impl TerminalManager {
         Ok(())
     }
 
-    pub async fn close(&self, thread_id: &str, terminal_id: Option<&str>) {
+    pub async fn close(
+        &self,
+        thread_id: &str,
+        terminal_id: Option<&str>,
+    ) -> Result<(), TerminalError> {
         let _invalidated_generations = self
             .inner
             .generations
@@ -1048,6 +1055,10 @@ impl TerminalManager {
         let closed = self.close_sessions(thread_id, terminal_id).await;
         self.publish_closed_sessions(&closed.notifications);
         log_terminal_cleanup("close", &closed.report);
+        if closed.report.failure_count > 0 {
+            return Err(TerminalError::Close);
+        }
+        Ok(())
     }
 
     async fn close_sessions(&self, thread_id: &str, terminal_id: Option<&str>) -> ClosedSessions {
@@ -1095,8 +1106,18 @@ impl TerminalManager {
                 (process, session.advance())
             };
             if let Some(process) = process {
+                let exit = process.subscribe_exit();
                 match process.kill() {
-                    Ok(()) => closed.report.record_success(),
+                    Ok(()) => match wait_for_terminal_process_tree_exit(Arc::clone(&process), exit).await
+                    {
+                        Ok(()) => closed.report.record_success(),
+                        Err(error) => closed.report.record_failure(format!(
+                            "terminal {}/{} process {}: {error}",
+                            key.0,
+                            key.1,
+                            process.pid()
+                        )),
+                    },
                     Err(error) => closed.report.record_failure(format!(
                         "terminal {}/{} process {}: {error}",
                         key.0,
@@ -1190,6 +1211,48 @@ impl TerminalManager {
                 thread_id: thread_id.to_string(),
                 terminal_id: terminal_id.to_string(),
             })
+    }
+}
+
+async fn wait_for_terminal_process_tree_exit(
+    process: Arc<dyn PtyProcess>,
+    mut root_exit: tokio::sync::watch::Receiver<Option<PtyExit>>,
+) -> Result<(), String> {
+    let tree_process = Arc::clone(&process);
+    let tree_exit = tokio::task::spawn_blocking(move || {
+        tree_process.wait_for_process_tree_exit(TERMINAL_CLOSE_WAIT_TIMEOUT)
+    })
+    .await
+    .map_err(|error| format!("process-tree wait task failed: {error}"))??;
+
+    match tree_exit {
+        Some(true) => Ok(()),
+        Some(false) => Err(format!(
+            "process tree did not exit within {} ms",
+            TERMINAL_CLOSE_WAIT_TIMEOUT.as_millis()
+        )),
+        None => {
+            let already_exited = root_exit.borrow().is_some();
+            let exited = already_exited
+                || tokio::time::timeout(TERMINAL_CLOSE_WAIT_TIMEOUT, async {
+                    while root_exit.borrow().is_none() {
+                        root_exit.changed().await.map_err(|_| ())?;
+                    }
+                    Ok::<(), ()>(())
+                })
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .is_some();
+            if exited {
+                Ok(())
+            } else {
+                Err(format!(
+                    "process did not exit within {} ms",
+                    TERMINAL_CLOSE_WAIT_TIMEOUT.as_millis()
+                ))
+            }
+        }
     }
 }
 
@@ -1363,6 +1426,9 @@ mod tests {
         output: broadcast::Sender<String>,
         exit: tokio::sync::watch::Sender<Option<PtyExit>>,
         killed: std::sync::atomic::AtomicBool,
+        exit_on_kill: std::sync::atomic::AtomicBool,
+        tree_exit_supported: std::sync::atomic::AtomicBool,
+        tree_exited: std::sync::atomic::AtomicBool,
         kill_error: std::sync::Mutex<Option<String>>,
     }
 
@@ -1377,6 +1443,9 @@ mod tests {
                 output,
                 exit,
                 killed: std::sync::atomic::AtomicBool::new(false),
+                exit_on_kill: std::sync::atomic::AtomicBool::new(true),
+                tree_exit_supported: std::sync::atomic::AtomicBool::new(false),
+                tree_exited: std::sync::atomic::AtomicBool::new(true),
                 kill_error: std::sync::Mutex::new(None),
             }
         }
@@ -1403,6 +1472,18 @@ mod tests {
                     signal: None,
                 }))
                 .expect("exit receiver");
+        }
+
+        fn delay_exit_on_kill(&self) {
+            self.exit_on_kill
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
+
+        fn keep_process_tree_running(&self) {
+            self.tree_exit_supported
+                .store(true, std::sync::atomic::Ordering::Release);
+            self.tree_exited
+                .store(false, std::sync::atomic::Ordering::Release);
         }
 
         fn fail_kill(&self, error: impl Into<String>) {
@@ -1438,11 +1519,33 @@ mod tests {
         fn kill(&self) -> Result<(), String> {
             self.killed
                 .store(true, std::sync::atomic::Ordering::Release);
-            self.kill_error
+            let result = self
+                .kill_error
                 .lock()
                 .expect("kill error")
                 .clone()
-                .map_or(Ok(()), Err)
+                .map_or(Ok(()), Err);
+            if result.is_ok() && self.exit_on_kill.load(std::sync::atomic::Ordering::Acquire) {
+                self.exit.send_replace(Some(PtyExit {
+                    exit_code: None,
+                    signal: None,
+                }));
+            }
+            result
+        }
+
+        fn wait_for_process_tree_exit(&self, _timeout: Duration) -> Result<Option<bool>, String> {
+            if self
+                .tree_exit_supported
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                Ok(Some(
+                    self.tree_exited
+                        .load(std::sync::atomic::Ordering::Acquire),
+                ))
+            } else {
+                Ok(None)
+            }
         }
 
         fn subscribe_output(&self) -> broadcast::Receiver<String> {
@@ -1558,6 +1661,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn close_waits_for_the_terminal_process_to_exit() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend::default());
+        let manager = TerminalManager::new(backend.clone(), TerminalManagerOptions::default());
+
+        manager
+            .open(TerminalOpenInput::new(
+                "thread-close",
+                "term-close",
+                root.path().to_path_buf(),
+                80,
+                24,
+            ))
+            .await
+            .unwrap();
+        let process = backend.latest();
+        process.delay_exit_on_kill();
+        let close_manager = manager.clone();
+        let close = tokio::spawn(async move {
+            close_manager
+                .close("thread-close", Some("term-close"))
+                .await
+                .unwrap();
+        });
+
+        while !process.is_killed() {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !close.is_finished(),
+            "close returned before the killed process released its resources"
+        );
+
+        process.exit(0);
+        tokio::time::timeout(Duration::from_secs(2), close)
+            .await
+            .expect("terminal close timed out")
+            .expect("terminal close task");
+    }
+
+    #[tokio::test]
+    async fn close_fails_while_the_terminal_process_tree_is_still_running() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(HistoryTestBackend::default());
+        let manager = TerminalManager::new(backend.clone(), TerminalManagerOptions::default());
+
+        manager
+            .open(TerminalOpenInput::new(
+                "thread-tree-close",
+                "term-tree-close",
+                root.path().to_path_buf(),
+                80,
+                24,
+            ))
+            .await
+            .unwrap();
+        backend.latest().keep_process_tree_running();
+
+        assert!(matches!(
+            manager
+                .close("thread-tree-close", Some("term-tree-close"))
+                .await,
+            Err(TerminalError::Close)
+        ));
+    }
+
+    #[tokio::test]
     async fn close_during_in_flight_subprocess_inspection_does_not_resurrect_metadata() {
         let root = tempfile::tempdir().unwrap();
         let backend = Arc::new(HistoryTestBackend::default());
@@ -1604,7 +1774,10 @@ mod tests {
             .activity_completed
             .clone();
 
-        manager.close("thread-race", Some("term-race")).await;
+        manager
+            .close("thread-race", Some("term-race"))
+            .await
+            .unwrap();
 
         loop {
             let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
@@ -1786,7 +1959,8 @@ mod tests {
             close_started_task.notify_one();
             close_manager
                 .close("thread-attach-close", Some("term-attach-close"))
-                .await;
+                .await
+                .unwrap();
         });
         close_started.notified().await;
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -1888,7 +2062,8 @@ mod tests {
         let close_task = tokio::spawn(async move {
             close_manager
                 .close("thread-spawn-close", Some("term-spawn-close"))
-                .await;
+                .await
+                .unwrap();
         });
         tokio::time::timeout(Duration::from_secs(2), async {
             while !generation.is_invalidated() {
@@ -2041,7 +2216,8 @@ mod tests {
 
         manager
             .close("thread-output-generation", Some("term-output-generation"))
-            .await;
+            .await
+            .unwrap();
         manager.open(input).await.unwrap();
         let mut replacement = manager
             .attach(TerminalAttachInput::existing(
@@ -2371,7 +2547,10 @@ mod tests {
 
         let restarted = manager.restart(input).await.unwrap();
         assert_eq!(restarted.status, TerminalStatus::Running);
-        manager.close("thread-unit", Some("term-unit")).await;
+        manager
+            .close("thread-unit", Some("term-unit"))
+            .await
+            .unwrap();
         manager.shutdown().await;
     }
 
