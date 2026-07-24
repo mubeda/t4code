@@ -978,6 +978,68 @@ async fn existing_branch_worktree_can_be_force_removed_when_dirty() {
     );
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn worktree_removal_finishes_after_windows_releases_a_file_handle() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    if relaunch_with_isolated_git_config(
+        "worktree_removal_finishes_after_windows_releases_a_file_handle",
+    ) {
+        return;
+    }
+    let repo = init_repo();
+    commit_file(repo.path(), "README.md", "base\n", "initial");
+    let worktree_root = tempfile::tempdir().expect("worktree parent");
+    let worktree_path = worktree_root.path().join("locked");
+    git(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature/locked",
+            &worktree_path.to_string_lossy(),
+        ],
+    );
+    let locked_path = worktree_path.join("locked.txt");
+    fs::write(&locked_path, "locked\n").expect("locked fixture");
+    let locked_file = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&locked_path)
+        .expect("exclusive worktree file handle");
+    let release_repo = repo.path().to_path_buf();
+    let release_path = worktree_path.to_string_lossy().replace('\\', "/");
+    let release_handle = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let registered = git(&release_repo, &["worktree", "list", "--porcelain"])
+                .lines()
+                .filter_map(|line| line.strip_prefix("worktree "))
+                .any(|path| path.replace('\\', "/").eq_ignore_ascii_case(&release_path));
+            if !registered {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "worktree registration was not removed"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        drop(locked_file);
+    });
+
+    let result = GitRepository::default()
+        .remove_worktree(repo.path(), &worktree_path, true, &cancellation())
+        .await;
+    release_handle.join().expect("release locked file handle");
+
+    result.expect("remove worktree after the file handle is released");
+    assert!(!worktree_path.exists());
+}
+
 #[tokio::test]
 async fn modified_submodule_is_reported_and_malformed_metadata_has_diagnostics() {
     if relaunch_with_isolated_git_config(

@@ -255,21 +255,12 @@ export function useThreadActions() {
         });
         if (removeResult._tag === "Failure") {
           const error = squashAtomCommandFailure(removeResult);
-          const message =
-            error instanceof Error ? error.message : "Unknown error removing worktree.";
           console.error("Failed to remove orphaned worktree before thread deletion", {
             threadId: threadRef.threadId,
             projectCwd: threadProject.workspaceRoot,
             worktreePath: orphanedWorktreePath,
             error,
           });
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Worktree removal failed",
-              description: `The thread was kept so you can retry. Could not remove ${displayWorktreePath ?? orphanedWorktreePath}. ${message}`,
-            }),
-          );
           return removeResult;
         }
       }
@@ -381,7 +372,7 @@ export function useThreadActions() {
             description: `Removed ${displayWorktreePath ?? orphanedWorktreePath}, but could not refresh repository status. ${message}`,
           }),
         );
-        return refreshResult;
+        return deleteResult;
       }
       return deleteResult;
     },

@@ -28,6 +28,8 @@ const DEFAULT_OUTPUT_LIMIT: usize = 1_000_000;
 const COMMIT_FIELD_SEPARATOR: char = '\x1f';
 const CLONE_OPERATION: &str = "GitVcsDriver.clone";
 const MAX_AUTOMATIC_WORKTREE_SUFFIX_ATTEMPTS: usize = 100;
+const WORKTREE_REMOVE_RETRY_ATTEMPTS: usize = 20;
+const WORKTREE_REMOVE_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 pub type BoxWorktreeBaseDirectoryFuture<'a> =
     Pin<Box<dyn Future<Output = Option<PathBuf>> + Send + 'a>>;
@@ -1176,6 +1178,14 @@ impl GitRepository {
         force: bool,
         cancellation: &CancellationToken,
     ) -> Result<(), GitCommandError> {
+        let was_registered = self
+            .worktree_paths(cwd, cancellation)
+            .await
+            .is_ok_and(|paths| {
+                paths
+                    .iter()
+                    .any(|registered| same_worktree_path(registered, path))
+            });
         let mut args = strings(&["worktree", "remove"]);
         if force {
             args.push("--force".into());
@@ -1188,19 +1198,37 @@ impl GitRepository {
             Ok(_) => return Ok(()),
             Err(error) => error,
         };
-        if path.exists() {
+        let Ok(paths) = self.worktree_paths(cwd, cancellation).await else {
+            return Err(error);
+        };
+        if paths
+            .iter()
+            .any(|registered| same_worktree_path(registered, path))
+        {
             return Err(error);
         }
-        match self.worktree_paths(cwd, cancellation).await {
-            Ok(paths)
-                if !paths
-                    .iter()
-                    .any(|registered| same_worktree_path(registered, path)) =>
-            {
-                Ok(())
-            }
-            _ => Err(error),
+        if !path.exists() {
+            return Ok(());
         }
+        if !was_registered {
+            return Err(error);
+        }
+        for attempt in 0..WORKTREE_REMOVE_RETRY_ATTEMPTS {
+            match tokio::fs::remove_dir_all(path).await {
+                Ok(()) => return Ok(()),
+                Err(filesystem_error) if filesystem_error.kind() == io::ErrorKind::NotFound => {
+                    return Ok(());
+                }
+                Err(_) if attempt + 1 < WORKTREE_REMOVE_RETRY_ATTEMPTS => {
+                    tokio::select! {
+                        () = cancellation.cancelled() => return Err(error),
+                        () = tokio::time::sleep(WORKTREE_REMOVE_RETRY_DELAY) => {}
+                    }
+                }
+                Err(_) => return Err(error),
+            }
+        }
+        Err(error)
     }
 
     pub async fn create_ref(

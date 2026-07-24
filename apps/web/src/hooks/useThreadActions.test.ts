@@ -639,7 +639,7 @@ describe("deleteThread", () => {
     expect(commandKeys()).not.toContain("thread.delete");
   });
 
-  it("toasts and returns the cleanup failure when worktree removal fails", async () => {
+  it("returns worktree removal failures for the caller to present", async () => {
     const shell = makeShell("t-del", { worktreePath: "C:/wt/x" });
     const ref = registerShell(shell);
     h.orphanedWorktreePath = "C:/wt/x";
@@ -652,16 +652,11 @@ describe("deleteThread", () => {
     expect(result._tag).toBe("Failure");
     expect(commandKeys()).not.toContain("thread.delete");
     expect(commandKeys()).not.toContain("vcs.refreshStatus");
-    expect(h.toastAdd).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "error",
-        title: "Worktree removal failed",
-      }),
-    );
+    expect(h.toastAdd).not.toHaveBeenCalled();
     errorSpy.mockRestore();
   });
 
-  it("toasts and returns the cleanup failure when the post-removal vcs refresh fails", async () => {
+  it("presents post-removal refresh failures without reporting thread deletion as failed", async () => {
     const shell = makeShell("t-del", { worktreePath: "C:/wt/x" });
     const ref = registerShell(shell);
     h.orphanedWorktreePath = "C:/wt/x";
@@ -671,8 +666,14 @@ describe("deleteThread", () => {
     const actions = renderActions();
 
     const result = await actions.deleteThread(ref);
-    expect(result._tag).toBe("Failure");
-    expect(h.toastAdd).toHaveBeenCalled();
+    expect(result._tag).toBe("Success");
+    expect(h.toastAdd).toHaveBeenCalledTimes(1);
+    expect(h.toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "error",
+        title: "Thread deleted, but VCS refresh failed",
+      }),
+    );
     errorSpy.mockRestore();
   });
 
