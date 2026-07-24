@@ -1,6 +1,6 @@
 {
   "name": "t4code",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "private": true,
   "scripts": {
     "build": "node ../../scripts/run-msvc-x64.mjs cargo build -p t4code-server",
