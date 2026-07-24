@@ -338,10 +338,9 @@ async fn fetch_codex_backend_usage_operation(
         .and_then(map_reset_credits);
     if credits.as_ref().is_none_or(|credits| {
         credits.total_earned_count.is_none() || credits.next_expires_at.is_none()
-    }) {
-        if let Some(supplemental) = fetch_reset_credits(&client, endpoints, &auth).await {
-            credits = Some(merge_reset_credits(credits, supplemental));
-        }
+    }) && let Some(supplemental) = fetch_reset_credits(&client, endpoints, &auth).await
+    {
+        credits = Some(merge_reset_credits(credits, supplemental));
     }
 
     CodexBackendFetch::Success(CodexBackendUsage {

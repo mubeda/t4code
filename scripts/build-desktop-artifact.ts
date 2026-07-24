@@ -869,7 +869,7 @@ export const buildTauriDesktopArtifact = Effect.fn("buildTauriDesktopArtifact")(
     write(
       `[desktop-artifact] Building ${plan.platform}/${plan.target} (${plan.arch}, ${plan.rustTarget})...\n`,
     );
-    yield* runSpawnPlan(plan.buildCommand, env);
+    yield* runSpawnPlan(plan.buildCommand, env).pipe(Effect.retry({ times: 2 }));
   }
 
   const artifacts = yield* copyTauriBundleArtifacts(plan);

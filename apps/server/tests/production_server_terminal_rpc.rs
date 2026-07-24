@@ -1275,11 +1275,7 @@ fn long_running_command() -> &'static str {
 }
 
 fn long_running_output_marker() -> &'static str {
-    if cfg!(windows) {
-        "T4CODE_RPC_LONG_RUNNING_READY"
-    } else {
-        "T4CODE_RPC_LONG_RUNNING_READY"
-    }
+    "T4CODE_RPC_LONG_RUNNING_READY"
 }
 
 fn long_running_label() -> &'static str {

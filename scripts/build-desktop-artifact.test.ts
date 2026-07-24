@@ -1384,7 +1384,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
-  it.effect("reports nonzero build exits and skips spawning when requested", () =>
+  it.effect("retries nonzero build exits and skips spawning when requested", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -1419,7 +1419,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         {},
         { write: () => undefined, host: { platform: "win32", arch: "x64" }, repoRoot },
       ).pipe(Effect.provide(failingSpawner));
-      assert.equal(spawnCount, 1);
+      assert.equal(spawnCount, 3);
       assert.equal(artifacts.length, 1);
     }),
   );
