@@ -170,9 +170,7 @@ pub(super) async fn consume_codex_rate_limit_reset_credit(
 ) -> Result<CodexRateLimitResetOutcome, ProviderUsageCommandError> {
     match tokio::time::timeout(
         timeout,
-        consume_codex_rate_limit_reset_credit_operation(
-            codex_home, endpoints, timeout, request_id,
-        ),
+        consume_codex_rate_limit_reset_credit_operation(codex_home, endpoints, timeout, request_id),
     )
     .await
     {
@@ -338,12 +336,9 @@ async fn fetch_codex_backend_usage_operation(
         .rate_limit_reset_credits
         .as_ref()
         .and_then(map_reset_credits);
-    if credits
-        .as_ref()
-        .is_none_or(|credits| {
-            credits.total_earned_count.is_none() || credits.next_expires_at.is_none()
-        })
-    {
+    if credits.as_ref().is_none_or(|credits| {
+        credits.total_earned_count.is_none() || credits.next_expires_at.is_none()
+    }) {
         if let Some(supplemental) = fetch_reset_credits(&client, endpoints, &auth).await {
             credits = Some(merge_reset_credits(credits, supplemental));
         }
@@ -400,7 +395,9 @@ async fn read_auth_with_reader(
 
 fn shared_auth_read(path: PathBuf, auth_reader: AuthReader) -> SharedAuthRead {
     let reads = AUTH_READS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut reads = reads.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut reads = reads
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(existing) = reads.get(&path) {
         return existing.clone();
     }
@@ -418,7 +415,9 @@ fn shared_auth_read(path: PathBuf, auth_reader: AuthReader) -> SharedAuthRead {
         };
         sender.send_replace(Some(outcome));
         let reads = AUTH_READS.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut reads = reads.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut reads = reads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if reads.get(&path).is_some_and(|current| current.id == id) {
             reads.remove(&path);
         }
@@ -1009,10 +1008,7 @@ mod tests {
             1_800_014_400
         );
         assert!(
-            supplemental_headers
-                .lock()
-                .expect("headers lock")
-                .is_some(),
+            supplemental_headers.lock().expect("headers lock").is_some(),
             "supplemental credits endpoint was not called"
         );
     }
@@ -1127,17 +1123,18 @@ mod tests {
             let endpoints = endpoints.clone();
             let reader = reader.clone();
             async move {
-                fetch_codex_backend_usage_with_auth_reader(&home, &endpoints, timeout, reader)
-                    .await
+                fetch_codex_backend_usage_with_auth_reader(&home, &endpoints, timeout, reader).await
             }
         });
-        started_rx.recv().await.expect("first credential read started");
+        started_rx
+            .recv()
+            .await
+            .expect("first credential read started");
         let mut second = tokio::spawn({
             let home = temporary.path().to_owned();
             let endpoints = endpoints.clone();
             async move {
-                fetch_codex_backend_usage_with_auth_reader(&home, &endpoints, timeout, reader)
-                    .await
+                fetch_codex_backend_usage_with_auth_reader(&home, &endpoints, timeout, reader).await
             }
         });
 

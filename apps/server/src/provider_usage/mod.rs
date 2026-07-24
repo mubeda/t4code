@@ -137,8 +137,7 @@ type FetchFuture =
 type ConsumeCodexResetFuture = Pin<
     Box<dyn Future<Output = Result<CodexRateLimitResetOutcome, ProviderUsageCommandError>> + Send>,
 >;
-type ConsumeCodexReset =
-    Arc<dyn Fn(String) -> ConsumeCodexResetFuture + Send + Sync>;
+type ConsumeCodexReset = Arc<dyn Fn(String) -> ConsumeCodexResetFuture + Send + Sync>;
 
 #[derive(Clone)]
 pub struct ProviderUsageFetcher {
@@ -288,10 +287,7 @@ impl ProviderUsageService {
                 now_ms.saturating_sub(*started_at_ms) < MIN_MANUAL_REFRESH_MS
             });
             if matches!(policy, RefreshPolicy::Throttled)
-                && state
-                    .refresh_started_at_ms
-                    .last_key_value()
-                    .is_some()
+                && state.refresh_started_at_ms.last_key_value().is_some()
             {
                 return drop_and_read(state, self).await;
             }
@@ -1011,27 +1007,22 @@ fn map_codex_usage(payload: &Value, now: OffsetDateTime) -> ProviderUsageSnapsho
 
 fn map_codex_app_server_reset_credits(payload: &Value) -> Option<RateLimitResetCredits> {
     let raw = payload.get("rateLimitResetCredits")?.as_object()?;
-    let available_count = raw
-        .get("availableCount")
-        .and_then(nonnegative_count)?;
+    let available_count = raw.get("availableCount").and_then(nonnegative_count)?;
     let total_earned_count = raw.get("totalEarnedCount").and_then(nonnegative_count);
-    let next_expires_at = raw
-        .get("nextExpiresAt")
-        .and_then(parse_reset)
-        .or_else(|| {
-            raw.get("credits")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter(|credit| {
-                    credit
-                        .get("status")
-                        .and_then(Value::as_str)
-                        .is_some_and(|status| status.eq_ignore_ascii_case("available"))
-                })
-                .filter_map(|credit| credit.get("expiresAt").and_then(parse_reset))
-                .min()
-        });
+    let next_expires_at = raw.get("nextExpiresAt").and_then(parse_reset).or_else(|| {
+        raw.get("credits")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|credit| {
+                credit
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .is_some_and(|status| status.eq_ignore_ascii_case("available"))
+            })
+            .filter_map(|credit| credit.get("expiresAt").and_then(parse_reset))
+            .min()
+    });
     Some(RateLimitResetCredits {
         available_count,
         total_earned_count,
@@ -1561,9 +1552,7 @@ mod tests {
             })],
             Arc::new(move || now),
         )
-        .with_codex_rate_limit_reset_consumer(|_| async {
-            Ok(CodexRateLimitResetOutcome::Reset)
-        });
+        .with_codex_rate_limit_reset_consumer(|_| async { Ok(CodexRateLimitResetOutcome::Reset) });
 
         let ordinary = tokio::spawn({
             let service = service.clone();
@@ -1656,12 +1645,15 @@ mod tests {
         assert_eq!(active_fetches.load(Ordering::SeqCst), 1);
 
         caller.abort();
-        assert!(caller.await.expect_err("caller cancellation").is_cancelled());
+        assert!(
+            caller
+                .await
+                .expect_err("caller cancellation")
+                .is_cancelled()
+        );
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if !service.read().await.is_fetching
-                    && active_fetches.load(Ordering::SeqCst) == 0
-                {
+                if !service.read().await.is_fetching && active_fetches.load(Ordering::SeqCst) == 0 {
                     break;
                 }
                 tokio::task::yield_now().await;
@@ -1687,7 +1679,10 @@ mod tests {
         let state = Arc::downgrade(&service.state);
         drop(service);
         tokio::task::yield_now().await;
-        assert!(state.upgrade().is_none(), "refresh task retained service state");
+        assert!(
+            state.upgrade().is_none(),
+            "refresh task retained service state"
+        );
     }
 
     #[tokio::test]

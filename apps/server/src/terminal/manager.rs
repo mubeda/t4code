@@ -1108,7 +1108,8 @@ impl TerminalManager {
             if let Some(process) = process {
                 let exit = process.subscribe_exit();
                 match process.kill() {
-                    Ok(()) => match wait_for_terminal_process_tree_exit(Arc::clone(&process), exit).await
+                    Ok(()) => match wait_for_terminal_process_tree_exit(Arc::clone(&process), exit)
+                        .await
                     {
                         Ok(()) => closed.report.record_success(),
                         Err(error) => closed.report.record_failure(format!(
@@ -1540,8 +1541,7 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Acquire)
             {
                 Ok(Some(
-                    self.tree_exited
-                        .load(std::sync::atomic::Ordering::Acquire),
+                    self.tree_exited.load(std::sync::atomic::Ordering::Acquire),
                 ))
             } else {
                 Ok(None)

@@ -319,15 +319,21 @@ mod tests {
         ]));
 
         assert_eq!(inventory.len(), 3);
-        assert!(inventory.iter().any(|agent| {
-            agent["name"] == "plan" && agent.get("invocation").is_none()
-        }));
-        assert!(inventory.iter().any(|agent| {
-            agent["name"] == "review" && agent["invocation"] == "mention"
-        }));
-        assert!(inventory.iter().any(|agent| {
-            agent["name"] == "build" && agent["invocation"] == "mention"
-        }));
+        assert!(
+            inventory
+                .iter()
+                .any(|agent| { agent["name"] == "plan" && agent.get("invocation").is_none() })
+        );
+        assert!(
+            inventory
+                .iter()
+                .any(|agent| { agent["name"] == "review" && agent["invocation"] == "mention" })
+        );
+        assert!(
+            inventory
+                .iter()
+                .any(|agent| { agent["name"] == "build" && agent["invocation"] == "mention" })
+        );
     }
 
     #[test]

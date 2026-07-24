@@ -1761,17 +1761,16 @@ mod tests {
     #[tokio::test]
     async fn full_probe_does_not_serialize_independent_provider_inventories() {
         let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(6));
-        let app = Router::new()
-            .route(
-                "/{*path}",
-                get(move || {
-                    let barrier = barrier.clone();
-                    async move {
-                        barrier.wait().await;
-                        Json(json!({}))
-                    }
-                }),
-            );
+        let app = Router::new().route(
+            "/{*path}",
+            get(move || {
+                let barrier = barrier.clone();
+                async move {
+                    barrier.wait().await;
+                    Json(json!({}))
+                }
+            }),
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind fake OpenCode server");

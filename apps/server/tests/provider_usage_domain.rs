@@ -680,9 +680,8 @@ async fn production_fetchers_handle_local_credentials_and_codex_rpc_responses() 
     assert_eq!(initialize_error.message, "Codex initialize failed.");
 
     const SENTINEL_SECRET: &str = "sentinel-private-rate-limit-detail";
-    let rate_limit_error_payload = format!(
-        "{{\"id\":2,\"error\":{{\"message\":\"{SENTINEL_SECRET}\"}}}}"
-    );
+    let rate_limit_error_payload =
+        format!("{{\"id\":2,\"error\":{{\"message\":\"{SENTINEL_SECRET}\"}}}}");
     let rate_limit_error = write_codex_fixture(
         temporary.path(),
         "rate-limit-error",

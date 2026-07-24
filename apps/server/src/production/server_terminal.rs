@@ -17,9 +17,9 @@ use crate::{
     },
     production::orchestration_effects::SetupScriptLaunch,
     provider_usage::{
-        CodexRateLimitResetOutcome, ConsumeCodexRateLimitResetResult, ProviderUsageProvider,
-        ProviderUsageCommandError, ProviderUsageResult, ProviderUsageService,
-        ProviderUsageSnapshot, ProviderUsageStatus, ProviderUsageWindow, RateLimitResetCredits,
+        CodexRateLimitResetOutcome, ConsumeCodexRateLimitResetResult, ProviderUsageCommandError,
+        ProviderUsageProvider, ProviderUsageResult, ProviderUsageService, ProviderUsageSnapshot,
+        ProviderUsageStatus, ProviderUsageWindow, RateLimitResetCredits,
     },
     rpc::{RpcRegistry, RpcResult, RpcStreamChunk},
     terminal::{
@@ -2308,22 +2308,17 @@ mod tests {
 
         for (outcome, expected) in [
             (CodexRateLimitResetOutcome::Reset, "reset"),
-            (
-                CodexRateLimitResetOutcome::NothingToReset,
-                "nothingToReset",
-            ),
+            (CodexRateLimitResetOutcome::NothingToReset, "nothingToReset"),
             (CodexRateLimitResetOutcome::NoCredit, "noCredit"),
             (
                 CodexRateLimitResetOutcome::AlreadyRedeemed,
                 "alreadyRedeemed",
             ),
         ] {
-            let wire = consume_codex_rate_limit_reset_to_wire(
-                ConsumeCodexRateLimitResetResult {
-                    outcome,
-                    usage: usage.clone(),
-                },
-            );
+            let wire = consume_codex_rate_limit_reset_to_wire(ConsumeCodexRateLimitResetResult {
+                outcome,
+                usage: usage.clone(),
+            });
             assert_eq!(wire["outcome"], expected);
             let absent = &wire["usage"]["providers"][0];
             assert_eq!(absent["fableWeekly"], Value::Null);
@@ -2337,10 +2332,7 @@ mod tests {
                 codex["rateLimitResetCredits"]["totalEarnedCount"],
                 Value::Null
             );
-            assert_eq!(
-                codex["rateLimitResetCredits"]["nextExpiresAt"],
-                Value::Null
-            );
+            assert_eq!(codex["rateLimitResetCredits"]["nextExpiresAt"], Value::Null);
         }
 
         assert_eq!(
