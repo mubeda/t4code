@@ -142,6 +142,7 @@ const testState = vi.hoisted(() => ({
     worktreePath?: string | null;
   }>,
   queryAtoms: [] as unknown[],
+  refreshRefs: vi.fn(),
   createWorktree: vi.fn(),
   createThread: vi.fn(),
   navigate: vi.fn(),
@@ -170,7 +171,12 @@ vi.mock("~/state/entities", () => ({
 vi.mock("~/state/query", () => ({
   useEnvironmentQuery: (atom: unknown) => {
     testState.queryAtoms.push(atom);
-    return { data: atom ? { refs: testState.refs } : null, error: null, isPending: false };
+    return {
+      data: atom ? { refs: testState.refs } : null,
+      error: null,
+      isPending: false,
+      refresh: testState.refreshRefs,
+    };
   },
 }));
 
@@ -376,6 +382,7 @@ function resetScenario(): void {
   testState.serverConfigs = new Map();
   testState.refs = [];
   testState.queryAtoms = [];
+  testState.refreshRefs.mockReset();
   testState.createWorktree
     .mockReset()
     .mockResolvedValue(success({ worktree: { path: "/repo/.worktrees/feature" } }));
@@ -1105,6 +1112,21 @@ if (browserRuntime) {
           input: { cwd: "/remote/repo", query: undefined },
         },
       });
+
+      await React.act(async () => root.unmount());
+      container.remove();
+    });
+
+    it("refreshes cached refs whenever the dialog opens", async () => {
+      const { container, root } = await mountDialog(false, PROJECT_REF);
+
+      expect(testState.refreshRefs).not.toHaveBeenCalled();
+      await renderDialog(root, true, PROJECT_REF);
+      expect(testState.refreshRefs).toHaveBeenCalledTimes(1);
+
+      await renderDialog(root, false, PROJECT_REF);
+      await renderDialog(root, true, PROJECT_REF);
+      expect(testState.refreshRefs).toHaveBeenCalledTimes(2);
 
       await React.act(async () => root.unmount());
       container.remove();

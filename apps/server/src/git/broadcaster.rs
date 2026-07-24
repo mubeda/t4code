@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    GitCommandError, GitRepository, VcsStatusLocalResult, VcsStatusRemoteResult,
+    GitCommandError, GitRepository, VcsStatusLocalResult, VcsStatusRemoteResult, VcsStatusResult,
     VcsStatusStreamEvent,
 };
 
@@ -148,6 +148,36 @@ impl StatusBroadcaster {
             entry.poller_cancellation.cancel();
         }
         Ok(local)
+    }
+
+    pub async fn refresh_status(
+        &self,
+        cwd: &Path,
+        cancellation: &CancellationToken,
+    ) -> Result<VcsStatusResult, GitCommandError> {
+        let cwd = tokio::fs::canonicalize(cwd)
+            .await
+            .unwrap_or_else(|_| cwd.to_path_buf());
+        let status = self.inner.repository.status(&cwd, cancellation).await?;
+        let remote = status.local.is_repo.then(|| status.remote.clone());
+        let event = VcsStatusStreamEvent::Snapshot {
+            local: status.local.clone(),
+            remote: remote.clone(),
+        };
+        let mut state = self.lock_state();
+        let mut remove_repository = false;
+        if let Some(entry) = state.repositories.get_mut(&cwd)
+            && (entry.local != status.local || entry.remote.as_ref() != Some(&remote))
+        {
+            entry.local = status.local.clone();
+            entry.remote = Some(remote);
+            publish(entry, event);
+            remove_repository = entry.subscribers.is_empty();
+        }
+        if remove_repository && let Some(entry) = state.repositories.remove(&cwd) {
+            entry.poller_cancellation.cancel();
+        }
+        Ok(status)
     }
 
     #[must_use]

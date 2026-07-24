@@ -125,6 +125,7 @@ export function CreateWorktreeDialog({
   const [formError, setFormError] = useState<string | null>(null);
   const instanceSelectionTouchedRef = useRef(false);
   const previousOpenRef = useRef(false);
+  const refsEnabledRef = useRef(false);
 
   const selectProjectTarget = useCallback((nextProjectRef: ScopedProjectRef | null) => {
     setProjectSelection((current) =>
@@ -191,6 +192,12 @@ export function CreateWorktreeDialog({
         })
       : null,
   );
+  const refsEnabled = open && branchesEnabled;
+  useEffect(() => {
+    const wasEnabled = refsEnabledRef.current;
+    refsEnabledRef.current = refsEnabled;
+    if (refsEnabled && !wasEnabled) refsQuery.refresh();
+  }, [refsEnabled, refsQuery.refresh]);
   // TODO(orca-port): confirm VcsListRefsResult field name is `refs`.
   const refs: ReadonlyArray<RefLike> = refsQuery.data?.refs ?? [];
   const selectedBranchRef = useMemo(

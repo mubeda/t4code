@@ -215,6 +215,96 @@ async fn vcs_status_stream_is_bounded_and_cancellable() {
 }
 
 #[tokio::test]
+async fn refresh_status_publishes_external_branch_changes_to_status_subscribers() {
+    let temp = TempDir::new().expect("temporary server directory");
+    let repository = TempDir::new().expect("temporary repository");
+    initialize_repository(&repository);
+    commit_file(repository.path(), "tracked.txt", "base\n", "initial");
+    let (handle, mut status_socket) = start_git_server(&temp).await;
+    let (mut refresh_socket, _) = connect_async(format!("ws://{}/ws", handle.local_addr()))
+        .await
+        .expect("refresh WebSocket connects");
+    let cwd = repository.path().to_string_lossy();
+
+    request(
+        &mut status_socket,
+        "701",
+        "subscribeVcsStatus",
+        json!({ "cwd": cwd }),
+    )
+    .await;
+    let snapshot = next_server_message(&mut status_socket).await;
+    assert!(matches!(
+        snapshot,
+        ServerMessage::Chunk { request_id, values }
+            if request_id.as_str() == "701"
+                && values[0]["_tag"] == "snapshot"
+                && values[0]["local"]["refName"] == "main"
+    ));
+    send_json(
+        &mut status_socket,
+        json!({ "_tag": "Ack", "requestId": "701" }),
+    )
+    .await;
+    let initial_remote =
+        next_server_message_with_timeout(&mut status_socket, Duration::from_secs(45)).await;
+    assert!(matches!(
+        initial_remote,
+        ServerMessage::Chunk { request_id, values }
+            if request_id.as_str() == "701" && values[0]["_tag"] == "remoteUpdated"
+    ));
+    send_json(
+        &mut status_socket,
+        json!({ "_tag": "Ack", "requestId": "701" }),
+    )
+    .await;
+
+    run_git(
+        &repository,
+        &["switch", "--quiet", "-c", "feature/external"],
+    );
+    request(
+        &mut refresh_socket,
+        "702",
+        "vcs.refreshStatus",
+        json!({ "cwd": cwd }),
+    )
+    .await;
+    let refreshed = success_value(&mut refresh_socket, "702").await;
+    assert_eq!(refreshed["refName"], "feature/external");
+
+    let local_update = timeout(Duration::from_secs(2), async {
+        loop {
+            let message = next_server_message(&mut status_socket).await;
+            if let ServerMessage::Chunk { request_id, values } = message
+                && request_id.as_str() == "701"
+                && matches!(
+                    values[0]["_tag"].as_str(),
+                    Some("localUpdated" | "snapshot")
+                )
+                && values[0]["local"]["refName"] == "feature/external"
+            {
+                break values;
+            }
+        }
+    })
+    .await
+    .expect("vcs.refreshStatus should publish a local status update");
+    assert_eq!(local_update[0]["local"]["refName"], "feature/external");
+
+    refresh_socket
+        .close(None)
+        .await
+        .expect("close refresh socket");
+    status_socket
+        .close(None)
+        .await
+        .expect("close status socket");
+    handle.shutdown();
+    handle.join().await.expect("server joins");
+}
+
+#[tokio::test]
 async fn stacked_commit_stream_finishes_with_a_decodable_success_event() {
     let temp = TempDir::new().expect("temporary server directory");
     let repository = TempDir::new().expect("temporary repository");
@@ -2114,7 +2204,17 @@ async fn next_server_message<S>(socket: &mut WebSocketStream<S>) -> ServerMessag
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let frame = timeout(Duration::from_secs(15), socket.next())
+    next_server_message_with_timeout(socket, Duration::from_secs(15)).await
+}
+
+async fn next_server_message_with_timeout<S>(
+    socket: &mut WebSocketStream<S>,
+    timeout_duration: Duration,
+) -> ServerMessage
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let frame = timeout(timeout_duration, socket.next())
         .await
         .expect("WebSocket response timeout")
         .expect("WebSocket remains open")

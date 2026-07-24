@@ -120,8 +120,8 @@ impl GitVcsRpcServices {
             "vcs.refreshStatus" => {
                 let input: CwdInput = decode(request.payload, "vcs.refreshStatus")?;
                 let mut status = self
-                    .repository
-                    .status(&input.cwd, &cancellation)
+                    .broadcaster
+                    .refresh_status(&input.cwd, &cancellation)
                     .await
                     .map_err(serialize_error)?;
                 enrich_remote_pull_request(
