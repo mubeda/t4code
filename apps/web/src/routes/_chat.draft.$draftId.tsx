@@ -27,7 +27,7 @@ function DraftChatThreadRouteView() {
   const serverThreadRef = draftSession?.promotedTo ?? inferredThreadRef;
   const serverThread = useThread(serverThreadRef);
   const serverThreadStarted = threadHasStarted(serverThread);
-  const canonicalThreadRef = serverThreadStarted ? serverThreadRef : null;
+  const canonicalThreadRef = serverThread ? serverThreadRef : null;
 
   useEffect(() => {
     if (!inferredThreadRef || draftSession?.promotedTo) {
@@ -37,7 +37,7 @@ function DraftChatThreadRouteView() {
   }, [draftSession?.promotedTo, inferredThreadRef]);
 
   useEffect(() => {
-    if (!canonicalThreadRef) {
+    if (!canonicalThreadRef || !serverThreadStarted) {
       return;
     }
     void navigate({
@@ -45,7 +45,7 @@ function DraftChatThreadRouteView() {
       params: buildThreadRouteParams(canonicalThreadRef),
       replace: true,
     });
-  }, [canonicalThreadRef, navigate]);
+  }, [canonicalThreadRef, navigate, serverThreadStarted]);
 
   useEffect(() => {
     if (draftSession || canonicalThreadRef) {

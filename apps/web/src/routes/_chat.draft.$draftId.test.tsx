@@ -150,16 +150,21 @@ describe("draft chat route", () => {
     expect(harness.effects[2]?.()).toBeUndefined();
   });
 
-  it("keeps draft rendering while a promoted server thread has not started", () => {
+  it("renders a materialized promoted server thread before its first turn starts", () => {
     const promoted = { environmentId: "environment-2", threadId: "thread-2" };
     harness.draftSession = {
       environmentId: "environment-1",
       threadId: "thread-1",
       promotedTo: promoted,
     };
+    harness.serverThread = { id: "server" };
     harness.serverStarted = false;
     expect(renderRoute()).toContain("data-chat-view");
-    expect(harness.chatProps[0]?.routeKind).toBe("draft");
+    expect(harness.chatProps[0]).toMatchObject({
+      environmentId: "environment-2",
+      threadId: "thread-2",
+      routeKind: "server",
+    });
     expect(harness.effects[1]?.()).toBeUndefined();
     expect(harness.effects[2]?.()).toBeUndefined();
   });
